@@ -1,0 +1,62 @@
+[build-system]
+requires = ["setuptools"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "geosave-engine"
+version = "0.1.0"
+description = "Geospatial remote sensing image segmentation framework built on top of PyTorch Lightning"
+readme = "README.md"
+requires-python = ">=3.9"
+authors = [
+    {name = "Fatah Muria", email = "fatahmurbaut@gmail.com"}
+]
+keywords = ["segmentation", "geospatial", "remote-sensing", "dinov2", "pytorch"]
+classifiers = [
+    "Development Status :: 3 - Alpha",
+    "Intended Audience :: Science/Research",
+    "Programming Language :: Python :: 3",
+    "Topic :: Scientific/Engineering :: Image Recognition",
+]
+
+dependencies = [
+    "torch>=2.0.0",
+    "torchvision>=0.15.0",
+    "pytorch-lightning>=2.0.0",
+    "segmentation-models-pytorch>=0.3.0",
+    "tqdm",
+    "PyYAML",
+    "numpy",
+    "pandas",
+    "scikit-learn",
+    "matplotlib",
+    "tensorboard",
+    "rasterio",
+    "albumentations",
+]
+
+[project.optional-dependencies]
+docs = [
+    "zensical"
+]
+
+[project.urls]
+Homepage = "https://github.com/yourusername/geosave-engine"
+Documentation = "https://github.com/yourusername/geosave-engine#readme"
+Repository = "https://github.com/yourusername/geosave-engine.git"
+Issues = "https://github.com/yourusername/geosave-engine/issues"
+
+[tool.setuptools]
+package-dir = {"" = "src"}
+
+[tool.setuptools.packages.find]
+where = ["src"]
+
+[tool.setuptools.package-data]
+geosave-engine = ["templates/**/*.yaml", "templates/**/*.ipynb"]  
+
+[project.scripts]
+geomoka-train = "geomoka.cli.train:main"
+geomoka-split = "geomoka.cli.datasplit:main"
+geomoka-scaffold = "geomoka.cli.scaffold:main"
+geomoka-template = "geomoka.cli.template:main"

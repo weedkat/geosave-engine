@@ -1,0 +1,39 @@
+[project]
+site_name = "Geosave Engine"
+site_description = "Geospatial remote sensing image segmentation framework built on top of PyTorch Lightning"
+site_author = "Fatah Muria"
+docs_dir = "docs"
+site_dir = "site"
+site_url = "https://weedkat.github.io/geosave-engine"
+
+copyright = "Copyright © 2026 GeoMoka contributors"
+
+nav = [
+  { "Home" = "index.md" },
+  { "Getting Started" = "getting-started.md" },
+  { "Training Workflow" = "training-workflow.md" },
+  { "CLI Reference" = "cli-reference.md" },
+  { "Codebase Overview" = "codebase-overview.md" }
+]
+
+[project.theme]
+language = "en"
+features = [
+  "announce.dismiss",
+  "content.code.copy",
+  "navigation.footer",
+  "navigation.sections",
+  "navigation.top",
+  "navigation.tracking",
+  "search.highlight"
+]
+
+[[project.theme.palette]]
+scheme = "default"
+toggle.icon = "lucide/sun"
+toggle.name = "Switch to dark mode"
+
+[[project.theme.palette]]
+scheme = "slate"
+toggle.icon = "lucide/moon"
+toggle.name = "Switch to light mode"
