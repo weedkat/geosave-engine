@@ -1,0 +1,92 @@
+# Arguments for dataset
+dataset: GenericDataset
+root_dir: dataset/isprs_postdam
+train_split: dataset/isprs_postdam/splits/train.csv
+val_split: dataset/isprs_postdam/splits/val.csv
+test_split: dataset/isprs_postdam/splits/test.csv
+metadata: config/isprs_postdam/metadata.yaml
+
+# Arguments for data loader, tweak if training is slow or low gpu utilization
+dataloader_cfg:
+  batch_size: 4  # Can use larger batch with smaller models
+  num_workers_train: 6  # Number of workers for training dataloader
+  num_workers_val: 2  # Number of workers for validation dataloader
+  prefetch_factor: 2 # Number of samples loaded in advance by each worker
+  persistent_workers: false # Keep workers alive between epochs for faster loading
+  pin_memory: true # Pin memory for faster GPU transfer
+  # nsample: 3000 # semi supervised learning sample size, not used in fully supervised training
+
+# Arguments for training
+train_cfg:
+  method: supervised
+  epochs: 60
+  lr: 0.000005 # learning rate for backbone / encoder
+  lr_multi: 40.0 # learning rate multiplier for head / decoder
+  criterion:
+    name: CELoss
+    kwargs:
+      # thresh: 0.7
+      # min_kept: 200000
+  # conf_thresh: 0.95 # semi supervised confidence threshold, not used in fully supervised training
+  eval_mode: sliding_window
+  nsample: 3000
+
+# Arguments for transformations, Refer to Albumentations library for more details
+transform_cfg:
+  train:
+    - name: RandomResizedCrop
+      kwargs:
+        size: [*crop_size, *crop_size]
+        scale: [0.08, 1]
+        ratio: [0.75, 1.33]
+
+    - name: HorizontalFlip
+      kwargs:
+        p: 0.5
+
+    - name: VerticalFlip
+      kwargs:
+        p: 0.3
+
+    - name: RandomRotate90
+      kwargs:
+        p: 0.5
+
+    - name: OneOf
+      kwargs:
+        transforms:
+          - name: ColorJitter
+            kwargs:
+              brightness: 0.2
+              contrast: 0.2
+              saturation: 0.2
+              hue: 0.1
+              p: 1.0
+          - name: RandomBrightnessContrast
+            kwargs:
+              brightness_limit: 0.2
+              contrast_limit: 0.2
+              p: 1.0
+        p: 0.5
+
+    # - name: GaussianBlur
+    #   kwargs:
+    #     blur_limit: 3
+    #     p: 0.3
+    
+    - name: Normalize
+      kwargs:
+        mean: [0.485, 0.456, 0.406]
+        std: [0.229, 0.224, 0.225]
+
+    - name: ToTensorV2
+      kwargs: {}
+
+  inference:
+    - name: Normalize
+      kwargs:
+        mean: [0.485, 0.456, 0.406]
+        std: [0.229, 0.224, 0.225]
+    
+    - name: ToTensorV2
+      kwargs: {}

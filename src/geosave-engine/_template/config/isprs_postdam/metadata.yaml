@@ -1,0 +1,29 @@
+# index 255 is ignored by model during training, change in train config if needed
+# class dict has to be continuous from 0 to nclass-1, with an optional ignore. please alter dataset and metadata accordingly
+# bacause mask dataset is in rgb format, it is fine to define the index, otherwise follow the dataset format
+dataset_name: isprs_postdam
+ignore_index: 255
+available_bands:
+  R: 0
+  G: 1
+  B: 2
+selected_bands: [R, G, B]
+class_dict: 
+  0:
+    name: Impervious surfaces
+    rgb : [255, 255, 255]
+  1:
+    name: Building
+    rgb : [0, 0, 255]
+  2:
+    name: Low vegetation
+    rgb : [0, 255, 255]
+  3:
+    name: Tree
+    rgb : [0, 255, 0]
+  4:
+    name: Car
+    rgb : [255, 255, 0]
+  255:
+    name: Background
+    rgb : [255, 0, 0]
