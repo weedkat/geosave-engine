@@ -22,7 +22,7 @@ classifiers = [
 dependencies = [
     "torch>=2.0.0",
     "torchvision>=0.15.0",
-    "pytorch-lightning>=2.0.0",
+    "lightning>=2.0.0",
     "segmentation-models-pytorch>=0.3.0",
     "tqdm",
     "PyYAML",
