@@ -1,9 +1,10 @@
 import pandas as pd
 from pathlib import Path
-from torch.utils.data import Dataset, DataLoader
+from torch.utils.data import Dataset
 import rasterio
 from PIL import Image
 import numpy as np
+from .metadata import MetadataInterpreter
 
 class SemSegDataset(Dataset):
     """
@@ -16,22 +17,24 @@ class SemSegDataset(Dataset):
         metadata: Path to YAML metadata (relative to cwd or absolute)
         bands: List of band names to be used e.g. ['R', 'G', 'B'] or ['B1', 'B2', 'B3']
     """
-    def __init__(self, data_dir, data_csv, metadata, image_dir, mask_dir):
+    def __init__(self, data_dir, data_csv, metadata, image_dir, label_dir):
         """
         Args:
             data_csv (str): Path to the CSV file containing image and mask paths.
-            root_dir (str): Root directory of the dataset.
+            data_dir (str): Directory containing the dataset.
             metadata (str): Path to the YAML file defining dataset metadata.
-            bands (list): List of band names to select, e.g., ['R', 'G', 'B']. If None, uses all bands.
+            image_dir (str): Directory containing the images.
+            label_dir (str): Directory containing the labels.
         """
         # Resolve relative paths from current working directory
         data_csv = Path(data_csv).resolve()
-        root_dir = Path(root_dir).resolve()
+        data_dir = Path(data_dir).resolve()
         metadata = Path(metadata).resolve()
     
         self.df = pd.read_csv(data_csv)
-        self.img_dir = root_dir / "images"
-        self.mask_dir = root_dir / "labels"
+        self.img_dir = data_dir / image_dir
+        self.mask_dir = data_dir / label_dir
+        self.mi = MetadataInterpreter(metadata)
         
     def __getitem__(self, idx):
         assert isinstance(idx, int)
@@ -40,6 +43,10 @@ class SemSegDataset(Dataset):
         
         img_path = self.img_dir / row['image']
         image = self._load_image(img_path)
+        
+        if 'label' not in row or pd.isna(row['label']):
+            return image, None
+        
         mask_path = self.mask_dir / row['label']
         mask = self._load_mask(mask_path)
 

@@ -57,6 +57,5 @@ geosave-engine = ["templates/**/*.yaml", "templates/**/*.ipynb"]
 
 [project.scripts]
 geomoka-train = "geomoka.cli.train:main"
-geomoka-split = "geomoka.cli.datasplit:main"
 geomoka-scaffold = "geomoka.cli.scaffold:main"
 geomoka-template = "geomoka.cli.template:main"

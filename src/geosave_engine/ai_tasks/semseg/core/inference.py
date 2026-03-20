@@ -29,15 +29,6 @@ class Inference:
         model: LightningModule,
     ):
         self.model = model
-        self.transform_cfg = model.transform_cfg['inference']
-        self.patch_size = model.metadata['input_size']
-        self.reject_class = model.metadata['ignore_index']
-        self.nclass = model.model_spec['nclass']
-        self.in_channels = model.model_spec['in_channels']
-        self.device = model.device
-
-        # for later
-        self.confidence_threshold = 0.0
         
         # Transform configuration
         self.transform = TransformsCompose(self.transform_cfg, input_size=self.patch_size)
@@ -121,18 +112,7 @@ class Inference:
         
         return pred, conf
     
-    def stream_infer(self, loader, mode, overlap_ratio):
-        if not isinstance(loader, DataLoader):
-            raise ValueError("For streaming inference, input must be a DataLoader.")
-        for batch in loader:
-            yield self.engine(batch, mode, overlap_ratio)
-
-    def infer(
-        self,
-        images       : np.ndarray,
-        mode         : str = 'sliding_window',
-        overlap_ratio: float = 0.5,
-    ):
+    def __call__(self, images):
         """
         Perform inference on input image(s).
         
@@ -167,42 +147,6 @@ class Inference:
         
         else:
             raise ValueError("Input must be a numpy array or a DataLoader")
-    
-    def _infer_resize(self, img_tensor: torch.Tensor) -> torch.Tensor:
-        """
-        Direct inference with resizing to patch_size and upscaling back.
-        
-        Args:
-            img_tensor: (B, C, H, W)
-            
-        Returns:
-            output: (B, C, H, W) logits
-        """
-        model = self.model.model  # Access the underlying model if wrapped
-        b, c, h, w = img_tensor.shape
-        
-        target_size = self.patch_size
-        
-        # Resize input
-        img_resized = F.interpolate(
-            img_tensor,
-            size=(target_size, target_size),
-            mode='bilinear',
-            align_corners=False
-        )
-        
-        # Inference on resized image
-        output = model(img_resized)
-        
-        # Resize output back to original size
-        output = F.interpolate(
-            output,
-            size=(h, w),
-            mode='bilinear',
-            align_corners=False
-        )
-        
-        return output
     
     def _infer_sliding_window(self, img_tensor: torch.Tensor, overlap_ratio: float = 0.5) -> torch.Tensor:
         """

@@ -4,9 +4,9 @@ from pathlib import Path
 import os
 import torch
 from .semseg.dpt import DPT
-from geomoka._core.registry import Registry
-
-PRETRAINED_DIR = Path.home() / '.cache' / 'geomoka' / 'pretrained'
+from geosave_engine._core.registry import Registry
+    
+PRETRAINED_DIR = Path.home() / '.cache' / 'geosave' / 'pretrained'
 
 # Map model names to smp classes
 dpt_encoder_map = {
@@ -49,7 +49,9 @@ def download_pretrained_dinov2(encoder, weights, pretrain_dir=PRETRAINED_DIR):
     
     return pth_path
 
-@Registry.register_model('dpt')
+registry = Registry()
+
+@registry.register('dpt')
 def build(in_channels, nclass, encoder='dinov2_base', weights='imagenet', pretrain_dir=PRETRAINED_DIR, **kwargs):
     model_cfg = dpt_encoder_map[encoder]
     

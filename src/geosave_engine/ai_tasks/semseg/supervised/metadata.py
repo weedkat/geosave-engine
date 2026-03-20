@@ -28,6 +28,12 @@ class MetadataInterpreter:
         self.class_dict = metadata["class_dict"]
         self.input_size = metadata['input_size']
         self.metadata = metadata
+
+        self.class_names = [item['name'] for key, item in self.class_dict.items() if key != self.ignore_index]
+        self.nclass = len(self.class_names)
+        self.in_channels = len(self.selected_bands)
+        self.dataset = metadata.get('dataset', 'unknown')
+
         
     def rgb_to_class(self, mask_rgb):
         """ 
@@ -66,21 +72,9 @@ class MetadataInterpreter:
             return {key: value for key, value in self.class_dict.items() if key != self.ignore_index}
         return self.class_dict
     
+    def get_selected_bands(self):
+        return self.get_bands(self.selected_bands)
+    
     def get_bands(self, band_names):
         """Get list of band indices based on available_bands in metadata"""
         return [self.available_bands[name] for name in band_names]
-    
-    @property
-    def nclass(self):
-        """Get number of classes excluding ignore_index"""
-        return len(self.get_class_dict(include_ignore_index=False))
-    
-    @property
-    def in_channels(self):
-        """Get number of input channels based on selected bands"""
-        return len(self.selected_bands)
-    
-    @property
-    def dataset(self):
-        """Get dataset name from metadata"""
-        return self.metadata.get('dataset', 'unknown')
