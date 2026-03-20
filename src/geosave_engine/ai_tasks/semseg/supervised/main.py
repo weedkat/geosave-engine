@@ -11,16 +11,18 @@ from .metadata import MetadataInterpreter
 
 
 class SemSegModel(L.LightningModule):
-    def __init__(self, arch, optim, loss, metadata, calibrate=False, **kwargs):
+    def __init__(self, arch, optim, loss, metadata_dict, transform_dict, calibrate=False, **kwargs):
         super().__init__()
+        self.save_hyperparameters()
+
         self.arch = arch
         self.optim = optim
         self.loss = loss
-        self.metadata_interpreter = MetadataInterpreter(metadata)
-        self.metadata = self.metadata_interpreter.metadata
+        self.transform_dict = transform_dict
+        self.calibrate = calibrate
+        self.metadata_interpreter = MetadataInterpreter(metadata_dict)
+        self.metadata_dict = metadata_dict
 
-        self.save_hyperparameters()
-        
         for attr in ['arch', 'optim', 'loss']:
             setattr(self, f"{attr}_cfg", extract_prefixed(kwargs, attr))
         
@@ -28,7 +30,7 @@ class SemSegModel(L.LightningModule):
         self.arch_cfg['in_channels'] = self.metadata_interpreter.in_channels
         self.model = model_registry.build(arch, **self.arch_cfg)
         
-        self.loss = loss_registry.build(loss, **self.loss_cfg)
+        self.loss_fn = loss_registry.build(loss, **self.loss_cfg)
 
         metrics = get_metrics(num_classes=self.metadata_interpreter.nclass, 
                               class_names=self.metadata_interpreter.class_names, 
@@ -42,6 +44,8 @@ class SemSegModel(L.LightningModule):
         self.register_buffer("threshold", torch.tensor(0.0), persistent=True)
 
     def setup(self, stage=None):
+        self.transform_trn = self.transform_dict.get("train")
+        self.transform_infer = self.transform_dict.get("infer")
         self.inferencer = Inference(self)
 
     def forward(self, x):
@@ -71,7 +75,7 @@ class SemSegModel(L.LightningModule):
     def training_step(self, batch, batch_idx):
         imgs, labels = batch
         logits = self.model(imgs)
-        loss = self.loss(logits, labels)
+        loss = self.loss_fn(logits, labels)
      
         self.train_metrics.update(logits, labels)
 
@@ -89,7 +93,7 @@ class SemSegModel(L.LightningModule):
     def validation_step(self, batch, batch_idx):
         imgs, labels = batch
         logits = self.inferencer(imgs, logits=True)
-        loss = self.loss(logits, labels)
+        loss = self.loss_fn(logits, labels)
         
         self.val_metrics.update(logits, labels)
 

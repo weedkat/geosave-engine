@@ -17,7 +17,7 @@ class SemSegDataset(Dataset):
         metadata: Path to YAML metadata (relative to cwd or absolute)
         bands: List of band names to be used e.g. ['R', 'G', 'B'] or ['B1', 'B2', 'B3']
     """
-    def __init__(self, data_dir, data_df, metadata, image_dir, label_dir):
+    def __init__(self, data_dir, data_df, metadata_dict, image_dir, label_dir):
         """
         Args:
             data_csv (str): Path to the CSV file containing image and mask paths.
@@ -28,12 +28,11 @@ class SemSegDataset(Dataset):
         """
         # Resolve relative paths from current working directory
         data_dir = Path(data_dir).resolve()
-        metadata = Path(metadata).resolve()
     
         self.df = data_df
         self.img_dir = data_dir / image_dir
         self.mask_dir = data_dir / label_dir
-        self.mi = MetadataInterpreter(metadata)
+        self.mi = MetadataInterpreter(metadata_dict)
         
     def __getitem__(self, idx):
         assert isinstance(idx, int)
@@ -89,7 +88,7 @@ class SemSegDataset(Dataset):
         # Detect if mask is RGB or index format
         if m.ndim == 3 and m.shape[2] == 3:
             # RGB format - convert to class indices
-            mask = self.mc.rgb_to_class(m)
+            mask = self.mi.rgb_to_class(m)
         elif m.ndim == 3 and m.shape[2] == 1:
             # Single channel with extra dimension - squeeze it
             mask = m.squeeze(-1).astype(np.int64)
