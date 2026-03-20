@@ -26,9 +26,9 @@ class Inference:
     """
     def __init__(
         self,
-        model: LightningModule,
+        module: LightningModule,
     ):
-        self.model = model
+        self.module = module
         
         # Transform configuration
         self.transform = TransformsCompose(self.transform_cfg, input_size=self.patch_size)

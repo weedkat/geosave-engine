@@ -17,7 +17,7 @@ class SemSegDataset(Dataset):
         metadata: Path to YAML metadata (relative to cwd or absolute)
         bands: List of band names to be used e.g. ['R', 'G', 'B'] or ['B1', 'B2', 'B3']
     """
-    def __init__(self, data_dir, data_csv, metadata, image_dir, label_dir):
+    def __init__(self, data_dir, data_df, metadata, image_dir, label_dir):
         """
         Args:
             data_csv (str): Path to the CSV file containing image and mask paths.
@@ -27,11 +27,10 @@ class SemSegDataset(Dataset):
             label_dir (str): Directory containing the labels.
         """
         # Resolve relative paths from current working directory
-        data_csv = Path(data_csv).resolve()
         data_dir = Path(data_dir).resolve()
         metadata = Path(metadata).resolve()
     
-        self.df = pd.read_csv(data_csv)
+        self.df = data_df
         self.img_dir = data_dir / image_dir
         self.mask_dir = data_dir / label_dir
         self.mi = MetadataInterpreter(metadata)
@@ -44,7 +43,7 @@ class SemSegDataset(Dataset):
         img_path = self.img_dir / row['image']
         image = self._load_image(img_path)
         
-        if 'label' not in row or pd.isna(row['label']):
+        if 'label' not in row or pd.isna(row['label']): # for unlabeled data, return image and None for mask
             return image, None
         
         mask_path = self.mask_dir / row['label']

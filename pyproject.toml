@@ -33,12 +33,17 @@ dependencies = [
     "tensorboard",
     "rasterio",
     "albumentations",
+    "xformers",
 ]
 
 [project.optional-dependencies]
 docs = [
     "zensical"
 ]
+
+[tool.pytest.ini_options]
+pythonpath = ["src"]
+testpaths = ["tests"]
 
 [project.urls]
 Homepage = "https://github.com/yourusername/geosave-engine"

@@ -1,6 +1,5 @@
 import lightning as L
 import torch
-from torch.optim import optim
 
 from geosave_engine.ai_tasks.semseg.core.inference import Inference
 
@@ -12,7 +11,7 @@ from .metadata import MetadataInterpreter
 
 
 class SemSegModel(L.LightningModule):
-    def __init__(self, arch, optim, loss, metadata=None, calibrate=False, **kwargs):
+    def __init__(self, arch, optim, loss, metadata, calibrate=False, **kwargs):
         super().__init__()
         self.arch = arch
         self.optim = optim
@@ -105,10 +104,10 @@ class SemSegModel(L.LightningModule):
 
     def test_step(self, batch, batch_idx):
         imgs, labels = batch
-        probs = self.inferencer(imgs, probs=True)
+        probs, preds = self.inferencer(imgs, probs=True)
 
         if self.calibrate:
-            max_conf, preds = probs.max(dim=1)
+            max_conf = probs[preds]
 
             self.cal_maxconf.append(max_conf.detach().cpu())
             self.cal_preds.append(preds.detach().cpu())

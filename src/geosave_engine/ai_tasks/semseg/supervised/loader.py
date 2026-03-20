@@ -5,7 +5,6 @@ from pathlib import Path
 from torch.utils.data import DataLoader
 from sklearn.model_selection import train_test_split
 
-from geosave_engine.ai_tasks.semseg.supervised.metadata import MetadataInterpreter
 from .dataset import SemSegDataset
 
 from ..core.utils import extract_id
@@ -15,9 +14,8 @@ IMAGE_EXTENSIONS = ['tif', 'tiff', 'jpg', 'jpeg', 'png', 'bmp', 'jp2']
 
 class DataModule(L.LightningDataModule):
     def __init__(self, 
-                 data_dir, 
-                 data_csv=None,
-                 metadata=None, 
+                 data_dir,
+                 metadata, 
                  image_dir='images', 
                  label_dir='labels', 
                  data_split_ratio=(0.7, 0.15, 0.15), 
@@ -29,62 +27,45 @@ class DataModule(L.LightningDataModule):
         self.save_hyperparameters()  # Saves the arguments to self.hparams
         
         self.data_dir = Path(data_dir)
+        self.metadata = metadata
         self.image_dir = image_dir
         self.label_dir = label_dir
-        self.data_csv = data_csv
         self.loader_kwargs = loader_kwargs
-        
-        if metadata is not None:
-            self.metadata = MetadataInterpreter(metadata).metadata
 
         self.train_ratio, self.val_ratio, self.test_ratio = data_split_ratio
 
 
     def data_split(self):
-        if self.data_csv is None:
-            images, labels = [], []
-            for ext in IMAGE_EXTENSIONS:
-                image_files = list(self.data_dir.glob(f"{self.image_dir}/*.{ext}"))
-                label_files = list(self.data_dir.glob(f"{self.label_dir}/*.{ext}"))
-                images.extend(image_files)
-                labels.extend(label_files)
-            
-            images = sorted(images)
-            labels = sorted(labels)
-    
-            label_dict = {extract_id(label.name): label.name for label in labels}
-
-              # Match images to masks by ID
-            labeled_pairs = []
-            unlabeled_imgs = []
-            
-            for img in images:
-                img_name = img.name
-                img_id = extract_id(img_name)
-                if img_id in label_dict:
-                    label_name = label_dict[img_id]
-                    labeled_pairs.append((img_name, label_name))
-                else:
-                    unlabeled_imgs.append(img_name)
-            
-            if not labeled_pairs:
-                raise ValueError(f"No matching image-mask pairs found. Check that filenames match (ignoring extensions)")
-            
-            df = pd.DataFrame(labeled_pairs, columns=['image', 'label'])
-            unlabeled_df = pd.DataFrame(unlabeled_imgs, columns=['image'])
-
-        else:
-            is_columns_valid = all(col in pd.read_csv(self.data_csv, nrows=0).columns for col in ['image', 'label'])
-            if not is_columns_valid:
-                raise ValueError(f"Invalid column names in {self.data_csv}. Expected columns: ['image', 'label']")
-            
-            df = pd.read_csv(self.data_csv)
-
-            df['image'] = df['image'].apply(lambda x: Path(x).name) # Ensure only filename is used, not full path.
-            df['label'] = df['label'].apply(lambda x: Path(x).name if pd.notna(x) else x)
-            
-            unlabeled_df = df[df['label'].isna()]
+        images, labels = [], []
+        for ext in IMAGE_EXTENSIONS:
+            image_files = list(self.data_dir.glob(f"{self.image_dir}/*.{ext}"))
+            label_files = list(self.data_dir.glob(f"{self.label_dir}/*.{ext}"))
+            images.extend(image_files)
+            labels.extend(label_files)
         
+        images = sorted(images)
+        labels = sorted(labels)
+
+        label_dict = {extract_id(label.name): label.name for label in labels}
+
+        # Match images to masks by ID
+        labeled_pairs = []
+        unlabeled_imgs = []
+        
+        for img in images:
+            img_name = img.name
+            img_id = extract_id(img_name)
+            if img_id in label_dict:
+                label_name = label_dict[img_id]
+                labeled_pairs.append((img_name, label_name))
+            else:
+                unlabeled_imgs.append(img_name)
+        
+        if not labeled_pairs:
+            raise ValueError(f"No matching image-mask pairs found. Check that filenames match (ignoring extensions)")
+        
+        df = pd.DataFrame(labeled_pairs, columns=['image', 'label'])
+        unlabeled_df = pd.DataFrame(unlabeled_imgs, columns=['image'])
 
         train_df, temp_df = train_test_split(
             df, 
@@ -105,7 +86,7 @@ class DataModule(L.LightningDataModule):
 
     def prepare_data(self): 
         # Only called on 1 GPU/TPU in distributed mode
-        is_split_exists = all((self.data_dir / f"{split}_split.csv").exists() for split in ["train", "val", "test"])
+        is_split_exists = all((self.data_dir / f"{split}_split.csv").exists() for split in ["train", "val", "test", "unlabeled"])
         
         if not is_split_exists:
             print("Split csv files not found. Creating new splits...")
@@ -113,14 +94,10 @@ class DataModule(L.LightningDataModule):
             train_df.to_csv(self.data_dir / "train_split.csv", index=False)
             val_df.to_csv(self.data_dir / "val_split.csv", index=False)
             test_df.to_csv(self.data_dir / "test_split.csv", index=False)
-            unlabeled_df.to_csv(self.data_dir / "unlabeled_data.csv", index=False)
+            unlabeled_df.to_csv(self.data_dir / "unlabeled_split.csv", index=False)
         
 
     def setup(self, stage=None):
-        # Reach into the model to see if it already has the 'truth'
-        if self.trainer and self.trainer.model and hasattr(self.trainer.model, "metadata"):
-            self.metadata = self.trainer.model.metadata
-
         # This runs on EVERY GPU. 
         if stage == "fit":
             train_df = pd.read_csv(self.data_dir / "train_split.csv")
@@ -148,7 +125,7 @@ class DataModule(L.LightningDataModule):
 
     def train_dataloader(self):
         default_kwargs = {
-            'batch_size': 32,
+            'batch_size': 16,
             'num_workers': 4,
             'shuffle': True,
             'drop_last': True,
@@ -158,7 +135,7 @@ class DataModule(L.LightningDataModule):
 
     def val_dataloader(self):
         default_kwargs = {
-            'batch_size': 32,
+            'batch_size': 16,
             'num_workers': 2,
             'shuffle': False,
         }
@@ -167,7 +144,7 @@ class DataModule(L.LightningDataModule):
 
     def test_dataloader(self):
         default_kwargs = {
-            'batch_size': 32,
+            'batch_size': 16,
             'num_workers': 2,
             'shuffle': False,
         }
@@ -176,9 +153,10 @@ class DataModule(L.LightningDataModule):
     
     def predict_dataloader(self):
         default_kwargs = {
-            'batch_size': 32,
+            'batch_size': 16,
             'num_workers': 2,
             'shuffle': False,
         }
         default_kwargs.update(self.loader_kwargs)
         return DataLoader(self.predict_ds, **default_kwargs)
+    
