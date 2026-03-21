@@ -1,3 +1,11 @@
+21/3/26 - Todo
 1. Figuring out transform, i should move the transform to Dataset for better efficiency
 2. Refactor Inference
 3. Test
+
+21/3/26 - Done
+1. moving transform to Dataset
+
+22/3/26 - Todo
+1. refactor inference so the responsibility is to only forward propagation and return logits
+2. add apply threshold on LightningModule

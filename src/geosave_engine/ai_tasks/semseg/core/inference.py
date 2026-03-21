@@ -29,44 +29,9 @@ class Inference:
         module: LightningModule,
     ):
         self.module = module
-        
-        # Transform configuration
-        self.transform = TransformsCompose(self.transform_cfg, input_size=self.patch_size)
-        self.model.model.eval()
-    
-    def preprocess(
-        self,
-        img_np: np.ndarray
-    ):
-        """
-        Convert numpy array to normalized tensor batch.
-        
-        Args:
-            image: Numpy array, either (H, W, C) or (B, H, W, C)
-
-        Returns:
-            img_tensor: (B, C, H, W) normalized tensor
-            orig_shape: (H, W) tuple
-        """
-        # Ensure (B, H, W, C) format for single images
-        if img_np.ndim == 2:
-            img_np = np.expand_dims(img_np, axis=-1)  # (H, W, 1)
-        if img_np.ndim == 3:
-            img_np = np.expand_dims(img_np, axis=0)  # (1, H, W, C)
-        
-        # Ensure uint8
-        if img_np.dtype != np.uint8:
-            img_np = (img_np * 255).astype(np.uint8) if img_np.max() <= 1.0 else img_np.astype(np.uint8)
-        
-        # Process each image in batch through transforms
-        img_tensors = []
-        for i in range(img_np.shape[0]):
-            img_tensor = self.transform(image=img_np[i])['image']
-            img_tensors.append(img_tensor)
-        
-        img_tensor = torch.stack(img_tensors, dim=0)  # (B, C, H, W)
-        
-        return img_tensor
+        self.model = module.model
+        self.thresholds = module.thresholds
+        self.ignore_index = module.metadata_interpreter.ignore_index
     
     def postprocess(
         self,
@@ -81,72 +46,32 @@ class Inference:
         Returns:
             pred_np: (B, H, W) predicted class indices
         """
-        pred = logits.argmax(dim=1).cpu().numpy()  # (B, C, H, W) -> (B, H, W)
-        conf = logits.softmax(dim=1).cpu().numpy().transpose(0, 2, 3, 1)  # (B, C, H, W) -> (B, H, W, C)
+        preds = logits.argmax(dim=1)
+        probs = logits.softmax(dim=1)
+        max_probs = probs.max(dim=1)[0]  # (B, H, W), each pixel's is max softmax confidence
         
-        # Apply confidence threshold to reject uncertain predictions
-        max_conf = np.max(conf, axis=-1)  # (B, H, W, C) -> (B, H, W)
-        pred[max_conf < self.confidence_threshold] = self.reject_class
+        for idx, threshold in enumerate(self.thresholds.values()):
+            # Apply confidence threshold to reject uncertain predictions
+            class_mask = (preds == idx)
+            reject_mask = (max_probs < threshold) & class_mask
+            preds[reject_mask] = self.ignore_index  # Set to ignore_index for rejected pixels
 
-        return pred, conf
-    
-    def engine(self, images, mode, overlap_ratio):
+        return preds, probs, max_probs
 
+
+    def __call__(self, img_tensor, overlap_ratio=0.5, pred=True, conf=False, max_conf=False) -> Tuple[np.ndarray, np.ndarray]:
+        """
+        Perform inference on input image(s).
+        """
         start_time = time.time()
 
-        img_tensor = self.preprocess(images)
-
-        with torch.no_grad():
-            if mode == 'resize':
-                output = self._infer_resize(img_tensor)
-            elif mode == 'sliding_window':
-                output = self._infer_sliding_window(img_tensor, overlap_ratio)
-            else:
-                raise ValueError(f"Unsupported mode: {mode}")
+        output = self._infer_sliding_window(img_tensor, overlap_ratio)
         
-        pred, conf = self.postprocess(output)
+        preds, probs, max_probs = self.postprocess(output)
 
         elapsed = time.time() - start_time
         
-        self.model.log(f'[Inference] Mode: {mode}, Processed {img_tensor.shape} in {elapsed:.2f}s')
-        
-        return pred, conf
-    
-    def __call__(self, images):
-        """
-        Perform inference on input image(s).
-        
-        Args:
-            images: Numpy array (H, W, C) or (B, H, W, C)
-            mode: 'sliding_window' or 'resize'
-            overlap_ratio: Overlap ratio for sliding window (default: from init)
-            log: Whether to log processing information
-
-        Returns:
-            pred: (H, W) or (B, H, W) predicted labels
-            conf: (H, W, C) or (B, H, W, C) confidence scores per class
-            metadata: dict with processing info
-        """
-        assert 0.0 <= overlap_ratio < 1.0, "Overlap ratio must be in [0, 1)"
-        assert mode in ['resize', 'sliding_window'], f"Invalid mode: {mode}"
-
-        if isinstance(images, np.ndarray):
-            return self.engine(images, mode, overlap_ratio)
-
-        elif isinstance(images, DataLoader):
-            preds, confs = [], []
-            for batch in images:
-                pred, conf = self.engine(batch, mode, overlap_ratio)
-                preds.append(pred)
-                confs.append(conf)
-
-            pred = np.concatenate(preds, axis=0)
-            conf = np.concatenate(confs, axis=0)
-    
-            return pred, conf
-        
-        else:
-            raise ValueError("Input must be a numpy array or a DataLoader")
+        return preds, probs, max_probs
     
     def _infer_sliding_window(self, img_tensor: torch.Tensor, overlap_ratio: float = 0.5) -> torch.Tensor:
         """

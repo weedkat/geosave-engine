@@ -5,6 +5,9 @@ from pathlib import Path
 from torch.utils.data import DataLoader
 from sklearn.model_selection import train_test_split
 
+from geosave_engine.ai_tasks.semseg.core.transform import TransformsCompose
+from geosave_engine.ai_tasks.semseg.supervised.metadata import MetadataInterpreter
+
 from .dataset import SemSegDataset
 
 from ..core.utils import extract_id
@@ -15,7 +18,6 @@ IMAGE_EXTENSIONS = ['tif', 'tiff', 'jpg', 'jpeg', 'png', 'bmp', 'jp2']
 class DataModule(L.LightningDataModule):
     def __init__(self, 
                  data_dir,
-                 metadata_dict=None,
                  image_dir='images', 
                  label_dir='labels', 
                  data_split_ratio=(0.7, 0.15, 0.15), 
@@ -28,7 +30,6 @@ class DataModule(L.LightningDataModule):
         
         self.data_dir = Path(data_dir)
         self.split_dir = self.data_dir / "splits"
-        self.metadata_dict = metadata_dict
         self.image_dir = image_dir
         self.label_dir = label_dir
         self.loader_kwargs = loader_kwargs
@@ -99,30 +100,39 @@ class DataModule(L.LightningDataModule):
         
 
     def setup(self, stage=None):
-        # This runs on EVERY GPU. 
+        # This runs on EVERY GPU.
+        if not hasattr(self, 'metadata_dict') or self.metadata_dict is None:
+            raise ValueError("metadata_dict attribute must be injected before setup()")
+        if not hasattr(self, 'transformer_dict') or self.transformer_dict is None:
+            raise ValueError("transformer_dict attribute must be injected before setup()")
+        
+        transform_trn = TransformsCompose(self.transform_dict['train'])
+        transform_infer = TransformsCompose(self.transform_dict['infer'])
+        metadata = MetadataInterpreter(self.metadata_dict)  # Use self.metadata_dict, not hparams
+        
         if stage == "fit":
             train_df = pd.read_csv(self.split_dir / "train_split.csv")
             val_df = pd.read_csv(self.split_dir / "val_split.csv")
             
-            self.train_ds = SemSegDataset(self.data_dir, train_df, self.metadata_dict, self.image_dir, self.label_dir)
-            self.val_ds = SemSegDataset(self.data_dir, val_df, self.metadata_dict, self.image_dir, self.label_dir)
+            self.train_ds = SemSegDataset(self.data_dir, train_df, metadata, transform_trn, self.image_dir, self.label_dir)
+            self.val_ds = SemSegDataset(self.data_dir, val_df, metadata, transform_infer, self.image_dir, self.label_dir)
         
         elif stage == "validate":
             val_df = pd.read_csv(self.split_dir / "val_split.csv")
-            self.val_ds = SemSegDataset(self.data_dir, val_df, self.metadata_dict, self.image_dir, self.label_dir)
+            self.val_ds = SemSegDataset(self.data_dir, val_df, metadata, transform_infer, self.image_dir, self.label_dir)
 
         elif stage == "test":
             test_df = pd.read_csv(self.split_dir / "test_split.csv")
-            self.test_ds = SemSegDataset(self.data_dir, test_df, self.metadata_dict, self.image_dir, self.label_dir)
+            self.test_ds = SemSegDataset(self.data_dir, test_df, metadata, transform_infer, self.image_dir, self.label_dir)
         
         elif stage == "predict":
             images = []
             for ext in IMAGE_EXTENSIONS:
                 image_files = list(self.data_dir.glob(f"{self.image_dir}/*.{ext}"))
                 images.extend(image_files)
+            images = [img.name for img in images]
             predict_df = pd.DataFrame({'image': images})
-            self.predict_ds = SemSegDataset(self.data_dir, predict_df, self.metadata_dict, self.image_dir, self.label_dir)
-        
+            self.predict_ds = SemSegDataset(self.data_dir, predict_df, metadata, transform_infer, self.image_dir, self.label_dir)
 
     def train_dataloader(self):
         default_kwargs = {
