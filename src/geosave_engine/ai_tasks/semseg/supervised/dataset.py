@@ -4,7 +4,6 @@ from torch.utils.data import Dataset
 import rasterio
 from PIL import Image
 import numpy as np
-from ..core.metadata import MetadataInterpreter
 
 class SemSegDataset(Dataset):
     """
@@ -17,12 +16,12 @@ class SemSegDataset(Dataset):
         metadata: Path to YAML metadata (relative to cwd or absolute)
         bands: List of band names to be used e.g. ['R', 'G', 'B'] or ['B1', 'B2', 'B3']
     """
-    def __init__(self, data_dir, data_df, metadata_dict, image_dir, label_dir):
+    def __init__(self, data_dir, data_df, metadata_interpreter, transform, image_dir, label_dir):
         """
         Args:
             data_csv (str): Path to the CSV file containing image and mask paths.
             data_dir (str): Directory containing the dataset.
-            metadata (str): Path to the YAML file defining dataset metadata.
+            metadata_interpreter (MetadataInterpreter): Instance of MetadataInterpreter.
             image_dir (str): Directory containing the images.
             label_dir (str): Directory containing the labels.
         """
@@ -32,8 +31,10 @@ class SemSegDataset(Dataset):
         self.df = data_df
         self.img_dir = data_dir / image_dir
         self.mask_dir = data_dir / label_dir
-        self.mi = MetadataInterpreter(metadata_dict)
-        
+        self.mi = metadata_interpreter
+        self.transform = transform
+        self.band_indices = self.mi.get_selected_bands()
+
     def __getitem__(self, idx):
         assert isinstance(idx, int)
 
@@ -42,23 +43,26 @@ class SemSegDataset(Dataset):
         img_path = self.img_dir / row['image']
         image = self._load_image(img_path)
         
-        if 'label' not in row or pd.isna(row['label']): # for unlabeled data, return image and None for mask
-            return image, None
+        if 'label' not in row or pd.isna(row['label']): # predict mode, no labels available
+            result = self.transform(image=image)
+            return result['image']
         
         mask_path = self.mask_dir / row['label']
         mask = self._load_mask(mask_path)
+        result = self.transform(image=image, mask=mask)
 
-        return image, mask
-    
+        # Ensure mask is int64 for loss function (CrossEntropyLoss expects Long)
+        return result['image'], result['mask'].long()
+        
     def _load_image(self, path):
         """Load image from various formats (TIF, JPG, PNG, etc.) and select bands if specified"""
         path = Path(path)
         ext = path.suffix.lower()
-        
+
         if ext in ['.tif', '.tiff']:
             # Use rasterio for TIFF files
             with rasterio.open(path) as src:
-                img = src.read(self.band_indices)  # (C, H, W)
+                img = src.read([i + 1 for i in self.band_indices])  # (C, H, W), rasterio bands are 1-indexed
                 img = np.transpose(img, (1, 2, 0))  # (H, W, C)
         else:
             # Use PIL for common formats (JPG, PNG, etc.)

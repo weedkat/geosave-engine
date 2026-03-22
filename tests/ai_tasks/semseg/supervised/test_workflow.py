@@ -8,22 +8,28 @@ import yaml
 from geosave_engine.ai_tasks.semseg.supervised.loader import DataModule
 from geosave_engine.ai_tasks.semseg.supervised.main import SemSegModel
 
+DATASET_DIR = Path("dataset/isprs_postdam").resolve()
+METADATA_PATH = DATASET_DIR / "metadata.yaml"
+TRANSFORM_PATH = DATASET_DIR / "transform.yaml"
+
+with METADATA_PATH.open("r") as f:
+    metadata_dict = yaml.safe_load(f)
+
+with TRANSFORM_PATH.open("r") as f:
+    transform_dict = yaml.safe_load(f)
+
 @pytest.fixture
 def mock_datamodule():
     """Sets up the DataModule once for all tests to use."""
-    dataset_dir = Path("dataset/isprs_postdam").resolve()
-    metadata_path = Path("dataset/isprs_postdam/metadata.yaml").resolve()
-    return DataModule(data_dir=dataset_dir, metadata=metadata_path)
+    return DataModule(data_dir=DATASET_DIR, 
+                      metadata_dict=metadata_dict, 
+                      transform_dict=transform_dict,
+                      batch_size=2,  # Use small batch size for testing
+                      num_workers=0)  # Use 0 workers for testing to avoid multiprocessing issues
 
 @pytest.fixture
 def mock_model():
     """Sets up the Model once for all tests to use."""
-    metadata_path = Path("dataset/isprs_postdam/metadata.yaml").resolve()
-    transform_path = Path("dataset/isprs_postdam/transform.yaml").resolve()
-    with metadata_path.open("r") as f:
-        metadata_dict = yaml.safe_load(f)
-    with transform_path.open("r") as f:
-        transform_dict = yaml.safe_load(f)
     return SemSegModel(arch="dpt", optim="AdamW", loss="CELoss", 
                        metadata_dict=metadata_dict, 
                        transform_dict=transform_dict)

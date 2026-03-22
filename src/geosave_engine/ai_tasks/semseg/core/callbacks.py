@@ -1,6 +1,14 @@
 import torch
 import lightning as L
-from lightning.pytorch.callbacks import Callback
+from lightning.pytorch.callbacks import (Callback, 
+                                         BasePredictionWriter, 
+                                         ModelCheckpoint, 
+                                         EarlyStopping,
+                                         LearningRateMonitor,
+                                         DeviceStatsMonitor,
+                                         RichProgressBar)
+
+from lightning.pytorch.callbacks.progress.rich_progress import RichProgressBarTheme
 
 class CalibrationCallback(Callback):
     """
@@ -14,7 +22,7 @@ class CalibrationCallback(Callback):
                  metric_name: str = "f1", # F1 is often better for per-class thresholds
                  ):
         assert 0.0 <= threshold_begin < threshold_end <= 1.0, "Threshold range must be within [0.0, 1.0]"
-        
+
         super().__init__()
         self.threshold_range = torch.linspace(threshold_begin, threshold_end, threshold_steps)
         self.metric_name = metric_name
@@ -100,3 +108,52 @@ class CalibrationCallback(Callback):
         self.test_max_probs.clear()
         self.test_labels.clear()
         pl_module.calibrating = False
+
+
+class RGBMaskWritter(BasePredictionWriter):
+    """
+    Base class for writing predictions to disk during testing.
+    Subclasses should implement the write_predictions method.
+    """
+    def __init__(self, save_dir: str = "predictions"):
+        super().__init__()
+        self.save_dir = Path(save_dir)
+        self.save_dir.mkdir(parents=True, exist_ok=True)
+
+    def on_predict_batch_end(self, trainer, pl_module, outputs, batch, batch_idx, dataloader_idx=0):
+        self.write_predictions(outputs, batch, batch_idx, trainer.global_step)
+
+    def write_predictions(self, outputs, batch, batch_idx, global_step):
+        raise NotImplementedError("Subclasses must implement write_predictions method.")
+
+
+checkpoint_callback = ModelCheckpoint(
+    dirpath="checkpoints/",         # Custom save directory
+    filename="semseg-{epoch:02d}-{val_loss:.2f}", # Dynamic naming!
+    monitor="val_loss",                # Metric to track
+    mode="min",                        # We want to MINIMIZE validation loss
+    save_top_k=3,                      # Keep the best 3 models, delete the rest
+    save_last=True                     # Also save a 'last.ckpt' just in case training crashes
+)
+
+early_stop_callback = EarlyStopping(
+    monitor="val_loss",  # Must match the exact string you use in self.log()
+    min_delta=0.00,      # Minimum change to qualify as an improvement
+    patience=5,          # How many epochs to wait before stopping
+    verbose=True,
+    mode="min"           # Stop when the loss stops decreasing
+)
+
+# Create a beautiful, custom-colored progress bar
+beautiful_bar = RichProgressBar(
+    theme=RichProgressBarTheme(
+        description="bold cyan",           # The text (e.g., "Epoch 1")
+        progress_bar="green",              # The bar filling up
+        progress_bar_finished="bold blue", # Color when epoch is done
+        progress_bar_pulse="bold purple",  # Color during indeterminate steps
+        batch_progress="yellow",           # The "100/1000" batch counter
+        time="dim white",                  # Time remaining
+        processing_speed="dim white",      # it/s
+        metrics="bold cyan"                # The actual loss/accuracy numbers!
+    )
+)

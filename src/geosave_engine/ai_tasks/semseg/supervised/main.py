@@ -1,7 +1,8 @@
 import lightning as L
 import torch
 
-from geosave_engine.ai_tasks.semseg.core.inference import Inference
+from geosave_engine.ai_tasks.semseg.core.inference import infer_sliding_window
+from torch.optim.lr_scheduler import CosineAnnealingLR
 
 from .registry import optim_registry, loss_registry, model_registry
 from ..core.metric import get_metrics
@@ -9,36 +10,44 @@ from ..core.utils import extract_prefixed
 
 from ..core.metadata import MetadataInterpreter
 
-
 class SemSegModel(L.LightningModule):
     def __init__(self, arch, optim, loss, metadata_dict, transform_dict, **kwargs):
         super().__init__()
         self.save_hyperparameters()
 
+        self.arch = arch
+        self.optim = optim
+        self.loss = loss
+
         self.transform_dict = transform_dict
         self.metadata_dict = metadata_dict
         self.metadata_interpreter = MetadataInterpreter(metadata_dict)
+
         self.ignore_index = self.metadata_interpreter.ignore_index
+        self.input_size = self.metadata_interpreter.input_size
+        self.nclass = self.metadata_interpreter.nclass
+        self.in_channels = self.metadata_interpreter.in_channels
+        self.class_names = self.metadata_interpreter.class_names
 
         self.arch_cfg = extract_prefixed(kwargs, 'arch')
         self.optim_cfg = extract_prefixed(kwargs, 'optim')
         self.loss_cfg = extract_prefixed(kwargs, 'loss')
         
-        self.arch_cfg['nclass'] = self.metadata_interpreter.nclass
-        self.arch_cfg['in_channels'] = self.metadata_interpreter.in_channels
+        self.arch_cfg['nclass'] = self.nclass
+        self.arch_cfg['in_channels'] = self.in_channels
         self.model = model_registry.build(arch, **self.arch_cfg)
         
         self.loss_cfg['ignore_index'] = self.ignore_index
         self.loss_fn = loss_registry.build(loss, **self.loss_cfg)
 
         metrics = get_metrics(
-            num_classes=self.metadata_interpreter.nclass, 
-            class_names=self.metadata_interpreter.class_names, 
+            num_classes=self.nclass, 
+            class_names=self.class_names, 
             ignore_index=self.ignore_index
         )
         test_metrics = get_metrics(
-            num_classes=self.metadata_interpreter.nclass, 
-            class_names=self.metadata_interpreter.class_names, 
+            num_classes=self.nclass, 
+            class_names=self.class_names, 
             ignore_index=None
         ) 
 
@@ -47,14 +56,10 @@ class SemSegModel(L.LightningModule):
         self.test_metrics = test_metrics.clone(prefix="test/")
 
         self.calibrating = False
-        self.register_buffer("class_thresholds", torch.zeros(self.metadata_interpreter.nclass), persistent=True)
-
-    def setup(self, stage=None):
-        if stage in ("validate", "test", "predict"):
-            self.inferencer = Inference(self)
+        self.register_buffer("class_thresholds", torch.zeros(self.nclass), persistent=True)
 
     def forward(self, x):
-        return self.model(x)
+        return infer_sliding_window(self, x)
 
     def configure_optimizers(self):
         optim_cfg = {
@@ -64,16 +69,27 @@ class SemSegModel(L.LightningModule):
         optim_cfg.update(self.optim_cfg)
 
         enc, dec = self.get_encoder_decoder_params()
-        encoder_lr = optim_cfg['lr']
-        decoder_lr = encoder_lr * optim_cfg['lr_multi']
+        encoder_lr = optim_cfg.pop('lr')
+        decoder_lr = encoder_lr * optim_cfg.pop('lr_multi')
 
-        parameter = [
+        parameter = [ 
             {'params': enc, 'lr': encoder_lr},
             {'params': dec, 'lr': decoder_lr}
         ]
+        
         optimizer = optim_registry.build(self.optim, parameter, **optim_cfg)
         
-        return optimizer
+        scheduler = CosineAnnealingLR(optimizer, T_max=self.trainer.max_epochs)
+        
+        return {
+            "optimizer": optimizer,
+            "lr_scheduler": {
+                "scheduler": scheduler,
+                "interval": "epoch",  # 'epoch' or 'step'
+                "frequency": 1,       # How often to step the scheduler
+                # "monitor": "val_loss", # ONLY required if using ReduceLROnPlateau
+            },
+        }
 
     # ================== Training ==================
 
@@ -97,7 +113,7 @@ class SemSegModel(L.LightningModule):
 
     def validation_step(self, batch, batch_idx):
         imgs, labels = batch
-        logits = self.inferencer(imgs)
+        logits = infer_sliding_window(self, imgs)
         loss = self.loss_fn(logits, labels)
         
         self.val_metrics.update(logits, labels)
@@ -113,7 +129,7 @@ class SemSegModel(L.LightningModule):
 
     def test_step(self, batch, batch_idx):
         imgs, labels = batch
-        logits = self.inferencer(imgs)
+        logits = infer_sliding_window(self, imgs)
 
         preds, max_probs = self.postprocess(logits)
         self.test_metrics.update(preds, labels)
@@ -129,9 +145,10 @@ class SemSegModel(L.LightningModule):
 
     def predict_step(self, batch, batch_idx, dataloader_idx=0):
         imgs = batch
-        logits = self.inferencer(imgs)
+        logits = infer_sliding_window(self, imgs)
+        preds, max_probs = self.postprocess(logits)
         
-        return self.postprocess(logits)
+        return preds, max_probs
 
     # ================== Utility Methods ==================
 

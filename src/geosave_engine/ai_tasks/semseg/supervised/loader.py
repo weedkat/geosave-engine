@@ -28,7 +28,7 @@ class DataModule(L.LightningDataModule):
         assert sum(data_split_ratio) == 1.0, "data_split_ratio must sum to 1.0"
 
         super().__init__()
-        self.save_hyperparameters()  # Saves the arguments to self.hparams
+        self.save_hyperparameters(ignore=["data_dir", "image_dir", "label_dir"])  # Saves the arguments to self.hparams
         
         self.data_dir = Path(data_dir)
         self.split_dir = self.data_dir / "splits"
@@ -39,6 +39,7 @@ class DataModule(L.LightningDataModule):
         self.loader_kwargs = loader_kwargs
 
         self.train_ratio, self.val_ratio, self.test_ratio = data_split_ratio
+        self.input_size = self.metadata_dict['input_size']
 
 
     def data_split(self):
@@ -106,8 +107,8 @@ class DataModule(L.LightningDataModule):
 
     def setup(self, stage=None):
         # This runs on EVERY GPU.
-        transform_trn = TransformsCompose(self.transform_dict['train'])
-        transform_infer = TransformsCompose(self.transform_dict['infer'])
+        transform_trn = TransformsCompose(self.transform_dict['train'], input_size=self.input_size)
+        transform_infer = TransformsCompose(self.transform_dict['infer'], input_size=self.input_size)
         metadata = MetadataInterpreter(self.metadata_dict)  # Use self.metadata_dict, not hparams
         
         if stage == "fit":
@@ -137,7 +138,6 @@ class DataModule(L.LightningDataModule):
     def train_dataloader(self):
         default_kwargs = {
             'batch_size': 16,
-            'num_workers': 4,
             'shuffle': True,
             'drop_last': True,
         }
@@ -147,8 +147,8 @@ class DataModule(L.LightningDataModule):
     def val_dataloader(self):
         default_kwargs = {
             'batch_size': 16,
-            'num_workers': 2,
             'shuffle': False,
+            'drop_last': False,
         }
         default_kwargs.update(self.loader_kwargs)
         return DataLoader(self.val_ds, **default_kwargs)
@@ -156,7 +156,7 @@ class DataModule(L.LightningDataModule):
     def test_dataloader(self):
         default_kwargs = {
             'batch_size': 16,
-            'num_workers': 2,
+            'drop_last': False,
             'shuffle': False,
         }
         default_kwargs.update(self.loader_kwargs)
@@ -165,7 +165,7 @@ class DataModule(L.LightningDataModule):
     def predict_dataloader(self):
         default_kwargs = {
             'batch_size': 16,
-            'num_workers': 2,
+            'drop_last': False,
             'shuffle': False,
         }
         default_kwargs.update(self.loader_kwargs)
