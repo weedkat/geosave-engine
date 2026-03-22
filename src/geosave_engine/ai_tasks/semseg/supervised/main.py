@@ -144,11 +144,11 @@ class SemSegModel(L.LightningModule):
     # ================== Prediction ==================
 
     def predict_step(self, batch, batch_idx, dataloader_idx=0):
-        imgs = batch
+        imgs, img_ids = batch
         logits = infer_sliding_window(self, imgs)
         preds, max_probs = self.postprocess(logits)
         
-        return preds, max_probs
+        return preds, max_probs, img_ids
 
     # ================== Utility Methods ==================
 

@@ -5,6 +5,8 @@ import rasterio
 from PIL import Image
 import numpy as np
 
+from ..core.utils import extract_id
+
 class SemSegDataset(Dataset):
     """
     Generic dataset handler for various image formats (TIF, JPG, PNG, etc.)
@@ -45,7 +47,8 @@ class SemSegDataset(Dataset):
         
         if 'label' not in row or pd.isna(row['label']): # predict mode, no labels available
             result = self.transform(image=image)
-            return result['image']
+            img_id = extract_id(img_path.stem)
+            return result['image'], img_id
         
         mask_path = self.mask_dir / row['label']
         mask = self._load_mask(mask_path)

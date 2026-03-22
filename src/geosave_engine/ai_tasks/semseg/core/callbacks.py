@@ -1,5 +1,8 @@
 import torch
+import numpy as np
 import lightning as L
+import rasterio
+from PIL import Image
 from lightning.pytorch.callbacks import (Callback, 
                                          BasePredictionWriter, 
                                          ModelCheckpoint, 
@@ -9,6 +12,8 @@ from lightning.pytorch.callbacks import (Callback,
                                          RichProgressBar)
 
 from lightning.pytorch.callbacks.progress.rich_progress import RichProgressBarTheme
+from pathlib import Path
+
 
 class CalibrationCallback(Callback):
     """
@@ -110,38 +115,88 @@ class CalibrationCallback(Callback):
         pl_module.calibrating = False
 
 
-class RGBMaskWritter(BasePredictionWriter):
+class RGBMaskWriter(BasePredictionWriter):
     """
-    Base class for writing predictions to disk during testing.
-    Subclasses should implement the write_predictions method.
+    Writes predicted segmentation masks to disk after each validation/test batch.
+     - Expects outputs to be (preds, max_probs, ids) where:
+        - preds: (B, H, W) predicted class indices
+        - max_probs: (B, H, W) confidence of the predicted class
+        - ids: (B,) identifiers or filenames for the images
     """
-    def __init__(self, save_dir: str = "predictions"):
-        super().__init__()
+    def __init__(self, save_dir: str = "predictions", file_prefix: str = "pred", save_form: list = ["class", "rgb", "tiff"]):
+        # BasePredictionWriter STRICTLY requires the write_interval argument
+        super().__init__(write_interval="batch") 
         self.save_dir = Path(save_dir)
         self.save_dir.mkdir(parents=True, exist_ok=True)
+        self.file_prefix = file_prefix
+        self.save_form = save_form
 
-    def on_predict_batch_end(self, trainer, pl_module, outputs, batch, batch_idx, dataloader_idx=0):
-        self.write_predictions(outputs, batch, batch_idx, trainer.global_step)
+    # The correct method name for BasePredictionWriter
+    def write_on_batch_end(self, trainer, pl_module, prediction, batch_indices, batch, batch_idx, dataloader_idx):
+        # 1. Unpack what your predict_step returned
+        preds, max_probs, ids = prediction
+        
+        # 2. Prepare the data (Move to CPU once)
+        preds_cpu = preds.cpu()
+        class_pred_np = preds_cpu.numpy().astype(np.uint8)
 
-    def write_predictions(self, outputs, batch, batch_idx, global_step):
-        raise NotImplementedError("Subclasses must implement write_predictions method.")
+        # Generate RGB only if the user asked for PNGs OR TIFFs
+        if "rgb" in self.save_form or "tiff" in self.save_form:
+            rgb_pred_np = pl_module.metadata_interpreter.class_to_rgb(class_pred_np) # (B, H, W, 3)
 
+        # 3. Save individual images in the batch
+        for i in range(preds.shape[0]):
+            # Create a clean base filename template
+            img_id = ids[i] if ids is not None else f"idx_{batch_indices[i]}"
+            base_name = self.save_dir / f"{self.file_prefix}_step{trainer.global_step}_batch{batch_idx}_id{img_id}"
 
-checkpoint_callback = ModelCheckpoint(
-    dirpath="checkpoints/",         # Custom save directory
-    filename="semseg-{epoch:02d}-{val_loss:.2f}", # Dynamic naming!
-    monitor="val_loss",                # Metric to track
-    mode="min",                        # We want to MINIMIZE validation loss
-    save_top_k=3,                      # Keep the best 3 models, delete the rest
-    save_last=True                     # Also save a 'last.ckpt' just in case training crashes
-)
+            # Option A: Save raw class indices as a PyTorch Tensor
+            if "class" in self.save_form:
+                # Saving the tensor directly is cleaner than wrapping a numpy array
+                torch.save(preds_cpu[i], f"{base_name}_class.pt")
+            
+            # Option B: Save as a standard RGB PNG
+            if "rgb" in self.save_form:
+                # PIL easily converts numpy arrays to standard image files
+                img_pil = Image.fromarray(rgb_pred_np[i])
+                img_pil.save(f"{base_name}_rgb.png")
+            
+            # Option C: Save as a GeoTIFF
+            if "tiff" in self.save_form:
+                # Rasterio strictly expects (Channels, Height, Width)
+                tiff_data = rgb_pred_np[i].transpose(2, 0, 1)
+                
+                with rasterio.open(
+                    f"{base_name}_rgb.tif", 
+                    'w', 
+                    driver='GTiff', 
+                    height=tiff_data.shape[1], 
+                    width=tiff_data.shape[2], 
+                    count=3, 
+                    dtype=tiff_data.dtype
+                ) as dst:
+                    dst.write(tiff_data)
+
+class DynamicModelCheckpoint(ModelCheckpoint):
+    # if no __init__ python assume to super().__init__()
+    def on_fit_start(self, trainer, pl_module):
+        arch = getattr(pl_module, "arch", "unknown_arch")
+        dataset = getattr(pl_module, "dataset_name", "unknown_data")
+        
+        if self.filename:
+            self.filename = self.filename.replace("{arch}", str(arch))
+            self.filename = self.filename.replace("{dataset}", str(dataset))
+            
+        # call the parent class so standard Lightning logic runs!
+        super().on_fit_start(trainer, pl_module)
+
 
 early_stop_callback = EarlyStopping(
-    monitor="val_loss",  # Must match the exact string you use in self.log()
-    min_delta=0.00,      # Minimum change to qualify as an improvement
-    patience=5,          # How many epochs to wait before stopping
+    monitor="val_loss",
+    min_delta=0.00,
+    patience=5,
     verbose=True,
-    mode="min"           # Stop when the loss stops decreasing
+    mode="min"
 )
 
 # Create a beautiful, custom-colored progress bar
