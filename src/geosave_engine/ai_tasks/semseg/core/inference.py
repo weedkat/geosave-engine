@@ -1,12 +1,9 @@
-from pathlib import Path
 import torch
 import torch.nn.functional as F
-from torch.utils.data import DataLoader
 import numpy as np
 import time
 from typing import Tuple, Dict, List
 
-from .transform import TransformsCompose
 from lightning import LightningModule
 
 
@@ -30,33 +27,6 @@ class Inference:
     ):
         self.module = module
         self.model = module.model
-        self.thresholds = module.thresholds
-        self.ignore_index = module.metadata_interpreter.ignore_index
-    
-    def postprocess(
-        self,
-        logits: torch.Tensor
-    ):
-        """
-        Convert model output tensor to numpy array of predicted labels.
-        
-        Args:
-            logits: (B, C, H, W) logits output from model
-            
-        Returns:
-            pred_np: (B, H, W) predicted class indices
-        """
-        preds = logits.argmax(dim=1)
-        probs = logits.softmax(dim=1)
-        max_probs = probs.max(dim=1)[0]  # (B, H, W), each pixel's is max softmax confidence
-        
-        for idx, threshold in enumerate(self.thresholds.values()):
-            # Apply confidence threshold to reject uncertain predictions
-            class_mask = (preds == idx)
-            reject_mask = (max_probs < threshold) & class_mask
-            preds[reject_mask] = self.ignore_index  # Set to ignore_index for rejected pixels
-
-        return preds, probs, max_probs
 
 
     def __call__(self, img_tensor, overlap_ratio=0.5, pred=True, conf=False, max_conf=False) -> Tuple[np.ndarray, np.ndarray]:
@@ -65,13 +35,11 @@ class Inference:
         """
         start_time = time.time()
 
-        output = self._infer_sliding_window(img_tensor, overlap_ratio)
-        
-        preds, probs, max_probs = self.postprocess(output)
+        logits = self._infer_sliding_window(img_tensor, overlap_ratio)
 
         elapsed = time.time() - start_time
         
-        return preds, probs, max_probs
+        return logits
     
     def _infer_sliding_window(self, img_tensor: torch.Tensor, overlap_ratio: float = 0.5) -> torch.Tensor:
         """

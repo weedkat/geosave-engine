@@ -7,11 +7,11 @@ from .registry import optim_registry, loss_registry, model_registry
 from ..core.metric import get_metrics
 from ..core.utils import extract_prefixed
 
-from .metadata import MetadataInterpreter
+from ..core.metadata import MetadataInterpreter
 
 
 class SemSegModel(L.LightningModule):
-    def __init__(self, arch, optim, loss, metadata_dict, transform_dict, calibrate=False, thresholds=None, **kwargs):
+    def __init__(self, arch, optim, loss, metadata_dict, transform_dict, **kwargs):
         metadata_interpreter = MetadataInterpreter(metadata_dict)
         if thresholds is None:
             """
@@ -27,9 +27,8 @@ class SemSegModel(L.LightningModule):
         self.loss = loss
         self.metadata_interpreter = metadata_interpreter
         self.transform_dict = transform_dict
-        self.calibrate = calibrate
         self.metadata_dict = metadata_dict
-        self.thresholds = thresholds
+        self.ignore_index = self.metadata_interpreter.ignore_index
 
         for attr in ['arch', 'optim', 'loss']:
             # arch_cfg, optim_cfg, loss_cfg will be extracted from kwargs if available
@@ -45,12 +44,16 @@ class SemSegModel(L.LightningModule):
         metrics = get_metrics(num_classes=self.metadata_interpreter.nclass, 
                               class_names=self.metadata_interpreter.class_names, 
                               ignore_index=self.metadata_interpreter.ignore_index)
-        
+        metrics2 = get_metrics(num_classes=self.metadata_interpreter.nclass, 
+                              class_names=self.metadata_interpreter.class_names, 
+                              ignore_index=None) # For test metrics, we want to include all classes in the report
+
         # Create separate instances for each stage
         self.train_metrics = metrics.clone(prefix="train/")
         self.val_metrics = metrics.clone(prefix="val/")
-        self.test_metrics = metrics.clone(prefix="test/")
+        self.test_metrics = metrics2.clone(prefix="test/")
 
+        self.calibrating = False
 
     def setup(self, stage=None):
         self.transform_trn = self.transform_dict.get("train")
@@ -101,7 +104,7 @@ class SemSegModel(L.LightningModule):
 
     def validation_step(self, batch, batch_idx):
         imgs, labels = batch
-        logits = self.inferencer(imgs, logits=True)
+        logits = self.inferencer(imgs)
         loss = self.loss_fn(logits, labels)
         
         self.val_metrics.update(logits, labels)
@@ -117,33 +120,14 @@ class SemSegModel(L.LightningModule):
 
     def test_step(self, batch, batch_idx):
         imgs, labels = batch
-        probs, preds = self.inferencer(imgs, probs=True)
+        logits = self.inferencer(imgs)
 
-        if self.calibrate:
-            max_conf = probs[preds]
-
-            self.cal_maxconf.append(max_conf.detach().cpu())
-            self.cal_preds.append(preds.detach().cpu())
-            self.cal_labels.append(labels.detach().cpu())
-
-        preds = (probs > self.threshold).long()
+        preds, max_probs = self.postprocess(logits)
         self.test_metrics.update(preds, labels)
 
+        return preds, max_probs, labels
+
     def on_test_epoch_end(self):
-        if self.calibrate and self.cal_preds:
-            all_probs = torch.cat(self.cal_preds)
-            all_labels = torch.cat(self.cal_labels)
-
-            new_val = self.find_best_threshold(all_probs, all_labels)
-            
-            self.threshold = torch.tensor(new_val, device=self.device)
-            
-            self.cal_preds.clear()
-            self.cal_labels.clear()
-            
-            print(f"Calibration complete. New threshold: {self.threshold:.4f}")
-            self.log("calibrated_threshold", self.threshold, on_epoch=True, prog_bar=True)
-
         output = self.test_metrics.compute()
         self.log_dict(output, prog_bar=True)
         self.test_metrics.reset()
@@ -152,10 +136,10 @@ class SemSegModel(L.LightningModule):
 
     def predict_step(self, batch, batch_idx, dataloader_idx=0):
         imgs = batch
-        preds = self.inferencer(imgs, logits=False)
+        logits = self.inferencer(imgs)
         
-        return preds
-    
+        return self.postprocess(logits)
+
     # ================== Utility Methods ==================
 
     def __repr__(self):
@@ -180,17 +164,28 @@ class SemSegModel(L.LightningModule):
             raise ValueError("Model must have either 'backbone' or 'encoder' attribute to split parameters.")
         return enc, dec
     
-    def find_best_threshold(self, probs, labels):
-        best_threshold = 0.0
-        best_metric = -float('inf')
+    def postprocess(
+        self,
+        logits: torch.Tensor
+    ):
+        """
+        Convert model output tensor to numpy array of predicted labels.
+        
+        Args:
+            logits: (B, C, H, W) logits output from model
+            
+        Returns:
+            pred_np: (B, H, W) predicted class indices
+        """
+        probs = logits.softmax(dim=1)
+        max_probs, preds = probs.max(dim=1)  # (B, H, W)
+        
+        if not self.calibrating:
+            for idx, threshold in enumerate(self.thresholds.values()):
+                # Apply confidence threshold to reject uncertain predictions
+                class_mask = (preds == idx)
+                reject_mask = (max_probs < threshold) & class_mask
+                preds[reject_mask] = self.ignore_index  # Set to ignore_index for rejected pixels
 
-        for class_idx, _ in self.thresholds.items():
-            for threshold in torch.linspace(0, 1, steps=100):
-                preds = (probs > threshold).long()
-                metric = self.test_metrics.compute(preds, labels)['test/iou']
-                if metric > best_metric:
-                    best_metric = metric
-                    best_threshold = threshold.item()
-
-        return best_threshold
+        return preds, max_probs
 

@@ -6,7 +6,7 @@ from torch.utils.data import DataLoader
 from sklearn.model_selection import train_test_split
 
 from geosave_engine.ai_tasks.semseg.core.transform import TransformsCompose
-from geosave_engine.ai_tasks.semseg.supervised.metadata import MetadataInterpreter
+from ..core.metadata import MetadataInterpreter
 
 from .dataset import SemSegDataset
 

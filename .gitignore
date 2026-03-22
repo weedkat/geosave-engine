@@ -209,3 +209,7 @@ __marimo__/
 # Local files
 config/
 dataset/
+
+# Local logs
+logs/
+lightning_logs/
