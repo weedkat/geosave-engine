@@ -57,6 +57,11 @@ class SemSegModel(L.LightningModule):
 
         self.calibrating = False
         self.register_buffer("class_thresholds", torch.zeros(self.nclass), persistent=True)
+        
+        # For logging validation images
+        self.val_sample_img = None
+        self.val_sample_pred = None
+        self.val_sample_label = None
 
     def forward(self, x):
         return infer_sliding_window(self, x)
@@ -111,12 +116,18 @@ class SemSegModel(L.LightningModule):
     
     # ================== Validation ==================
 
-    def validation_step(self, batch, batch_idx):
+    def validation_step(self, batch, batch_idx, dataloader_idx=0):
         imgs, labels = batch
         logits = infer_sliding_window(self, imgs)
         loss = self.loss_fn(logits, labels)
         
         self.val_metrics.update(logits, labels)
+
+        # Log first image from first batch of first dataloader
+        if batch_idx == 0 and dataloader_idx == 0:
+            self.val_sample_img = imgs[0].detach().cpu()
+            self.val_sample_pred = logits[0].detach().cpu().argmax(dim=0)
+            self.val_sample_label = labels[0].detach().cpu()
 
         self.log("val_loss", loss)
     
@@ -124,6 +135,15 @@ class SemSegModel(L.LightningModule):
         output = self.val_metrics.compute()
         self.log_dict(output, prog_bar=True)
         self.val_metrics.reset()
+        
+        # Log validation image
+        if self.val_sample_img is not None:
+            pred_rgb = torch.tensor(self.metadata_interpreter.class_to_rgb(self.val_sample_pred.numpy()), dtype=torch.uint8).permute(2, 0, 1)
+            label_rgb = torch.tensor(self.metadata_interpreter.class_to_rgb(self.val_sample_label.numpy()), dtype=torch.uint8).permute(2, 0, 1)
+            
+            img_vis = self.val_sample_img / 255.0 if self.val_sample_img.max() > 1 else self.val_sample_img
+            
+            self.logger.log_image("val/sample", [img_vis, pred_rgb / 255.0, label_rgb / 255.0])
 
     # ================== Testing ==================
 
@@ -144,11 +164,11 @@ class SemSegModel(L.LightningModule):
     # ================== Prediction ==================
 
     def predict_step(self, batch, batch_idx, dataloader_idx=0):
-        imgs, img_ids = batch
+        imgs, img_ids, meta_profiles = batch
         logits = infer_sliding_window(self, imgs)
         preds, max_probs = self.postprocess(logits)
         
-        return preds, max_probs, img_ids
+        return preds, max_probs, img_ids, meta_profiles
 
     # ================== Utility Methods ==================
 

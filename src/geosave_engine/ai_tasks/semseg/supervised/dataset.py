@@ -18,7 +18,7 @@ class SemSegDataset(Dataset):
         metadata: Path to YAML metadata (relative to cwd or absolute)
         bands: List of band names to be used e.g. ['R', 'G', 'B'] or ['B1', 'B2', 'B3']
     """
-    def __init__(self, data_dir, data_df, metadata_interpreter, transform, image_dir, label_dir):
+    def __init__(self, data_dir, data_df, metadata_interpreter, transform, image_dir, label_dir, predict_mode=False):
         """
         Args:
             data_csv (str): Path to the CSV file containing image and mask paths.
@@ -26,6 +26,7 @@ class SemSegDataset(Dataset):
             metadata_interpreter (MetadataInterpreter): Instance of MetadataInterpreter.
             image_dir (str): Directory containing the images.
             label_dir (str): Directory containing the labels.
+            predict_mode (bool): Whether to run in prediction mode (no labels available).
         """
         # Resolve relative paths from current working directory
         data_dir = Path(data_dir).resolve()
@@ -36,6 +37,7 @@ class SemSegDataset(Dataset):
         self.mi = metadata_interpreter
         self.transform = transform
         self.band_indices = self.mi.get_selected_bands()
+        self.predict_mode = predict_mode
 
     def __getitem__(self, idx):
         assert isinstance(idx, int)
@@ -43,12 +45,15 @@ class SemSegDataset(Dataset):
         row = self.df.iloc[idx]
         
         img_path = self.img_dir / row['image']
-        image = self._load_image(img_path)
-        
-        if 'label' not in row or pd.isna(row['label']): # predict mode, no labels available
+        image, meta_profile = self._load_image(img_path)
+
+        if self.predict_mode:
             result = self.transform(image=image)
             img_id = extract_id(img_path.stem)
-            return result['image'], img_id
+            return result['image'], img_id, meta_profile
+        
+        if 'label' not in row or pd.isna(row['label']):
+            raise ValueError(f"Label path is missing for index {idx} in training mode.")
         
         mask_path = self.mask_dir / row['label']
         mask = self._load_mask(mask_path)
@@ -58,24 +63,27 @@ class SemSegDataset(Dataset):
         return result['image'], result['mask'].long()
         
     def _load_image(self, path):
-        """Load image from various formats (TIF, JPG, PNG, etc.) and select bands if specified"""
+        """Load image and extract spatial metadata if available."""
         path = Path(path)
         ext = path.suffix.lower()
+        
+        meta_profile = {}
 
         if ext in ['.tif', '.tiff']:
             # Use rasterio for TIFF files
             with rasterio.open(path) as src:
-                img = src.read([i + 1 for i in self.band_indices])  # (C, H, W), rasterio bands are 1-indexed
+                meta_profile = src.profile.copy() 
+                img = src.read([i + 1 for i in self.band_indices])  
                 img = np.transpose(img, (1, 2, 0))  # (H, W, C)
         else:
-            # Use PIL for common formats (JPG, PNG, etc.)
             img = Image.open(path)
-            img = np.array(img)  # Already in (H, W, C) or (H, W)
-            # Select bands if specified
+            img = np.array(img)  
+            
             if self.band_indices is not None and img.ndim >= 3:
                 img = img[:, :, self.band_indices]
         
-        return img
+        # Return BOTH the image array and the metadata dictionary
+        return img, meta_profile
 
     def _load_mask(self, path):
         """Load mask in either RGB format or index format"""
