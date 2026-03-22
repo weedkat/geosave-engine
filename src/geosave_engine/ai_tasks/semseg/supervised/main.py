@@ -12,53 +12,46 @@ from ..core.metadata import MetadataInterpreter
 
 class SemSegModel(L.LightningModule):
     def __init__(self, arch, optim, loss, metadata_dict, transform_dict, **kwargs):
-        metadata_interpreter = MetadataInterpreter(metadata_dict)
-        if thresholds is None:
-            """
-            {'class_name': threshold_value, ...}
-            """
-            thresholds = {key: 0.0 for key in metadata_interpreter.class_names}
-
         super().__init__()
         self.save_hyperparameters()
 
-        self.arch = arch
-        self.optim = optim
-        self.loss = loss
-        self.metadata_interpreter = metadata_interpreter
         self.transform_dict = transform_dict
         self.metadata_dict = metadata_dict
+        self.metadata_interpreter = MetadataInterpreter(metadata_dict)
         self.ignore_index = self.metadata_interpreter.ignore_index
 
-        for attr in ['arch', 'optim', 'loss']:
-            # arch_cfg, optim_cfg, loss_cfg will be extracted from kwargs if available
-            setattr(self, f"{attr}_cfg", extract_prefixed(kwargs, attr))
+        self.arch_cfg = extract_prefixed(kwargs, 'arch')
+        self.optim_cfg = extract_prefixed(kwargs, 'optim')
+        self.loss_cfg = extract_prefixed(kwargs, 'loss')
         
         self.arch_cfg['nclass'] = self.metadata_interpreter.nclass
         self.arch_cfg['in_channels'] = self.metadata_interpreter.in_channels
         self.model = model_registry.build(arch, **self.arch_cfg)
         
-        self.loss_cfg['ignore_index'] = self.metadata_interpreter.ignore_index
+        self.loss_cfg['ignore_index'] = self.ignore_index
         self.loss_fn = loss_registry.build(loss, **self.loss_cfg)
 
-        metrics = get_metrics(num_classes=self.metadata_interpreter.nclass, 
-                              class_names=self.metadata_interpreter.class_names, 
-                              ignore_index=self.metadata_interpreter.ignore_index)
-        metrics2 = get_metrics(num_classes=self.metadata_interpreter.nclass, 
-                              class_names=self.metadata_interpreter.class_names, 
-                              ignore_index=None) # For test metrics, we want to include all classes in the report
+        metrics = get_metrics(
+            num_classes=self.metadata_interpreter.nclass, 
+            class_names=self.metadata_interpreter.class_names, 
+            ignore_index=self.ignore_index
+        )
+        test_metrics = get_metrics(
+            num_classes=self.metadata_interpreter.nclass, 
+            class_names=self.metadata_interpreter.class_names, 
+            ignore_index=None
+        ) 
 
-        # Create separate instances for each stage
         self.train_metrics = metrics.clone(prefix="train/")
         self.val_metrics = metrics.clone(prefix="val/")
-        self.test_metrics = metrics2.clone(prefix="test/")
+        self.test_metrics = test_metrics.clone(prefix="test/")
 
         self.calibrating = False
+        self.register_buffer("class_thresholds", torch.zeros(self.metadata_interpreter.nclass), persistent=True)
 
     def setup(self, stage=None):
-        self.transform_trn = self.transform_dict.get("train")
-        self.transform_infer = self.transform_dict.get("infer")
-        self.inferencer = Inference(self)
+        if stage in ("validate", "test", "predict"):
+            self.inferencer = Inference(self)
 
     def forward(self, x):
         return self.model(x)
@@ -164,28 +157,26 @@ class SemSegModel(L.LightningModule):
             raise ValueError("Model must have either 'backbone' or 'encoder' attribute to split parameters.")
         return enc, dec
     
-    def postprocess(
-        self,
-        logits: torch.Tensor
-    ):
+    def postprocess(self, logits: torch.Tensor):
         """
-        Convert model output tensor to numpy array of predicted labels.
+        Convert model output tensor to predicted labels with vectorized per-class thresholding.
         
         Args:
             logits: (B, C, H, W) logits output from model
             
         Returns:
-            pred_np: (B, H, W) predicted class indices
+            preds: (B, H, W) predicted class indices with rejections applied
+            max_probs: (B, H, W) confidence scores
         """
         probs = logits.softmax(dim=1)
-        max_probs, preds = probs.max(dim=1)  # (B, H, W)
+        max_probs, preds = probs.max(dim=1) # (B, H, W)
         
         if not self.calibrating:
-            for idx, threshold in enumerate(self.thresholds.values()):
-                # Apply confidence threshold to reject uncertain predictions
-                class_mask = (preds == idx)
-                reject_mask = (max_probs < threshold) & class_mask
-                preds[reject_mask] = self.ignore_index  # Set to ignore_index for rejected pixels
+            # VECTORIZED LOOKUP: Map every pixel to its class-specific threshold
+            pixel_thresholds = self.class_thresholds[preds] # (B, H, W)
+            
+            reject_mask = max_probs < pixel_thresholds
+            preds[reject_mask] = self.ignore_index
 
         return preds, max_probs
 

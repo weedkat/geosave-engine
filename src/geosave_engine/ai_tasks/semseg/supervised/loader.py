@@ -18,6 +18,8 @@ IMAGE_EXTENSIONS = ['tif', 'tiff', 'jpg', 'jpeg', 'png', 'bmp', 'jp2']
 class DataModule(L.LightningDataModule):
     def __init__(self, 
                  data_dir,
+                 metadata_dict,
+                 transform_dict,
                  image_dir='images', 
                  label_dir='labels', 
                  data_split_ratio=(0.7, 0.15, 0.15), 
@@ -30,6 +32,8 @@ class DataModule(L.LightningDataModule):
         
         self.data_dir = Path(data_dir)
         self.split_dir = self.data_dir / "splits"
+        self.metadata_dict = metadata_dict
+        self.transform_dict = transform_dict
         self.image_dir = image_dir
         self.label_dir = label_dir
         self.loader_kwargs = loader_kwargs
@@ -88,6 +92,7 @@ class DataModule(L.LightningDataModule):
 
     def prepare_data(self): 
         # Only called on 1 GPU/TPU in distributed mode
+        self.split_dir.mkdir(exist_ok=True)  # Create splits directory if it doesn't exist
         is_split_exists = all((self.split_dir / f"{split}_split.csv").exists() for split in ["train", "val", "test", "unlabeled"])
         
         if not is_split_exists:
@@ -101,11 +106,6 @@ class DataModule(L.LightningDataModule):
 
     def setup(self, stage=None):
         # This runs on EVERY GPU.
-        if not hasattr(self, 'metadata_dict') or self.metadata_dict is None:
-            raise ValueError("metadata_dict attribute must be injected before setup()")
-        if not hasattr(self, 'transformer_dict') or self.transformer_dict is None:
-            raise ValueError("transformer_dict attribute must be injected before setup()")
-        
         transform_trn = TransformsCompose(self.transform_dict['train'])
         transform_infer = TransformsCompose(self.transform_dict['infer'])
         metadata = MetadataInterpreter(self.metadata_dict)  # Use self.metadata_dict, not hparams
