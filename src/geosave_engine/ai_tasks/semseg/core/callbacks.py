@@ -97,8 +97,8 @@ class CalibrationCallback(Callback):
         pl_module.calibrating = False
 
 
-class RGBMaskWriter(BasePredictionWriter):
-    def __init__(self, save_dir: str = "predictions", file_prefix: str = "pred", save_form: list = ["class_pt", "rgb_png", "class_tif"]):
+class MaskWriter(BasePredictionWriter):
+    def __init__(self, save_dir: str = "predictions", file_prefix: str = "pred", save_form: list = ["class_tif"]):
         super().__init__(write_interval="batch") 
         self.save_dir = Path(save_dir)
         self.save_dir.mkdir(parents=True, exist_ok=True)
