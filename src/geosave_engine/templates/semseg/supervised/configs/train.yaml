@@ -1,0 +1,25 @@
+model_cfg:
+  name: DeepLabV3Plus
+  backbone: resnet50
+  pretrained: true
+
+# Arguments for data loader, tweak if training is slow or low gpu utilization
+dataloader_cfg:
+  batch_size: 4  # Can use larger batch with smaller models
+  num_workers_train: 6  # Number of workers for training dataloader
+  num_workers_val: 2  # Number of workers for validation dataloader
+  prefetch_factor: 2 # Number of samples loaded in advance by each worker
+  persistent_workers: false # Keep workers alive between epochs for faster loading
+  pin_memory: true # Pin memory for faster GPU transfer
+  # nsample: 3000 # semi supervised learning sample size, not used in fully supervised training
+
+# Arguments for training
+train_cfg:
+  epochs: 60
+  lr: 0.000005 # learning rate for backbone / encoder
+  lr_multi: 40.0 # learning rate multiplier for head / decoder
+  criterion:
+    name: CELoss
+    kwargs:
+      # thresh: 0.7
+      # min_kept: 200000

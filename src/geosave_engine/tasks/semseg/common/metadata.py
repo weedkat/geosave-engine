@@ -64,6 +64,7 @@ class MetadataInterpreter:
 
         # The ellipsis (...) allows this to work seamlessly with both (H,W,3) and (B,H,W,3)
         # Compress the RGB channels into a single integer hash
+        # p.s i don't understand this voodoo trick
         color_hash = (mask_rgb[..., 0] << 16) | (mask_rgb[..., 1] << 8) | mask_rgb[..., 2]
         
         # Use the compressed integers as indices to grab the class IDs instantly

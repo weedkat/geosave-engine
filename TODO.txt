@@ -19,3 +19,6 @@
 23/3/26
 1. Test the callbacks
 2. Add COGS for sentinel-2
+
+24/3/26
+1. separation of data modules train and predict

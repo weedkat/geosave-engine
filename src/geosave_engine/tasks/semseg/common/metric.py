@@ -12,6 +12,7 @@ def get_metrics(num_classes, class_names, ignore_index):
             JaccardIndex(task='multiclass', num_classes=num_classes, ignore_index=ignore_index, average=None),
             labels=class_names # This maps index 0 to "Forest", etc.
         )
+        # You can add more metrics here as needed
     }
 
     return MetricCollection(metrics)

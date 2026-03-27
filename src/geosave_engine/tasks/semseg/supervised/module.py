@@ -1,23 +1,23 @@
 import lightning as L
 import torch
 
-from geosave_engine.ai_tasks.semseg.core.inference import infer_sliding_window
+from ..common.inference import infer_sliding_window
 from torch.optim.lr_scheduler import CosineAnnealingLR
 
 from .registry import optim_registry, loss_registry, model_registry
-from ..core.metric import get_metrics
-from ..core.utils import extract_prefixed
+from ..common.metric import get_metrics
+from ..common.utils import extract_prefixed
 
-from ..core.metadata import MetadataInterpreter
+from ..common.metadata import MetadataInterpreter
 
 class SemSegModel(L.LightningModule):
-    def __init__(self, arch, optim, loss, metadata_dict, transform_dict, **kwargs):
+    def __init__(self, arch_cfg, optim_cfg, loss_cfg, metadata_dict, transform_dict, **kwargs):
         super().__init__()
         self.save_hyperparameters()
 
-        self.arch = arch
-        self.optim = optim
-        self.loss = loss
+        self.arch = arch_cfg['name']
+        self.optim = optim_cfg['name']
+        self.loss = loss_cfg['name']
 
         self.transform_dict = transform_dict
         self.metadata_dict = metadata_dict
@@ -29,16 +29,16 @@ class SemSegModel(L.LightningModule):
         self.in_channels = self.metadata_interpreter.in_channels
         self.class_names = self.metadata_interpreter.class_names
 
-        self.arch_cfg = extract_prefixed(kwargs, 'arch')
-        self.optim_cfg = extract_prefixed(kwargs, 'optim')
-        self.loss_cfg = extract_prefixed(kwargs, 'loss')
+        self.arch_cfg = arch_cfg
+        self.optim_cfg = optim_cfg
+        self.loss_cfg = loss_cfg
         
         self.arch_cfg['nclass'] = self.nclass
         self.arch_cfg['in_channels'] = self.in_channels
-        self.model = model_registry.build(arch, **self.arch_cfg)
+        self.model = model_registry.build(self.arch, **self.arch_cfg)
         
         self.loss_cfg['ignore_index'] = self.ignore_index
-        self.loss_fn = loss_registry.build(loss, **self.loss_cfg)
+        self.loss_fn = loss_registry.build(self.loss, **self.loss_cfg)
 
         metrics = get_metrics(
             num_classes=self.nclass, 
@@ -67,12 +67,8 @@ class SemSegModel(L.LightningModule):
         return infer_sliding_window(self, x)
 
     def configure_optimizers(self):
-        optim_cfg = {
-            'lr': 5e-5,
-            'lr_multi': 40.0,
-        }
-        optim_cfg.update(self.optim_cfg)
-
+        optim_cfg = self.optim_cfg.copy()
+        
         enc, dec = self.get_encoder_decoder_params()
         encoder_lr = optim_cfg.pop('lr')
         decoder_lr = encoder_lr * optim_cfg.pop('lr_multi')

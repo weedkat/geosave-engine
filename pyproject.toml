@@ -61,7 +61,7 @@ where = ["src"]
 [tool.setuptools.package-data]
 geosave-engine = ["templates/**/*.yaml", "templates/**/*.ipynb"]  
 
-[project.scripts]
-geomoka-train = "geosave_engine._cli.train:main"
-geomoka-scaffold = "geosave_engine._cli.scaffold:main"
-geomoka-template = "geosave_engine._cli.template:main"
+# [project.scripts]
+# geomoka-train = "geosave_engine._cli.train:main"
+# geomoka-scaffold = "geosave_engine._cli.scaffold:main"
+# geomoka-template = "geosave_engine._cli.template:main"

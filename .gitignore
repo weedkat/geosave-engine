@@ -213,3 +213,7 @@ dataset/
 # Local logs
 logs/
 lightning_logs/
+
+# Project files
+./*project/
+./*project*/

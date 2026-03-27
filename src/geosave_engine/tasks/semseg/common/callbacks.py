@@ -56,7 +56,7 @@ class CalibrationCallback(Callback):
         n_classes = pl_module.metadata_interpreter.nclass
         new_thresholds = torch.zeros(n_classes, device=pl_module.device)
 
-        # 1. Inner search loop (Same math as before, but on validation data)
+        # 1. Inner search loop, we optimize f1 score for each class independently
         for c in range(n_classes):
             class_mask = (all_preds == c)
             if not class_mask.any():

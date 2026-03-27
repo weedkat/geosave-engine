@@ -2,6 +2,7 @@ import torch
 import torch.nn.functional as F
 from lightning import LightningModule
 
+# UPDATE: added padding becuase models are more accurate at the center
 def infer_sliding_window(module: LightningModule, img_tensor: torch.Tensor, overlap_ratio: float = 0.5) -> torch.Tensor:
     model = module.model
     grid = module.input_size

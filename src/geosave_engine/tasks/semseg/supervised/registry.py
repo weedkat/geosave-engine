@@ -1,4 +1,7 @@
-from geosave_engine._core.registry import Registry
+# Factory registries for supervised semantic segmentation components
+# No more hardcoded imports or if-else chains for models, optimizers, or losses!
+
+from geosave_engine.core.registry import Registry
 import torch
 import torch.nn as nn
 import torchmetrics

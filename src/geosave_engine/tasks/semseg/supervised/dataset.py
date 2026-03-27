@@ -7,36 +7,17 @@ import numpy as np
 
 from ..core.utils import extract_id
 
-class SemSegDataset(Dataset):
-    """
-    Generic dataset handler for various image formats (TIF, JPG, PNG, etc.)
-    Supports masks in both RGB format and index format.
-
-    Args:
-        data_csv: Path to CSV file (relative to cwd or absolute)
-        root_dir: Root directory of dataset (relative to cwd or absolute)
-        metadata: Path to YAML metadata (relative to cwd or absolute)
-        bands: List of band names to be used e.g. ['R', 'G', 'B'] or ['B1', 'B2', 'B3']
-    """
-    def __init__(self, data_dir, data_df, metadata_interpreter, transform, image_dir, label_dir, predict_mode=False):
-        """
-        Args:
-            data_csv (str): Path to the CSV file containing image and mask paths.
-            data_dir (str): Directory containing the dataset.
-            metadata_interpreter (MetadataInterpreter): Instance of MetadataInterpreter.
-            image_dir (str): Directory containing the images.
-            label_dir (str): Directory containing the labels.
-            predict_mode (bool): Whether to run in prediction mode (no labels available).
-        """
-        # Resolve relative paths from current working directory
+class BaseDataset(Dataset):
+    def __init__(self, data_dir, data_df, metadata_cls, transform_fn, image_dir, label_dir, predict_mode=False):
         data_dir = Path(data_dir).resolve()
     
         self.df = data_df
         self.img_dir = data_dir / image_dir
         self.mask_dir = data_dir / label_dir
-        self.mi = metadata_interpreter
-        self.transform = transform
+        self.mi = metadata_cls
+        self.transform = transform_fn
         self.band_indices = self.mi.get_selected_bands()
+        
         self.predict_mode = predict_mode
 
     def __getitem__(self, idx):

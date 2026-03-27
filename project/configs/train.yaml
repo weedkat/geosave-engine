@@ -1,0 +1,27 @@
+arch_cfg:
+  name: dpt
+
+optim_cfg:
+  name: AdamW
+  lr: 0.000005
+  lr_multi: 40.0
+
+loss_cfg:
+  name: CELoss
+
+train_loader_cfg:
+  batch_size: 4
+  num_workers: 6
+  prefetch_factor: 2
+  persistent_workers: false
+  pin_memory: true
+
+eval_loader_cfg:
+  batch_size: 4
+  num_workers: 2
+  prefetch_factor: 2
+  persistent_workers: false
+  pin_memory: true
+
+train_cfg:
+  max_epochs: 60
