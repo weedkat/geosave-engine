@@ -1,0 +1,1 @@
+# CDSE API Client, for downloading assets from stac bucket
