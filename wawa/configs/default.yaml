@@ -1,19 +1,31 @@
-# GLOBAL CONFIGURATION
 model:
   model_name: UNet
   model_config:
     arch: UNet
     input_channels: 3
-  optimizer_config: 
+  optimizer_config:
     name: Adam
     lr: 0.001
   loss_config:
     name: CrossEntropyLoss
     weight: null
-
+  name: UnetPlusPlus
 trainer:
   max_epochs: 100
   callbacks:
+  - class_path: lightning.pytorch.callbacks.ModelCheckpoint
+    monitor: val_loss
+    mode: min
+    save_top_k: 1
+  - class_path: lightning.pytorch.callbacks.EarlyStopping
+    monitor: val_loss
+    mode: min
+    patience: 10
+data:
+  data_dir: data/train
+fit:
+  trainer:
+    callbacks:
     - class_path: lightning.pytorch.callbacks.ModelCheckpoint
       monitor: val_loss
       mode: min
@@ -22,39 +34,18 @@ trainer:
       monitor: val_loss
       mode: min
       patience: 10
-
-data:
-  data_dir: data/train
-
-
-# Fit configuration for the training loop, such as logging and checkpointing
-fit:
-  trainer:
-    callbacks:
-      - class_path: lightning.pytorch.callbacks.ModelCheckpoint
-        monitor: val_loss
-        mode: min
-        save_top_k: 1
-      - class_path: lightning.pytorch.callbacks.EarlyStopping
-        monitor: val_loss
-        mode: min
-        patience: 10
     logger:
-      - class_path: lightning.pytorch.loggers.TensorBoardLogger
-        save_dir: artifacts
-
+    - class_path: lightning.pytorch.loggers.TensorBoardLogger
+      save_dir: artifacts
 test:
   trainer:
     logger:
       type: TensorBoardLogger
       save_dir: artifacts
       name: semantic_segmentation_test
-
 predict:
   trainer:
     logger:
       type: TensorBoardLogger
-      save_dir: artifacts 
+      save_dir: artifacts
       name: semantic_segmentation_predict
-      
-

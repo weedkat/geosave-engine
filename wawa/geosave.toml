@@ -1,0 +1,6 @@
+project_name = "wawa"
+task = "semantic segmentation"
+method = "supervised"
+models = [ "DensePredictionTransformer", "Unet", "UnetPlusPlus", "DeepLabV3", "DeepLabV3Plus", "FPN", "PSPNet", "PAN", "Linknet", "MAnet",]
+selected_model = "UnetPlusPlus"
+description = "A GeoSave Engine project."

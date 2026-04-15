@@ -10,6 +10,7 @@ from geosave_engine.cli.utils.cli_helpers import (
     get_artifacts_args,
 )
 from geosave_engine.cli.build import build_project
+from geosave_engine.cli.docs import show_docs
 
 
 app = typer.Typer(help="GeoSave Engine CLI")
@@ -246,11 +247,35 @@ def upload(
 
 
 @app.command()
-def docs():
+def docs(
+    section: str | None = typer.Argument(
+        None,
+        help="Docs section: lightningmodule | datamodule | model | loss | optimizer",
+    ),
+    arg1: str | None = typer.Argument(
+        None,
+        help="Optional chained arg (e.g., task for model, name for loss/optimizer)",
+    ),
+    arg2: str | None = typer.Argument(
+        None,
+        help="Optional chained arg (e.g., method for model)",
+    ),
+    arg3: str | None = typer.Argument(
+        None,
+        help="Optional chained arg (e.g., model name)",
+    ),
+):
     """
-    Open the GeoSave Engine documentation in your web browser.
+    Quick CLI reference for GeoSave components.
+
+    Examples:
+    - geosave docs
+    - geosave docs lightningmodule
+    - geosave docs datamodule
+    - geosave docs model semantic_segmentation supervised
+    - geosave docs optimizer AdamW
     """
-    # execute_script()
+    show_docs(section=section, arg1=arg1, arg2=arg2, arg3=arg3)
 
 
 if __name__ == "__main__":

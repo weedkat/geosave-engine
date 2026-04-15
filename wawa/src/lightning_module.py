@@ -1,5 +1,5 @@
 from lightning import LightningModule
-from src.factories import build_optimizer, build_loss, build_model  # ty:ignore[unresolved-import]
+from src.factory import build_model  # ty:ignore[unresolved-import]
 
 
 class GeosaveLightningModule(LightningModule):
@@ -8,7 +8,7 @@ class GeosaveLightningModule(LightningModule):
     Lightning modules are responsible for defining the neural network architecture and the training logic.
     They should implement the `training_step`, `validation_step`, and `test_step` methods to handle the training, validation, and testing loops.
     """
-    def __init__(self, model_config, optim_config, loss_config):
+    def __init__(self, model_config, optimzer_config, loss_config):
         super().__init__()
         self.save_hyperparameters()
         model_name = model_config.get("name") if isinstance(model_config, dict) else None
