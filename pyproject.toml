@@ -51,6 +51,12 @@ path = "src/geosave_engine/__about__.py"
 extra-dependencies = [
   "mypy>=1.0.0",
 ]
+
+[tool.hatch.build]
+include = [
+  "src/templates/**",
+]
+
 [tool.hatch.envs.types.scripts]
 check = "mypy --install-types --non-interactive {args:src/geosave_engine tests}"
 

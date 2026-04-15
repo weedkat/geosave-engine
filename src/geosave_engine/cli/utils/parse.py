@@ -4,26 +4,22 @@ from pathlib import Path
 import typer
 import toml
 
-template_path = Path(__file__).parent.parent.parent / "templates"
 
-tasks: dict[str, list[str]] = {}
+def get_tasks(template_path: Path) -> dict[str, list[str]]:
+    tasks: dict[str, list[str]] = {}
+    folders = [p for p in template_path.iterdir() if p.is_dir() and p.name != "__pycache__"]
+    for folder in folders:
+        methods = [p for p in folder.iterdir() if p.is_dir() and p.name != "__pycache__"]
+        task_name = folder.name.replace("_", " ").lower()
+        method_names = []
+        for method in methods:
+            method_name = method.name.replace("_", " ").lower()
+            method_names.append(method_name)
+        tasks[task_name] = method_names
+    return tasks
 
-folders = [p for p in template_path.iterdir() if p.is_dir() and p.name != "__pycache__"]
 
-for folder in folders:
-    methods = [p for p in folder.iterdir() if p.is_dir() and p.name != "__pycache__"]
-    task_name = folder.name.replace("_", " ").lower()
-
-    method_names = []
-    for method in methods:
-        method_name = method.name.replace("_", " ").lower()
-        method_names.append(method_name)
-
-    tasks[task_name] = method_names
-
-package_path = Path(__file__).parent.parent.parent / "models"
-
-def get_model_list(task: str, method: str):
+def get_model_list(task: str, method: str, package_path: Path) -> list[str]:
     class_names = []
     for file in package_path.glob("**/build.py"):
         if file.name == "__init__.py":

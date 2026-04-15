@@ -4,10 +4,12 @@ import os
 import typer
 from pathlib import Path
 
-from geosave_engine.cli.utils.parse import get_model_list, tasks
+from geosave_engine.cli.utils.parse import get_model_list, get_tasks
 from geosave_engine.cli.utils.generate import generate_project
 
-def build_project(name, dir: str):
+MODELS_PACKAGE_PATH = Path(__file__).parent.parent / "models"
+
+def build_project(name, dir: str, template_dir):
     """
     Build a new GeoSave project workspace.
     
@@ -15,8 +17,11 @@ def build_project(name, dir: str):
     a training method, and the specific models you want to use. It copies the necessary 
     templates and generates a ready-to-use workspace with a tracking `geosave.toml` file.
     """
+
     typer.secho("Building the project...", fg=typer.colors.CYAN)
-    
+
+    tasks = get_tasks(template_dir)
+
     if name is None:
         name = questionary.text(
             "Enter the name of the build:",
@@ -29,10 +34,10 @@ def build_project(name, dir: str):
         "Select the AI task:",
         choices=[t for t in tasks]
     ).ask()
-    
+
     if not task:
         raise typer.Exit()
-    
+
     methods = tasks.get(task)
     if not methods:
         typer.secho(f"Error: No methods/templates found for the task '{task}'.", fg=typer.colors.RED, err=True)
@@ -47,7 +52,7 @@ def build_project(name, dir: str):
         typer.secho(f"Error: Method '{method}' does not exist for task '{task}'.", fg=typer.colors.RED, err=True)
         raise typer.Exit(1)
     
-    model_choices = get_model_list(task, method)
+    model_choices = get_model_list(task, method, MODELS_PACKAGE_PATH)
 
     if not model_choices:
         typer.secho("Error: No models found for the selected task and method.", fg=typer.colors.RED, err=True)
@@ -73,7 +78,7 @@ def build_project(name, dir: str):
     if description is None:
         raise typer.Exit()
 
-    if generate_project(dir, name, task, method, models, description):
+    if generate_project(dir, name, task, method, models, description, template_dir):
         # Inject selected model into config file (pick the first model)
         config_path = Path(dir) / name / "configs" / "default.yaml"
         if config_path.exists():

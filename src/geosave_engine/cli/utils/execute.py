@@ -61,16 +61,24 @@ def load_env(project_dir: Path, current_dir: Path) -> dict[str, str]:
 
     return env
 
-def execute_script(project_name: str, task_name: str, script_path: Path, project_dir: Path, current_dir: Path, run_args: list[str], operation: str = "pipeline"):
+
+def execute_script(script_path: Path, env: dict, args: list[str], cwd: Path = None):
+    """
+    Execute a script with the given environment and arguments.
+    """
+    try:
+        subprocess.run(["python", str(script_path.resolve())] + args, check=True, cwd=cwd, env=env)
+    except subprocess.CalledProcessError as e:
+        typer.secho(f"Script failed with exit code {e.returncode}", fg=typer.colors.RED, err=True)
+        raise typer.Exit(e.returncode)
+
+def execute_project_script(project_name: str, task_name: str, script_path: Path, project_dir: Path, current_dir: Path, run_args: list[str], operation: str = "pipeline"):
+    """
+    Prepares environment, displays info, and executes a project script using execute_script.
+    """
     cmd_env = load_env(project_dir, current_dir)
     args_str = " ".join(run_args) if run_args else "No extra args"
     script_rel_path = script_path.relative_to(project_dir)
-    
     task_display = f" (Task: {task_name})" if task_name else ""
     typer.secho(f"Starting {operation} for '{project_name}'{task_display}\nExecuting: `python {script_rel_path} {args_str}`", fg=typer.colors.GREEN)
-    
-    try:
-        subprocess.run(["python", str(script_path.resolve())] + run_args, check=True, cwd=project_dir, env=cmd_env)
-    except subprocess.CalledProcessError as e:
-        typer.secho(f"{operation.capitalize()} failed with exit code {e.returncode}", fg=typer.colors.RED, err=True)
-        raise typer.Exit(e.returncode)
+    execute_script(script_path, cmd_env, run_args, project_dir)

@@ -44,13 +44,16 @@ src/
   geosave_engine/
     api/
       cdse.py
+      upload.py
     cli/
       utils/
         execute.py
         generate.py
         parse.py
         search.py
+      build.py
       main.py
+      upload.py
     core/
       model.py
     models/
@@ -73,30 +76,23 @@ src/
         build.py
       smp/
         build.py
-    templates/
-      semantic_segmentation/
-        supervised/
-          configs/
-            default.yaml
-          scripts/
-            inference.py
-            ingest.py
-            preprocess.py
-            test.py
-            train.py
-          src/
-            callbacks.py
-            data_ingest.py
-            data_module.py
-            data_transform.py
-            lightning_module.py
-            metrics.py
-          exploratory_data_analysis.ipynb
-          README.md
-    utils/
-      __init__.py
     __about__.py
     __init__.py
+  templates/
+    semantic_segmentation/
+      supervised/
+        configs/
+          default.yaml
+        src/
+          callbacks.py
+          data_ingest.py
+          data_module.py
+          data_transform.py
+          lightning_module.py
+          metrics.py
+        exploratory_data_analysis.ipynb
+        README.md
+    main_template.py
 .env.example
 .gitignore
 .python-version
@@ -110,6 +106,144 @@ zensical.toml
 <files>
 This section contains the contents of the repository's files.
 
+<file path="src/templates/semantic_segmentation/supervised/configs/default.yaml">
+# GLOBAL CONFIGURATION
+model:
+  name: UNet
+  backbone: resnet34
+  pretrained: true
+  num_classes: 5
+  loss: cross_entropy
+
+trainer:
+  max_epochs: 100
+  callbacks:
+    - type: ModelCheckpoint
+      monitor: val_loss
+      mode: min
+      save_top_k: 1
+    - type: EarlyStopping
+      monitor: val_loss
+      mode: min
+      patience: 10
+
+data:
+  train:
+    batch_size: 16
+    num_workers: 4
+    shuffle: true
+  val:
+    batch_size: 16
+    num_workers: 4
+    shuffle: false
+  test:
+    batch_size: 16
+    num_workers: 4
+    shuffle: false
+
+# Fit configuration for the training loop, such as logging and checkpointing
+fit:
+  trainer:
+    log_every_n_steps: 50
+    checkpoint_callback: true
+    logger:
+      type: TensorBoardLogger
+      save_dir: logs
+      name: semantic_segmentation
+
+test:
+  trainer:
+    logger:
+      type: TensorBoardLogger
+      save_dir: logs
+      name: semantic_segmentation_test
+
+predict:
+  trainer:
+    logger:
+      type: TensorBoardLogger
+      save_dir: logs
+      name: semantic_segmentation_predict
+</file>
+
+<file path="src/templates/semantic_segmentation/supervised/src/callbacks.py">
+
+</file>
+
+<file path="src/templates/semantic_segmentation/supervised/src/data_ingest.py">
+
+</file>
+
+<file path="src/templates/semantic_segmentation/supervised/src/data_module.py">
+from lightning import LightningDataModule
+
+class GeosaveDataModule(LightningDataModule):
+    """
+    Base class for GeoSave data modules. 
+    Data modules are responsible for loading and preprocessing data for training and inference.
+    They should implement the `prepare_data` and `setup` methods to handle data loading and splitting.
+    """
+    pass
+</file>
+
+<file path="src/templates/semantic_segmentation/supervised/src/data_transform.py">
+
+</file>
+
+<file path="src/templates/semantic_segmentation/supervised/src/lightning_module.py">
+from lightning import LightningModule
+
+class GeosaveLightningModule(LightningModule):
+    """
+    Base class for GeoSave lightning modules. 
+    Lightning modules are responsible for defining the neural network architecture and the training logic.
+    They should implement the `training_step`, `validation_step`, and `test_step` methods to handle the training, validation, and testing loops.
+    """
+    pass
+</file>
+
+<file path="src/templates/semantic_segmentation/supervised/src/metrics.py">
+
+</file>
+
+<file path="src/templates/semantic_segmentation/supervised/exploratory_data_analysis.ipynb">
+
+</file>
+
+<file path="src/templates/semantic_segmentation/supervised/README.md">
+
+</file>
+
+<file path="src/templates/main_template.py">
+from lightning.pytorch.cli import LightningCLI
+from src.data_module import GeosaveDataModule
+from src.lightning_module import GeosaveLightningModule
+
+
+def cli_main():
+    LightningCLI(
+        GeosaveLightningModule,
+        GeosaveDataModule
+    )
+
+if __name__ == "__main__":
+    cli_main()
+</file>
+
+<file path="src/geosave_engine/api/cdse.py">
+# CDSE API Client, for downloading assets from stac bucket
+</file>
+
+<file path="src/geosave_engine/api/upload.py">
+def upload_model():
+    """
+    Upload a trained model to the GeoSave Model Hub.
+    
+    This command will package the trained model artifacts and metadata, and upload them to the GeoSave Model Hub for sharing and deployment.
+    """
+    print("Uploading the model to the GeoSave Model Hub...")
+</file>
+
 <file path="src/geosave_engine/cli/utils/execute.py">
 from __future__ import annotations
 import typer
@@ -119,13 +253,40 @@ from pathlib import Path
 
 def load_env(project_dir: Path, current_dir: Path) -> dict[str, str]:
     env = os.environ.copy()
-    
-    env_file = current_dir / ".env"
-    if not (env_file.exists() and env_file.is_file()):
-        env_file = current_dir.parent / ".env"
-        
-    if not (env_file.exists() and env_file.is_file()):
-        typer.secho(f"Error: No .env file found in {current_dir} or {current_dir.parent}", fg=typer.colors.RED, err=True)
+
+    # Search order for .env files
+    search_paths = [
+        project_dir / ".env",
+        project_dir / ".env.example",
+        current_dir / ".env",
+        current_dir / ".env.example",
+        current_dir.parent / ".env",
+        current_dir.parent / ".env.example",
+    ]
+
+    env_file = None
+    for path in search_paths:
+        if path.exists() and path.is_file() and path.name == ".env":
+            env_file = path
+            break
+    # If no .env, but .env.example exists, copy it to .env and use it
+    if env_file is None:
+        for path in search_paths:
+            if path.exists() and path.is_file() and path.name == ".env.example":
+                # Copy .env.example to .env in the same directory
+                new_env = path.parent / ".env"
+                try:
+                    import shutil
+                    shutil.copy2(path, new_env)
+                    typer.secho(f"Copied {path} to {new_env} as .env was missing.", fg=typer.colors.YELLOW)
+                    env_file = new_env
+                    break
+                except Exception as e:
+                    typer.secho(f"Error copying {path} to {new_env}: {e}", fg=typer.colors.RED, err=True)
+                    raise typer.Exit(1)
+
+    if env_file is None:
+        typer.secho(f"Error: No .env or .env.example file found in {project_dir}, {current_dir}, or {current_dir.parent}", fg=typer.colors.RED, err=True)
         raise typer.Exit(1)
 
     try:
@@ -139,12 +300,12 @@ def load_env(project_dir: Path, current_dir: Path) -> dict[str, str]:
         typer.secho(f"Warning: Failed to load .env file at {env_file}: {e}", fg=typer.colors.YELLOW)
 
     env["GEOSAVE_PROJECT_DIR"] = str(project_dir.resolve())
-    
+
     if "PYTHONPATH" in env:
         env["PYTHONPATH"] = f"{project_dir.resolve()}:{env['PYTHONPATH']}"
     else:
         env["PYTHONPATH"] = str(project_dir.resolve())
-    
+
     return env
 
 def execute_script(project_name: str, task_name: str, script_path: Path, project_dir: Path, current_dir: Path, run_args: list[str], operation: str = "pipeline"):
@@ -172,15 +333,16 @@ from collections import defaultdict
 import toml
 import typer
 
+def generate_project(dir: str, name: str, task: str, method: str, models: list[str], description: str, template_dir: Path) -> bool:
+    project_template_dir = template_dir / task.replace(" ", "_") / method.replace(" ", "_")
 
-def generate_project(dir: str, name: str, task: str, method: str, models: list[str], description: str) -> bool:
-    
-    template_dir = Path(__file__).parent.parent.parent / "templates" / task.replace(" ", "_") / method.replace(" ", "_")
-    
     try:
-        if copier(str(template_dir), os.path.join(dir, name)):
+        if copier(str(project_template_dir), os.path.join(dir, name)):
             os.makedirs(os.path.join(dir, name, "data"), exist_ok=True)
             os.makedirs(os.path.join(dir, name, "artifacts"), exist_ok=True)
+            main_template_path = os.path.join(template_dir, "main_template.py")
+            main_py_path = os.path.join(dir, name, "main.py")
+            copier(str(main_template_path), main_py_path)
         else:
             return False
 
@@ -194,7 +356,7 @@ def generate_project(dir: str, name: str, task: str, method: str, models: list[s
         typer.secho(f"An error occurred during copying: {e}", fg=typer.colors.RED, err=True)
         return False
 
-    env_path = Path(__file__).parent.parent.parent / "templates" / ".env"
+    env_path = template_dir / ".env"
     if env_path.exists():
         copier(str(env_path), os.path.join(dir, name, ".env"))
 
@@ -318,26 +480,22 @@ from pathlib import Path
 import typer
 import toml
 
-template_path = Path(__file__).parent.parent.parent / "templates"
 
-tasks: dict[str, list[str]] = {}
+def get_tasks(template_path: Path) -> dict[str, list[str]]:
+    tasks: dict[str, list[str]] = {}
+    folders = [p for p in template_path.iterdir() if p.is_dir() and p.name != "__pycache__"]
+    for folder in folders:
+        methods = [p for p in folder.iterdir() if p.is_dir() and p.name != "__pycache__"]
+        task_name = folder.name.replace("_", " ").lower()
+        method_names = []
+        for method in methods:
+            method_name = method.name.replace("_", " ").lower()
+            method_names.append(method_name)
+        tasks[task_name] = method_names
+    return tasks
 
-folders = [p for p in template_path.iterdir() if p.is_dir() and p.name != "__pycache__"]
 
-for folder in folders:
-    methods = [p for p in folder.iterdir() if p.is_dir() and p.name != "__pycache__"]
-    task_name = folder.name.replace("_", " ").lower()
-
-    method_names = []
-    for method in methods:
-        method_name = method.name.replace("_", " ").lower()
-        method_names.append(method_name)
-
-    tasks[task_name] = method_names
-
-package_path = Path(__file__).parent.parent.parent / "models"
-
-def get_model_list(task: str, method: str):
+def get_model_list(task: str, method: str, package_path: Path) -> list[str]:
     class_names = []
     for file in package_path.glob("**/build.py"):
         if file.name == "__init__.py":
@@ -424,128 +582,19 @@ def find_script(directory: Path, script_names: str | list[str]) -> Path:
     raise typer.Exit(1)
 </file>
 
-<file path="src/geosave_engine/templates/semantic_segmentation/supervised/scripts/inference.py">
-import argparse
-import os
-from pathlib import Path
-from src.data_module import test
-
-file_path = Path(__file__).resolve().parent.parent
-os.chdir(file_path)  # Ensure the script runs in its own directory for relative imports
-
-
-
-def infer(config: str):
-    """Run inference with the specified configuration."""
-    # Placeholder for inference logic
-    print(f"Running inference with config: {config}")
-    test()
-
-if __name__ == "__main__":
-    parser = argparse.ArgumentParser(description="Run inference with the specified configuration.")
-    parser.add_argument("--model", required=True, help="Path to the configuration file.")
-    args = parser.parse_args()
-    infer(args.model)
-</file>
-
-<file path="src/geosave_engine/templates/semantic_segmentation/supervised/scripts/ingest.py">
-import os
-from pathlib import Path
-
-file_path = Path(__file__).resolve().parent.parent
-os.chdir(file_path)  # Ensure the script runs in its own directory for relative imports
-</file>
-
-<file path="src/geosave_engine/templates/semantic_segmentation/supervised/scripts/preprocess.py">
-import os
-from pathlib import Path
-
-file_path = Path(__file__).resolve().parent.parent
-os.chdir(file_path)  # Ensure the script runs in its own directory for relative imports
-</file>
-
-<file path="src/geosave_engine/templates/semantic_segmentation/supervised/scripts/test.py">
-import argparse
-import os
-from pathlib import Path
-
-file_path = Path(__file__).resolve().parent.parent
-os.chdir(file_path)  # Ensure the script runs in its own directory for relative imports
-
-
-def test(config: str):
-    """Run testing with the specified configuration."""
-    # Placeholder for testing logic
-    print(f"Running test with config: {config}")
-
-if __name__ == "__main__":
-    parser = argparse.ArgumentParser(description="Run testing with the specified configuration.")
-    parser.add_argument("--model", required=True, help="Path to the configuration file.")
-    args = parser.parse_args()
-    test(args.model)
-</file>
-
-<file path="src/geosave_engine/templates/semantic_segmentation/supervised/scripts/train.py">
-import argparse
-import os
-from pathlib import Path
-
-file_path = Path(__file__).resolve().parent.parent
-os.chdir(file_path)  # Ensure the script runs in its own directory for relative imports
-
-
-def train(config: str):
-    """Train a model using the specified configuration."""
-    # Placeholder for training logic
-    print(f"Training model with config: {config}")
-
-if __name__ == "__main__":
-    parser = argparse.ArgumentParser(description="Run training with the specified configuration.")
-    parser.add_argument("--config", required=True, help="Path to the configuration file.")
-    args = parser.parse_args()
-    train(args.config)
-</file>
-
-<file path="src/geosave_engine/templates/semantic_segmentation/supervised/src/callbacks.py">
-
-</file>
-
-<file path="src/geosave_engine/templates/semantic_segmentation/supervised/src/metrics.py">
-
-</file>
-
-<file path="AGENTS.md">
-# Rule
-
-1. Always use Context7 when I need library/API documentation, code generation, setup or configuration steps without me having to explicitly ask.
-</file>
-
-<file path="src/geosave_engine/api/cdse.py">
-# CDSE API Client, for downloading assets from stac bucket
-</file>
-
-<file path="src/geosave_engine/cli/main.py">
+<file path="src/geosave_engine/cli/build.py">
 from __future__ import annotations
 import questionary
 import os
 import typer
 from pathlib import Path
 
-from geosave_engine.cli.utils.parse import validate_workspace, get_model_list, tasks
+from geosave_engine.cli.utils.parse import get_model_list, get_tasks
 from geosave_engine.cli.utils.generate import generate_project
-from geosave_engine.cli.utils.search import find_configs, find_artifact_parents, find_script
-from geosave_engine.cli.utils.execute import execute_script
 
+MODELS_PACKAGE_PATH = Path(__file__).parent.parent / "models"
 
-app = typer.Typer(help="GeoSave Engine CLI")
-CURRENT_DIR = Path.cwd()
-
-
-@app.command()
-def build(
-    name: str | None = typer.Argument(None, help="The name of the new GeoSave project to create"),
-    dir: str = typer.Option(str(CURRENT_DIR), "--dir", "-d", help="The parent directory where the project will be created")
-):
+def build_project(name, dir: str, template_dir):
     """
     Build a new GeoSave project workspace.
     
@@ -553,8 +602,11 @@ def build(
     a training method, and the specific models you want to use. It copies the necessary 
     templates and generates a ready-to-use workspace with a tracking `geosave.toml` file.
     """
+
     typer.secho("Building the project...", fg=typer.colors.CYAN)
-    
+
+    tasks = get_tasks(template_dir)
+
     if name is None:
         name = questionary.text(
             "Enter the name of the build:",
@@ -567,10 +619,10 @@ def build(
         "Select the AI task:",
         choices=[t for t in tasks]
     ).ask()
-    
+
     if not task:
         raise typer.Exit()
-    
+
     methods = tasks.get(task)
     if not methods:
         typer.secho(f"Error: No methods/templates found for the task '{task}'.", fg=typer.colors.RED, err=True)
@@ -585,7 +637,7 @@ def build(
         typer.secho(f"Error: Method '{method}' does not exist for task '{task}'.", fg=typer.colors.RED, err=True)
         raise typer.Exit(1)
     
-    model_choices = get_model_list(task, method)
+    model_choices = get_model_list(task, method, MODELS_PACKAGE_PATH)
 
     if not model_choices:
         typer.secho("Error: No models found for the selected task and method.", fg=typer.colors.RED, err=True)
@@ -611,7 +663,7 @@ def build(
     if description is None:
         raise typer.Exit()
 
-    if generate_project(dir, name, task, method, models, description):
+    if generate_project(dir, name, task, method, models, description, template_dir):
         # Inject selected model into config file (pick the first model)
         config_path = Path(dir) / name / "configs" / "default.yaml"
         if config_path.exists():
@@ -630,201 +682,10 @@ def build(
             except Exception as e:
                 typer.secho(f"Warning: Could not update config file with selected model: {e}", fg=typer.colors.YELLOW)
         typer.secho(f"Project '{name}' created successfully at {os.path.join(dir, name)}", fg=typer.colors.GREEN)
+</file>
 
-def _get_config_args(project_dir: Path, config: str | None) -> list[str]:
-    if config:
-        return ["--config", config]
-        
-    config_files = find_configs(project_dir)
-    if config_files:
-        choices = [questionary.Choice(f.name, value=str(f.resolve())) for f in config_files]
-        selected = questionary.select("Select the configuration file:", choices=choices).ask()
-        if selected:
-            return ["--config", selected]
-        raise typer.Exit(1)
-        
-    typer.secho(f"Error: No .yaml or .yml configuration files found in '{project_dir / 'configs'}'.", fg=typer.colors.RED, err=True)
-    raise typer.Exit(1)
+<file path="src/geosave_engine/cli/upload.py">
 
-def _get_artifacts_args(project_dir: Path, artifacts: str | None) -> list[str]:
-    if artifacts:
-        return ["--model", artifacts]
-        
-    artifact_dirs = find_artifact_parents(project_dir)
-    if artifact_dirs:
-        choices = [questionary.Choice(d.name, value=str(d.resolve())) for d in artifact_dirs]
-        selected = questionary.select("Select the model artifacts containing config:", choices=choices).ask()
-        if selected:
-            return ["--model", selected]
-        raise typer.Exit(1)
-        
-    typer.secho(f"Error: No valid artifact directories containing config files found in '{project_dir / 'artifacts'}'.", fg=typer.colors.RED, err=True)
-    raise typer.Exit(1)
-
-@app.command(context_settings={"allow_extra_args": True, "ignore_unknown_options": True})
-def train(
-    ctx: typer.Context,
-    project_dir: Path = typer.Argument(CURRENT_DIR, help="Path to the GeoSave project directory (containing geosave.toml)"),
-    config: str | None = typer.Option(None, "--config", "-c", help="Path to the configuration file (e.g., config.yml) used for training")
-):
-    """
-    Train models in a GeoSave workspace.
-    
-    Executes the training pipeline inside the provided workspace. If no `--config` is provided, 
-    the command will scan the workspace folder for `.yaml` or `.yml` configuration files and 
-    prompt you to select one interactively.
-    """
-    workspace_config = validate_workspace(project_dir)
-        
-    project_name = workspace_config.get("project_name", "Unknown Project")
-    if isinstance(project_name, tuple):
-        project_name = project_name[0]
-        
-    typer.secho(f"Found GeoSave project workspace: '{project_name}'", fg=typer.colors.CYAN)
-    
-    train_script = find_script(project_dir, "train.py")
-        
-    run_args = _get_config_args(project_dir, config)
-    run_args.extend(ctx.args)
-    
-    execute_script(
-        project_name=project_name,
-        task_name=workspace_config.get("task", ""),
-        script_path=train_script,
-        project_dir=project_dir,
-        current_dir=CURRENT_DIR,
-        run_args=run_args,
-        operation="training"
-    )
-    
-
-@app.command(context_settings={"allow_extra_args": True, "ignore_unknown_options": True})
-def test(
-    ctx: typer.Context,
-    project_dir: Path = typer.Argument(CURRENT_DIR, help="Path to the GeoSave project directory (containing geosave.toml)"),
-    artifacts: str | None = typer.Option(None, "--artifacts", "-a", help="Path to a specific model artifacts directory to evaluate against")
-):
-    """
-    Test models evaluated under a GeoSave pipeline.
-    
-    This executes the testing logic using your generated `train.py test` script. 
-    It requires selecting an artifact directory inside `artifacts/` that contains 
-    saved model checkpoints and configuration files. If `--artifacts` isn't found, 
-    the CLI prompts you interactively.
-    """
-    workspace_config = validate_workspace(project_dir)
-    
-    test_script = find_script(project_dir, "test.py")
-        
-    run_args = _get_artifacts_args(project_dir, artifacts)
-    run_args.extend(ctx.args)
-    
-    execute_script(
-        project_name=workspace_config.get("project_name", "Unknown"),
-        task_name=workspace_config.get("task", ""),
-        script_path=test_script,
-        project_dir=project_dir,
-        current_dir=CURRENT_DIR,
-        run_args=run_args,
-        operation="test"
-    )
-
-
-@app.command(context_settings={"allow_extra_args": True, "ignore_unknown_options": True})
-def infer(
-    ctx: typer.Context,
-    project_dir: Path = typer.Argument(CURRENT_DIR, help="Path to the GeoSave project directory (containing geosave.toml)"),
-    artifacts: str | None = typer.Option(None, "--artifacts", "-a", help="Path to the trained model artifacts directory used for predictions")
-):
-    """
-    Run predictions inside a GeoSave workspace.
-    
-    This command invokes `inference.py` inside the project folder. It requires specifying 
-    which artifact folder (containing your trained weights and config metadata) to use 
-    to properly reconstruct the model before testing your data.
-    """
-    workspace_config = validate_workspace(project_dir)
-    
-    infer_script = find_script(project_dir, ["infer.py", "inference.py"])
-    
-    run_args = _get_artifacts_args(project_dir, artifacts)
-    run_args.extend(ctx.args)
-    
-    execute_script(
-        project_name=workspace_config.get("project_name", "Unknown"),
-        task_name=workspace_config.get("task", ""),
-        script_path=infer_script,
-        project_dir=project_dir,
-        current_dir=CURRENT_DIR,
-        run_args=run_args,
-        operation="inference"
-    )
-
-
-@app.command(context_settings={"allow_extra_args": True, "ignore_unknown_options": True})
-def ingest(
-    ctx: typer.Context,
-    project_dir: Path = typer.Argument(CURRENT_DIR, help="Path to the GeoSave project directory (containing geosave.toml)")
-):
-    """
-    Run data ingestion in a GeoSave workspace.
-    
-    Executes the ingestion pipeline. You can pass arbitrary flags to the script.
-    """
-    workspace_config = validate_workspace(project_dir)
-        
-    project_name = workspace_config.get("project_name", "Unknown Project")
-    if isinstance(project_name, tuple):
-        project_name = project_name[0]
-        
-    typer.secho(f"Found GeoSave project workspace: '{project_name}'", fg=typer.colors.CYAN)
-    
-    ingest_script = find_script(project_dir, "ingest.py")
-        
-    execute_script(
-        project_name=project_name,
-        task_name=workspace_config.get("task", ""),
-        script_path=ingest_script,
-        project_dir=project_dir,
-        current_dir=CURRENT_DIR,
-        run_args=ctx.args,
-        operation="ingestion"
-    )
-
-
-@app.command(context_settings={"allow_extra_args": True, "ignore_unknown_options": True})
-def preprocess(
-    ctx: typer.Context,
-    project_dir: Path = typer.Argument(CURRENT_DIR, help="Path to the GeoSave project directory (containing geosave.toml)")
-):
-    """
-    Run data preprocessing in a GeoSave workspace.
-    
-    Executes the preprocessing pipeline. You can pass arbitrary flags to the script.
-    """
-    workspace_config = validate_workspace(project_dir)
-        
-    project_name = workspace_config.get("project_name", "Unknown Project")
-    if isinstance(project_name, tuple):
-        project_name = project_name[0]
-        
-    typer.secho(f"Found GeoSave project workspace: '{project_name}'", fg=typer.colors.CYAN)
-    
-    preprocess_script = find_script(project_dir, "preprocess.py")
-        
-    execute_script(
-        project_name=project_name,
-        task_name=workspace_config.get("task", ""),
-        script_path=preprocess_script,
-        project_dir=project_dir,
-        current_dir=CURRENT_DIR,
-        run_args=ctx.args,
-        operation="preprocessing"
-    )
-
-
-if __name__ == "__main__":
-    app()
 </file>
 
 <file path="src/geosave_engine/core/model.py">
@@ -2223,6 +2084,405 @@ class FeatureFusionBlock(nn.Module):
         return output
 </file>
 
+<file path="src/geosave_engine/models/smp/build.py">
+import segmentation_models_pytorch as smp
+from geosave_engine.core.model import BaseGeosaveModel
+
+
+class Unet(BaseGeosaveModel):
+    task = {
+        "semantic segmentation": ["supervised"],
+        "pixelwise regression": []
+        }
+    model = smp.Unet
+
+class UnetPlusPlus(BaseGeosaveModel):
+    task = {
+        "semantic segmentation": [],
+        "pixelwise regression": []
+        }
+    model = smp.UnetPlusPlus
+
+class DeepLabV3(BaseGeosaveModel):
+    task = {
+        "semantic segmentation": []
+        }
+    model = smp.DeepLabV3
+
+class DeepLabV3Plus(BaseGeosaveModel):
+    task = {
+        "semantic segmentation": []
+        }
+    model = smp.DeepLabV3Plus
+
+class FPN(BaseGeosaveModel):
+    task = {
+        "semantic segmentation": []
+        }
+    model = smp.FPN
+
+class PSPNet(BaseGeosaveModel):
+    task = {
+        "semantic segmentation": []
+        }
+    model = smp.PSPNet
+
+class PAN(BaseGeosaveModel):
+    task = {
+        "semantic segmentation": []
+        }
+    model = smp.PAN
+
+class Linknet(BaseGeosaveModel):
+    task = {
+        "semantic segmentation": []
+        }
+    model = smp.Linknet
+
+class MAnet(BaseGeosaveModel):
+    task = {
+        "semantic segmentation": []
+        }
+    model = smp.MAnet
+</file>
+
+<file path="src/geosave_engine/__about__.py">
+__version__ = "0.1.0"
+</file>
+
+<file path="src/geosave_engine/__init__.py">
+
+</file>
+
+<file path=".python-version">
+3.12.10
+</file>
+
+<file path="AGENTS.md">
+# Rule
+
+1. Always use Context7 when I need library/API documentation, code generation, setup or configuration steps without me having to explicitly ask.
+</file>
+
+<file path="README.md">
+# geosave-engine
+A backend engine for remote sensing task, full pipeline from data gathering, training, and serving
+</file>
+
+<file path="src/geosave_engine/cli/main.py">
+from __future__ import annotations
+import questionary
+import typer
+from pathlib import Path
+
+from geosave_engine.cli.utils.parse import validate_workspace
+from geosave_engine.cli.utils.search import (
+    find_configs,
+    find_artifact_parents,
+    find_script,
+)
+from geosave_engine.cli.utils.execute import execute_script
+from geosave_engine.cli.build import build_project
+from geosave_engine.api.upload import upload_model
+
+app = typer.Typer(help="GeoSave Engine CLI")
+CURRENT_DIR = Path.cwd()
+TEMPLATE_DIR = Path(__file__).parent.parent.parent / "templates"
+
+@app.command()
+def build(
+    name: str | None = typer.Argument(
+        None, help="The name of the new GeoSave project to create"
+    ),
+    dir: str = typer.Option(
+        str(CURRENT_DIR),
+        "--dir",
+        "-d",
+        help="The parent directory where the project will be created",
+    ),
+):
+    """
+    Build a new GeoSave project workspace.
+
+    This command interactively scaffolds a new project by asking you to select an AI task,
+    a training method, and the specific models you want to use. It copies the necessary
+    templates and generates a ready-to-use workspace with a tracking `geosave.toml` file.
+    """
+    build_project(name, dir, TEMPLATE_DIR)
+
+
+@app.command(
+    context_settings={"allow_extra_args": True, "ignore_unknown_options": True}
+)
+def fit(
+    ctx: typer.Context,
+    project_dir: Path = typer.Argument(
+        CURRENT_DIR,
+        help="Path to the GeoSave project directory (containing geosave.toml)",
+    ),
+    config: str | None = typer.Option(
+        None,
+        "--config",
+        "-c",
+        help="Path to the configuration file (e.g., config.yml) used for training",
+    ),
+):
+    """
+    Train models in a GeoSave workspace.
+
+    Executes the training pipeline inside the provided workspace. If no `--config` is provided,
+    the command will scan the workspace folder for `.yaml` or `.yml` configuration files and
+    prompt you to select one interactively.
+    """
+    workspace_config = _validate_workspace(project_dir)
+
+    train_script = find_script(project_dir, "main.py")
+
+    run_args = ['fit']
+    run_args.extend(_get_config_args(project_dir, config))
+    run_args.extend(ctx.args)
+
+    execute_script(
+        project_name=workspace_config.get("project_name", "Unknown"),
+        task_name=workspace_config.get("task", ""),
+        script_path=train_script,
+        project_dir=project_dir,
+        current_dir=CURRENT_DIR,
+        run_args=run_args,
+        operation="training",
+    )
+
+
+@app.command(
+    context_settings={"allow_extra_args": True, "ignore_unknown_options": True}
+)
+def test(
+    ctx: typer.Context,
+    project_dir: Path = typer.Argument(
+        CURRENT_DIR,
+        help="Path to the GeoSave project directory (containing geosave.toml)",
+    ),
+    artifacts: str | None = typer.Option(
+        None,
+        "--artifacts",
+        "-a",
+        help="Path to a specific model artifacts directory to evaluate against",
+    ),
+):
+    """
+    Test models evaluated under a GeoSave pipeline.
+
+    This executes the testing logic using your generated `train.py test` script.
+    It requires selecting an artifact directory inside `artifacts/` that contains
+    saved model checkpoints and configuration files. If `--artifacts` isn't found,
+    the CLI prompts you interactively.
+    """
+    workspace_config = _validate_workspace(project_dir)
+
+    test_script = find_script(project_dir, "main.py")
+
+    run_args = ['test']
+    run_args.extend(_get_artifacts_args(project_dir, artifacts))
+    run_args.extend(ctx.args)
+
+    execute_script(
+        project_name=workspace_config.get("project_name", "Unknown"),
+        task_name=workspace_config.get("task", ""),
+        script_path=test_script,
+        project_dir=project_dir,
+        current_dir=CURRENT_DIR,
+        run_args=run_args,
+        operation="test",
+    )
+
+
+@app.command(
+    context_settings={"allow_extra_args": True, "ignore_unknown_options": True}
+)
+def predict(
+    ctx: typer.Context,
+    project_dir: Path = typer.Argument(
+        CURRENT_DIR,
+        help="Path to the GeoSave project directory (containing geosave.toml)",
+    ),
+    artifacts: str | None = typer.Option(
+        None,
+        "--artifacts",
+        "-a",
+        help="Path to the trained model artifacts directory used for predictions",
+    ),
+):
+    """
+    Run predictions inside a GeoSave workspace.
+
+    This command invokes `inference.py` inside the project folder. It requires specifying
+    which artifact folder (containing your trained weights and config metadata) to use
+    to properly reconstruct the model before testing your data.
+    """
+    workspace_config = _validate_workspace(project_dir)
+
+    infer_script = find_script(project_dir, "main.py")
+
+    run_args = ['predict']
+    run_args.extend(_get_artifacts_args(project_dir, artifacts))
+    run_args.extend(ctx.args)
+
+    execute_script(
+        project_name=workspace_config.get("project_name", "Unknown"),
+        task_name=workspace_config.get("task", ""),
+        script_path=infer_script,
+        project_dir=project_dir,
+        current_dir=CURRENT_DIR,
+        run_args=run_args,
+        operation="inference",
+    )
+
+
+@app.command(
+    context_settings={"allow_extra_args": True, "ignore_unknown_options": True}
+)
+def ingest(
+    ctx: typer.Context,
+    project_dir: Path = typer.Argument(
+        CURRENT_DIR,
+        help="Path to the GeoSave project directory (containing geosave.toml)",
+    ),
+):
+    """
+    Run data ingestion in a GeoSave workspace.
+
+    Executes the ingestion pipeline. You can pass arbitrary flags to the script.
+    """
+    workspace_config = _validate_workspace(project_dir)
+
+    ingest_script = find_script(project_dir, "ingest.py")
+
+    execute_script(
+        project_name=workspace_config.get("project_name", "Unknown"),
+        task_name=workspace_config.get("task", ""),
+        script_path=ingest_script,
+        project_dir=project_dir,
+        current_dir=CURRENT_DIR,
+        run_args=ctx.args,
+        operation="ingestion",
+    )
+
+
+@app.command(
+    context_settings={"allow_extra_args": True, "ignore_unknown_options": True}
+)
+def preprocess(
+    ctx: typer.Context,
+    project_dir: Path = typer.Argument(
+        CURRENT_DIR,
+        help="Path to the GeoSave project directory (containing geosave.toml)",
+    ),
+):
+    """
+    Run data preprocessing in a GeoSave workspace.
+
+    Executes the preprocessing pipeline. You can pass arbitrary flags to the script.
+    """
+    workspace_config = _validate_workspace(project_dir)
+
+    preprocess_script = find_script(project_dir, "preprocess.py")
+
+    execute_script(
+        project_name=workspace_config.get("project_name", "Unknown"),
+        task_name=workspace_config.get("task", ""),
+        script_path=preprocess_script,
+        project_dir=project_dir,
+        current_dir=CURRENT_DIR,
+        run_args=ctx.args,
+        operation="preprocessing",
+    )
+
+
+@app.command()
+def upload(
+    ctx: typer.Context,
+    project_dir: Path = typer.Argument(
+        CURRENT_DIR,
+        help="Path to the GeoSave project directory (containing geosave.toml)",
+    ),
+):
+    """
+    Upload a model to Hugging Face Hub.
+
+    This command looks for an `upload.py` script in the current directory and executes it.
+    You can pass arbitrary flags to the upload script.
+    """
+    workspace_config = _validate_workspace(CURRENT_DIR)
+
+    upload_model()
+
+
+def _validate_workspace(project_dir: Path) -> dict:
+    workspace_config = validate_workspace(project_dir)
+
+    project_name = workspace_config.get("project_name", "Unknown Project")
+    if isinstance(project_name, tuple):
+        project_name = project_name[0]
+
+    typer.secho(
+        f"Found GeoSave project workspace: '{project_name}'", fg=typer.colors.CYAN
+    )
+
+    return workspace_config
+
+
+def _get_config_args(project_dir: Path, config: str | None) -> list[str]:
+    if config:
+        return ["--config", config]
+
+    config_files = find_configs(project_dir)
+    if config_files:
+        choices = [
+            questionary.Choice(f.name, value=str(f.resolve())) for f in config_files
+        ]
+        selected = questionary.select(
+            "Select the configuration file:", choices=choices
+        ).ask()
+        if selected:
+            return ["--config", selected]
+        raise typer.Exit(1)
+
+    typer.secho(
+        f"Error: No .yaml or .yml configuration files found in '{project_dir / 'configs'}'.",
+        fg=typer.colors.RED,
+        err=True,
+    )
+    raise typer.Exit(1)
+
+
+def _get_artifacts_args(project_dir: Path, artifacts: str | None) -> list[str]:
+    if artifacts:
+        return ["--model", artifacts]
+
+    artifact_dirs = find_artifact_parents(project_dir)
+    if artifact_dirs:
+        choices = [
+            questionary.Choice(d.name, value=str(d.resolve())) for d in artifact_dirs
+        ]
+        selected = questionary.select(
+            "Select the model artifacts containing config:", choices=choices
+        ).ask()
+        if selected:
+            return ["--model", selected]
+        raise typer.Exit(1)
+
+    typer.secho(
+        f"Error: No valid artifact directories containing config files found in '{project_dir / 'artifacts'}'.",
+        fg=typer.colors.RED,
+        err=True,
+    )
+    raise typer.Exit(1)
+
+
+if __name__ == "__main__":
+    app()
+</file>
+
 <file path="src/geosave_engine/models/dpt/build.py">
 # Use cache directory for pretrained weights
 # Works for both dev and pip-installed versions
@@ -2296,125 +2556,6 @@ class DensePredictionTransformer(BaseGeosaveModel):
         "semantic segmentation": []
         }
     model = build_dpt
-</file>
-
-<file path="src/geosave_engine/models/smp/build.py">
-import segmentation_models_pytorch as smp
-from geosave_engine.core.model import BaseGeosaveModel
-
-
-class Unet(BaseGeosaveModel):
-    task = {
-        "semantic segmentation": ["supervised"],
-        "pixelwise regression": []
-        }
-    model = smp.Unet
-
-class UnetPlusPlus(BaseGeosaveModel):
-    task = {
-        "semantic segmentation": [],
-        "pixelwise regression": []
-        }
-    model = smp.UnetPlusPlus
-
-class DeepLabV3(BaseGeosaveModel):
-    task = {
-        "semantic segmentation": []
-        }
-    model = smp.DeepLabV3
-
-class DeepLabV3Plus(BaseGeosaveModel):
-    task = {
-        "semantic segmentation": []
-        }
-    model = smp.DeepLabV3Plus
-
-class FPN(BaseGeosaveModel):
-    task = {
-        "semantic segmentation": []
-        }
-    model = smp.FPN
-
-class PSPNet(BaseGeosaveModel):
-    task = {
-        "semantic segmentation": []
-        }
-    model = smp.PSPNet
-
-class PAN(BaseGeosaveModel):
-    task = {
-        "semantic segmentation": []
-        }
-    model = smp.PAN
-
-class Linknet(BaseGeosaveModel):
-    task = {
-        "semantic segmentation": []
-        }
-    model = smp.Linknet
-
-class MAnet(BaseGeosaveModel):
-    task = {
-        "semantic segmentation": []
-        }
-    model = smp.MAnet
-</file>
-
-<file path="src/geosave_engine/templates/semantic_segmentation/supervised/configs/default.yaml">
-model:
-  name: UNet
-  backbone: resnet34
-  pretrained: true
-  num_classes: 5
-  loss: cross_entropy
-</file>
-
-<file path="src/geosave_engine/templates/semantic_segmentation/supervised/src/data_ingest.py">
-
-</file>
-
-<file path="src/geosave_engine/templates/semantic_segmentation/supervised/src/data_module.py">
-def test():
-    print("Running test")
-</file>
-
-<file path="src/geosave_engine/templates/semantic_segmentation/supervised/src/data_transform.py">
-
-</file>
-
-<file path="src/geosave_engine/templates/semantic_segmentation/supervised/src/lightning_module.py">
-
-</file>
-
-<file path="src/geosave_engine/templates/semantic_segmentation/supervised/exploratory_data_analysis.ipynb">
-
-</file>
-
-<file path="src/geosave_engine/templates/semantic_segmentation/supervised/README.md">
-
-</file>
-
-<file path="src/geosave_engine/utils/__init__.py">
-__all__=[
-    "get_model_list",
-]
-</file>
-
-<file path="src/geosave_engine/__about__.py">
-__version__ = "0.1.0"
-</file>
-
-<file path="src/geosave_engine/__init__.py">
-
-</file>
-
-<file path=".python-version">
-3.12.10
-</file>
-
-<file path="README.md">
-# geosave-engine
-A backend engine for remote sensing task, full pipeline from data gathering, training, and serving
 </file>
 
 <file path=".env.example">
@@ -2762,6 +2903,12 @@ path = "src/geosave_engine/__about__.py"
 extra-dependencies = [
   "mypy>=1.0.0",
 ]
+
+[tool.hatch.build]
+include = [
+  "src/templates/**",
+]
+
 [tool.hatch.envs.types.scripts]
 check = "mypy --install-types --non-interactive {args:src/geosave_engine tests}"
 

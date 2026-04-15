@@ -7,12 +7,9 @@ from collections import defaultdict
 import toml
 import typer
 
-
-def generate_project(dir: str, name: str, task: str, method: str, models: list[str], description: str) -> bool:
-    
-    template_dir = Path(__file__).parent.parent.parent / "templates"
+def generate_project(dir: str, name: str, task: str, method: str, models: list[str], description: str, template_dir: Path) -> bool:
     project_template_dir = template_dir / task.replace(" ", "_") / method.replace(" ", "_")
-    
+
     try:
         if copier(str(project_template_dir), os.path.join(dir, name)):
             os.makedirs(os.path.join(dir, name, "data"), exist_ok=True)
@@ -33,7 +30,7 @@ def generate_project(dir: str, name: str, task: str, method: str, models: list[s
         typer.secho(f"An error occurred during copying: {e}", fg=typer.colors.RED, err=True)
         return False
 
-    env_path = Path(__file__).parent.parent.parent / "templates" / ".env"
+    env_path = template_dir / ".env"
     if env_path.exists():
         copier(str(env_path), os.path.join(dir, name, ".env"))
 

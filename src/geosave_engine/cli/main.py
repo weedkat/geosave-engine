@@ -1,23 +1,20 @@
 from __future__ import annotations
-import questionary
 import typer
 from pathlib import Path
 
-from geosave_engine.cli.utils.parse import validate_workspace
-from geosave_engine.cli.utils.search import (
-    find_configs,
-    find_artifact_parents,
-    find_script,
+from geosave_engine.cli.utils.search import find_script
+from geosave_engine.cli.utils.execute import execute_project_script
+from geosave_engine.cli.utils.cli_helpers import (
+    validate_workspace_with_feedback,
+    get_config_args,
+    get_artifacts_args,
 )
-from geosave_engine.cli.utils.execute import execute_script
-
 from geosave_engine.cli.build import build_project
-from geosave_engine.api.upload import upload_model
 
 
 app = typer.Typer(help="GeoSave Engine CLI")
 CURRENT_DIR = Path.cwd()
-
+TEMPLATE_DIR = Path(__file__).parent.parent.parent / "templates"
 
 @app.command()
 def build(
@@ -38,7 +35,7 @@ def build(
     a training method, and the specific models you want to use. It copies the necessary
     templates and generates a ready-to-use workspace with a tracking `geosave.toml` file.
     """
-    build_project(name, dir)
+    build_project(name, dir, TEMPLATE_DIR)
 
 
 @app.command(
@@ -64,15 +61,15 @@ def fit(
     the command will scan the workspace folder for `.yaml` or `.yml` configuration files and
     prompt you to select one interactively.
     """
-    workspace_config = _validate_workspace(project_dir)
+    workspace_config = validate_workspace_with_feedback(project_dir)
 
     train_script = find_script(project_dir, "main.py")
 
     run_args = ['fit']
-    run_args.extend(_get_config_args(project_dir, config))
+    run_args.extend(get_config_args(project_dir, config))
     run_args.extend(ctx.args)
 
-    execute_script(
+    execute_project_script(
         project_name=workspace_config.get("project_name", "Unknown"),
         task_name=workspace_config.get("task", ""),
         script_path=train_script,
@@ -107,15 +104,15 @@ def test(
     saved model checkpoints and configuration files. If `--artifacts` isn't found,
     the CLI prompts you interactively.
     """
-    workspace_config = _validate_workspace(project_dir)
+    workspace_config = validate_workspace_with_feedback(project_dir)
 
     test_script = find_script(project_dir, "main.py")
 
     run_args = ['test']
-    run_args.extend(_get_artifacts_args(project_dir, artifacts))
+    run_args.extend(get_artifacts_args(project_dir, artifacts))
     run_args.extend(ctx.args)
 
-    execute_script(
+    execute_project_script(
         project_name=workspace_config.get("project_name", "Unknown"),
         task_name=workspace_config.get("task", ""),
         script_path=test_script,
@@ -149,15 +146,15 @@ def predict(
     which artifact folder (containing your trained weights and config metadata) to use
     to properly reconstruct the model before testing your data.
     """
-    workspace_config = _validate_workspace(project_dir)
+    workspace_config = validate_workspace_with_feedback(project_dir)
 
     infer_script = find_script(project_dir, "main.py")
 
     run_args = ['predict']
-    run_args.extend(_get_artifacts_args(project_dir, artifacts))
+    run_args.extend(get_artifacts_args(project_dir, artifacts))
     run_args.extend(ctx.args)
 
-    execute_script(
+    execute_project_script(
         project_name=workspace_config.get("project_name", "Unknown"),
         task_name=workspace_config.get("task", ""),
         script_path=infer_script,
@@ -183,11 +180,11 @@ def ingest(
 
     Executes the ingestion pipeline. You can pass arbitrary flags to the script.
     """
-    workspace_config = _validate_workspace(project_dir)
+    workspace_config = validate_workspace_with_feedback(project_dir)
 
     ingest_script = find_script(project_dir, "ingest.py")
 
-    execute_script(
+    execute_project_script(
         project_name=workspace_config.get("project_name", "Unknown"),
         task_name=workspace_config.get("task", ""),
         script_path=ingest_script,
@@ -213,11 +210,11 @@ def preprocess(
 
     Executes the preprocessing pipeline. You can pass arbitrary flags to the script.
     """
-    workspace_config = _validate_workspace(project_dir)
+    workspace_config = validate_workspace_with_feedback(project_dir)
 
     preprocess_script = find_script(project_dir, "preprocess.py")
 
-    execute_script(
+    execute_project_script(
         project_name=workspace_config.get("project_name", "Unknown"),
         task_name=workspace_config.get("task", ""),
         script_path=preprocess_script,
@@ -242,71 +239,18 @@ def upload(
     This command looks for an `upload.py` script in the current directory and executes it.
     You can pass arbitrary flags to the upload script.
     """
-    workspace_config = _validate_workspace(CURRENT_DIR)
+    pass
+    # workspace_config = _validate_workspace(CURRENT_DIR)
 
-    upload_model()
-
-
-def _validate_workspace(project_dir: Path) -> dict:
-    workspace_config = validate_workspace(project_dir)
-
-    project_name = workspace_config.get("project_name", "Unknown Project")
-    if isinstance(project_name, tuple):
-        project_name = project_name[0]
-
-    typer.secho(
-        f"Found GeoSave project workspace: '{project_name}'", fg=typer.colors.CYAN
-    )
-
-    return workspace_config
+    # upload_model()
 
 
-def _get_config_args(project_dir: Path, config: str | None) -> list[str]:
-    if config:
-        return ["--config", config]
-
-    config_files = find_configs(project_dir)
-    if config_files:
-        choices = [
-            questionary.Choice(f.name, value=str(f.resolve())) for f in config_files
-        ]
-        selected = questionary.select(
-            "Select the configuration file:", choices=choices
-        ).ask()
-        if selected:
-            return ["--config", selected]
-        raise typer.Exit(1)
-
-    typer.secho(
-        f"Error: No .yaml or .yml configuration files found in '{project_dir / 'configs'}'.",
-        fg=typer.colors.RED,
-        err=True,
-    )
-    raise typer.Exit(1)
-
-
-def _get_artifacts_args(project_dir: Path, artifacts: str | None) -> list[str]:
-    if artifacts:
-        return ["--model", artifacts]
-
-    artifact_dirs = find_artifact_parents(project_dir)
-    if artifact_dirs:
-        choices = [
-            questionary.Choice(d.name, value=str(d.resolve())) for d in artifact_dirs
-        ]
-        selected = questionary.select(
-            "Select the model artifacts containing config:", choices=choices
-        ).ask()
-        if selected:
-            return ["--model", selected]
-        raise typer.Exit(1)
-
-    typer.secho(
-        f"Error: No valid artifact directories containing config files found in '{project_dir / 'artifacts'}'.",
-        fg=typer.colors.RED,
-        err=True,
-    )
-    raise typer.Exit(1)
+@app.command()
+def docs():
+    """
+    Open the GeoSave Engine documentation in your web browser.
+    """
+    # execute_script()
 
 
 if __name__ == "__main__":
