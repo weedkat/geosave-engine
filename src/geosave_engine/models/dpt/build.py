@@ -1,10 +1,11 @@
 # Use cache directory for pretrained weights
 # Works for both dev and pip-installed versions
+
 from pathlib import Path
 import os
 import torch
 from .semseg.dpt import DPT
-from geosave_engine._core.registry import Registry
+from geosave_engine.core.model import BaseGeosaveModel
     
 PRETRAINED_DIR = Path.home() / '.cache' / 'geosave' / 'pretrained'
 
@@ -49,10 +50,7 @@ def download_pretrained_dinov2(encoder, weights, pretrain_dir=PRETRAINED_DIR):
     
     return pth_path
 
-registry = Registry()
-
-@registry.register('dpt')
-def build(in_channels, nclass, encoder='dinov2_base', weights='imagenet', pretrain_dir=PRETRAINED_DIR, **kwargs):
+def build_dpt(in_channels, nclass, encoder='dinov2_base', weights='imagenet', pretrain_dir=PRETRAINED_DIR, **kwargs):
     model_cfg = dpt_encoder_map[encoder]
     
     model = DPT(**{**model_cfg, 'nclass': nclass, 'in_chans': in_channels, **kwargs})
@@ -63,6 +61,12 @@ def build(in_channels, nclass, encoder='dinov2_base', weights='imagenet', pretra
         model.backbone.load_state_dict(state_dict)
         print(f'Pretrained DINOv2 weights loaded from {pth_path}')
     else:
-        print(f'No pretrained weights, training from scratch')
+        print('No pretrained weights, training from scratch')
     
     return model
+
+class DensePredictionTransformer(BaseGeosaveModel):
+    task = {
+        "semantic segmentation": []
+        }
+    model = build_dpt

@@ -1,16 +1,59 @@
-from hatch.cli.env import env
+from __future__ import annotations
 import os
 import shutil
 import ast
 from pathlib import Path
 from collections import defaultdict
+import toml
+import typer
+
+
+def generate_project(dir: str, name: str, task: str, method: str, models: list[str], description: str) -> bool:
+    
+    template_dir = Path(__file__).parent.parent.parent / "templates"
+    project_template_dir = template_dir / task.replace(" ", "_") / method.replace(" ", "_")
+    
+    try:
+        if copier(str(project_template_dir), os.path.join(dir, name)):
+            os.makedirs(os.path.join(dir, name, "data"), exist_ok=True)
+            os.makedirs(os.path.join(dir, name, "artifacts"), exist_ok=True)
+            main_template_path = os.path.join(template_dir, "main_template.py")
+            main_py_path = os.path.join(dir, name, "main.py")
+            copier(str(main_template_path), main_py_path)
+        else:
+            return False
+
+        try:
+            generate_models_file(models, os.path.join(dir, name, "src", "model_factory.py"))
+        except Exception as e:
+            typer.secho(f"An error occurred during model file generation: {e}", fg=typer.colors.RED, err=True)
+            return False
+
+    except Exception as e:
+        typer.secho(f"An error occurred during copying: {e}", fg=typer.colors.RED, err=True)
+        return False
+
+    env_path = Path(__file__).parent.parent.parent / "templates" / ".env"
+    if env_path.exists():
+        copier(str(env_path), os.path.join(dir, name, ".env"))
+
+    with open(os.path.join(dir, name, "geosave.toml"), "w", encoding="utf-8") as f:
+        toml.dump({
+            "project_name": name,
+            "task": task,
+            "method": method,
+            "models": models,
+            "description": description
+        }, f)
+        
+    return True
 
 def generate_models_file(models: list[str], output_path: str) -> None:
     """
     Generates a Python file exporting a factory dictionary mapping model names to their classes.
     Scans the src/geosave_engine/models directory to find where the requested models are defined.
     """
-    package_path = Path(__file__).parent.parent / "models"
+    package_path = Path(__file__).parent.parent.parent / "models"
     
     # Store {"module.path.to.import": [("ModelClass", "model_key")]}
     imports_by_module = defaultdict(list)
@@ -60,7 +103,6 @@ def generate_models_file(models: list[str], output_path: str) -> None:
     
     with open(output_path, "w", encoding="utf-8") as f:
         f.write("\n".join(lines))
-        print(f"Factory file generated at: {output_path}")
 
 
 def copier(source: str, destination: str) -> bool:
@@ -80,23 +122,21 @@ def copier(source: str, destination: str) -> bool:
         raise FileNotFoundError(f"Source path '{source}' does not exist.")
 
     if os.path.exists(destination):
-        while True:
-            choice = input(f"Warning: Destination '{destination}' already exists. Overwrite? [y/N]: ").strip().lower()
-            if choice in ['y', 'yes']:
-                break
-            elif choice in ['n', 'no', '']:
-                print("Copy operation cancelled.")
-                return False
-            else:
-                print("Please enter 'y' to overwrite or 'n' to cancel.")
+        import questionary
+        choice = questionary.confirm(
+            f"Warning: Destination '{destination}' already exists. Overwrite?"
+        ).ask()
+        
+        if not choice:
+            typer.secho("Copy operation cancelled.", fg=typer.colors.YELLOW)
+            return False
 
     try:
         if os.path.isdir(source):
             shutil.copytree(source, destination, dirs_exist_ok=True)
-            print(f"Directory recursively copied from '{source}' to '{destination}'.")
+            # Not printing here to avoid noise during project build. You can log it if needed
         else:
             shutil.copy2(source, destination)
-            print(f"File copied from '{source}' to '{destination}'.")
     except IOError as e:
         raise IOError(f"Error copying from '{source}' to '{destination}': {e}")
 

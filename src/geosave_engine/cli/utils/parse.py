@@ -1,9 +1,10 @@
+from __future__ import annotations
 import ast
 from pathlib import Path
 import typer
 import toml
 
-template_path = Path(__file__).parent.parent / "templates"
+template_path = Path(__file__).parent.parent.parent / "templates"
 
 tasks: dict[str, list[str]] = {}
 
@@ -20,7 +21,7 @@ for folder in folders:
 
     tasks[task_name] = method_names
 
-package_path = Path(__file__).parent.parent / "models"
+package_path = Path(__file__).parent.parent.parent / "models"
 
 def get_model_list(task: str, method: str):
     class_names = []
@@ -59,19 +60,18 @@ def validate_workspace(project_dir: Path) -> dict:
     config_path = project_dir / "geosave.toml"
     
     if not config_path.exists():
-        typer.echo(f"Error: GeoSave workspace not found. Could not find {config_path}", err=True)
-        typer.echo("Make sure you are in a directory created by 'geosave-engine build' or pass the correct path.", err=True)
+        typer.secho(f"Error: GeoSave workspace not found. Could not find {config_path}", fg=typer.colors.RED, err=True)
+        typer.secho("Make sure you are in a directory created by 'geosave-engine build' or pass the correct path.", fg=typer.colors.YELLOW, err=True)
         raise typer.Exit(1)
         
     try:
         with open(config_path, "r", encoding="utf-8") as f:
             config = toml.load(f)
     except Exception as e:
-        typer.echo(f"Error reading geosave.toml: {e}", err=True)
+        typer.secho(f"Error reading geosave.toml: {e}", fg=typer.colors.RED, err=True)
         raise typer.Exit(1)
-        
+            
     return config
 
 if __name__ == "__main__":
-    print(get_model_list("image segmentation", "supervised"))
-    
+    pass

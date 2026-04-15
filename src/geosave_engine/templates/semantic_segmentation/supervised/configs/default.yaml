@@ -1,0 +1,33 @@
+model:
+  name: UNet
+  backbone: resnet34
+  pretrained: true
+  num_classes: 5
+  loss: cross_entropy
+
+trainer:
+  max_epochs: 100
+  callbacks:
+    - type: ModelCheckpoint
+      monitor: val_loss
+      mode: min
+      save_top_k: 1
+    - type: EarlyStopping
+      monitor: val_loss
+      mode: min
+      patience: 10
+
+
+data:
+  train:
+    batch_size: 16
+    num_workers: 4
+    shuffle: true
+  val:
+    batch_size: 16
+    num_workers: 4
+    shuffle: false
+  test:
+    batch_size: 16
+    num_workers: 4
+    shuffle: false
