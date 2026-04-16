@@ -1,6 +1,13 @@
 import torch
 from lightning.pytorch.callbacks import Callback 
 
+class PredctionWritter(Callback):
+    pass
+
+class LiveTrainingMonitor(Callback):
+    pass
+
+
 class CalibrationCallback(Callback):
     """
     Calibrates per-class confidence thresholds to maximize metrics on the VALIDATION set.

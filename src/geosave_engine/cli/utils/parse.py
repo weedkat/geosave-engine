@@ -33,8 +33,8 @@ def get_model_list(task: str, method: str, package_path: Path) -> list[str]:
                         # Look for class assignments
                         if isinstance(item, ast.Assign):
                             for target in item.targets:
-                                # Find where variable name is "task" or "tasks"
-                                if isinstance(target, ast.Name) and target.id in {"task", "tasks"}:
+                                # Find where variable name is "tasks"
+                                if isinstance(target, ast.Name) and target.id == "tasks":
                                     # Expecting task to be a dictionary
                                     if isinstance(item.value, ast.Dict):
                                         # Iterate pairs of keys and values

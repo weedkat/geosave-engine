@@ -5,7 +5,7 @@ from typing import Literal
 
 import torch
 
-from geosave_engine.core.factory import BaseModelFactory
+from geosave_engine.core.base import BaseModel
 
 from .semseg.dpt import DPT
 
@@ -61,12 +61,11 @@ def download_pretrained_dinov2(
     return pth_path
 
 
-class DensePredictionTransformer(BaseModelFactory):
+class DensePredictionTransformer(BaseModel):
     """Dense Prediction Transformer model wrapper for semantic segmentation."""
     tasks = {
         "semantic segmentation": []
         }
-    task = tasks
     doc_links = ["https://docs.geosave.dev/models/densepredictiontransformer"]
     docs_links = doc_links
     model = DPT
@@ -82,6 +81,9 @@ class DensePredictionTransformer(BaseModelFactory):
         *args,
         **kwargs,
     ) -> DPT:
+        if not callable(getattr(cls, "model", None)):
+            raise ValueError(f"{cls.__name__}.model must be defined and callable")
+            
         if encoder not in dpt_encoder_map:
             raise ValueError(f"Unknown encoder '{encoder}'. Valid options are: {list(dpt_encoder_map.keys())}")
 

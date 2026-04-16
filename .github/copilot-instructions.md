@@ -25,3 +25,10 @@ You are working in geosave-engine, a boilerplate package for rapidly building ge
 - Keep code clean and self-documenting.
 - Add comments only for non-obvious geospatial logic.
 - Do not hallucinate dependencies, methods, or parameters.
+
+## Style
+- Uphold this paradigm
+  - Keep it simple! Stupid!
+  - You aren't gonna need it! (YAGNI)
+  - Don't repeat yourself! (DRY)
+- Follow existing code style and patterns in the repository.

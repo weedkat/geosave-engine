@@ -87,6 +87,16 @@ def _expr_to_name(node: ast.AST) -> str | None:
 	return None
 
 
+def _extract_doc_link(value: Any) -> str | None:
+	if isinstance(value, str):
+		return value
+	if isinstance(value, (list, tuple)) and value:
+		first_item = value[0]
+		if isinstance(first_item, str):
+			return first_item
+	return None
+
+
 def _collect_model_infos(models_path: Path) -> dict[str, ModelInfo]:
 	infos: dict[str, ModelInfo] = {}
 	for build_file in models_path.glob("**/build.py"):
@@ -107,7 +117,7 @@ def _collect_model_infos(models_path: Path) -> dict[str, ModelInfo]:
 					continue
 
 				target_name = stmt.targets[0].id
-				if target_name in {"task", "tasks"} and isinstance(stmt.value, ast.Dict):
+				if target_name == "tasks" and isinstance(stmt.value, ast.Dict):
 					for k, v in zip(stmt.value.keys, stmt.value.values):
 						if isinstance(k, ast.Constant) and isinstance(k.value, str):
 							methods: list[str] = []
@@ -123,13 +133,18 @@ def _collect_model_infos(models_path: Path) -> dict[str, ModelInfo]:
 				if target_name in {"doc_link", "dock_link"}:
 					if isinstance(stmt.value, ast.Constant) and isinstance(stmt.value.value, str):
 						doc_link = stmt.value.value
+					else:
+						doc_link = _extract_doc_link(ast.literal_eval(stmt.value)) if not isinstance(stmt.value, ast.Constant) else doc_link
 
 				if target_name == "doc_links":
-					if isinstance(stmt.value, ast.List):
-						for link_node in stmt.value.elts:
-							if isinstance(link_node, ast.Constant) and isinstance(link_node.value, str):
-								doc_link = link_node.value
-								break
+					try:
+						doc_link = _extract_doc_link(ast.literal_eval(stmt.value))
+					except Exception:
+						if isinstance(stmt.value, ast.List):
+							for link_node in stmt.value.elts:
+								if isinstance(link_node, ast.Constant) and isinstance(link_node.value, str):
+									doc_link = link_node.value
+									break
 
 			infos[node.name] = ModelInfo(
 				class_name=node.name,
@@ -143,7 +158,7 @@ def _collect_model_infos(models_path: Path) -> dict[str, ModelInfo]:
 	return infos
 
 
-def _collect_factory_registry(kind: str) -> dict[str, type[Any]]:
+def _collect_interface_registry(kind: str) -> dict[str, type[Any]]:
 	root = _losses_root() if kind == "loss" else _optimizers_root()
 	attr_name = "loss" if kind == "loss" else "optimizer"
 	registry: dict[str, type[Any]] = {}
@@ -220,6 +235,25 @@ def _format_annotation(annotation: Any) -> str:
 	return text
 
 
+def _extract_metadata_from_annotation(annotation: Any) -> str:
+	if annotation is inspect.Parameter.empty:
+		return ""
+
+	metadata: list[str] = []
+	args = getattr(annotation, "__metadata__", None)
+	if args:
+		metadata.extend(str(item) for item in args)
+
+	annotation_text = str(annotation)
+	if "Annotated[" in annotation_text and not metadata:
+		inner = annotation_text.split("Annotated[", maxsplit=1)[1].rstrip("]")
+		parts = [part.strip() for part in inner.split(",")]
+		if len(parts) > 1:
+			metadata.extend(parts[1:])
+
+	return "; ".join(metadata)
+
+
 def _format_default(value: Any) -> str:
 	return repr(value)
 
@@ -281,11 +315,17 @@ def _build_model_meta_table(info: ModelInfo) -> Table:
 	return build_doc_cli(model_name, description_block, tasks_block, parameters_table)
 
 
-def _build_arguments_table(signature: inspect.Signature | None, error_message: str | None = None) -> Table:
+def _build_arguments_table(
+	signature: inspect.Signature | None,
+	error_message: str | None = None,
+	exclude_names: set[str] | None = None,
+) -> Table:
 	table = Table(title="", header_style="bold bright_white")
 	table.add_column("Parameter", style="yellow")
 	table.add_column("Type", style="green")
 	table.add_column("Default / Value", style="magenta")
+	table.add_column("Metadata", style="cyan")
+	exclude_names = exclude_names or set()
 
 	if signature is None:
 		error_text = (
@@ -296,11 +336,15 @@ def _build_arguments_table(signature: inspect.Signature | None, error_message: s
 		table.add_row(
 			"args",
 			Text("-", style="white"),
+			Text("-", style="white"),
 			Text(error_text, style="yellow"),
 		)
 		return table
 
 	for param in signature.parameters.values():
+		if param.name in exclude_names:
+			continue
+
 		name = param.name
 		is_variadic = False
 		if param.kind is inspect.Parameter.VAR_POSITIONAL:
@@ -318,28 +362,39 @@ def _build_arguments_table(signature: inspect.Signature | None, error_message: s
 		else:
 			default_text = _format_default(param.default)
 
-		table.add_row(Text(name, style="yellow"), type_text, default_text)
+		metadata_text = _extract_metadata_from_annotation(param.annotation)
+
+		table.add_row(Text(name, style="yellow"), type_text, metadata_text or "-", default_text)
 
 	return table
 
 
-def _format_callable_header(factory_name: str, callable_name: str, callable_obj: Any) -> str:
-	signature = inspect.signature(callable_obj)
-	parts: list[str] = []
-	for param in signature.parameters.values():
-		if param.kind is inspect.Parameter.VAR_POSITIONAL:
-			parts.append(f"*{param.name}")
-		elif param.kind is inspect.Parameter.VAR_KEYWORD:
-			parts.append(f"**{param.name}")
-		else:
-			parts.append(param.name)
-	return f"{factory_name}.{callable_name}({', '.join(parts)})"
+def _format_mode_header(factory_name: str, mode_name: str) -> str:
+	return f'{factory_name} (mode="{mode_name}")'
 
 
 def _ast_to_text(node: ast.AST | None) -> str | None:
 	if node is None:
 		return None
 	return ast.unparse(node)
+
+
+def _ast_metadata_text(node: ast.AST | None) -> str:
+	if node is None:
+		return ""
+
+	if isinstance(node, ast.Subscript):
+		base_name = _ast_to_text(node.value)
+		if base_name and base_name.endswith("Annotated"):
+			slice_node = node.slice
+			if isinstance(slice_node, ast.Tuple):
+				metadata_parts = [
+					part
+					for part in (_ast_to_text(part_node) for part_node in slice_node.elts[1:])
+					if part
+				]
+				return "; ".join(metadata_parts)
+	return ""
 
 
 def _class_init_signature_from_file(file_path: Path, class_name: str) -> str | None:
@@ -415,11 +470,13 @@ def _build_init_arguments_table_from_file(file_path: Path, class_name: str) -> T
 	table = Table(title="", header_style="bold bright_white")
 	table.add_column("Parameter", style="yellow")
 	table.add_column("Type", style="green")
+	table.add_column("Metadata", style="cyan")
 	table.add_column("Default / Value", style="magenta")
 
 	if not file_path.exists():
 		table.add_row(
 			"args",
+			Text("-", style="white"),
 			Text("-", style="white"),
 			Text("unavailable (template file not found)", style="yellow"),
 		)
@@ -435,6 +492,7 @@ def _build_init_arguments_table_from_file(file_path: Path, class_name: str) -> T
 	if class_node is None:
 		table.add_row(
 			"args",
+			Text("-", style="white"),
 			Text("-", style="white"),
 			Text("unavailable (class not found)", style="yellow"),
 		)
@@ -452,6 +510,7 @@ def _build_init_arguments_table_from_file(file_path: Path, class_name: str) -> T
 		table.add_row(
 			"args",
 			Text("-", style="white"),
+			Text("-", style="white"),
 			Text("unavailable (__init__ not found)", style="yellow"),
 		)
 		return table
@@ -467,6 +526,7 @@ def _build_init_arguments_table_from_file(file_path: Path, class_name: str) -> T
 
 		ann = _ast_to_text(arg.annotation) or "Any"
 		type_text = _highlight_type(ann)
+		metadata_text = _ast_metadata_text(arg.annotation)
 		if idx >= default_offset:
 			default_node = defaults[idx - default_offset]
 			default_text = _ast_to_text(default_node) or "..."
@@ -474,13 +534,14 @@ def _build_init_arguments_table_from_file(file_path: Path, class_name: str) -> T
 		else:
 			default_value = Text("required", style="bright_yellow")
 
-		table.add_row(Text(arg.arg, style="yellow"), type_text, default_value)
+		table.add_row(Text(arg.arg, style="yellow"), type_text, metadata_text or "-", default_value)
 
 	if args.vararg:
 		ann = _ast_to_text(args.vararg.annotation) or "Any"
 		table.add_row(
 			Text(f"*{args.vararg.arg}", style="yellow"),
 			_highlight_type(ann),
+			_ast_metadata_text(args.vararg.annotation) or "-",
 			"-",
 		)
 
@@ -490,13 +551,19 @@ def _build_init_arguments_table_from_file(file_path: Path, class_name: str) -> T
 			default_value = Text("required", style="bright_yellow")
 		else:
 			default_value = _ast_to_text(kw_default) or "..."
-		table.add_row(Text(kw_arg.arg, style="yellow"), _highlight_type(ann), default_value)
+		table.add_row(
+			Text(kw_arg.arg, style="yellow"),
+			_highlight_type(ann),
+			_ast_metadata_text(kw_arg.annotation) or "-",
+			default_value,
+		)
 
 	if args.kwarg:
 		ann = _ast_to_text(args.kwarg.annotation) or "Any"
 		table.add_row(
 			Text(f"**{args.kwarg.arg}", style="yellow"),
 			_highlight_type(ann),
+			_ast_metadata_text(args.kwarg.annotation) or "-",
 			"-",
 		)
 
@@ -623,13 +690,13 @@ def _show_trainer_docs() -> None:
 
 def _show_registry_docs(kind: str, selected_name: str | None = None) -> None:
 	title = "Loss" if kind == "loss" else "Optimizer"
-	registry = _collect_factory_registry(kind)
+	registry = _collect_interface_registry(kind)
 
 	if not registry:
 		console.print(
 			build_doc_cli(
 				Text(title, style="bold cyan"),
-				Text("No factory classes discovered in current environment.", style="yellow"),
+				Text("No interface classes discovered in current environment.", style="yellow"),
 			)
 		)
 		return
@@ -654,14 +721,20 @@ def _show_registry_docs(kind: str, selected_name: str | None = None) -> None:
 
 	target_attr = "loss" if kind == "loss" else "optimizer"
 	target_callable = getattr(cls, target_attr)
-	target_sig_table = _build_arguments_table(inspect.signature(target_callable))
+	target_sig_table = _build_arguments_table(
+		inspect.signature(target_callable),
+		exclude_names={"model"} if kind == "optimizer" else None,
+	)
 
 	mode_rows: list[RenderableType] = []
 	for mode_name, mode_callable in _collect_mode_callables(cls):
-		mode_sig_table = _build_arguments_table(inspect.signature(mode_callable))
+		mode_sig_table = _build_arguments_table(
+			inspect.signature(mode_callable),
+			exclude_names={"model"} if kind == "optimizer" else None,
+		)
 		mode_doc = inspect.getdoc(mode_callable) or "No mode docstring available."
 		mode_doc_short = mode_doc.split("\n\n", maxsplit=1)[0]
-		mode_header = _format_callable_header(cls.__name__, mode_name, mode_callable)
+		mode_header = _format_mode_header(cls.__name__, mode_name)
 		mode_rows.extend(
 			[
 				Text(mode_header, style="bold green"),
@@ -671,7 +744,8 @@ def _show_registry_docs(kind: str, selected_name: str | None = None) -> None:
 		)
 
 	doc_links = getattr(cls, "doc_links", None)
-	doc_link_text = Text(doc_links[0], style="blue underline") if isinstance(doc_links, list) and doc_links else Text("https://docs.com", style="blue underline")
+	doc_link = _extract_doc_link(doc_links)
+	doc_link_text = Text(doc_link or "https://docs.com", style="blue underline")
 
 	console.print(
 		build_doc_cli(

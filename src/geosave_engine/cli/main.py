@@ -153,7 +153,7 @@ def predict(
 
     run_args = ['predict']
     run_args.extend(get_artifacts_args(project_dir, artifacts))
-    run_args.extend(ctx.args)
+    run_args.extend(ctx.args) # flags get passed trough
 
     execute_project_script(
         project_name=workspace_config.get("project_name", "Unknown"),
@@ -163,66 +163,6 @@ def predict(
         current_dir=CURRENT_DIR,
         run_args=run_args,
         operation="inference",
-    )
-
-
-@app.command(
-    context_settings={"allow_extra_args": True, "ignore_unknown_options": True}
-)
-def ingest(
-    ctx: typer.Context,
-    project_dir: Path = typer.Argument(
-        CURRENT_DIR,
-        help="Path to the GeoSave project directory (containing geosave.toml)",
-    ),
-):
-    """
-    Run data ingestion in a GeoSave workspace.
-
-    Executes the ingestion pipeline. You can pass arbitrary flags to the script.
-    """
-    workspace_config = validate_workspace_with_feedback(project_dir)
-
-    ingest_script = find_script(project_dir, "ingest.py")
-
-    execute_project_script(
-        project_name=workspace_config.get("project_name", "Unknown"),
-        task_name=workspace_config.get("task", ""),
-        script_path=ingest_script,
-        project_dir=project_dir,
-        current_dir=CURRENT_DIR,
-        run_args=ctx.args,
-        operation="ingestion",
-    )
-
-
-@app.command(
-    context_settings={"allow_extra_args": True, "ignore_unknown_options": True}
-)
-def preprocess(
-    ctx: typer.Context,
-    project_dir: Path = typer.Argument(
-        CURRENT_DIR,
-        help="Path to the GeoSave project directory (containing geosave.toml)",
-    ),
-):
-    """
-    Run data preprocessing in a GeoSave workspace.
-
-    Executes the preprocessing pipeline. You can pass arbitrary flags to the script.
-    """
-    workspace_config = validate_workspace_with_feedback(project_dir)
-
-    preprocess_script = find_script(project_dir, "preprocess.py")
-
-    execute_project_script(
-        project_name=workspace_config.get("project_name", "Unknown"),
-        task_name=workspace_config.get("task", ""),
-        script_path=preprocess_script,
-        project_dir=project_dir,
-        current_dir=CURRENT_DIR,
-        run_args=ctx.args,
-        operation="preprocessing",
     )
 
 

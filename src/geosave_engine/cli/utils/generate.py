@@ -29,10 +29,9 @@ def generate_project(
             return False
 
         try:
-            factory_path = os.path.join(dir, name, "src", "factories.py")
-            available_models = inject_model_factory(task, method, factory_path)
+            available_models = discover_available_models(task, method)
         except Exception as e:
-            typer.secho(f"An error occurred during factory file generation: {e}", fg=typer.colors.RED, err=True)
+            typer.secho(f"An error occurred during model discovery: {e}", fg=typer.colors.RED, err=True)
             return False
 
     except Exception as e:
@@ -49,7 +48,6 @@ def generate_project(
             "task": task,
             "method": method,
             "models": available_models,
-            "selected_model": selected_model,
             "description": description
         }, f)
         
@@ -84,7 +82,7 @@ def _collect_model_factories(package_root: Path, task: str, method: str) -> dict
                     continue
                 if len(item.targets) != 1 or not isinstance(item.targets[0], ast.Name):
                     continue
-                if item.targets[0].id not in {"task", "tasks"}:
+                if item.targets[0].id != "tasks":
                     continue
                 if not isinstance(item.value, ast.Dict):
                     continue
@@ -114,14 +112,6 @@ def _collect_model_factories(package_root: Path, task: str, method: str) -> dict
     return imports_by_module
 
 
-def _render_registry_lines(registry_name: str, registry_entries: list[tuple[str, str]]) -> list[str]:
-    lines = [f"{registry_name} = {{"]
-    for class_name, key in registry_entries:
-        lines.append(f"    '{key}': {class_name},")
-    lines.append("}")
-    return lines
-
-
 def _flatten_registry(imports_by_module: dict[str, list[tuple[str, str]]]) -> list[tuple[str, str]]:
     entries: list[tuple[str, str]] = []
     for module_name in sorted(imports_by_module.keys()):
@@ -129,104 +119,14 @@ def _flatten_registry(imports_by_module: dict[str, list[tuple[str, str]]]) -> li
     return entries
 
 
-def _build_model_registry_source(task: str, method: str, package_root: Path) -> tuple[list[str], list[str]]:
+def discover_available_models(task: str, method: str) -> list[str]:
+    package_root = Path(__file__).parent.parent.parent / "models"
     model_imports = _collect_model_factories(package_root, task, method)
     if not model_imports:
         raise ValueError(f"No model factories found for task='{task}' and method='{method}'.")
 
-    lines: list[str] = []
-    for modname in sorted(model_imports.keys()):
-        cls_names = [info[0] for info in model_imports[modname]]
-        lines.append(f"from {modname} import {', '.join(cls_names)}")
-
     model_entries = _flatten_registry(model_imports)
-    lines.extend([
-        "",
-        *_render_registry_lines("MODEL_FACTORY", model_entries),
-    ])
-
-    return lines, [key for _, key in model_entries]
-
-
-def _build_common_factory_source() -> list[str]:
-    return [
-        "_RAW_OPTIM_FACTORY = globals().get('OPTIM_FACTORY', []) or []",
-        "_RAW_LOSS_FACTORY = globals().get('LOSS_FACTORY', []) or []",
-        "",
-        "OPTIMIZER_FACTORY = {cls.__name__: cls for cls in _RAW_OPTIM_FACTORY}",
-        "LOSS_FACTORY = {cls.__name__: cls for cls in _RAW_LOSS_FACTORY}",
-        "",
-        "",
-        "def _available_methods(factory_cls):",
-        "    return sorted([name for name, value in factory_cls.__dict__.items() if isinstance(value, classmethod) and not name.startswith('_')])",
-        "",
-        "",
-        "def _resolve_factory_callable(registry, kind, name, method=None, default_method=None):",
-        "    factory_cls = registry.get(name)",
-        "    if factory_cls is None:",
-        "        raise ValueError(f\"Unknown {kind} '{name}'. Available: {', '.join(sorted(registry.keys()))}\")",
-        "    if method is not None:",
-        "        candidate = getattr(factory_cls, method, None)",
-        "        if callable(candidate):",
-        "            return candidate",
-        "        raise ValueError(f\"{kind.capitalize()} '{name}' does not support method '{method}'. Available methods: {_available_methods(factory_cls)}\")",
-        "    if default_method is not None:",
-        "        candidate = getattr(factory_cls, default_method, None)",
-        "        if callable(candidate):",
-        "            return candidate",
-        "    build_candidate = getattr(factory_cls, 'build', None)",
-        "    if callable(build_candidate):",
-        "        return build_candidate",
-        "    raise ValueError(f\"{kind.capitalize()} '{name}' has no build method. Available methods: {_available_methods(factory_cls)}\")",
-        "",
-        "",
-        "def build_loss(name, *args, method='full', **kwargs):",
-        "    factory_callable = _resolve_factory_callable(LOSS_FACTORY, 'loss', name, method=method, default_method='full')",
-        "    return factory_callable(*args, **kwargs)",
-        "",
-        "",
-        "def build_optimizer(name, *args, method='full', **kwargs):",
-        "    factory_callable = _resolve_factory_callable(OPTIMIZER_FACTORY, 'optimizer', name, method=method, default_method='full')",
-        "    return factory_callable(*args, **kwargs)",
-        "",
-    ]
-
-
-def inject_model_factory(task: str, method: str, output_path: str) -> list[str]:
-    """Append a generated factory block to the template-owned factories.py file."""
-    package_root = Path(__file__).parent.parent.parent / "models"
-    common_lines = _build_common_factory_source()
-    model_lines, model_keys = _build_model_registry_source(task, method, package_root)
-
-    with open(output_path, "r", encoding="utf-8") as f:
-        template_source = f.read()
-
-    block_start = "# ==== GEOSAVE AUTO-GENERATED FACTORY BLOCK: START ===="
-    block_end = "# ==== GEOSAVE AUTO-GENERATED FACTORY BLOCK: END ===="
-
-    rendered_base = template_source
-    if block_start in template_source:
-        rendered_base = template_source.split(block_start, maxsplit=1)[0].rstrip()
-
-    generated_lines = [
-        block_start,
-        "",
-        *common_lines,
-        *model_lines,
-        "",
-        "def build_model(name, *args, method=None, **kwargs):",
-        "    factory_callable = _resolve_factory_callable(MODEL_FACTORY, 'model', name, method=method)",
-        "    return factory_callable(*args, **kwargs)",
-        "",
-        block_end,
-    ]
-
-    rendered = rendered_base + "\n\n" + "\n".join(generated_lines) + "\n"
-
-    with open(output_path, "w", encoding="utf-8") as f:
-        f.write(rendered)
-
-    return model_keys
+    return [key for _, key in model_entries]
 
 
 def copier(source: str, destination: str) -> bool:
@@ -271,4 +171,4 @@ if __name__ == "__main__":
     # source_path = "src/geosave_engine/core"
     # destination_path = "test"
     # copier(source_path, destination_path)
-    inject_model_factory("semantic segmentation", "supervised", "factories.py")
+    print(discover_available_models("semantic segmentation", "supervised"))
