@@ -2,20 +2,19 @@ from __future__ import annotations
 import typer
 from pathlib import Path
 
-from geosave_engine.cli.utils.search import find_script
-from geosave_engine.cli.utils.execute import execute_project_script
-from geosave_engine.cli.utils.cli_helpers import (
-    validate_workspace_with_feedback,
-    get_config_args,
-    get_artifacts_args,
+from geosave_engine.cli.services.build.project_generation_service import (
+    ProjectGenerationService,
 )
-from geosave_engine.cli.build import build_project
-from geosave_engine.cli.docs import show_docs
+from geosave_engine.cli.services.build.scaffold_service import BuildScaffoldService
+from geosave_engine.cli.services.runtime.project_script_runner import ProjectScriptRunner
+from geosave_engine.cli.metadata import models_root, templates_root
+from geosave_engine.cli.services.docs.docs_generator import show_docs
 
 
 app = typer.Typer(help="GeoSave Engine CLI")
 CURRENT_DIR = Path.cwd()
-TEMPLATE_DIR = Path(__file__).parent.parent.parent / "templates"
+TEMPLATE_DIR = templates_root()
+MODELS_PACKAGE_PATH = models_root()
 
 @app.command()
 def build(
@@ -36,7 +35,18 @@ def build(
     a training method, and the specific models you want to use. It copies the necessary
     templates and generates a ready-to-use workspace with a tracking `geosave.toml` file.
     """
-    build_project(name, dir, TEMPLATE_DIR)
+    scaffold_service = BuildScaffoldService(
+        template_dir=TEMPLATE_DIR,
+        models_package_path=MODELS_PACKAGE_PATH,
+    )
+    request = scaffold_service.collect_request(name)
+    created = ProjectGenerationService.generate_project(
+        request=request,
+        output_dir=dir,
+        template_dir=TEMPLATE_DIR,
+    )
+    if not created:
+        raise typer.Exit(1)
 
 
 @app.command(
@@ -62,23 +72,8 @@ def fit(
     the command will scan the workspace folder for `.yaml` or `.yml` configuration files and
     prompt you to select one interactively.
     """
-    workspace_config = validate_workspace_with_feedback(project_dir)
-
-    train_script = find_script(project_dir, "main.py")
-
-    run_args = ['fit']
-    run_args.extend(get_config_args(project_dir, config))
-    run_args.extend(ctx.args)
-
-    execute_project_script(
-        project_name=workspace_config.get("project_name", "Unknown"),
-        task_name=workspace_config.get("task", ""),
-        script_path=train_script,
-        project_dir=project_dir,
-        current_dir=CURRENT_DIR,
-        run_args=run_args,
-        operation="training",
-    )
+    runner = ProjectScriptRunner(project_dir=project_dir, current_dir=CURRENT_DIR)
+    runner.fit(config=config, extra_args=ctx.args)
 
 
 @app.command(
@@ -105,23 +100,8 @@ def test(
     saved model checkpoints and configuration files. If `--artifacts` isn't found,
     the CLI prompts you interactively.
     """
-    workspace_config = validate_workspace_with_feedback(project_dir)
-
-    test_script = find_script(project_dir, "main.py")
-
-    run_args = ['test']
-    run_args.extend(get_artifacts_args(project_dir, artifacts))
-    run_args.extend(ctx.args)
-
-    execute_project_script(
-        project_name=workspace_config.get("project_name", "Unknown"),
-        task_name=workspace_config.get("task", ""),
-        script_path=test_script,
-        project_dir=project_dir,
-        current_dir=CURRENT_DIR,
-        run_args=run_args,
-        operation="test",
-    )
+    runner = ProjectScriptRunner(project_dir=project_dir, current_dir=CURRENT_DIR)
+    runner.test(artifacts=artifacts, extra_args=ctx.args)
 
 
 @app.command(
@@ -147,43 +127,40 @@ def predict(
     which artifact folder (containing your trained weights and config metadata) to use
     to properly reconstruct the model before testing your data.
     """
-    workspace_config = validate_workspace_with_feedback(project_dir)
-
-    infer_script = find_script(project_dir, "main.py")
-
-    run_args = ['predict']
-    run_args.extend(get_artifacts_args(project_dir, artifacts))
-    run_args.extend(ctx.args) # flags get passed trough
-
-    execute_project_script(
-        project_name=workspace_config.get("project_name", "Unknown"),
-        task_name=workspace_config.get("task", ""),
-        script_path=infer_script,
-        project_dir=project_dir,
-        current_dir=CURRENT_DIR,
-        run_args=run_args,
-        operation="inference",
-    )
+    runner = ProjectScriptRunner(project_dir=project_dir, current_dir=CURRENT_DIR)
+    runner.predict(artifacts=artifacts, extra_args=ctx.args)
 
 
-@app.command()
-def upload(
+@app.command(
+    context_settings={"allow_extra_args": True, "ignore_unknown_options": True}
+)
+def run(
     ctx: typer.Context,
     project_dir: Path = typer.Argument(
         CURRENT_DIR,
         help="Path to the GeoSave project directory (containing geosave.toml)",
     ),
+    script_name: str | None = typer.Option(
+        None,
+        "--script",
+        "-s",
+        help="Script name in project scripts/ directory (with or without .py)",
+    ),
 ):
     """
-    Upload a model to Hugging Face Hub.
+    Execute a custom script from the project's scripts directory.
 
-    This command looks for an `upload.py` script in the current directory and executes it.
-    You can pass arbitrary flags to the upload script.
+    Usage:
+    - geosave run
+    - geosave run <project_dir>
+    - geosave run <project_dir> --script <script_name>
+
+    If script is not specified, you'll be prompted to select one from scripts/.
+    Any extra flags are passed through to the script. If no flags are passed,
+    you'll be prompted to enter them interactively.
     """
-    pass
-    # workspace_config = _validate_workspace(CURRENT_DIR)
-
-    # upload_model()
+    runner = ProjectScriptRunner(project_dir=project_dir, current_dir=CURRENT_DIR)
+    runner.run(script_name=script_name, extra_args=ctx.args)
 
 
 @app.command()

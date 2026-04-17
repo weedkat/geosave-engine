@@ -67,7 +67,6 @@ class DensePredictionTransformer(BaseModel):
         "semantic segmentation": []
         }
     doc_links = ["https://docs.geosave.dev/models/densepredictiontransformer"]
-    docs_links = doc_links
     model = DPT
 
     @classmethod

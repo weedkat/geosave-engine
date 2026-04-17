@@ -217,3 +217,6 @@ lightning_logs/
 # Project files
 ./*project/
 ./*project*/
+
+# Local state files testing
+wawa/

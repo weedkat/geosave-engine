@@ -44,8 +44,33 @@ class BaseOptimizer:
         if not callable(optimizer_callable):
             raise ValueError(f"{cls.__name__}.optimizer must be defined and callable")
 
-        method = kwargs.pop("method", "default")
-        mode_callable = getattr(cls, method, None)
+        method_config = kwargs.pop("method", {"mode": "default"})
+
+        if not isinstance(method_config, dict):
+            raise TypeError(
+                f"{cls.__name__}.build expects 'method' to be a mapping, "
+                f"got '{type(method_config).__name__}'"
+            )
+
+        mode_name_raw = method_config.get("mode")
+        if not isinstance(mode_name_raw, str) or not mode_name_raw:
+            raise ValueError(
+                f"{cls.__name__}.build requires method.mode as a non-empty string"
+            )
+
+        mode_name = mode_name_raw
+        mode_kwargs = {
+            key: value for key, value in method_config.items() if key != "mode"
+        }
+
+        overlap = set(kwargs).intersection(mode_kwargs)
+        if overlap:
+            keys = ", ".join(sorted(overlap))
+            raise ValueError(
+                f"{cls.__name__}.build received duplicated keys in global and method config: {keys}"
+            )
+
+        mode_callable = getattr(cls, mode_name, None)
         if not callable(mode_callable):
-            raise ValueError(f"{cls.__name__} does not support optimizer mode '{method}'")
-        return mode_callable(*args, **kwargs)
+            raise ValueError(f"{cls.__name__} does not support optimizer mode '{mode_name}'")
+        return mode_callable(*args, **kwargs, **mode_kwargs)

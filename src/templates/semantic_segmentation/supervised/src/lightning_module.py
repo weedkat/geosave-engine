@@ -1,8 +1,8 @@
 from lightning import LightningModule
 from geosave_engine.core.class_resolver import (
-    instantiate_from_config,
     instantiate_from_config_build,
 )
+from geosave_engine.core.optimizer_resolver import instantiate_optimizers_from_config
 
 class GeosaveLightningModule(LightningModule):
     """
@@ -58,41 +58,7 @@ class GeosaveLightningModule(LightningModule):
 
     def configure_optimizers(self):
         """Choose optimizer and optional LR scheduler configuration."""
-        optimizer_configs = []
-
-        for raw_optim_cfg in self.optim_config:
-            if not isinstance(raw_optim_cfg, dict):
-                raise ValueError("Each optimizer config entry must be a dictionary.")
-
-            optim_cfg = dict(raw_optim_cfg)
-            scheduler_cfg_raw = optim_cfg.pop("scheduler", None)
-
-            optimizer = instantiate_from_config(optim_cfg, model=self.model)
-            optimizer_item: dict = {"optimizer": optimizer}
-
-            if scheduler_cfg_raw is not None:
-                if not isinstance(scheduler_cfg_raw, dict):
-                    raise ValueError("optimizer.scheduler must be a dictionary when provided.")
-
-                scheduler_cfg = dict(scheduler_cfg_raw) # copy to avoid mutating input config
-                lightning_scheduler_cfg = scheduler_cfg.pop("config", None)
-
-                scheduler = instantiate_from_config(scheduler_cfg, optimizer=optimizer)
-
-                if lightning_scheduler_cfg is None:
-                    optimizer_item["lr_scheduler"] = scheduler
-                else:
-                    if not isinstance(lightning_scheduler_cfg, dict):
-                        raise ValueError("optimizer.scheduler.config must be a dictionary.")
-
-                    optimizer_item["lr_scheduler"] = {
-                        "scheduler": scheduler,
-                        **dict(lightning_scheduler_cfg),
-                    }
-
-            optimizer_configs.append(optimizer_item)
-
-        return tuple(optimizer_configs)
+        return instantiate_optimizers_from_config(self.optim_config, model=self.model)
 
     # ---------------------------------------------------------------------
     # Common LightningModule utilities
