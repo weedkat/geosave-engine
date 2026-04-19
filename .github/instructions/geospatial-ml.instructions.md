@@ -6,19 +6,8 @@ applyTo: "**/*.{py,ipynb}"
 
 ## Domain Focus
 - This repository targets semantic segmentation workflows for geospatial data.
-- Align implementations with this workflow:
-  1. data_ingestion
-  2. exploratory_data_analysis
-  3. settings_hyperparameter
-  4. training_&_validation
-  5. testing
-  6. inference
-
-## Geospatial Implementation Rules
-- Preserve CRS/spatial alignment assumptions across imagery, labels, and model inputs.
-- Prefer reproducible data pipelines and deterministic splits when possible.
-- For STAC pipelines, ensure filtering by geometry/bbox and datetime is explicit.
-- For temporal composites, use explicit aggregation semantics (e.g., median across 2020 time axis).
+- The primary use case is building and training models on satellite imagery with spatially aligned labels.
+- The project emphasizes geospatial data handling, model training orchestration, and STAC-based data pipelines.
 
 ## Library-Specific Expectations
 - PyTorch Lightning:

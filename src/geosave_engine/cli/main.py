@@ -1,20 +1,27 @@
 from __future__ import annotations
-import typer
+
 from pathlib import Path
 
-from geosave_engine.cli.services.build.project_generation_service import (
-    ProjectGenerationService,
-)
-from geosave_engine.cli.services.build.scaffold_service import BuildScaffoldService
-from geosave_engine.cli.services.runtime.project_script_runner import ProjectScriptRunner
-from geosave_engine.cli.metadata import models_root, templates_root
-from geosave_engine.cli.services.docs.docs_generator import show_docs
+import typer
+
+from geosave_engine.cli.errors import GeosaveCliError
+from geosave_engine.cli.io import QuestionaryPrompter, TyperConsole
+from geosave_engine.cli.paths import models_root, templates_root
 
 
 app = typer.Typer(help="GeoSave Engine CLI")
 CURRENT_DIR = Path.cwd()
-TEMPLATE_DIR = templates_root()
-MODELS_PACKAGE_PATH = models_root()
+
+
+def _handle(func):
+    """Catch `GeosaveCliError` raised by services and exit with its code."""
+    console = TyperConsole()
+    try:
+        func()
+    except GeosaveCliError as error:
+        console.error(str(error))
+        raise typer.Exit(error.exit_code) from error
+
 
 @app.command()
 def build(
@@ -35,18 +42,30 @@ def build(
     a training method, and the specific models you want to use. It copies the necessary
     templates and generates a ready-to-use workspace with a tracking `geosave.toml` file.
     """
-    scaffold_service = BuildScaffoldService(
-        template_dir=TEMPLATE_DIR,
-        models_package_path=MODELS_PACKAGE_PATH,
-    )
-    request = scaffold_service.collect_request(name)
-    created = ProjectGenerationService.generate_project(
-        request=request,
-        output_dir=dir,
-        template_dir=TEMPLATE_DIR,
-    )
-    if not created:
-        raise typer.Exit(1)
+    from geosave_engine.cli.build import collect_build_request, generate_project
+
+    template_dir = templates_root()
+    models_package_path = models_root()
+    prompter = QuestionaryPrompter()
+    console = TyperConsole()
+
+    def _run() -> None:
+        request = collect_build_request(
+            name,
+            template_dir=template_dir,
+            models_package_path=models_package_path,
+            prompter=prompter,
+            console=console,
+        )
+        generate_project(
+            request,
+            output_dir=Path(dir),
+            template_dir=template_dir,
+            prompter=prompter,
+            console=console,
+        )
+
+    _handle(_run)
 
 
 @app.command(
@@ -72,8 +91,7 @@ def fit(
     the command will scan the workspace folder for `.yaml` or `.yml` configuration files and
     prompt you to select one interactively.
     """
-    runner = ProjectScriptRunner(project_dir=project_dir, current_dir=CURRENT_DIR)
-    runner.fit(config=config, extra_args=ctx.args)
+    _handle(lambda: _make_runner(project_dir).fit(config=config, extra_args=ctx.args))
 
 
 @app.command(
@@ -100,8 +118,9 @@ def test(
     saved model checkpoints and configuration files. If `--artifacts` isn't found,
     the CLI prompts you interactively.
     """
-    runner = ProjectScriptRunner(project_dir=project_dir, current_dir=CURRENT_DIR)
-    runner.test(artifacts=artifacts, extra_args=ctx.args)
+    _handle(
+        lambda: _make_runner(project_dir).test(artifacts=artifacts, extra_args=ctx.args)
+    )
 
 
 @app.command(
@@ -127,8 +146,11 @@ def predict(
     which artifact folder (containing your trained weights and config metadata) to use
     to properly reconstruct the model before testing your data.
     """
-    runner = ProjectScriptRunner(project_dir=project_dir, current_dir=CURRENT_DIR)
-    runner.predict(artifacts=artifacts, extra_args=ctx.args)
+    _handle(
+        lambda: _make_runner(project_dir).predict(
+            artifacts=artifacts, extra_args=ctx.args
+        )
+    )
 
 
 @app.command(
@@ -154,20 +176,24 @@ def run(
     - geosave run
     - geosave run <project_dir>
     - geosave run <project_dir> --script <script_name>
+    - geosave run <project_dir> <script_name> [<extra_args>...]
 
-    If script is not specified, you'll be prompted to select one from scripts/.
-    Any extra flags are passed through to the script. If no flags are passed,
-    you'll be prompted to enter them interactively.
+    The script name can be given via --script or as the first positional extra
+    argument (with or without the .py suffix). If omitted, you will be prompted
+    to select one from scripts/. Any extra flags are always forwarded to the script.
     """
-    runner = ProjectScriptRunner(project_dir=project_dir, current_dir=CURRENT_DIR)
-    runner.run(script_name=script_name, extra_args=ctx.args)
+    _handle(
+        lambda: _make_runner(project_dir).run(
+            script_name=script_name, extra_args=ctx.args
+        )
+    )
 
 
 @app.command()
 def docs(
     section: str | None = typer.Argument(
         None,
-        help="Docs section: lightningmodule | datamodule | model | loss | optimizer",
+        help="Docs section: lightningmodule | datamodule | trainer | templates | model | loss | optimizer",
     ),
     arg1: str | None = typer.Argument(
         None,
@@ -192,7 +218,29 @@ def docs(
     - geosave docs model semantic_segmentation supervised
     - geosave docs optimizer AdamW
     """
-    show_docs(section=section, arg1=arg1, arg2=arg2, arg3=arg3)
+    from geosave_engine.cli.docs import show_docs
+
+    prompter = QuestionaryPrompter()
+    _handle(
+        lambda: show_docs(
+            section=section,
+            arg1=arg1,
+            arg2=arg2,
+            arg3=arg3,
+            prompter=prompter,
+        )
+    )
+
+
+def _make_runner(project_dir: Path):
+    from geosave_engine.cli.runtime import ProjectScriptRunner
+
+    return ProjectScriptRunner(
+        project_dir=project_dir,
+        current_dir=CURRENT_DIR,
+        prompter=QuestionaryPrompter(),
+        console=TyperConsole(),
+    )
 
 
 if __name__ == "__main__":

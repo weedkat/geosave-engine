@@ -1,8 +1,9 @@
 from lightning import LightningModule
-from geosave_engine.core.class_resolver import (
+
+from geosave_engine.core.resolver import (
     instantiate_from_config_build,
+    instantiate_optimizers_from_config,
 )
-from geosave_engine.core.optimizer_resolver import instantiate_optimizers_from_config
 
 class GeosaveLightningModule(LightningModule):
     """
