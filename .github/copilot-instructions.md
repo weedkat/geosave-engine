@@ -12,17 +12,17 @@
 
 ## Architecture
 - Core package code lives in `src/geosave_engine`; generated project blueprints live in `src/templates`.
-- CLI entrypoint is `geosave` (`src/geosave_engine/cli/main.py`) and orchestrates `build`, `fit`, `test`, `predict`, and `docs` workflows.
+- CLI entrypoint is `geosave` (`src/geosave_engine/cli/main.py`) and orchestrates `build`, `fit`, `test`, `predict`, `run`, and `docs` workflows.
 - Keep PyTorch Lightning boundaries clear:
   - `LightningDataModule` handles data loading/sampling/transforms.
   - `LightningModule` handles model, loss, optimization, and step logic.
-- Prefer class-path driven configuration for models/optimizers/schedulers/losses/callbacks and instantiate through existing resolver patterns.
+- Prefer class-path driven yaml configuration for models/optimizers/schedulers/losses/callbacks and instantiate through existing resolver patterns.
 
 ## Required Stack
 - PyTorch Lightning for training orchestration, callbacks, and evaluation workflows.
 - TorchGeo for geospatial dataset loading and spatially aligned sampling.
 - PySTAC Client and `pystac` for STAC API querying and item handling.
-- `stackstac` for STAC Item loading into xarray and temporal/statistical preprocessing.
+- `odc-stac` for STAC Item loading into xarray and temporal/statistical preprocessing.
 
 ## Build and Test
 - Environment setup: `uv sync --locked --no-editable`
@@ -32,6 +32,7 @@
   - `uv run geosave fit`
   - `uv run geosave test`
   - `uv run geosave predict`
+  - `uv run geosave run`
 - Quality checks:
   - `uv run ruff check .`
   - `uv run pytest`
@@ -49,4 +50,3 @@
 - Link to existing project docs instead of duplicating detail:
   - `docs/GEOSPATIAL.md`
   - `docs/TORCHGEO.md`
-  - `src/templates/semantic_segmentation/supervised/README.md`

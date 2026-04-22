@@ -1,7 +1,4 @@
-from __future__ import annotations
-
 from typing import Any
-
 
 class CQL2:
     """Static helpers for building CQL2-JSON filter expressions.

@@ -14,15 +14,15 @@ def templates_root() -> Path:
 
 
 def models_root() -> Path:
-    return package_root() / "models"
+    return package_root() / "ml" / "models"
 
 
 def losses_root() -> Path:
-    return package_root() / "losses"
+    return package_root() / "ml" / "losses"
 
 
 def optimizers_root() -> Path:
-    return package_root() / "optimizers"
+    return package_root() / "ml" / "optimizers"
 
 
 def src_root() -> Path:

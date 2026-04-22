@@ -7,6 +7,7 @@ import typer
 from geosave_engine.cli.errors import GeosaveCliError
 from geosave_engine.cli.io import QuestionaryPrompter, TyperConsole
 from geosave_engine.cli.paths import models_root, templates_root
+from geosave_engine.cli.generate import collect_build_request, generate_project
 
 
 app = typer.Typer(help="GeoSave Engine CLI")
@@ -42,7 +43,6 @@ def build(
     a training method, and the specific models you want to use. It copies the necessary
     templates and generates a ready-to-use workspace with a tracking `geosave.toml` file.
     """
-    from geosave_engine.cli.build import collect_build_request, generate_project
 
     template_dir = templates_root()
     models_package_path = models_root()
