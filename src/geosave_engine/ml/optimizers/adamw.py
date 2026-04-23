@@ -3,7 +3,7 @@ from __future__ import annotations
 import torch
 
 from geosave_engine.ml.core.base import BaseOptimizer
-from geosave_engine.utils.torch_params import split_encoder_decoder_params
+from geosave_engine.utils.ml.torch_params import split_encoder_decoder_params
 
 
 class AdamW(BaseOptimizer):

@@ -29,7 +29,7 @@ from geosave_engine.cli.paths import (
     templates_root,
 )
 from geosave_engine.cli.search import discover_model_names, discover_tasks
-from geosave_engine.utils.strings import normalize_slug, resolve_from_choices
+from geosave_engine.utils.cli.strings import normalize_slug, resolve_from_choices
 
 
 _rich_console = RichConsole()

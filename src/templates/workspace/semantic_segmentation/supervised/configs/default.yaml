@@ -1,0 +1,79 @@
+trainer:
+  max_epochs: 100
+  log_every_n_steps: 10
+  logger:
+    class_path: lightning.pytorch.loggers.TensorBoardLogger
+    init_args:
+      save_dir: artifacts
+      name: supervised_dynamicworld
+  callbacks:
+    - class_path: lightning.pytorch.callbacks.ModelCheckpoint
+      init_args:
+        monitor: val_loss
+        mode: min
+        save_top_k: 1
+        filename: "{epoch}-{val_loss:.4f}"
+    - class_path: lightning.pytorch.callbacks.EarlyStopping
+      init_args:
+        monitor: val_loss
+        mode: min
+        patience: 10
+    - class_path: lightning.pytorch.callbacks.LearningRateMonitor
+      init_args:
+        logging_interval: epoch
+
+model:
+  class_path: src.lightning_module.GeosaveLightningModule
+  init_args:
+    model_name: UNet
+    model_config:
+      dense_model:
+        class_path: geosave_engine.ml.models.smp.Unet
+        encoder_name: resnet34
+        encoder_weights: imagenet
+        in_channels: 9
+        classes: 9
+    optim_config:
+      - class_path: geosave_engine.ml.optimizers.AdamW
+        weight_decay: 0.01
+        method:
+          mode: split
+          encoder_lr: 0.0001
+          decoder_lr: 0.001
+        scheduler:
+          class_path: torch.optim.lr_scheduler.CosineAnnealingLR
+          T_max: 100
+          config:
+            monitor: val_loss
+            interval: epoch
+    loss_config:
+      supervised:
+        class_path: geosave_engine.ml.losses.CrossEntropyLoss
+        ignore_index: 255
+
+data:
+  class_path: src.data_module.GeosaveDataModule
+  init_args:
+    manifest: data/manifest.gpkg
+    batch_size: 16
+    num_workers: 4
+    train_transform:
+      - name: HorizontalFlip
+        kwargs:
+          p: 0.5
+      - name: VerticalFlip
+        kwargs:
+          p: 0.5
+      - name: RandomRotate90
+        kwargs:
+          p: 0.5
+      - name: RandomResizedCrop
+        kwargs:
+          size: [256, 256]
+          scale: [0.5, 1.0]
+          p: 1.0
+      - name: ToTensorV2
+        kwargs: {}
+    infer_transform:
+      - name: ToTensorV2
+        kwargs: {}

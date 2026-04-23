@@ -10,7 +10,12 @@ def package_root() -> Path:
 
 def templates_root() -> Path:
     """Root of the shipped workspace templates (siblings of the package)."""
-    return package_root().parent / "templates"
+    return package_root().parent / "templates" / "workspace"
+
+
+def plugins_root() -> Path:
+    """Root of the shipped plugins (siblings of the package)."""
+    return package_root().parent / "templates" / "plugins"
 
 
 def models_root() -> Path:

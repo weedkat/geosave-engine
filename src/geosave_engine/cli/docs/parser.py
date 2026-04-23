@@ -245,35 +245,6 @@ def _extract_function_params(
     return rows
 
 
-def callable_signature(module_path: str, class_name: str) -> inspect.Signature | None:
-    """Return the signature of the class's `build` (if concrete) or target callable.
-
-    Falls back to the underlying `model`/`loss`/`optimizer` attribute when
-    `build` has no explicit parameters. For full docs rendering (where you
-    want both the build params AND the underlying model params), use
-    `build_callable_signature` and `underlying_model_signature` instead.
-    """
-    module = importlib.import_module(module_path)
-    cls = getattr(module, class_name)
-
-    build_callable = getattr(cls, "build", None)
-    if callable(build_callable):
-        sig = inspect.signature(build_callable)
-        has_var_args = any(
-            param.kind in {inspect.Parameter.VAR_POSITIONAL, inspect.Parameter.VAR_KEYWORD}
-            for param in sig.parameters.values()
-        )
-        if not has_var_args:
-            return sig
-
-    for attr in ("model", "loss", "optimizer"):
-        target = getattr(cls, attr, None)
-        if target is not None:
-            return inspect.signature(target)
-
-    raise AttributeError(f"Class '{class_name}' has no build/model/loss/optimizer callable")
-
-
 def build_callable_signature(module_path: str, class_name: str) -> inspect.Signature | None:
     """Return the `build` classmethod signature (always, even when it has *args/**kwargs).
 

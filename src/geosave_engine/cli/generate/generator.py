@@ -7,8 +7,8 @@ import toml
 from geosave_engine.cli.generate.request import BuildRequest
 from geosave_engine.cli.errors import AbortedByUser, BuildError
 from geosave_engine.cli.io import Console, Prompter
-from geosave_engine.utils.fs_ops import copy_tree
-from geosave_engine.utils.yaml_config import inject_into_file
+from geosave_engine.utils.cli.fs_ops import copy_tree
+from geosave_engine.utils.ml.yaml_config import inject_into_file
 
 
 def generate_project(
@@ -30,7 +30,7 @@ def generate_project(
     _prompt_overwrite_if_exists(project_dir, prompter)
 
     _copy_common_template(template_dir, project_dir)
-    _copy_task_common(template_dir, request.task, project_dir)
+    # _copy_task_common(template_dir, request.task, project_dir)
     _overlay_task_template(template_dir, request.task, request.method, project_dir)
     _write_project_metadata(project_dir, request)
     _inject_selected_model(project_dir, request.selected_model)
@@ -53,7 +53,7 @@ def _prompt_overwrite_if_exists(project_dir: Path, prompter: Prompter) -> None:
 def _copy_common_template(template_dir: Path, project_dir: Path) -> None:
     common = template_dir / "common"
     try:
-        copy_tree(common, project_dir, file_exceptions=["*/.gitkeep"])
+        copy_tree(common, project_dir, file_exceptions=["*/.gitkeep", "*/.ruff_cache"])
     except Exception as error:
         raise BuildError(f"Failed to copy common template: {error}") from error
 
@@ -64,7 +64,7 @@ def _copy_task_common(template_dir: Path, task: str, project_dir: Path) -> None:
     if not task_common.exists():
         return
     try:
-        copy_tree(task_common, project_dir, file_exceptions=["*/.gitkeep"])
+        copy_tree(task_common, project_dir, file_exceptions=["*/.gitkeep", "*/.ruff_cache"])
     except Exception as error:
         raise BuildError(f"Failed to copy task common template: {error}") from error
 
@@ -76,7 +76,7 @@ def _overlay_task_template(
     method_slug = method.replace(" ", "_")
     source = template_dir / task_slug / method_slug
     try:
-        copy_tree(source, project_dir)
+        copy_tree(source, project_dir, file_exceptions=["*/.gitkeep", "*/.ruff_cache"])
     except Exception as error:
         raise BuildError(f"Failed to overlay task template: {error}") from error
 

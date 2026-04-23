@@ -1,23 +1,34 @@
 from __future__ import annotations
 
+from dataclasses import dataclass
 from pathlib import Path
 from typing import Literal
 
 import torch
 
 from geosave_engine.ml.core.base import BaseModel
-from geosave_engine.utils.pretrained import DEFAULT_CACHE_DIR, cached_weights_path, download_weights
+from geosave_engine.utils.ml.pretrained import DEFAULT_CACHE_DIR, cached_weights_path, download_weights
 
 from .semseg.dpt import DPT
 
 EncoderName = Literal["dinov2_small", "dinov2_base", "dinov2_large", "dinov2_giant"]
 WeightsName = Literal["imagenet", "none"]
 
-DPT_ENCODER_PRESETS: dict[str, dict] = {
-    "dinov2_small": {"encoder_size": "small", "features": 64, "out_channels": [48, 96, 192, 384]},
-    "dinov2_base": {"encoder_size": "base", "features": 128, "out_channels": [96, 192, 384, 768]},
-    "dinov2_large": {"encoder_size": "large", "features": 256, "out_channels": [256, 512, 1024, 1024]},
-    "dinov2_giant": {"encoder_size": "giant", "features": 384, "out_channels": [1536, 1536, 1536, 1536]},
+
+@dataclass(frozen=True)
+class EncoderPreset:
+    """DPT encoder preset: backbone size plus decoder head channel widths."""
+
+    encoder_size: str
+    features: int
+    out_channels: tuple[int, int, int, int]
+
+
+DPT_ENCODER_PRESETS: dict[str, EncoderPreset] = {
+    "dinov2_small": EncoderPreset(encoder_size="small", features=64,  out_channels=(48, 96, 192, 384)),
+    "dinov2_base":  EncoderPreset(encoder_size="base",  features=128, out_channels=(96, 192, 384, 768)),
+    "dinov2_large": EncoderPreset(encoder_size="large", features=256, out_channels=(256, 512, 1024, 1024)),
+    "dinov2_giant": EncoderPreset(encoder_size="giant", features=384, out_channels=(1536, 1536, 1536, 1536)),
 }
 
 DPT_PRETRAINED_URLS: dict[str, dict[str, str]] = {
@@ -76,10 +87,10 @@ class DensePredictionTransformer(BaseModel):
 
         preset = DPT_ENCODER_PRESETS[encoder]
         model = cls.model(
-            encoder_size=preset["encoder_size"],
+            encoder_size=preset.encoder_size,
             nclass=nclass,
-            features=preset["features"],
-            out_channels=preset["out_channels"],
+            features=preset.features,
+            out_channels=list(preset.out_channels),
             in_chans=in_channels,
             *args,
             **kwargs,

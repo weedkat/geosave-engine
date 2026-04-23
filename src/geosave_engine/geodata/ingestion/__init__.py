@@ -1,18 +1,8 @@
-from geosave_engine.geodata.ingestion.sentinel2_l1c import SentinelL1CService
-from geosave_engine.geodata.processing.masking import (
-    compute_s2c_mask,
-    compute_cdi_mask,
-    compute_b10_mask,
-    build_shadow_mask,
-)
-from geosave_engine.geodata.ingestion.manifest import load_or_init_manifest, append_to_manifest
+"""Concrete raster ingestors by satellite / product level."""
+from geosave_engine.geodata.ingestion.sentinel2_l1c import Sentinel2L1CIngestor
+from geosave_engine.geodata.ingestion.sentinel2_l2a import Sentinel2L2AIngestor
 
 __all__ = [
-    "SentinelL1CService",
-    "compute_s2c_mask",
-    "compute_cdi_mask",
-    "compute_b10_mask",
-    "build_shadow_mask",
-    "load_or_init_manifest",
-    "append_to_manifest",
+    "Sentinel2L1CIngestor",
+    "Sentinel2L2AIngestor",
 ]

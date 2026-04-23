@@ -164,10 +164,6 @@ def build_init_arguments_table(file_path: Path, class_name: str) -> Table:
     return table
 
 
-def format_mode_header(factory_name: str, mode_name: str) -> str:
-    return f'{factory_name} (mode="{mode_name}")'
-
-
 def build_model_meta_section(info: ModelInfo) -> Table:
     """Render the full model doc panel (header, description, tasks, args).
 

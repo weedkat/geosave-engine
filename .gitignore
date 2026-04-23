@@ -220,3 +220,4 @@ lightning_logs/
 
 # Local state files testing
 wawa/
+.VSCodeCounter

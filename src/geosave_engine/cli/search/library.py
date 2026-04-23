@@ -30,28 +30,43 @@ class InterfaceInfo:
     file_path: Path
 
 
-def discover_tasks(templates_path: Path) -> dict[str, list[str]]:
-    """Walk `templates_path` and return `{task_name: [method, ...]}`.
+_IGNORED_TEMPLATE_DIRS = {"__pycache__", ".ruff_cache", ".pytest_cache", "common"}
 
-    `common/` and dunder/pycache folders are excluded. Folder names are
-    normalised: underscores become spaces, lower-cased.
+
+def discover_tasks(templates_path: Path) -> dict[str, list[str]]:
+    """Walk workspace templates and return usable `{task_name: [method, ...]}`.
+
+    Internal/cache folders and empty placeholder task folders are excluded.
+    Folder names are normalised: underscores become spaces, lower-cased.
     """
     tasks: dict[str, list[str]] = {}
     if not templates_path.exists():
         return tasks
 
     for folder in templates_path.iterdir():
-        if not folder.is_dir() or folder.name in {"__pycache__", "common"}:
+        if not _is_template_dir(folder):
             continue
 
         methods = [
             method.name.replace("_", " ").lower()
             for method in folder.iterdir()
-            if method.is_dir() and method.name != "__pycache__"
+            if _is_template_dir(method) and _has_template_content(method)
         ]
-        tasks[folder.name.replace("_", " ").lower()] = methods
+        if methods:
+            tasks[folder.name.replace("_", " ").lower()] = methods
 
     return tasks
+
+
+def _is_template_dir(path: Path) -> bool:
+    return path.is_dir() and path.name not in _IGNORED_TEMPLATE_DIRS
+
+
+def _has_template_content(path: Path) -> bool:
+    return any(
+        child.name not in _IGNORED_TEMPLATE_DIRS and child.name != ".gitkeep"
+        for child in path.iterdir()
+    )
 
 
 def discover_model_names(task: str, method: str, models_package_path: Path) -> list[str]:

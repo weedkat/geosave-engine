@@ -1,11 +1,11 @@
-"""Sentinel-2 Level-1C ingestor (Top-of-Atmosphere reflectance)."""
+"""Sentinel-2 Level-2A ingestor (Surface reflectance)."""
 from __future__ import annotations
 
 import numpy as np
 import pystac
 import xarray as xr
 
-from geosave_engine.geodata.core.constants import SENTINEL2_L1C
+from geosave_engine.geodata.core.constants import SENTINEL2_L2A
 from geosave_engine.geodata.core.ingestion import BaseIngestor
 
 
@@ -35,15 +35,15 @@ def _radiometry_from_item(item: pystac.Item) -> tuple[float, float]:
     raise ValueError(f"item {item.id!r} has no usable raster scale/offset metadata")
 
 
-class Sentinel2L1CIngestor(BaseIngestor):
-    """Sentinel-2 Level-1C ingestor.
+class Sentinel2L2AIngestor(BaseIngestor):
+    """Sentinel-2 Level-2A ingestor (Surface reflectance).
 
     Applies a single global scale/offset read from the first STAC item to all
-    requested bands, converting digital numbers to top-of-atmosphere
-    reflectance.
+    requested bands. Override ``_apply_radiometry`` in a subclass when
+    per-band handling or SCL exclusion is needed.
     """
 
-    COLLECTION = SENTINEL2_L1C
+    COLLECTION = SENTINEL2_L2A
 
     def _apply_radiometry(
         self,

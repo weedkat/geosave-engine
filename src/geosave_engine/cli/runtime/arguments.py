@@ -9,7 +9,7 @@ from geosave_engine.cli.search import (
     list_user_scripts,
     resolve_user_script,
 )
-from geosave_engine.utils.strings import parse_shell_args
+from geosave_engine.utils.cli.strings import parse_shell_args
 
 
 def resolve_config_args(
