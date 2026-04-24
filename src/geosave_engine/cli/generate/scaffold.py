@@ -3,22 +3,21 @@ from __future__ import annotations
 from pathlib import Path
 
 from geosave_engine.cli.generate.request import BuildRequest
-from geosave_engine.cli.errors import AbortedByUser, BuildError
+from geosave_engine.cli.errors import AbortedByUserError, BuildError
 from geosave_engine.cli.io import Console, Prompter
-from geosave_engine.cli.search import discover_model_names, discover_tasks
+from geosave_engine.cli.search import discover_tasks
 
 
 def collect_build_request(
     initial_name: str | None,
     *,
     template_dir: Path,
-    models_package_path: Path,
     prompter: Prompter,
     console: Console,
 ) -> BuildRequest:
     """Interactively build a `BuildRequest` by prompting the user.
 
-    Pure composition over the Prompter seam. Raises `AbortedByUser` when the
+    Pure composition over the Prompter seam. Raises `AbortedByUserError` when the
     user cancels any prompt, `BuildError` when the templates/models library
     is in an inconsistent state.
     """
@@ -29,16 +28,12 @@ def collect_build_request(
     project_name = _prompt_for_project_name(initial_name, prompter)
     task = _prompt_for_task(task_map, prompter)
     method = _prompt_for_method(task, task_map, prompter, console)
-    available_models = _discover_or_fail(task, method, models_package_path, console)
-    selected_model = _prompt_for_model(available_models, prompter)
     description = _prompt_for_description(prompter)
 
     return BuildRequest(
         name=project_name,
         task=task,
         method=method,
-        available_models=available_models,
-        selected_model=selected_model,
         description=description,
     )
 
@@ -49,14 +44,14 @@ def _prompt_for_project_name(initial: str | None, prompter: Prompter) -> str:
 
     answer = prompter.text("Enter the name of the build:")
     if not answer or not answer.strip():
-        raise AbortedByUser("Project name is required.")
+        raise AbortedByUserError("Project name is required.")
     return answer.strip()
 
 
 def _prompt_for_task(task_map: dict[str, list[str]], prompter: Prompter) -> str:
     selected = prompter.select("Select the AI task:", list(task_map.keys()))
     if not selected:
-        raise AbortedByUser("Task selection cancelled.")
+        raise AbortedByUserError("Task selection cancelled.")
     return selected
 
 
@@ -76,27 +71,11 @@ def _prompt_for_method(
     return selected
 
 
-def _discover_or_fail(
-    task: str, method: str, models_package_path: Path, console: Console
-) -> list[str]:
-    models = discover_model_names(task, method, models_package_path)
-    if not models:
-        raise BuildError("No models found for the selected task and method.")
-    return models
-
-
-def _prompt_for_model(choices: list[str], prompter: Prompter) -> str:
-    selected = prompter.select("Select the default model for config.yaml:", choices)
-    if not selected:
-        raise AbortedByUser("Model selection cancelled.")
-    return selected
-
-
 def _prompt_for_description(prompter: Prompter) -> str:
     answer = prompter.text(
         "Enter the description of the build:",
         default="A GeoSave Engine project.",
     )
     if answer is None:
-        raise AbortedByUser("Description input cancelled.")
+        raise AbortedByUserError("Description input cancelled.")
     return answer

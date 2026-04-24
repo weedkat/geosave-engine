@@ -10,6 +10,4 @@ class BuildRequest:
     name: str
     task: str
     method: str
-    available_models: list[str]
-    selected_model: str
     description: str

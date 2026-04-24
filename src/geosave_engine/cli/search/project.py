@@ -21,6 +21,10 @@ class ProjectLayout:
     @property
     def artifacts_dir(self) -> Path:
         return self.root / "artifacts"
+    
+    @property
+    def noteooks_dir(self) -> Path:
+        return self.root
 
 
 def find_configs(layout: ProjectLayout) -> list[Path]:

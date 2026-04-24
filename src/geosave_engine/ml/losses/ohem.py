@@ -1,6 +1,6 @@
 import torch
 from torch import nn
-import torch.nn.functional as F
+import torch.nn.functional as F  # noqa: N812 — universally accepted PyTorch alias
 
 from geosave_engine.ml.core.base import BaseLoss
 

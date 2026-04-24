@@ -1,7 +1,9 @@
 import torch
-from lightning import LightningModule
-from torchmetrics import MetricCollection
+from typing import cast
 
+from lightning import LightningModule
+from lightning.pytorch.loggers import TensorBoardLogger
+from geosave_engine.ml.callbacks.calibration import CalibrationCallback
 from geosave_engine.utils.ml.resolver import (
     instantiate_from_config_build,
     instantiate_optimizers_from_config,
@@ -14,29 +16,25 @@ class GeosaveLightningModule(LightningModule):
     Lightning modules are responsible for defining the neural network architecture and the training logic.
     They should implement the `training_step`, `validation_step`, and `test_step` methods to handle the training, validation, and testing loops.
     """
-
     def __init__(
         self,
-        model_name: str,
         model_config: dict,
         optim_config: list[dict],
         loss_config: dict,
-        threshold=0,
-        threshold_callibration=True,
+        threshold_calibration: bool = True,
         log_image_every_n_steps: int = 5,
     ):
         super().__init__()
         self.save_hyperparameters()
-        self.threshold = threshold
+        self.calibrating: bool = False
+        self.threshold_calibration = threshold_calibration
         self.log_image_every_n_steps = log_image_every_n_steps
 
-        self.model_name = model_name
         self.model_config = model_config
         self.optim_config = optim_config
         self.loss_config = loss_config
 
         dense_model = model_config.get("dense_model")
-
         if dense_model is not None and isinstance(dense_model, dict):
             self.model: torch.nn.Module = instantiate_from_config_build(dense_model)  # type: ignore[assignment]
         else:
@@ -47,6 +45,13 @@ class GeosaveLightningModule(LightningModule):
             self.loss: torch.nn.Module = instantiate_from_config_build(loss)  # type: ignore[assignment]
         else:
             raise ValueError("Loss configuration must include a 'supervised' key with a valid loss configuration dictionary.")
+
+        self.num_classes = int(dense_model["classes"])
+        self.ignore_index = loss_config["supervised"].get("ignore_index")
+        self.register_buffer(
+            "class_thresholds",
+            torch.full((self.num_classes,), 0.5),
+        )
 
     def forward(self, *args, **kwargs):
         return self.model(*args, **kwargs)
@@ -60,23 +65,21 @@ class GeosaveLightningModule(LightningModule):
 
     def configure_callbacks(self):
         """Return model-specific callbacks to merge with Trainer callbacks."""
-        return []
+        if not self.threshold_calibration:
+            return []
+        return [CalibrationCallback()]
 
     def configure_optimizers(self):
         """Choose optimizer and optional LR scheduler configuration."""
         return instantiate_optimizers_from_config(self.optim_config, model=self.model)
 
     def setup(self, stage: str | None = None) -> None:
-        class_meta    = self.trainer.datamodule.class_meta  # type: ignore[union-attr]
-        ignore_mask   = class_meta["ignore"].astype(bool)
-        self.num_classes  = int((~ignore_mask).sum())
-        self.ignore_index = int(class_meta[ignore_mask]["class_id"].iloc[0])
-        class_names   = (
-            class_meta[~ignore_mask]
-            .sort_values("class_id")["class_name"]
-            .tolist()
+        class_names = [f"class_{i}" for i in range(self.num_classes)]
+        metrics = get_segmentation_metrics(
+            num_classes=self.num_classes,
+            class_names=class_names,
+            ignore_index=self.ignore_index,
         )
-        metrics = get_segmentation_metrics(self.num_classes, class_names, self.ignore_index)
         self.train_metrics = metrics.clone(prefix="train_")
         self.val_metrics   = metrics.clone(prefix="val_")
         self.test_metrics  = metrics.clone(prefix="test_")
@@ -163,6 +166,12 @@ class GeosaveLightningModule(LightningModule):
         self.val_metrics.update(logits, label)
         if batch_idx == 0:
             self._log_segmentation("val", label, logits)
+
+        if self.calibrating:
+            probs = logits.softmax(dim=1)
+            max_probs, preds = probs.max(dim=1)
+            return preds, max_probs, label
+
         return loss
 
     def on_validation_epoch_end(self):
@@ -212,7 +221,8 @@ class GeosaveLightningModule(LightningModule):
         return super().on_predict_epoch_start()
 
     def predict_step(self, batch, batch_idx, dataloader_idx=0):
-        return self(batch["image"]).argmax(dim=1)
+        logits = self(batch["image"])
+        return self.postprocess(logits)
 
     def on_predict_epoch_end(self):
         """Run at the end of each prediction epoch."""
@@ -237,17 +247,32 @@ class GeosaveLightningModule(LightningModule):
     # Non Lightning methods for model-specific logic
     # ---------------------------------------------------------------------
 
-    def calibrate_thresholds(self):
-        """Calibrate prediction thresholds based on validation outputs."""
-        pass  # No-op, threshold calibration logic is handled in callbacks in this template
-
-    def _log_segmentation(self, prefix: str, label: torch.Tensor, logits: torch.Tensor) -> None:
-        if not hasattr(self.logger, "experiment"):
+    def _log_segmentation(self, prefix: str, labels: torch.Tensor, logits: torch.Tensor) -> None:
+        tb_logger = next(
+            (lg for lg in self.loggers if isinstance(lg, TensorBoardLogger)), None
+        )
+        if tb_logger is None:
             return
-        writer = self.logger.experiment
-        step   = self.global_step
-        scale  = float(self.num_classes - 1) or 1.0
-        lbl    = label[0].float()
-        pred   = logits[0].argmax(dim=0).float()
-        writer.add_image(f"{prefix}/label",      (lbl  / scale).unsqueeze(0), step)  # type: ignore[attr-defined]
+        writer = tb_logger.experiment
+        step  = self.global_step
+        scale = float(self.num_classes - 1) or 1.0
+        label   = labels[0].float()
+        pred  = logits[0].argmax(dim=0).float()
+        writer.add_image(f"{prefix}/label",      (label  / scale).unsqueeze(0), step)  # type: ignore[attr-defined]
         writer.add_image(f"{prefix}/prediction", (pred / scale).unsqueeze(0), step)  # type: ignore[attr-defined]
+
+    def postprocess(self, logits: torch.Tensor) -> tuple[torch.Tensor, torch.Tensor]:
+        """Convert logits to predictions and apply calibrated threshold rejection."""
+        probs = logits.softmax(dim=1)
+        max_probs, preds = probs.max(dim=1)
+
+        if not self.calibrating:
+            class_thresholds = cast(torch.Tensor, self.class_thresholds)
+            pixel_thresholds = torch.index_select(class_thresholds, 0, preds.reshape(-1)).view_as(preds)
+            preds = torch.where(
+                max_probs >= pixel_thresholds,
+                preds,
+                preds.new_full((), self.ignore_index),
+            )
+
+        return preds, max_probs

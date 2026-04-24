@@ -7,7 +7,7 @@ class GeosaveCliError(Exception):
     exit_code: int = 1
 
 
-class AbortedByUser(GeosaveCliError):
+class AbortedByUserError(GeosaveCliError):
     """The user cancelled a prompt (Ctrl-C, empty answer)."""
 
 

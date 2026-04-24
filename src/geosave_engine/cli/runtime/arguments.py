@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from geosave_engine.cli.errors import AbortedByUser, WorkspaceError
+from geosave_engine.cli.errors import AbortedByUserError, WorkspaceError
 from geosave_engine.cli.io import Prompter
 from geosave_engine.cli.search import (
     ProjectLayout,
@@ -32,7 +32,7 @@ def resolve_config_args(
         [(path.name, str(path.resolve())) for path in configs],
     )
     if not selected:
-        raise AbortedByUser("Config selection cancelled.")
+        raise AbortedByUserError("Config selection cancelled.")
     return ["--config", selected]
 
 
@@ -57,7 +57,7 @@ def resolve_artifact_args(
         [(path.name, str(path.resolve())) for path in parents],
     )
     if not selected:
-        raise AbortedByUser("Artifact selection cancelled.")
+        raise AbortedByUserError("Artifact selection cancelled.")
     return ["--model", selected]
 
 
@@ -85,7 +85,7 @@ def resolve_script_invocation(
     forwarded = f" (extra args {extra_args!r} will be forwarded)" if extra_args else ""
     selected = prompter.select_mapping(f"Select the script to run{forwarded}:", choices)
     if not selected:
-        raise AbortedByUser("Script selection cancelled.")
+        raise AbortedByUserError("Script selection cancelled.")
     return selected, extra_args
 
 
@@ -96,11 +96,11 @@ def resolve_script_extra_args(extra_args: list[str], prompter: Prompter) -> list
 
     answer = prompter.text("Enter additional script arguments (optional):", default="")
     if answer is None:
-        raise AbortedByUser("Script argument input cancelled.")
+        raise AbortedByUserError("Script argument input cancelled.")
     try:
         return parse_shell_args(answer)
     except ValueError as error:
-        raise AbortedByUser(f"Invalid argument string: {error}") from error
+        raise AbortedByUserError(f"Invalid argument string: {error}") from error
 
 
 def locate_user_script(layout: ProjectLayout, script_name: str) -> str:

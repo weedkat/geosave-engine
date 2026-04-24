@@ -5,10 +5,9 @@ from pathlib import Path
 import toml
 
 from geosave_engine.cli.generate.request import BuildRequest
-from geosave_engine.cli.errors import AbortedByUser, BuildError
+from geosave_engine.cli.errors import AbortedByUserError, BuildError
 from geosave_engine.cli.io import Console, Prompter
 from geosave_engine.utils.cli.fs_ops import copy_tree
-from geosave_engine.utils.ml.yaml_config import inject_into_file
 
 
 def generate_project(
@@ -22,7 +21,7 @@ def generate_project(
     """Materialize `request` into a workspace under `output_dir / request.name`.
 
     Returns the absolute path to the generated project. Raises `BuildError`
-    on copy/template errors and `AbortedByUser` if the user declines an
+    on copy/template errors and `AbortedByUserError` if the user declines an
     overwrite prompt.
     """
     project_dir = output_dir / request.name
@@ -33,7 +32,6 @@ def generate_project(
     # _copy_task_common(template_dir, request.task, project_dir)
     _overlay_task_template(template_dir, request.task, request.method, project_dir)
     _write_project_metadata(project_dir, request)
-    _inject_selected_model(project_dir, request.selected_model)
 
     console.success(f"Project '{request.name}' created successfully at {project_dir}")
     return project_dir
@@ -47,7 +45,7 @@ def _prompt_overwrite_if_exists(project_dir: Path, prompter: Prompter) -> None:
         default=False,
     )
     if not proceed:
-        raise AbortedByUser("Build cancelled — destination exists.")
+        raise AbortedByUserError("Build cancelled — destination exists.")
 
 
 def _copy_common_template(template_dir: Path, project_dir: Path) -> None:
@@ -86,7 +84,6 @@ def _write_project_metadata(project_dir: Path, request: BuildRequest) -> None:
         "project_name": request.name,
         "task": request.task,
         "method": request.method,
-        "models": request.available_models,
         "description": request.description,
     }
     try:
@@ -94,16 +91,3 @@ def _write_project_metadata(project_dir: Path, request: BuildRequest) -> None:
             toml.dump(metadata, handle)
     except Exception as error:
         raise BuildError(f"Failed to write geosave.toml: {error}") from error
-
-
-def _inject_selected_model(project_dir: Path, selected_model: str) -> None:
-    config_path = project_dir / "configs" / "default.yaml"
-    try:
-        inject_into_file(
-            config_path,
-            "model.name",
-            selected_model,
-            required_mapping_keys=("model",),
-        )
-    except Exception as error:
-        raise BuildError(f"Failed to inject selected model into config: {error}") from error

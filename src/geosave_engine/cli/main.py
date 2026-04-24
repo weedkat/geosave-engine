@@ -4,14 +4,17 @@ from pathlib import Path
 
 import typer
 
-from geosave_engine.cli.errors import GeosaveCliError
+from geosave_engine.cli.errors import BuildError, GeosaveCliError
 from geosave_engine.cli.io import QuestionaryPrompter, TyperConsole
-from geosave_engine.cli.paths import models_root, templates_root
+from geosave_engine.cli.paths import templates_root
 from geosave_engine.cli.generate import collect_build_request, generate_project
+from geosave_engine.cli.plugin.plugin import add_plugin
+from geosave_engine.cli.runtime import ProjectScriptRunner
 
 
 app = typer.Typer(help="GeoSave Engine CLI")
 CURRENT_DIR = Path.cwd()
+_ADD_PLUGIN_TYPE_TOKENS = {"script", "scripts", "notebook"}
 
 
 def _handle(func):
@@ -40,12 +43,11 @@ def build(
     Build a new GeoSave project workspace.
 
     This command interactively scaffolds a new project by asking you to select an AI task,
-    a training method, and the specific models you want to use. It copies the necessary
-    templates and generates a ready-to-use workspace with a tracking `geosave.toml` file.
+    and a training method. It copies the necessary templates and generates a ready-to-use
+    workspace with a tracking `geosave.toml` file.
     """
 
     template_dir = templates_root()
-    models_package_path = models_root()
     prompter = QuestionaryPrompter()
     console = TyperConsole()
 
@@ -53,7 +55,6 @@ def build(
         request = collect_build_request(
             name,
             template_dir=template_dir,
-            models_package_path=models_package_path,
             prompter=prompter,
             console=console,
         )
@@ -67,6 +68,65 @@ def build(
 
     _handle(_run)
 
+
+@app.command()
+def add(
+    project_dir: Path = typer.Argument(
+        CURRENT_DIR,
+        help="Path to the GeoSave project directory (containing geosave.toml)",
+    ),
+    plugin_type_arg: str | None = typer.Argument(
+        None,
+        help="Plugin type to add (e.g., scripts or notebook)",
+    ),
+    plugin_name_arg: str | None = typer.Argument(
+        None,
+        help="Plugin name in the selected plugin type",
+    ),
+    plugin_type: str | None = typer.Option(
+        None,
+        "--plugin-type",
+        "--plugin",
+        "-t",
+        help="Plugin type to add (supports 'script' alias for 'scripts')",
+    ),
+    plugin_name: str | None = typer.Option(
+        None,
+        "--plugin-name",
+        "--name",
+        "-n",
+        help="Plugin name to add",
+    ),
+):
+    """
+    Add a new plugin to an existing GeoSave project.
+
+    Usage:
+    - geosave add <project_dir> <plugin_type> <plugin_name>
+    - geosave add <project_dir> --plugin-type <plugin_type> --plugin-name <plugin_name>
+    - geosave add <plugin_type> <plugin_name>  (when already in workspace)
+    - geosave add <project_dir>
+    """
+    prompter = QuestionaryPrompter()
+    console = TyperConsole()
+
+    def _run() -> None:
+        resolved_project_dir, normalized_type_arg, normalized_name_arg = _normalize_add_positionals(
+            project_dir,
+            plugin_type_arg,
+            plugin_name_arg,
+        )
+        resolved_type = _resolve_add_value("plugin type", normalized_type_arg, plugin_type)
+        resolved_name = _resolve_add_value("plugin name", normalized_name_arg, plugin_name)
+        add_plugin(
+            resolved_project_dir,
+            plugin_type=resolved_type,
+            plugin_name=resolved_name,
+            prompter=prompter,
+            console=console,
+        )
+    
+    _handle(_run)
 
 @app.command(
     context_settings={"allow_extra_args": True, "ignore_unknown_options": True}
@@ -233,14 +293,43 @@ def docs(
 
 
 def _make_runner(project_dir: Path):
-    from geosave_engine.cli.runtime import ProjectScriptRunner
-
     return ProjectScriptRunner(
         project_dir=project_dir,
         current_dir=CURRENT_DIR,
         prompter=QuestionaryPrompter(),
         console=TyperConsole(),
     )
+
+
+def _resolve_add_value(
+    label: str,
+    positional: str | None,
+    option: str | None,
+) -> str | None:
+    if positional and option and positional != option:
+        raise BuildError(
+            f"Conflicting {label}: positional '{positional}' does not match option '{option}'."
+        )
+    return option or positional
+
+
+def _normalize_add_positionals(
+    project_dir: Path,
+    plugin_type_arg: str | None,
+    plugin_name_arg: str | None,
+) -> tuple[Path, str | None, str | None]:
+    """Support `geosave add <plugin_type> <plugin_name>` when run in a workspace."""
+    if plugin_name_arg is not None:
+        return project_dir, plugin_type_arg, plugin_name_arg
+
+    token = project_dir.as_posix().strip().lower()
+    looks_like_plugin_type = token in _ADD_PLUGIN_TYPE_TOKENS
+    has_workspace_manifest = (project_dir / "geosave.toml").is_file()
+
+    if looks_like_plugin_type and not has_workspace_manifest:
+        return CURRENT_DIR, token, plugin_type_arg
+
+    return project_dir, plugin_type_arg, plugin_name_arg
 
 
 if __name__ == "__main__":

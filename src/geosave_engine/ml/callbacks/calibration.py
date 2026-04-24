@@ -5,11 +5,14 @@ from lightning.pytorch.callbacks import Callback
 
 
 class CalibrationCallback(Callback):
-    """Calibrates per-class confidence thresholds against the validation set.
+    """Calibrates per-class confidence thresholds once at the end of fit.
 
-    Sweeps `threshold_steps` points in `[threshold_begin, threshold_end]` per
-    class and picks the value that maximises `metric_name` (currently F1).
-    The learned thresholds are written into `pl_module.class_thresholds`.
+    Triggered from ``on_fit_end``: flips ``pl_module.calibrating`` to ``True``,
+    runs a single ``trainer.validate`` pass so ``validation_step`` yields
+    ``(preds, max_probs, labels)`` tuples, then sweeps ``threshold_steps``
+    points in ``[threshold_begin, threshold_end]`` per class, picking the
+    value that maximises ``metric_name`` (currently F1). The learned
+    thresholds are written into ``pl_module.class_thresholds``.
     """
 
     def __init__(
@@ -27,31 +30,43 @@ class CalibrationCallback(Callback):
         self.val_max_probs: list[torch.Tensor] = []
         self.val_labels: list[torch.Tensor] = []
 
-    def on_validation_epoch_start(self, trainer, pl_module):
-        pl_module.calibrating = True
-        self.val_preds.clear()
-        self.val_max_probs.clear()
-        self.val_labels.clear()
-
     def on_validation_batch_end(
         self, trainer, pl_module, outputs, batch, batch_idx, dataloader_idx=0
     ):
-        # validation_step is expected to return (preds, max_probs, labels).
+        if not getattr(pl_module, "calibrating", False):
+            return
         preds, max_probs, labels = outputs
         self.val_preds.append(preds.detach().cpu())
         self.val_max_probs.append(max_probs.detach().cpu())
         self.val_labels.append(labels.detach().cpu())
 
-    def on_validation_epoch_end(self, trainer, pl_module):
-        if not self.val_preds:
+    def on_fit_end(self, trainer, pl_module):
+        if trainer.datamodule is None:
+            return
+
+        self.val_preds.clear()
+        self.val_max_probs.clear()
+        self.val_labels.clear()
+
+        pl_module.calibrating = True
+        try:
+            trainer.validate(model=pl_module, datamodule=trainer.datamodule, verbose=False)
+            self._compute_and_apply_thresholds(pl_module)
+        finally:
             pl_module.calibrating = False
+            self.val_preds.clear()
+            self.val_max_probs.clear()
+            self.val_labels.clear()
+
+    def _compute_and_apply_thresholds(self, pl_module) -> None:
+        if not self.val_preds:
             return
 
         all_preds = torch.cat(self.val_preds).view(-1)
         all_max_probs = torch.cat(self.val_max_probs).view(-1)
         all_labels = torch.cat(self.val_labels).view(-1)
 
-        n_classes = pl_module.metadata_interpreter.nclass
+        n_classes = pl_module.num_classes
         new_thresholds = torch.zeros(n_classes, device=pl_module.device)
 
         for c in range(n_classes):
@@ -66,13 +81,9 @@ class CalibrationCallback(Callback):
 
             best_t, best_score = 0.0, -1.0
             for t in self.threshold_range:
-                stays_correct = (c_probs >= t) & is_correct
-                stays_wrong = (c_probs >= t) & (~is_correct)
-                rejected_correct = (c_probs < t) & is_correct
-
-                tp = stays_correct.sum().float()
-                fp = stays_wrong.sum().float()
-                fn = rejected_correct.sum().float()
+                tp = ((c_probs >= t) & is_correct).sum().float()
+                fp = ((c_probs >= t) & (~is_correct)).sum().float()
+                fn = ((c_probs < t) & is_correct).sum().float()
 
                 precision = tp / (tp + fp + 1e-7)
                 recall = tp / (tp + fn + 1e-7)
@@ -85,8 +96,3 @@ class CalibrationCallback(Callback):
             new_thresholds[c] = best_t
 
         pl_module.class_thresholds.copy_(new_thresholds)
-
-        self.val_preds.clear()
-        self.val_max_probs.clear()
-        self.val_labels.clear()
-        pl_module.calibrating = False

@@ -26,6 +26,9 @@ geosave build my-project
 
 Outcome: A ready workspace is created with project structure, config entry points, and runnable scripts.
 
+Model selection is config-driven after scaffold generation. Edit `configs/default.yaml`
+to choose the model class path and per-model settings for each run.
+
 ### Create and Run Dataset Scripts
 
 Dataset ingestion and preprocessing are project-specific. Edit scripts based on your data design, then use the CLI UI to discover and execute scripts.
@@ -92,15 +95,23 @@ GeoSave Engine combines PyTorch Lightning and TorchGeo for model training and ge
 
 A generated workspace gives you a ready structure to start quickly:
 
-my-project/
-	geosave.toml
-	main.py
-	README.md
-	configs/
-	data/
-	scripts/
-	src/
-	artifacts/
+```text
+workspace/
+├── artifacts
+├── configs
+│   └── default.yaml
+├── data
+├── datasets
+├── notebooks
+├── predictions
+├── scripts
+├── src
+│   ├── data_module.py
+│   ├── dataset.py
+│   └── lightning_module.py
+├── geosave.toml
+└── main.py
+```
 
 In short: config, data staging, runnable scripts, source code, and output artifacts are prepared in one place.
 

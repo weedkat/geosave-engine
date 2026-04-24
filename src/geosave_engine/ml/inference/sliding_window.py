@@ -1,5 +1,5 @@
 import torch
-import torch.nn.functional as F
+import torch.nn.functional as F  # noqa: N812 — universally accepted PyTorch alias
 
 # UPDATE: added padding because models are more accurate at the center
 def infer_sliding_window(

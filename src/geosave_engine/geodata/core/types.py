@@ -10,10 +10,13 @@ class LoadRequest:
 
     ``crs`` and ``bounds`` pin the output to an exact pixel grid. When omitted,
     a UTM CRS is derived from ``bbox``.
+
+    ``bands`` is required — callers must declare which bands they want; there is
+    no silent "all bands" default.
     """
 
-    bbox: tuple[float, float, float, float]
     bands: list[str]
+    bbox: tuple[float, float, float, float] | None = None
     crs: str | None = None
     bounds: tuple[float, float, float, float] | None = None
     resolution: int = 10

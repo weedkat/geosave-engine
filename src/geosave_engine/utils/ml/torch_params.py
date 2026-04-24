@@ -1,17 +1,22 @@
 from __future__ import annotations
 
-from typing import Any
+import torch
 
 
-def split_encoder_decoder_params(model: Any) -> tuple[list[Any], list[Any]]:
-    """Partition `model.parameters()` into encoder and decoder param lists.
+def split_encoder_decoder_params(
+    model: torch.nn.Module,
+) -> tuple[list[torch.nn.Parameter], list[torch.nn.Parameter]]:
+    """Partition ``model.parameters()`` into encoder and decoder param lists.
 
-    The model must expose either a `backbone` or `encoder` attribute; all other
-    named parameters are treated as decoder params.
+    The model must expose either a ``backbone`` or ``encoder`` attribute; all
+    other named parameters are treated as decoder params.
+
+    Raises:
+        ValueError: if the model exposes neither ``backbone`` nor ``encoder``.
     """
     if hasattr(model, "backbone"):
-        encoder: list[Any] = [p for p in model.backbone.parameters() if p.requires_grad]
-        decoder: list[Any] = [p for name, p in model.named_parameters() if "backbone" not in name]
+        encoder = [p for p in model.backbone.parameters() if p.requires_grad]
+        decoder = [p for name, p in model.named_parameters() if "backbone" not in name]
         return encoder, decoder
 
     if hasattr(model, "encoder"):

@@ -219,5 +219,6 @@ lightning_logs/
 ./*project*/
 
 # Local state files testing
-wawa/
+/wawa
+/workspace
 .VSCodeCounter

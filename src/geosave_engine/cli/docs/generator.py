@@ -19,7 +19,7 @@ from geosave_engine.cli.docs.rendering import (
     build_model_meta_section,
     build_section,
 )
-from geosave_engine.cli.errors import AbortedByUser, DocsError
+from geosave_engine.cli.errors import AbortedByUserError, DocsError
 from geosave_engine.cli.io import Prompter
 from geosave_engine.cli.paths import (
     losses_root,
@@ -58,7 +58,7 @@ def show_docs(
     if not section:
         selected = prompter.select_mapping("Choose Geosave docs:", _SECTION_CHOICES)
         if not selected:
-            raise AbortedByUser("Docs selection cancelled.")
+            raise AbortedByUserError("Docs selection cancelled.")
         section = selected
 
     section_norm = normalize_slug(section)
@@ -186,7 +186,7 @@ def _show_registry(kind: str, selected_name: str | None, prompter: Prompter) -> 
             f"Choose {title.lower()}:", [(name, name) for name in names]
         )
         if not selected_name:
-            raise AbortedByUser("Selection cancelled.")
+            raise AbortedByUserError("Selection cancelled.")
 
     resolved = resolve_from_choices(selected_name, names)
     if not resolved:
@@ -241,7 +241,7 @@ def _show_models(arg1, arg2, arg3, prompter: Prompter) -> None:
         resolve_from_choices(arg1, tasks) if arg1 else None
     ) or prompter.select_mapping("Choose task:", [(name, name) for name in tasks])
     if not task:
-        raise AbortedByUser("Task selection cancelled.")
+        raise AbortedByUserError("Task selection cancelled.")
     if task not in task_map:
         raise DocsError(f"Unknown task: {arg1 or task}")
 
@@ -258,7 +258,7 @@ def _show_models(arg1, arg2, arg3, prompter: Prompter) -> None:
                 "Choose method:", [(name, name) for name in methods]
             )
             if not selected:
-                raise AbortedByUser("Method selection cancelled.")
+                raise AbortedByUserError("Method selection cancelled.")
             method = selected
 
     discovered = discover_model_names(task, method, models_root())
@@ -277,7 +277,7 @@ def _show_models(arg1, arg2, arg3, prompter: Prompter) -> None:
             "Choose model:", [(name, name) for name in model_names]
         )
         if not model_name:
-            raise AbortedByUser("Model selection cancelled.")
+            raise AbortedByUserError("Model selection cancelled.")
 
     info = info_map.get(model_name)
     if info is None:

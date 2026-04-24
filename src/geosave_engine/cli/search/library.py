@@ -74,19 +74,30 @@ def discover_model_names(task: str, method: str, models_package_path: Path) -> l
 
     Parses each `build.py` with `ast` to avoid importing heavy model modules.
     """
-    class_names: list[str] = []
+    return list(discover_model_options(task, method, models_package_path).keys())
+
+
+def discover_model_options(task: str, method: str, models_package_path: Path) -> dict[str, str]:
+    """Return `{model_identifier: class_path}` for models matching `task` and `method`."""
+    model_options: dict[str, str] = {}
 
     for build_file in models_package_path.glob("**/build.py"):
         with open(build_file, "r", encoding="utf-8") as handle:
             tree = ast.parse(handle.read())
 
+        relative = build_file.relative_to(models_package_path).with_suffix("")
+        module_path = ".".join(("geosave_engine", "ml", "models", *relative.parts))
+        class_module_path = (
+            module_path[: -len(".build")] if module_path.endswith(".build") else module_path
+        )
+
         for node in tree.body:
             if not isinstance(node, ast.ClassDef):
                 continue
             if _class_matches(node, task, method):
-                class_names.append(node.name)
+                model_options[node.name] = f"{class_module_path}.{node.name}"
 
-    return class_names
+    return model_options
 
 
 def _class_matches(class_node: ast.ClassDef, task: str, method: str) -> bool:

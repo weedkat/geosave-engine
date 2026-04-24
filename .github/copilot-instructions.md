@@ -1,52 +1,65 @@
-# Geosave Engine Project Guidelines
+# Geosave Engine Agent Guidelines
 
-## Code Style
-- Keep responses and implementations concise and direct.
-- Prefer code-first changes; add brief explanation only when needed.
-- Ask for clarification when required inputs are missing.
-- Avoid speculative architecture changes unless explicitly requested.
-- Follow existing repository patterns and naming/style conventions.
-- Apply KISS, YAGNI, and DRY.
-- Add comments only for non-obvious geospatial logic.
-- Do not hallucinate dependencies, methods, or parameters.
+## Project Goal
 
-## Architecture
-- Core package code lives in `src/geosave_engine`; generated project blueprints live in `src/templates`.
-- CLI entrypoint is `geosave` (`src/geosave_engine/cli/main.py`) and orchestrates `build`, `fit`, `test`, `predict`, `run`, and `docs` workflows.
-- Keep PyTorch Lightning boundaries clear:
-  - `LightningDataModule` handles data loading/sampling/transforms.
-  - `LightningModule` handles model, loss, optimization, and step logic.
-- Prefer class-path driven yaml configuration for models/optimizers/schedulers/losses/callbacks and instantiate through existing resolver patterns.
+Generate ready-to-use geospatial ML workspaces by reliably copying curated templates through the GeoSave CLI.
+
+## Agent Defaults
+
+- Keep outputs concise, actionable, and implementation-first.
+- Prefer direct code changes over long explanations.
+- Do not hallucinate APIs, dependencies, file paths, or parameters.
+- Follow existing project structure, naming, and style.
+- Ask for clarification only when ambiguity blocks implementation.
+- Keep this file for durable defaults; put task-specific workflow in repo instructions.
+
+## Coding Rules
+
+- Use strict typing for all function inputs and returns; avoid Any.
+- Add docstrings for public functions and non-trivial internal contracts.
+- Use constants instead of magic numbers or strings.
+- Add comments only for non-obvious intent.
+- Fail fast with clear errors; avoid silent fallback behavior.
+- Prioritize modularization; each function and class should have one responsibility.
+- Prefer minimal diffs and avoid unrelated refactors.
+- Preserve public APIs unless the user explicitly requests a breaking change.
+- Use clear names; avoid abbreviations unless they are standard in the domain.
+- Keep logic simple: KISS, YAGNI, and DRY.
+- Use established libraries/patterns already present in this repository.
+
+## Exception Policy
+
+- If you must break a rule, add a short comment explaining why.
+- If the same exception appears repeatedly, propose updating the guideline.
+
+## Repository Map
+
+```text
+src
+├── geosave_engine
+│   ├── cli
+│   ├── geodata
+│   ├── ml
+│   └── utils
+└── templates
+    ├── plugins
+    │   ├── notebook
+    │   └── scripts
+    └── workspace
+        ├── common
+        ├── object_detection
+        ├── pixelwise_regression
+        └── semantic_segmentation
+```
 
 ## Required Stack
-- PyTorch Lightning for training orchestration, callbacks, and evaluation workflows.
-- TorchGeo for geospatial dataset loading and spatially aligned sampling.
-- PySTAC Client and `pystac` for STAC API querying and item handling.
-- `odc-stac` for STAC Item loading into xarray and temporal/statistical preprocessing.
 
-## Build and Test
-- Environment setup: `uv sync --locked --no-editable`
-- CLI sanity check: `uv run geosave --help`
-- Run workflows from repo root or project workspace:
-  - `uv run geosave build`
-  - `uv run geosave fit`
-  - `uv run geosave test`
-  - `uv run geosave predict`
-  - `uv run geosave run`
-- Quality checks:
-  - `uv run ruff check .`
-  - `uv run pytest`
-  - `uv run mypy src/geosave_engine tests`
+- Machine Learning: PyTorch Lightning.
+- Dataset Management: TorchGeo-compatible geospatial datasets and aligned sampling.
+- Data Ingestion: odc-stac with xarray-based preprocessing.
+- Raster IO: rioxarray and rasterio for GeoTIFF read/write and CRS-aware raster operations.
+- Dataset Manifests: GeoPackage (GPKG) for dataset manifest handling.
 
-## Geospatial Conventions
-- Preserve CRS and spatial alignment assumptions across imagery, labels, and model inputs.
-- Prefer deterministic/reproducible split behavior when possible.
-- For STAC pipelines, make geometry/bbox and datetime filters explicit.
-- For temporal composites, use explicit aggregation semantics.
+## Testing
 
-## Documentation-First
-- Verify APIs/parameters before implementing non-trivial logic.
-- Use Context7 MCP for up-to-date library documentation and code examples.
-- Link to existing project docs instead of duplicating detail:
-  - `docs/GEOSPATIAL.md`
-  - `docs/TORCHGEO.md`
+use workspace/ folder, a generated workspace from geosave build cli to test geosave functionalities (example: geosave run workspace)

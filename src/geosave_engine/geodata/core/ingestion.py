@@ -20,6 +20,7 @@ from pyproj.aoi import AreaOfInterest
 from pyproj.database import query_utm_crs_info
 
 from geosave_engine.geodata.core.client import BaseStacClient
+from geosave_engine.geodata.core.errors import IngestionError, IngestionErrorReason
 from geosave_engine.geodata.core.query import BaseStacQuery
 from geosave_engine.geodata.core.types import GeoTiffOptions, LoadRequest
 from geosave_engine.utils.geodata.datetime import datetime_range_buffer
@@ -28,8 +29,7 @@ from geosave_engine.utils.geodata.tiff import TiffMetadata, read_tiff_metadata
 
 log = logging.getLogger(__name__)
 
-_UNRECOVERABLE = ("Read failed", "opj_get_decoded_tile")
-_MAX_ATTEMPTS  = 3
+_MAX_LOAD_ATTEMPTS = 3
 
 
 def _utm_crs_from_bbox(bbox: tuple[float, float, float, float]) -> CRS:
@@ -71,30 +71,34 @@ class BaseIngestor(abc.ABC):
         bounds: tuple[float, float, float, float] | None = None,
         resolution: int = 10,
         as_reflectance: bool = True,
-    ) -> xr.DataArray | None:
+    ) -> xr.DataArray:
         """Search and load a (band, y, x) DataArray for a single STAC query.
 
         All items are mosaicked so samples at tile boundaries receive data from
-        both tiles. Retry logic is handled internally (up to 3 attempts).
+        both tiles. Retry logic is handled internally.
 
         ``crs`` and ``bounds`` pin the output to an exact pixel grid. When
         omitted, a UTM CRS is derived from ``query.bbox``.
-
-        Returns ``None`` when no items are found or an unrecoverable error occurs.
 
         The returned DataArray carries provenance in ``.attrs``:
           - ``item_ids``         — list of STAC item IDs
           - ``sensing_datetime`` — ISO-8601 datetime string
           - ``sun_azimuth``      — solar azimuth angle (degrees)
+
+        Raises:
+            IngestionError: with reason ``NO_ITEMS_FOUND`` when the STAC search
+                returns no items, or ``RETRIES_EXHAUSTED`` when all load attempts
+                fail.
         """
         items = self._client.search(query)
         if not items:
-            log.info("query=%s -- no items found", query)
-            return None
-        if query.bbox is None:
-            raise ValueError("query.bbox is required for loading")
+            raise IngestionError(
+                IngestionErrorReason.NO_ITEMS_FOUND,
+                f"no STAC items found for query={query!r}",
+            )
+
         request = LoadRequest(
-            bbox=tuple(query.bbox),
+            bbox=tuple(query.bbox) if query.bbox else None,
             bands=bands,
             crs=crs,
             bounds=bounds,
@@ -111,48 +115,50 @@ class BaseIngestor(abc.ABC):
         date_window: timedelta = timedelta(days=1),
         resolution: int = 10,
         as_reflectance: bool = True,
-    ) -> tuple[xr.DataArray, TiffMetadata] | None:
-        """Load data aligned to a TIFF's spatial grid, returning (DataArray, TiffMetadata).
+    ) -> tuple[xr.DataArray, TiffMetadata]:
+        """Load data aligned to a TIFF's spatial grid.
 
         Datetime is parsed from the TIFF filename (expects ``…-YYYYMMDD.tif``).
-        CRS and bounds are read from the raster. The STAC query is built internally
-        using ``self.COLLECTION`` — no caller-supplied query needed.
+        CRS and bounds are read from the raster. The STAC query is built
+        internally using ``self.COLLECTION``.
 
-        Returns ``None`` when no STAC items are found.
+        Raises:
+            IngestionError: propagated from ``load()`` if no items are found or
+                all retries are exhausted.
         """
-        meta     = read_tiff_metadata(tiff_path)
+        metadata = read_tiff_metadata(tiff_path)
         dt_range = datetime_range_buffer(
-            meta.datetime,
+            metadata.datetime,
             delta_before=date_window,
             delta_after=date_window,
         )
         query = BaseStacQuery(
             collections=[self.COLLECTION],
-            bbox=meta.geometry.bounds,
+            bbox=metadata.geometry.bounds,
             datetime=dt_range,
         )
-        da = self.load(
+        data_array = self.load(
             query,
-            crs=meta.crs,
-            bounds=meta.bounds,
+            crs=metadata.crs,
+            bounds=metadata.bounds,
             bands=bands,
             resolution=resolution,
             as_reflectance=as_reflectance,
         )
-        return None if da is None else (da, meta)
+        return data_array, metadata
 
     def save(
         self,
-        da: xr.DataArray,
+        data_array: xr.DataArray,
         path: Path,
         options: GeoTiffOptions = GeoTiffOptions(),
     ) -> None:
         """Write a DataArray to a compressed tiled GeoTIFF."""
         predictor = options.predictor
         if predictor is None:
-            predictor = 3 if np.issubdtype(da.dtype, np.floating) else 2
+            predictor = 3 if np.issubdtype(data_array.dtype, np.floating) else 2
         Path(path).parent.mkdir(parents=True, exist_ok=True)
-        da.rio.to_raster(
+        data_array.rio.to_raster(
             path,
             compress=options.compress,
             predictor=predictor,
@@ -165,7 +171,7 @@ class BaseIngestor(abc.ABC):
 
     def _apply_radiometry(
         self,
-        da: xr.DataArray,
+        data_array: xr.DataArray,
         items: list[pystac.Item],
     ) -> xr.DataArray:
         """Convert DN to physical values. Default is a passthrough.
@@ -174,7 +180,7 @@ class BaseIngestor(abc.ABC):
         DN→backscatter, DN→elevation, etc.) using scale/offset read from STAC
         item metadata — no hardcoded values.
         """
-        return da
+        return data_array
 
     # ------------------------------------------------------------------
     # Internal helpers
@@ -184,55 +190,59 @@ class BaseIngestor(abc.ABC):
         self,
         items: list[pystac.Item],
         request: LoadRequest,
-    ) -> xr.DataArray | None:
+    ) -> xr.DataArray:
         lazy = self._build_lazy(items, request)
-        for attempt in range(1, _MAX_ATTEMPTS + 1):
+        last_exc: Exception | None = None
+        for attempt in range(1, _MAX_LOAD_ATTEMPTS + 1):
             try:
                 with ProgressBar():
                     return lazy.compute()
-            except Exception as exc:
-                msg = str(exc)
-                if any(tag in msg for tag in _UNRECOVERABLE):
-                    log.warning("Unrecoverable JP2 error (skip): %s", exc)
-                    return None
-                if attempt == _MAX_ATTEMPTS:
-                    log.warning("Load failed after %d attempts (skip): %s", _MAX_ATTEMPTS, exc)
-                    return None
-                log.debug("Retry %d/%d: %s", attempt, _MAX_ATTEMPTS, exc)
+            except Exception as exc:  # reason: odc-stac / dask raise heterogeneous errors; we retry regardless of type
+                last_exc = exc
+                if attempt == _MAX_LOAD_ATTEMPTS:
+                    break
+                log.debug("Load attempt %d/%d failed: %s", attempt, _MAX_LOAD_ATTEMPTS, exc)
                 time.sleep(2 ** attempt)
+
+        raise IngestionError(
+            IngestionErrorReason.RETRIES_EXHAUSTED,
+            f"load failed after {_MAX_LOAD_ATTEMPTS} attempts",
+        ) from last_exc
 
     def _build_lazy(
         self,
         items: list[pystac.Item],
         request: LoadRequest,
     ) -> xr.DataArray:
-        resolved_crs = request.crs or _utm_crs_from_bbox(request.bbox)
+        resolved_crs = request.crs
+        if not resolved_crs and request.bbox:
+            resolved_crs = _utm_crs_from_bbox(request.bbox)
         if request.bounds:
             geobox = GeoBox.from_bbox(request.bounds, crs=resolved_crs, resolution=request.resolution)
-            ds = odc_load(
+            dataset = odc_load(
                 items, bands=request.bands, geobox=geobox,
                 resampling="bilinear", chunks={"x": 1024, "y": 1024},
             )
         else:
-            ds = odc_load(
+            dataset = odc_load(
                 items, bands=request.bands, bbox=request.bbox, crs=resolved_crs,
                 resolution=request.resolution,
                 resampling="bilinear", chunks={"x": 1024, "y": 1024},
             )
-        da = ds.to_array(dim="band")
+        data_array = dataset.to_array(dim="band")
 
-        time_dims = [d for d in da.dims if d not in ("band", "y", "x")]
+        time_dims = [d for d in data_array.dims if d not in ("band", "y", "x")]
         if time_dims:
-            da = da.isel({d: 0 for d in time_dims}, drop=True)
+            data_array = data_array.isel({d: 0 for d in time_dims}, drop=True)
 
-        da = da.rio.set_spatial_dims(x_dim="x", y_dim="y", inplace=False)
-        da.attrs.update({
+        data_array = data_array.rio.set_spatial_dims(x_dim="x", y_dim="y", inplace=False)
+        data_array.attrs.update({
             "item_ids":         [i.id for i in items],
-            "sensing_datetime": items[0].properties.get("datetime"),
-            "sun_azimuth":      float(items[0].properties.get("view:sun_azimuth", 0.0)),
+            "sensing_datetime": items[0].properties["datetime"],
+            "sun_azimuth":      float(items[0].properties["view:sun_azimuth"]),
         })
 
         if request.as_reflectance:
-            da = self._apply_radiometry(da, items)
+            data_array = self._apply_radiometry(data_array, items)
 
-        return da
+        return data_array

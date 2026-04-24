@@ -20,6 +20,7 @@ import pandas as pd
 import xarray as xr
 from tqdm import tqdm
 
+from geosave_engine.geodata.core.errors import IngestionError, IngestionErrorReason
 from geosave_engine.geodata.ingestion import Sentinel2L1CIngestor
 from geosave_engine.geodata.processing.masking import (
     build_shadow_mask,
@@ -27,7 +28,7 @@ from geosave_engine.geodata.processing.masking import (
     compute_cdi_mask,
     compute_s2c_mask,
 )
-from geosave_engine.geodata.stac_client.cdse_client import CdseClient
+from geosave_engine.geodata.stac_client.cdse import CdseClient
 from geosave_engine.utils.geodata.manifest import (
     append_to_manifest,
     load_manifest,
@@ -149,16 +150,13 @@ def main() -> None:
             continue
 
         try:
-            result = svc.from_tiff(tiff_path, bands=_ALL_BANDS)
-        except Exception as exc:
-            tqdm.write(f"[warn] {key} -- error: {exc}")
+            all_da, tiff_meta = svc.from_tiff(tiff_path, bands=_ALL_BANDS)
+        except IngestionError as exc:
+            if exc.reason is IngestionErrorReason.NO_ITEMS_FOUND:
+                tqdm.write(f"[skip] {key} -- {exc.reason.value}: {exc}")
+            else:
+                tqdm.write(f"[warn] {key} -- {exc.reason.value}: {exc}")
             continue
-
-        if result is None:
-            tqdm.write(f"[skip] {key} -- no data found")
-            continue
-
-        all_da, tiff_meta = result
 
         nodata_mask = np.isnan(all_da.sel(band=BANDS).values).all(axis=0)
         nodata_pct  = float(nodata_mask.mean())
