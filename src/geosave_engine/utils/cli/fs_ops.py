@@ -30,6 +30,24 @@ def _build_ignore_callback(source: Path, patterns: tuple[str, ...]):
     return ignore_patterns
 
 
+def ensure_split_dirs(
+    root: Path,
+    datasets: Iterable[str],
+    splits: Iterable[str],
+) -> dict[tuple[str, str], Path]:
+    """Create ``root/<dataset>/<split>/`` for every (dataset, split) pair.
+
+    Returns a mapping ``(dataset, split) → Path`` for downstream lookups.
+    """
+    paths: dict[tuple[str, str], Path] = {}
+    for dataset in datasets:
+        for split in splits:
+            target = Path(root) / dataset / split
+            target.mkdir(parents=True, exist_ok=True)
+            paths[(dataset, split)] = target
+    return paths
+
+
 def copy_tree(
     source: Path,
     destination: Path,

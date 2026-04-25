@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+from pathlib import Path
+
 from geosave_engine.cli.errors import AbortedByUserError, WorkspaceError
 from geosave_engine.cli.io import Prompter
 from geosave_engine.cli.search import (
@@ -40,25 +42,75 @@ def resolve_artifact_args(
     artifacts: str | None,
     layout: ProjectLayout,
     prompter: Prompter,
+    *,
+    config_override: str | None = None,
 ) -> list[str]:
-    """Return the `--model <path>` pair pointing at a trained-artifact directory."""
+    """Resolve ``--artifacts <dir>`` to Lightning subcommand args.
+
+    Expands the artifact directory into ``--config <dir>/config.yaml`` and the
+    latest ``--ckpt_path <dir>/checkpoints/*.ckpt`` (when present). If
+    ``config_override`` is provided, that ``--config`` is used instead of the
+    one inside the artifact dir.
+    """
+    selected_dir: Path | None = None
     if artifacts:
-        return ["--model", artifacts]
-
-    parents = find_artifact_parents(layout)
-    if not parents:
-        raise WorkspaceError(
-            "No valid artifact directories containing config files found in "
-            f"'{layout.artifacts_dir}'."
+        selected_dir = Path(artifacts).resolve()
+    else:
+        parents = find_artifact_parents(layout)
+        if not parents:
+            raise WorkspaceError(
+                "No valid artifact directories containing config files found in "
+                f"'{layout.artifacts_dir}'."
+            )
+        choices = [
+            (
+                str(path.relative_to(layout.artifacts_dir)),
+                str(path.resolve()),
+            )
+            for path in parents
+        ]
+        selected = prompter.select_mapping(
+            "Select the model artifacts containing config:",
+            choices,
         )
+        if not selected:
+            raise AbortedByUserError("Artifact selection cancelled.")
+        selected_dir = Path(selected)
 
-    selected = prompter.select_mapping(
-        "Select the model artifacts containing config:",
-        [(path.name, str(path.resolve())) for path in parents],
-    )
-    if not selected:
-        raise AbortedByUserError("Artifact selection cancelled.")
-    return ["--model", selected]
+    if not selected_dir.is_dir():
+        raise WorkspaceError(f"Artifact directory not found: {selected_dir}")
+
+    args: list[str] = []
+    if config_override:
+        args.extend(["--config", config_override])
+    else:
+        artifact_cfg = _artifact_config_path(selected_dir)
+        if artifact_cfg is None:
+            raise WorkspaceError(
+                f"No config.yaml found inside artifact dir '{selected_dir}'."
+            )
+        args.extend(["--config", str(artifact_cfg)])
+
+    ckpt = _latest_checkpoint(selected_dir)
+    if ckpt is not None:
+        args.extend(["--ckpt_path", str(ckpt)])
+    return args
+
+
+def _artifact_config_path(artifact_dir: Path) -> Path | None:
+    for name in ("config.yaml", "config.yml"):
+        candidate = artifact_dir / name
+        if candidate.is_file():
+            return candidate
+    return None
+
+
+def _latest_checkpoint(artifact_dir: Path) -> Path | None:
+    ckpt_dir = artifact_dir / "checkpoints"
+    if not ckpt_dir.is_dir():
+        return None
+    ckpts = sorted(ckpt_dir.glob("*.ckpt"), key=lambda p: p.stat().st_mtime)
+    return ckpts[-1] if ckpts else None
 
 
 def resolve_script_invocation(

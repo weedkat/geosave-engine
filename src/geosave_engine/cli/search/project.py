@@ -36,16 +36,24 @@ def find_configs(layout: ProjectLayout) -> list[Path]:
 
 
 def find_artifact_parents(layout: ProjectLayout) -> list[Path]:
-    """Return artifact sub-directories that contain at least one YAML config."""
+    """Return artifact directories that contain a ``config.yaml``.
+
+    Supports the TensorBoard-style nesting written by the auto-injected logger:
+    ``artifacts/<exp_name>/version_<n>/config.yaml``. Falls back to direct
+    children of ``artifacts/`` if a config sits one level up.
+    """
     artifacts_dir = layout.artifacts_dir
     if not artifacts_dir.is_dir():
         return []
-    return [
-        directory
-        for directory in sorted(artifacts_dir.iterdir())
-        if directory.is_dir()
-        and (list(directory.glob("*.yaml")) or list(directory.glob("*.yml")))
-    ]
+
+    # Recursive scan up to two levels deep — enough for both the historical
+    # `artifacts/<run>/config.yaml` layout and the current
+    # `artifacts/<exp>/version_<n>/config.yaml` layout.
+    candidates: set[Path] = set()
+    for depth_glob in ("*/config.yaml", "*/*/config.yaml", "*/config.yml", "*/*/config.yml"):
+        for cfg in artifacts_dir.glob(depth_glob):
+            candidates.add(cfg.parent)
+    return sorted(candidates)
 
 
 def find_entrypoint(layout: ProjectLayout, script_name: str = "main.py") -> Path | None:

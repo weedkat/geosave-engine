@@ -27,7 +27,10 @@ class TransformsCompose:
 
         transforms = [self.build_transforms(spec) for spec in cfg]
 
-        self.transform = A.Compose(transforms)
+        # CRS warping in TorchGeo can produce image/mask sizes that differ by a
+        # few pixels for the same tile pair. The downstream resize/crop step
+        # normalises this, so albumentations' strict shape check is disabled.
+        self.transform = A.Compose(transforms, is_check_shapes=False)
 
     def __call__(self, sample: Sample | None = None, /, **kwargs):
         if sample is None:
@@ -63,7 +66,7 @@ class TransformsCompose:
         name = spec['name']
         args = spec.get('kwargs', {}).copy()
         cls = getattr(A, name)
-        
+
         if name in ("OneOf", "SomeOf", "Compose"):
             nested_spec = args.pop('transforms', [])
             transforms = [self.build_transforms(t) for t in nested_spec]
@@ -74,7 +77,14 @@ class TransformsCompose:
                 args['size'] = [self.input_size, self.input_size]
             elif 'size' not in args:
                 raise ValueError(f"{name} requires 'size' in kwargs or input_size passed to TransformsCompose")
-            
+            # Albumentations splits the API: RandomResizedCrop takes `size`,
+            # while RandomCrop/CenterCrop/Resize take separate `height`/`width`.
+            if name in ("RandomCrop", "CenterCrop", "Resize"):
+                size = args.pop('size')
+                height, width = (size, size) if isinstance(size, int) else size
+                args.setdefault('height', height)
+                args.setdefault('width', width)
+
         return cls(**args)
 
     def __add__(self, other):

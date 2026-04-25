@@ -1,7 +1,8 @@
-"""TIFF file utilities: metadata reading and datetime parsing."""
+"""TIFF file utilities: metadata reading, datetime parsing, filename conventions."""
 from __future__ import annotations
 
 import dataclasses
+import re
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
@@ -10,6 +11,16 @@ import pyproj
 import rasterio
 import shapely.geometry
 import shapely.ops
+
+# Filename convention: <prefix>_<lon>_<lat>-<YYYYMMDD>.tif
+# Must match Sentinel2L1C.filename_regex used by TorchGeo dataset discovery.
+_TIFF_ID_RE = re.compile(
+    r"^(?P<prefix>[A-Za-z0-9_]+?)"
+    r"_(?P<lon>-?\d+(?:\.\d+)?)"
+    r"_(?P<lat>-?\d+(?:\.\d+)?)"
+    r"-(?P<date>\d{8})\.tif$"
+)
+_TIFF_DATE_RE = re.compile(r"(?<!\d)(?P<date>\d{8})(?!\d)")
 
 
 @dataclasses.dataclass(frozen=True)
@@ -22,15 +33,57 @@ class TiffMetadata:
     geometry: Any                               # shapely Polygon in WGS84
 
 
+@dataclasses.dataclass(frozen=True)
+class TiffId:
+    """Components encoded in a canonical geosave TIFF filename."""
+
+    prefix: str
+    lon: float
+    lat: float
+    date: datetime
+
+
+def build_tiff_filename(meta: "TiffMetadata", prefix: str) -> str:
+    """Format a canonical TIFF filename: ``<prefix>_<lon>_<lat>-<YYYYMMDD>.tif``.
+
+    Longitude/latitude are derived from the centroid of ``meta.geometry`` (WGS84);
+    the date is taken from ``meta.datetime``.
+    """
+    if "_" in prefix or "-" in prefix:
+        raise ValueError(f"prefix may not contain '_' or '-': {prefix!r}")
+    centroid = meta.geometry.centroid
+    return f"{prefix}_{centroid.x:.10f}_{centroid.y:.10f}-{meta.datetime.strftime('%Y%m%d')}.tif"
+
+
+def parse_tiff_id(path: Path) -> TiffId:
+    """Parse a canonical TIFF filename into its components."""
+    match = _TIFF_ID_RE.match(Path(path).name)
+    if not match:
+        raise ValueError(f"filename does not match canonical TIFF pattern: {Path(path).name!r}")
+    return TiffId(
+        prefix=match["prefix"],
+        lon=float(match["lon"]),
+        lat=float(match["lat"]),
+        date=datetime.strptime(match["date"], "%Y%m%d").replace(tzinfo=timezone.utc),
+    )
+
+
 def parse_tiff_datetime(path: Path) -> datetime:
-    """Parse acquisition date from TIFF filename suffix (expects …-YYYYMMDD.tif)."""
-    date_token = Path(path).stem.rsplit("-", 1)[-1]
+    """Parse acquisition date from TIFF filename suffix.
+
+    Accepts canonical names like ``dw_<lon>_<lat>-YYYYMMDD.tif`` and tolerant
+    variants such as macOS AppleDouble sidecars (``._`` prefix) or auxiliary
+    suffixes after the date token.
+    """
+    name = Path(path).name
+    stem = name[2:] if name.startswith("._") else Path(path).stem
+    match = _TIFF_DATE_RE.search(stem)
+    if not match:
+        raise ValueError(f"cannot parse acquisition date from TIFF filename: {name!r}")
     try:
-        return datetime.strptime(date_token, "%Y%m%d").replace(tzinfo=timezone.utc)
+        return datetime.strptime(match["date"], "%Y%m%d").replace(tzinfo=timezone.utc)
     except ValueError as exc:
-        raise ValueError(
-            f"cannot parse acquisition date from TIFF filename: {Path(path).name!r}"
-        ) from exc
+        raise ValueError(f"cannot parse acquisition date from TIFF filename: {name!r}") from exc
 
 
 def read_tiff_metadata(path: Path) -> TiffMetadata:

@@ -49,18 +49,32 @@ class ProjectScriptRunner:
         run_args = ["fit", *resolve_config_args(config, self.layout, self.prompter), *extra_args]
         self._run_entrypoint(run_args, operation="training")
 
-    def test(self, artifacts: str | None, extra_args: list[str]) -> None:
+    def test(
+        self,
+        artifacts: str | None,
+        extra_args: list[str],
+        config: str | None = None,
+    ) -> None:
         run_args = [
             "test",
-            *resolve_artifact_args(artifacts, self.layout, self.prompter),
+            *resolve_artifact_args(
+                artifacts, self.layout, self.prompter, config_override=config
+            ),
             *extra_args,
         ]
         self._run_entrypoint(run_args, operation="test")
 
-    def predict(self, artifacts: str | None, extra_args: list[str]) -> None:
+    def predict(
+        self,
+        artifacts: str | None,
+        extra_args: list[str],
+        config: str | None = None,
+    ) -> None:
         run_args = [
             "predict",
-            *resolve_artifact_args(artifacts, self.layout, self.prompter),
+            *resolve_artifact_args(
+                artifacts, self.layout, self.prompter, config_override=config
+            ),
             *extra_args,
         ]
         self._run_entrypoint(run_args, operation="inference")

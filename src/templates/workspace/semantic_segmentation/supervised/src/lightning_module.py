@@ -1,169 +1,145 @@
-import torch
+from __future__ import annotations
+
 from typing import cast
 
+import torch
 from lightning import LightningModule
 from lightning.pytorch.loggers import TensorBoardLogger
+
 from geosave_engine.ml.callbacks.calibration import CalibrationCallback
+from geosave_engine.ml.core.metrics import get_segmentation_metrics
+from geosave_engine.utils.geodata.manifest import TrainingMeta
 from geosave_engine.utils.ml.resolver import (
     instantiate_from_config_build,
     instantiate_optimizers_from_config,
 )
-from geosave_engine.ml.core.metrics import get_segmentation_metrics
+
 
 class GeosaveLightningModule(LightningModule):
+    """Semantic-segmentation Lightning module driven by manifest metadata.
+
+    ``in_channels``, ``num_classes``, and ``ignore_index`` are pulled from
+    ``self.trainer.datamodule`` (via ``training_meta`` + ``in_channels``) at
+    ``configure_model`` time, so the YAML config does not need to repeat them.
     """
-    Base class for GeoSave lightning modules.
-    Lightning modules are responsible for defining the neural network architecture and the training logic.
-    They should implement the `training_step`, `validation_step`, and `test_step` methods to handle the training, validation, and testing loops.
-    """
+
     def __init__(
         self,
         model_config: dict,
         optim_config: list[dict],
         loss_config: dict,
-        threshold_calibration: bool = True,
+        threshold_calibration: bool = False,
         log_image_every_n_steps: int = 5,
     ):
         super().__init__()
         self.save_hyperparameters()
-        self.calibrating: bool = False
-        self.threshold_calibration = threshold_calibration
-        self.log_image_every_n_steps = log_image_every_n_steps
-
         self.model_config = model_config
         self.optim_config = optim_config
         self.loss_config = loss_config
+        self.threshold_calibration = threshold_calibration
+        self.log_image_every_n_steps = log_image_every_n_steps
 
-        dense_model = model_config.get("dense_model")
-        if dense_model is not None and isinstance(dense_model, dict):
-            self.model: torch.nn.Module = instantiate_from_config_build(dense_model)  # type: ignore[assignment]
-        else:
-            raise ValueError("Model configuration must include a 'dense_model' key with a valid model configuration dictionary.")
+        self.calibrating: bool = False
 
-        loss = loss_config.get("supervised")
-        if loss is not None and isinstance(loss, dict):
-            self.loss: torch.nn.Module = instantiate_from_config_build(loss)  # type: ignore[assignment]
-        else:
-            raise ValueError("Loss configuration must include a 'supervised' key with a valid loss configuration dictionary.")
+        if "dense_model" not in model_config or not isinstance(model_config["dense_model"], dict):
+            raise ValueError("model_config must include a 'dense_model' dict.")
+        if "supervised" not in loss_config or not isinstance(loss_config["supervised"], dict):
+            raise ValueError("loss_config must include a 'supervised' dict.")
 
-        self.num_classes = int(dense_model["classes"])
-        self.ignore_index = loss_config["supervised"].get("ignore_index")
+    # ---------------------------------------------------------------------
+    # Configuration
+    # ---------------------------------------------------------------------
+    def configure_model(self) -> None:
+        """Build dense model + loss using manifest-derived shape from the datamodule."""
+        if hasattr(self, "model"):
+            return  # idempotent — Lightning may call this more than once
+
+        meta = self._training_meta()
+        in_channels = int(self._datamodule().in_channels)
+
+        dense_cfg = dict(self.model_config["dense_model"])
+        dense_cfg["in_channels"] = in_channels
+        dense_cfg["classes"] = meta.num_classes
+        self.model: torch.nn.Module = instantiate_from_config_build(dense_cfg)
+
+        loss_cfg = dict(self.loss_config["supervised"])
+        loss_cfg.setdefault("ignore_index", meta.ignore_index)
+        self.loss: torch.nn.Module = instantiate_from_config_build(loss_cfg)
+
+        self.num_classes = meta.num_classes
+        self.ignore_index = meta.ignore_index
         self.register_buffer(
             "class_thresholds",
             torch.full((self.num_classes,), 0.5),
         )
 
-    def forward(self, *args, **kwargs):
-        return self.model(*args, **kwargs)
-
-    # ---------------------------------------------------------------------
-    # Configuration
-    # ---------------------------------------------------------------------
-    def configure_model(self):
-        """Create modules in a strategy/precision-aware context."""
-        return super().configure_model()
-
     def configure_callbacks(self):
-        """Return model-specific callbacks to merge with Trainer callbacks."""
         if not self.threshold_calibration:
             return []
         return [CalibrationCallback()]
 
     def configure_optimizers(self):
-        """Choose optimizer and optional LR scheduler configuration."""
         return instantiate_optimizers_from_config(self.optim_config, model=self.model)
 
     def setup(self, stage: str | None = None) -> None:
-        class_names = [f"class_{i}" for i in range(self.num_classes)]
+        from copy import deepcopy
+        meta = self._training_meta()
         metrics = get_segmentation_metrics(
-            num_classes=self.num_classes,
-            class_names=class_names,
-            ignore_index=self.ignore_index,
+            num_classes=meta.num_classes,
+            class_names=meta.class_names,
+            ignore_index=meta.ignore_index,
         )
-        self.train_metrics = metrics.clone(prefix="train_")
-        self.val_metrics   = metrics.clone(prefix="val_")
-        self.test_metrics  = metrics.clone(prefix="test_")
+        self.train_scalar = metrics.scalar.clone(prefix="train_")
+        self.val_scalar = metrics.scalar.clone(prefix="val_")
+        self.test_scalar = metrics.scalar.clone(prefix="test_")
+        self.train_per_class = deepcopy(metrics.per_class)
+        self.val_per_class = deepcopy(metrics.per_class)
+        self.test_per_class = deepcopy(metrics.per_class)
+
+    def forward(self, *args, **kwargs):
+        return self.model(*args, **kwargs)
 
     # ---------------------------------------------------------------------
-    # Common LightningModule utilities
+    # Training / validation / test
     # ---------------------------------------------------------------------
-    @classmethod
-    def load_from_checkpoint(
-        cls,
-        checkpoint_path,
-        map_location=None,
-        hparams_file=None,
-        strict=None,
-        weights_only=None,
-        **kwargs,
-    ):
-        """Load a model from a checkpoint."""
-        return super().load_from_checkpoint(
-            checkpoint_path,
-            map_location=map_location,
-            hparams_file=hparams_file,
-            strict=strict,
-            weights_only=weights_only,
-            **kwargs,
-        )
-
-    # ---------------------------------------------------------------------
-    # Fit lifecycle
-    # ---------------------------------------------------------------------
-    def on_fit_start(self):
-        """Run at the very beginning of fit."""
-        return super().on_fit_start()
-
-    def on_fit_end(self):
-        """Run at the very end of fit."""
-        return super().on_fit_end()
-
-    # ---------------------------------------------------------------------
-    # Training lifecycle
-    # ---------------------------------------------------------------------
-    def on_train_start(self):
-        """Run at the start of the training loop."""
-        return super().on_train_start()
-
-    def on_train_epoch_start(self):
-        """Run at the beginning of each training epoch."""
-        return super().on_train_epoch_start()
-
     def training_step(self, batch, batch_idx):
         image, label = batch["image"], batch["label"]
         logits = self(image)
         loss = self.loss(logits, label)
+
         self.log("train_loss", loss, on_step=True, on_epoch=True, prog_bar=True)
-        self.train_metrics.update(logits, label)
+        self.train_scalar.update(logits, label)
+        self.train_per_class.update(logits, label)
+
         if self.global_step % self.log_image_every_n_steps == 0:
             self._log_segmentation("train", label, logits)
+
         return loss
 
     def on_train_epoch_end(self):
-        self.log_dict(self.train_metrics.compute())
-        self.train_metrics.reset()
+        train_metrics = {
+            **self.train_scalar.compute(),
+            **self._prefixed(self.train_per_class.compute(), "train_"),
+        }
 
-    def on_train_end(self):
-        """Run at the end of the training loop."""
-        return super().on_train_end()
-
-    # ---------------------------------------------------------------------
-    # Validation lifecycle
-    # ---------------------------------------------------------------------
-    def on_validation_start(self):
-        """Run at the start of validation."""
-        return super().on_validation_start()
-
-    def on_validation_epoch_start(self):
-        """Run at the beginning of each validation epoch."""
-        return super().on_validation_epoch_start()
+        self.log_dict(train_metrics, on_step=False, on_epoch=True)
+        self.train_scalar.reset()
+        self.train_per_class.reset()
+        # Lightning fires `_logger_connector.on_epoch_end()` AFTER this hook,
+        # so val metrics from the just-finished epoch are already in
+        # `callback_metrics` while train metrics aren't yet — pass the freshly
+        # computed train dict to the monitor so the rendered table has both.
+        self._render_epoch_summary(train_metrics)
 
     def validation_step(self, batch, batch_idx, dataloader_idx=0):
         image, label = batch["image"], batch["label"]
         logits = self(image)
         loss = self.loss(logits, label)
+
         self.log("val_loss", loss, on_step=False, on_epoch=True, prog_bar=True, sync_dist=True)
-        self.val_metrics.update(logits, label)
+        self.val_scalar.update(logits, label)
+        self.val_per_class.update(logits, label)
+        
         if batch_idx == 0:
             self._log_segmentation("val", label, logits)
 
@@ -175,77 +151,72 @@ class GeosaveLightningModule(LightningModule):
         return loss
 
     def on_validation_epoch_end(self):
-        self.log_dict(self.val_metrics.compute())
-        self.val_metrics.reset()
-
-    def on_validation_end(self):
-        """Run at the end of validation."""
-        return super().on_validation_end()
-
-    # ---------------------------------------------------------------------
-    # Test lifecycle
-    # ---------------------------------------------------------------------
-    def on_test_start(self):
-        """Run at the start of testing."""
-        return super().on_test_start()
-
-    def on_test_epoch_start(self):
-        """Run at the beginning of each test epoch."""
-        return super().on_test_epoch_start()
+        self.log_dict(self.val_scalar.compute(), on_step=False, on_epoch=True)
+        self.log_dict(self._prefixed(self.val_per_class.compute(), "val_"), on_step=False, on_epoch=True)
+        self.val_scalar.reset()
+        self.val_per_class.reset()
 
     def test_step(self, batch, batch_idx, dataloader_idx=0):
         image, label = batch["image"], batch["label"]
         logits = self(image)
         loss = self.loss(logits, label)
         self.log("test_loss", loss, on_step=False, on_epoch=True, sync_dist=True)
-        self.test_metrics.update(logits, label)
+        self.test_scalar.update(logits, label)
+        self.test_per_class.update(logits, label)
         return loss
 
     def on_test_epoch_end(self):
-        self.log_dict(self.test_metrics.compute())
-        self.test_metrics.reset()
-
-    def on_test_end(self):
-        """Run at the end of testing."""
-        return super().on_test_end()
-
-    # ---------------------------------------------------------------------
-    # Predict lifecycle
-    # ---------------------------------------------------------------------
-    def on_predict_start(self):
-        """Run at the start of prediction."""
-        return super().on_predict_start()
-
-    def on_predict_epoch_start(self):
-        """Run at the beginning of each prediction epoch."""
-        return super().on_predict_epoch_start()
+        self.log_dict(self.test_scalar.compute(), on_step=False, on_epoch=True)
+        self.log_dict(self._prefixed(self.test_per_class.compute(), "test_"), on_step=False, on_epoch=True)
+        self.test_scalar.reset()
+        self.test_per_class.reset()
 
     def predict_step(self, batch, batch_idx, dataloader_idx=0):
         logits = self(batch["image"])
         return self.postprocess(logits)
 
-    def on_predict_epoch_end(self):
-        """Run at the end of each prediction epoch."""
-        return super().on_predict_epoch_end()
-
-    def on_predict_end(self):
-        """Run at the end of prediction."""
-        return super().on_predict_end()
-
     # ---------------------------------------------------------------------
-    # Checkpoint hooks
+    # Helpers
     # ---------------------------------------------------------------------
-    def on_save_checkpoint(self, checkpoint):
-        """Save additional state into the checkpoint dictionary."""
-        return super().on_save_checkpoint(checkpoint)
+    @staticmethod
+    def _prefixed(d: dict, prefix: str) -> dict:
+        return {f"{prefix}{k}": v for k, v in d.items()}
 
-    def on_load_checkpoint(self, checkpoint):
-        """Restore additional state from the checkpoint dictionary."""
-        return super().on_load_checkpoint(checkpoint)
+    def _render_epoch_summary(self, fresh_train_metrics: dict) -> None:
+        """Push the epoch summary panel through ``LiveTrainingMonitor`` if attached.
 
-    # ---------------------------------------------------------------------
-    # Non Lightning methods for model-specific logic
-    # ---------------------------------------------------------------------
+        ``fresh_train_metrics`` is the just-computed train dict; val metrics
+        from the same epoch are read from ``trainer.callback_metrics`` (already
+        materialised by the val loop's ``logger_connector.on_epoch_end``).
+        """
+        from geosave_engine.ml.callbacks.training_monitor import LiveTrainingMonitor
+        if self.trainer is None or self.trainer.sanity_checking:
+            return
+        monitor = next(
+            (cb for cb in self.trainer.callbacks if isinstance(cb, LiveTrainingMonitor)),
+            None,
+        )
+        if monitor is None:
+            return
+        merged = {**self.trainer.callback_metrics, **fresh_train_metrics}
+        monitor.render_epoch_summary(self.trainer, merged)
+
+    def _datamodule(self):
+        dm = getattr(self.trainer, "datamodule", None) if self._trainer is not None else None
+        if dm is None:
+            raise RuntimeError(
+                "GeosaveLightningModule requires a LightningDataModule with "
+                "`training_meta` and `in_channels` attributes."
+            )
+        return dm
+
+    def _training_meta(self) -> TrainingMeta:
+        meta = getattr(self._datamodule(), "training_meta", None)
+        if not isinstance(meta, TrainingMeta):
+            raise RuntimeError(
+                "datamodule.training_meta is missing or not a TrainingMeta instance."
+            )
+        return meta
 
     def _log_segmentation(self, prefix: str, labels: torch.Tensor, logits: torch.Tensor) -> None:
         tb_logger = next(
@@ -254,15 +225,14 @@ class GeosaveLightningModule(LightningModule):
         if tb_logger is None:
             return
         writer = tb_logger.experiment
-        step  = self.global_step
+        step = self.global_step
         scale = float(self.num_classes - 1) or 1.0
-        label   = labels[0].float()
-        pred  = logits[0].argmax(dim=0).float()
-        writer.add_image(f"{prefix}/label",      (label  / scale).unsqueeze(0), step)  # type: ignore[attr-defined]
-        writer.add_image(f"{prefix}/prediction", (pred / scale).unsqueeze(0), step)  # type: ignore[attr-defined]
+        label = labels[0].float()
+        pred = logits[0].argmax(dim=0).float()
+        writer.add_image(f"{prefix}/label", (label / scale).unsqueeze(0), step)
+        writer.add_image(f"{prefix}/prediction", (pred / scale).unsqueeze(0), step)
 
     def postprocess(self, logits: torch.Tensor) -> tuple[torch.Tensor, torch.Tensor]:
-        """Convert logits to predictions and apply calibrated threshold rejection."""
         probs = logits.softmax(dim=1)
         max_probs, preds = probs.max(dim=1)
 

@@ -3,12 +3,8 @@ model_name: UNet
 trainer:
   max_epochs: 100
   log_every_n_steps: 10
-  logger:
-    # class_path: lightning.pytorch.loggers.MLFlowLogger
-    # init_args:
-    #   experiment_name: geosave-semantic-segmentation
-    #   tracking_uri: http://localhost:5000
   callbacks:
+    - class_path: geosave_engine.ml.callbacks.LiveTrainingMonitor
     - class_path: lightning.pytorch.callbacks.ModelCheckpoint
       init_args:
         monitor: val_loss
@@ -25,13 +21,12 @@ trainer:
         logging_interval: epoch
 
 model:
+  threshold_calibration: false
   model_config:
     dense_model:
       class_path: geosave_engine.ml.models.smp.Unet
       encoder_name: resnet34
       encoder_weights: imagenet
-      in_channels: 9
-      classes: 9
   optim_config:
     - class_path: geosave_engine.ml.optimizers.AdamW
       weight_decay: 0.01
@@ -48,12 +43,12 @@ model:
   loss_config:
     supervised:
       class_path: geosave_engine.ml.losses.CrossEntropyLoss
-      ignore_index: 255
 
 data:
   class_path: src.data_module.GeosaveDataModule
   init_args:
-    manifest: data/manifest.gpkg
+    data_path: data
+    manifest_path: data/manifest.gpkg
     batch_size: 16
     num_workers: 4
     train_transform:
@@ -74,5 +69,8 @@ data:
       - name: ToTensorV2
         kwargs: {}
     infer_transform:
+      - name: CenterCrop
+        kwargs:
+          size: [256, 256]
       - name: ToTensorV2
         kwargs: {}

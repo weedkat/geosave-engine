@@ -169,17 +169,24 @@ def test(
         "-a",
         help="Path to a specific model artifacts directory to evaluate against",
     ),
+    config: str | None = typer.Option(
+        None,
+        "--config",
+        "-c",
+        help="Override the artifact's config.yaml with an alternate config file",
+    ),
 ):
     """
     Test models evaluated under a GeoSave pipeline.
 
-    This executes the testing logic using your generated `train.py test` script.
-    It requires selecting an artifact directory inside `artifacts/` that contains
-    saved model checkpoints and configuration files. If `--artifacts` isn't found,
-    the CLI prompts you interactively.
+    Selects an artifact directory inside `artifacts/` that contains a
+    `config.yaml` and a `checkpoints/*.ckpt`. The CLI auto-loads the artifact's
+    config and picks the latest checkpoint; pass `--config` to override.
     """
     _handle(
-        lambda: _make_runner(project_dir).test(artifacts=artifacts, extra_args=ctx.args)
+        lambda: _make_runner(project_dir).test(
+            artifacts=artifacts, extra_args=ctx.args, config=config
+        )
     )
 
 
@@ -198,17 +205,23 @@ def predict(
         "-a",
         help="Path to the trained model artifacts directory used for predictions",
     ),
+    config: str | None = typer.Option(
+        None,
+        "--config",
+        "-c",
+        help="Override the artifact's config.yaml with an alternate config file",
+    ),
 ):
     """
     Run predictions inside a GeoSave workspace.
 
-    This command invokes `inference.py` inside the project folder. It requires specifying
-    which artifact folder (containing your trained weights and config metadata) to use
-    to properly reconstruct the model before testing your data.
+    Selects an artifact directory inside `artifacts/` containing a
+    `config.yaml` and a `checkpoints/*.ckpt`. Auto-loads the config and picks
+    the latest checkpoint; pass `--config` to override.
     """
     _handle(
         lambda: _make_runner(project_dir).predict(
-            artifacts=artifacts, extra_args=ctx.args
+            artifacts=artifacts, extra_args=ctx.args, config=config
         )
     )
 

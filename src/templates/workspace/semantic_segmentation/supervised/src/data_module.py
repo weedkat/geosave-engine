@@ -14,15 +14,20 @@ from geosave_engine.ml.core.transform import (
     remap,
     rename_key,
 )
-from geosave_engine.utils.geodata.manifest import load_class_meta
+from geosave_engine.utils.geodata.manifest import (
+    derive_training_meta,
+    load_band_meta,
+    load_class_meta,
+)
 
-# Replace with the source-class-id -> training-class-id mapping for your label
-# product. Keys must cover every value that appears in the raster labels.
-CLASS_ID_MAP: dict[int, int] = {
-    # 0: 255,  # e.g. no-data -> ignore
-    # 1: 0,
-    # 2: 1,
-}
+# manifest.gpkg setups, changethis
+CLASS_META_LAYER = "metadata_dynamicworld"
+BAND_META_LAYER = "bands_sentinel_2_l1c"
+
+# IF labels band is more than one layer, set this up, otherwise delete
+DW_LABEL_BANDS: tuple[str, ...] = ("label", "prob")
+RasterLabel.all_bands = DW_LABEL_BANDS
+
 
 class GeosaveDataModule(LightningDataModule):
     """Semantic-segmentation datamodule over pre-chipped TorchGeo datasets.
@@ -32,7 +37,9 @@ class GeosaveDataModule(LightningDataModule):
       - predict:           ``<data_path>/sentinel_2_l1c`` (COGs)
 
     Training samples intersect ``sentinel_2_l1c & dynamicworld & cloud_mask``;
-    the cloud mask is available at ``sample["cloud_mask"]``.
+    the dynamicworld mask is exposed as ``sample["label"]`` and the cloud mask as
+    ``sample["cloud_mask"]``. ``num_classes``, ``ignore_index``, ``class_id_map``,
+    and ``in_channels`` are derived from the manifest's metadata layers.
     """
 
     def __init__(
@@ -64,53 +71,89 @@ class GeosaveDataModule(LightningDataModule):
         self.prefetch_factor = prefetch_factor
         self.persistent_workers = persistent_workers
 
+        # Manifest metadata is read up-front so the LightningModule can read
+        # `in_channels` / `training_meta` from `configure_model()` without
+        # having to wait for `setup()` to run on every stage.
+        class_meta = load_class_meta(self.manifest_path, layer=CLASS_META_LAYER)
+        band_meta = load_band_meta(self.manifest_path, layer=BAND_META_LAYER)
+        self.training_meta = derive_training_meta(class_meta)
+        self.bands: list[str] = band_meta["band_name"].astype(str).tolist()
+        self.in_channels: int = len(self.bands)
+
     def setup(self, stage: str | None = None) -> None:
-        self.class_meta = load_class_meta(self.manifest_path)
+        # The dw label is the primary "mask" through augmentation, then renamed
+        # to "label" so the LightningModule reads `batch["label"]`.
+        rename_label = rename_key("mask", "label")
 
         train_pipeline = TransformPipeline(
-            remap(CLASS_ID_MAP),
+            remap(self.training_meta.class_id_map),
             TransformsCompose(self.train_transform),
+            rename_label,
         )
         infer_pipeline = TransformPipeline(
-            remap(CLASS_ID_MAP),
+            remap(self.training_meta.class_id_map),
+            TransformsCompose(self.infer_transform),
+            rename_label,
+        )
+        # Predict-time samples have no label, so skip the mask remap/rename.
+        predict_pipeline = TransformPipeline(
             TransformsCompose(self.infer_transform),
         )
-        # so we can use batch["image"], batch["mask"], batch["cloud_mask"] in the model
-        rename_cloud = rename_key("mask", "cloud_mask") 
+
+        # Override the Sentinel2L1C class-level `all_bands` so band indexing
+        # matches the manifest-declared layout (the ingestion writes only the
+        # subset of bands listed in the manifest, in that order).
+        sentinel_cls = type(
+            "Sentinel2L1CSubset",
+            (Sentinel2L1C,),
+            {"all_bands": tuple(self.bands)},
+        )
+
+        # NOTE: cloud_mask is intentionally not intersected here. The default
+        # `TransformsCompose` only augments `image` + `mask`, so any extra
+        # raster (cloud_mask) would skip augmentation and break batch stacking.
+        # Wire it back in once the augmentation pipeline supports additional
+        # mask targets.
+
+        def _dw(split: str) -> RasterLabel:
+            return RasterLabel(
+                paths=self.data_path / "dynamicworld" / split,
+                bands=("label",),
+            )
+        
+        def _s2(split: str) -> Sentinel2L1C:
+            return sentinel_cls(
+                paths=self.data_path / "sentinel_2_l1c" / split,
+            )
 
         if stage == "fit":
-            s2_train = Sentinel2L1C(paths=self.data_path / "sentinel_2_l1c" / "train")
-            dw_train = RasterLabel(paths=self.data_path / "dynamicworld" / "train")
-            cm_train = RasterLabel(paths=self.data_path / "cloud_mask" / "train", transforms=rename_cloud)
-            self.train_dataset = s2_train & dw_train & cm_train
+            self.train_dataset = _s2("train") & _dw("train")
             self.train_dataset.transforms = train_pipeline
             self.train_sampler = PreChippedGeoSampler(self.train_dataset, shuffle=True)
-        
+
+            self.val_dataset = _s2("val") & _dw("val")
+            self.val_dataset.transforms = infer_pipeline
+            self.val_sampler = PreChippedGeoSampler(self.val_dataset, shuffle=False)
+
         elif stage == "validate":
-            s2_val = Sentinel2L1C(paths=self.data_path / "sentinel_2_l1c" / "val")
-            dw_val = RasterLabel(paths=self.data_path / "dynamicworld" / "val")
-            cm_val = RasterLabel(paths=self.data_path / "cloud_mask" / "val", transforms=rename_cloud)
-            self.val_dataset = s2_val & dw_val & cm_val
+            self.val_dataset = _s2("val") & _dw("val")
             self.val_dataset.transforms = infer_pipeline
             self.val_sampler = PreChippedGeoSampler(self.val_dataset, shuffle=False)
 
         elif stage == "test":
-            s2_test = Sentinel2L1C(paths=self.data_path / "sentinel_2_l1c" / "test")
-            dw_test = RasterLabel(paths=self.data_path / "dynamicworld" / "test")
-            cm_test = RasterLabel(paths=self.data_path / "cloud_mask" / "test", transforms=rename_cloud)
-            self.test_dataset = s2_test & dw_test & cm_test
+            self.test_dataset = _s2("test") & _dw("test")
             self.test_dataset.transforms = infer_pipeline
             self.test_sampler = PreChippedGeoSampler(self.test_dataset, shuffle=False)
 
         elif stage == "predict":
-            self.predict_dataset = Sentinel2L1C(paths=self.data_path / "sentinel_2_l1c")
-            self.predict_dataset.transforms = infer_pipeline
+            self.predict_dataset = sentinel_cls(paths=self.data_path / "sentinel_2_l1c")
+            self.predict_dataset.transforms = predict_pipeline
             self.predict_sampler = GridGeoSampler(
                 self.predict_dataset,
                 size=self.predict_patch_size,
                 stride=self.predict_stride,
             )
-        
+
         else:
             raise ValueError(f"Invalid stage: {stage}")
 

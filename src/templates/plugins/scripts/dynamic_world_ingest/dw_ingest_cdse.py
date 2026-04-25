@@ -1,23 +1,40 @@
-"""Ingest DynamicWorld-labelled Sentinel-2 L1C patches via CDSE."""
+"""Ingest DynamicWorld-labelled Sentinel-2 L1C patches via CDSE.
+
+Workflow
+--------
+
+
+Output written to ``DATA``:
+
+    data/
+    ├── cloud_mask/{train,val,test}/*.tif    # uint8 single-band union mask
+    ├── sentinel_2_l1c/{train,val,test}/*.tif
+    └── manifest.gpkg
+
+DynamicWorld labels are NOT copied — they are renamed in-place to the
+canonical ``dw_<lon>_<lat>-<YYYYMMDD>.tif`` filename so that TorchGeo's
+``RasterLabel`` regex can discover them recursively.  Point
+``RasterLabel(paths=...)`` at the extracted split directory; nested folder
+structure is preserved.
+"""
 from __future__ import annotations
 
 import os
 
-os.environ.setdefault("GDAL_DISABLE_READDIR_ON_OPEN", "EMPTY_DIR")
+os.environ.setdefault("GDAL_DISABLE_READDIR_ON_OPEN",       "EMPTY_DIR")
 os.environ.setdefault("GDAL_HTTP_MERGE_CONSECUTIVE_RANGES", "YES")
-os.environ.setdefault("GDAL_HTTP_MULTIPLEX", "YES")
-os.environ.setdefault("GDAL_HTTP_TCP_KEEPALIVE", "YES")
-os.environ.setdefault("GDAL_HTTP_UNSAFESSL", "YES")
-os.environ.setdefault("GDAL_HTTP_TIMEOUT", "120")
-os.environ.setdefault("GDAL_HTTP_RETRY_COUNT", "6")
-os.environ.setdefault("GDAL_HTTP_RETRY_DELAY", "2")
-os.environ.setdefault("GDAL_NUM_THREADS", "1")
+os.environ.setdefault("GDAL_HTTP_MULTIPLEX",                "YES")
+os.environ.setdefault("GDAL_HTTP_TCP_KEEPALIVE",            "YES")
+os.environ.setdefault("GDAL_HTTP_UNSAFESSL",                "YES")
+os.environ.setdefault("GDAL_HTTP_TIMEOUT",                  "120")
+os.environ.setdefault("GDAL_HTTP_RETRY_COUNT",              "6")
+os.environ.setdefault("GDAL_HTTP_RETRY_DELAY",              "2")
+os.environ.setdefault("GDAL_NUM_THREADS",                   "1")
 
+from collections.abc import Iterable
 from pathlib import Path
 
 import numpy as np
-import pandas as pd
-import xarray as xr
 from tqdm import tqdm
 
 from geosave_engine.geodata.core.errors import IngestionError, IngestionErrorReason
@@ -29,19 +46,16 @@ from geosave_engine.geodata.processing.masking import (
     compute_s2c_mask,
 )
 from geosave_engine.geodata.stac_client.cdse import CdseClient
+from geosave_engine.utils.cli.fs_ops import ensure_split_dirs
 from geosave_engine.utils.geodata.manifest import (
-    append_to_manifest,
-    load_manifest,
-    write_class_meta,
+    append_geo_layer,
+    list_manifest_layers,
+    load_geo_layer,
 )
+from geosave_engine.utils.geodata.masks import union_masks, write_single_band_mask
+from geosave_engine.utils.geodata.tiff import build_tiff_filename, read_tiff_metadata
 
-
-BANDS:             list[str] = ["B02", "B03", "B04", "B05", "B06", "B07", "B08", "B11", "B12"]
-S2CLOUDLESS_BANDS: list[str] = ["B01", "B02", "B04", "B05", "B08", "B8A", "B09", "B10", "B11", "B12"]
-_ALL_BANDS:        list[str] = ["B01", "B02", "B03", "B04", "B05", "B06", "B07", "B08", "B8A", "B09", "B10", "B11", "B12"]
-NODATA_SKIP_THRESHOLD = 0.50
-
-DW_CLASSES = [
+DW_CLASSES: list[dict] = [
     {"class_id": 0,   "class_name": "water",              "source_class_id": 1, "ignore": False, "color_r": 65,  "color_g": 155, "color_b": 223},
     {"class_id": 1,   "class_name": "trees",              "source_class_id": 2, "ignore": False, "color_r": 57,  "color_g": 125, "color_b": 73},
     {"class_id": 2,   "class_name": "grass",              "source_class_id": 3, "ignore": False, "color_r": 136, "color_g": 176, "color_b": 83},
@@ -54,163 +68,162 @@ DW_CLASSES = [
     {"class_id": 255, "class_name": "masked",             "source_class_id": 0, "ignore": True,  "color_r": 0,   "color_g": 0,   "color_b": 0},
 ]
 
+# Output band order written into sentinel_2_l1c GeoTIFFs.
+BANDS:             list[str] = ["B02", "B03", "B04", "B05", "B06", "B07", "B08", "B11", "B12"]
+# Bands required by s2cloudless.
+S2CLOUDLESS_BANDS: list[str] = ["B01", "B02", "B04", "B05", "B08", "B8A", "B09", "B10", "B11", "B12"]
+# Superset fetched from STAC — covers BANDS + S2CLOUDLESS_BANDS + CDI inputs.
+ALL_BANDS:         list[str] = ["B01", "B02", "B03", "B04", "B05", "B06", "B07", "B08", "B8A", "B09", "B10", "B11", "B12"]
 
-def _build_tiff_index(root: Path) -> dict[str, Path]:
-    """Map dw_id → TIFF path, preferring label_* files when both variants exist."""
-    index: dict[str, Path] = {}
-    for p in root.rglob("*.tif"):
-        stem = p.stem
-        key  = stem[6:] if stem.startswith("label_") else stem
-        if key not in index or p.stem.startswith("label_"):
-            index[key] = p
-    return index
+SPLITS             = ("train", "val", "test")
+OUTPUT_DATASETS    = ("sentinel_2_l1c", "cloud_mask")   # dynamicworld stays in-place
+NODATA_SKIP_THRESHOLD = 0.50
+TIFF_PREFIX        = "dw"
+
+WORKSPACE_DATA = Path("data")
 
 
-def _build_mask(
-    da_all: xr.DataArray,
-    sun_azimuth: float,
-) -> tuple[np.ndarray, dict[str, float]]:
-    s2c    = compute_s2c_mask(da_all.sel(band=S2CLOUDLESS_BANDS).values)
+def _already_ingested(manifest_path: Path, fname: str) -> bool:
+    if "sentinel_2_l1c" not in list_manifest_layers(manifest_path):
+        return False
+    gdf = load_geo_layer(manifest_path, "sentinel_2_l1c")
+    return "filename" in gdf.columns and fname in gdf["filename"].astype(str).values
+
+
+def _build_cloud_components(da_filled, sun_azimuth: float):
+    s2c    = compute_s2c_mask(da_filled.sel(band=S2CLOUDLESS_BANDS).values).astype(bool)
     cdi    = compute_cdi_mask(
-        da_all.sel(band="B07").values,
-        da_all.sel(band="B08").values,
-        da_all.sel(band="B8A").values,
+        da_filled.sel(band="B07").values,
+        da_filled.sel(band="B08").values,
+        da_filled.sel(band="B8A").values,
+    ).astype(bool)
+    b10    = compute_b10_mask(da_filled.sel(band="B10").values).astype(bool)
+    shadow = build_shadow_mask(s2c & cdi & b10, sun_azimuth, resolution=10).astype(bool)
+    return s2c, cdi, b10, shadow
+
+
+def _append_records(
+    manifest_path: Path,
+    *,
+    fname: str,
+    split: str,
+    tiff_meta,
+    da_attrs: dict,
+    cloud_union: np.ndarray,
+    s2c: np.ndarray,
+    cdi: np.ndarray,
+    b10: np.ndarray,
+    shadow: np.ndarray,
+    nodata_pct: float,
+) -> None:
+    common = {"filename": fname, "split": split, "geometry": tiff_meta.geometry}
+    append_geo_layer(
+        {
+            **common,
+            "sensing_datetime": da_attrs.get("sensing_datetime"),
+            "item_ids":         "|".join(str(x) for x in da_attrs.get("item_ids", [])),
+            "sun_azimuth":      float(da_attrs.get("sun_azimuth", 0.0)),
+            "crs":              tiff_meta.crs,
+        },
+        manifest_path,
+        layer="sentinel_2_l1c",
+        native_crs=tiff_meta.crs,
     )
-    b10    = compute_b10_mask(da_all.sel(band="B10").values)
-    cloud  = s2c & cdi & b10
-    shadow = build_shadow_mask(cloud, sun_azimuth, resolution=10)
-    return cloud | shadow, {
-        "s2c":    float(s2c.mean()),
-        "cdi":    float(cdi.mean()),
-        "b10":    float(b10.mean()),
-        "shadow": float(shadow.mean()),
-    }
-
-
-def _save_outputs(
-    svc: Sentinel2L1CIngestor,
-    key: str,
-    da: xr.DataArray,
-    final_mask: np.ndarray,
-    input_dir: Path,
-    mask_dir: Path,
-    tci_dir: Path,
-) -> tuple[str, str, str]:
-    input_path = input_dir / f"{key}.tif"
-    mask_path  = mask_dir  / f"{key}.tif"
-    tci_path   = tci_dir   / f"{key}.tif"
-
-    svc.save(da, input_path)
-
-    mask_layer = xr.DataArray(
-        final_mask.astype(np.uint8), dims=["y", "x"], coords={"y": da.y, "x": da.x}
+    append_geo_layer(
+        {
+            **common,
+            "masked_pct": float(cloud_union.mean()),
+            "s2c_pct":    float(s2c.mean()),
+            "cdi_pct":    float(cdi.mean()),
+            "b10_pct":    float(b10.mean()),
+            "shadow_pct": float(shadow.mean()),
+            "nodata_pct": nodata_pct,
+        },
+        manifest_path,
+        layer="cloud_mask",
+        native_crs=tiff_meta.crs,
     )
-    mask_layer = mask_layer.rio.write_crs(da.rio.crs)
-    mask_layer = mask_layer.rio.write_transform(da.rio.transform())
-    svc.save(mask_layer, mask_path)
 
-    tci = (da.sel(band=["B04", "B03", "B02"]).clip(0, 0.3) / 0.3 * 255).astype(np.uint8)
-    svc.save(tci, tci_path)
-    return str(input_path), str(mask_path), str(tci_path)
+
+def ingest_split(
+    label_paths: Iterable[Path],
+    split: str,
+    *,
+    output_root: Path = WORKSPACE_DATA,
+    manifest_path: Path | None = None,
+    svc: Sentinel2L1CIngestor | None = None,
+) -> None:
+    """Ingest a list of DW label TIFFs into ``output_root`` under ``split``.
+
+    ``label_paths`` can be any iterable — glob, CSV reader, XLSX rows, etc.
+    The caller decides which paths belong to this split.
+    """
+    if split not in SPLITS:
+        raise ValueError(f"split must be one of {SPLITS!r}; got {split!r}")
+
+    out_paths     = ensure_split_dirs(output_root, OUTPUT_DATASETS, SPLITS)
+    manifest_path = manifest_path or output_root / "manifest.gpkg"
+    svc           = svc or Sentinel2L1CIngestor(CdseClient())
+
+    label_list = list(label_paths)
+    for label_src in tqdm(label_list, total=len(label_list), desc=f"ingesting [{split}]", unit="tif"):
+        label_src = Path(label_src)
+
+        tiff_meta = read_tiff_metadata(label_src)
+        fname     = build_tiff_filename(tiff_meta, TIFF_PREFIX)
+        if _already_ingested(manifest_path, fname):
+            continue
+        if label_src.name != fname:
+            label_src = label_src.rename(label_src.parent / fname)
+
+        try:
+            all_da, tiff_meta = svc.from_tiff(label_src, bands=ALL_BANDS)
+        except IngestionError as exc:
+            level = "skip" if exc.reason is IngestionErrorReason.NO_ITEMS_FOUND else "warn"
+            tqdm.write(f"[{level}] {label_src.name} -- {exc.reason.value}: {exc}")
+            continue
+
+        nodata_mask = np.isnan(all_da.sel(band=BANDS).values).all(axis=0)
+        nodata_pct  = float(nodata_mask.mean())
+        if nodata_pct > NODATA_SKIP_THRESHOLD:
+            tqdm.write(f"[skip] {label_src.name} -- too much nodata ({nodata_pct:.2%})")
+            continue
+
+        da_filled = all_da.fillna(0.0)
+        da        = da_filled.sel(band=BANDS)
+
+        s2c, cdi, b10, shadow = _build_cloud_components(da_filled, float(all_da.attrs.get("sun_azimuth", 0.0)))
+        cloud_union = union_masks(s2c, cdi, b10, shadow, nodata_mask)
+
+        svc.save(da, out_paths[("sentinel_2_l1c", split)] / fname)
+        write_single_band_mask(cloud_union, da, out_paths[("cloud_mask", split)] / fname, svc)
+
+        _append_records(
+            manifest_path,
+            fname=fname,
+            split=split,
+            tiff_meta=tiff_meta,
+            da_attrs=all_da.attrs,
+            cloud_union=cloud_union,
+            s2c=s2c,
+            cdi=cdi,
+            b10=b10,
+            shadow=shadow,
+            nodata_pct=nodata_pct,
+        )
 
 
 def main() -> None:
     from dotenv import load_dotenv
     load_dotenv()
 
-    output_dir = Path("data/processed")
-    input_dir  = output_dir / "input"
-    mask_dir   = output_dir / "mask"
-    tci_dir    = output_dir / "tci"
-    for d in (input_dir, mask_dir, tci_dir):
-        d.mkdir(parents=True, exist_ok=True)
-
-    manifest_path = output_dir / "manifest.gpkg"
-    xlsx_path     = Path("data/dynamicworld_extracted/v1_dw_tile_metadata_for_public_release.xlsx").resolve()
-    dw_root       = Path("data/dynamicworld_extracted")
-
-    svc        = Sentinel2L1CIngestor(CdseClient())
-    df         = pd.read_excel(xlsx_path).iloc[100:120]
-    tiff_index = _build_tiff_index(dw_root)
-
-    write_class_meta(DW_CLASSES, manifest_path)
-
-    for row in tqdm(df.itertuples(index=False), total=len(df), desc="ingesting (CDSE)", unit="row"):
-        key = str(row.dw_id)
-
-        if manifest_path.exists():
-            gdf = load_manifest(manifest_path)
-            if key in gdf["dw_id"].values:
-                tqdm.write(f"[skip] {key} -- already in manifest")
-                continue
-
-        tiff_path = tiff_index.get(key)
-        if tiff_path is None:
-            tqdm.write(f"[skip] {key} -- no TIFF found")
+    # Drive from the extracted DW directory layout — swap for CSV/XLSX/glob as needed.
+    dw_extracted = Path("data/dynamicworld")
+    for split in SPLITS:
+        split_root = dw_extracted / split
+        if not split_root.exists():
             continue
-
-        try:
-            all_da, tiff_meta = svc.from_tiff(tiff_path, bands=_ALL_BANDS)
-        except IngestionError as exc:
-            if exc.reason is IngestionErrorReason.NO_ITEMS_FOUND:
-                tqdm.write(f"[skip] {key} -- {exc.reason.value}: {exc}")
-            else:
-                tqdm.write(f"[warn] {key} -- {exc.reason.value}: {exc}")
-            continue
-
-        nodata_mask = np.isnan(all_da.sel(band=BANDS).values).all(axis=0)
-        nodata_pct  = float(nodata_mask.mean())
-        if nodata_pct > NODATA_SKIP_THRESHOLD:
-            tqdm.write(f"[skip] {key} -- too much nodata ({nodata_pct:.2%})")
-            continue
-
-        sun_azimuth      = float(all_da.attrs.get("sun_azimuth", 0.0))
-        item_ids         = [str(x) for x in all_da.attrs.get("item_ids", [])]
-        sensing_datetime = all_da.attrs.get("sensing_datetime")
-
-        da_all_filled     = all_da.fillna(0.0)
-        da                = da_all_filled.sel(band=BANDS)
-        cloud_mask, stats = _build_mask(da_all_filled, sun_azimuth)
-        final_mask        = cloud_mask | nodata_mask
-
-        input_path, mask_path, tci_path = _save_outputs(
-            svc, key, da, final_mask, input_dir, mask_dir, tci_dir,
-        )
-
-        record = {
-            "dw_id":              key,
-            "split":              "train",
-            "labeler":            row.labeler,
-            "crs":                tiff_meta.crs,
-            "hemisphere":         row.hemisphere,
-            "biome":              row.biome,
-            "biome_name":         row.biome_name,
-            "sensing_datetime":   sensing_datetime,
-            "Bare_Ground":        row.Bare_Ground,
-            "Built_Area":         row.Built_Area,
-            "Clouds":             row.Clouds,
-            "Crops":              row.Crops,
-            "Flooded_Vegetation": row.Flooded_Vegetation,
-            "Grass":              row.Grass,
-            "Scrub":              row.Scrub,
-            "Snow_Ice":           row.Snow_Ice,
-            "Trees":              row.Trees,
-            "Water":              row.Water,
-            "item_id":            "|".join(item_ids),
-            "sun_azimuth":        sun_azimuth,
-            "masked_pct":         float(final_mask.mean()),
-            "s2c_pct":            stats["s2c"],
-            "cdi_pct":            stats["cdi"],
-            "b10_pct":            stats["b10"],
-            "shadow_pct":         stats["shadow"],
-            "label_path":         str(tiff_path),
-            "input_path":         input_path,
-            "mask_path":          mask_path,
-            "tci_path":           tci_path,
-            "geometry":           tiff_meta.geometry,
-        }
-
-        append_to_manifest(record, manifest_path, native_crs=tiff_meta.crs)
+        ingest_split(sorted(split_root.rglob("*.tif")), split)
 
 
 if __name__ == "__main__":

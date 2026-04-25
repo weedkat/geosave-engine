@@ -4,6 +4,21 @@ import zipfile
 from pathlib import Path
 
 
+def _cleanup_macosx_artifacts(root: Path) -> None:
+    """Remove macOS archive metadata files extracted from a ZIP archive."""
+    for path in root.rglob("__MACOSX"):
+        if path.is_dir():
+            for child in sorted(path.rglob("*"), reverse=True):
+                if child.is_file() or child.is_symlink():
+                    child.unlink()
+                elif child.is_dir():
+                    child.rmdir()
+            path.rmdir()
+    for path in root.rglob("._*"):
+        if path.is_file() or path.is_symlink():
+            path.unlink()
+
+
 def extract_zip(zip_path: Path, extract_to: Path, *, skip_if_extracted: bool = True) -> None:
     """Extract `zip_path` into `extract_to`, creating the directory if needed."""
     
@@ -17,6 +32,7 @@ def extract_zip(zip_path: Path, extract_to: Path, *, skip_if_extracted: bool = T
     extract_to.mkdir(parents=True, exist_ok=True)
     with zipfile.ZipFile(zip_path, "r") as handle:
         handle.extractall(extract_to)
+    _cleanup_macosx_artifacts(extract_to)
 
 
 def cleanup_zip(zip_path: Path) -> None:

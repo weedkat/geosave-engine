@@ -53,6 +53,8 @@ dependencies = [
     "boto3>=1.42.91",
     "odc-geo>=0.5.1",
     "albumentations>=2.0.8",
+    "folium>=0.20.0",
+    "mapclassify>=2.8.1",
 ]
 
 [project.urls]

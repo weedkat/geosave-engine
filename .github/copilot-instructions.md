@@ -6,31 +6,30 @@ Generate ready-to-use geospatial ML workspaces by reliably copying curated templ
 
 ## Agent Defaults
 
-- Keep outputs concise, actionable, and implementation-first.
-- Prefer direct code changes over long explanations.
-- Do not hallucinate APIs, dependencies, file paths, or parameters.
-- Follow existing project structure, naming, and style.
-- Ask for clarification only when ambiguity blocks implementation.
-- Keep this file for durable defaults; put task-specific workflow in repo instructions.
+- Keep replies short.
+- Edit code first, then explain briefly.
+- Use real APIs, files, deps, and params from repo or docs.
+- Match existing project structure and style.
+- Ask questions when blocked or risk is high.
+- Keep durable rules here; task flow goes elsewhere.
 
 ## Coding Rules
 
-- Use strict typing for all function inputs and returns; avoid Any.
-- Add docstrings for public functions and non-trivial internal contracts.
-- Use constants instead of magic numbers or strings.
-- Add comments only for non-obvious intent.
-- Fail fast with clear errors; avoid silent fallback behavior.
-- Prioritize modularization; each function and class should have one responsibility.
-- Prefer minimal diffs and avoid unrelated refactors.
-- Preserve public APIs unless the user explicitly requests a breaking change.
-- Use clear names; avoid abbreviations unless they are standard in the domain.
-- Keep logic simple: KISS, YAGNI, and DRY.
-- Use established libraries/patterns already present in this repository.
+- Prefer typed params and returns; avoid Any unless justified.
+- Add docstrings for public classes and functions.
+- Use named constants for repeated literals.
+- Comment only for non-obvious intent or edge cases.
+- Validate inputs early and raise clear errors.
+- Keep functions and classes focused on one job.
+- Keep diffs scoped to the task.
+- Preserve public APIs unless a change is requested.
+- Use clear, descriptive names.
+- Choose the simplest correct solution and reuse repo patterns.
 
 ## Exception Policy
 
-- If you must break a rule, add a short comment explaining why.
-- If the same exception appears repeatedly, propose updating the guideline.
+- If you break a rule, leave a brief reason.
+- If an exception repeats, update the guideline.
 
 ## Repository Map
 
