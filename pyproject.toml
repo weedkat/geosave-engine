@@ -68,11 +68,6 @@ geosave = "geosave_engine.cli.main:app"
 [tool.hatch.version]
 path = "src/geosave_engine/__about__.py"
 
-[tool.hatch.envs.types]
-extra-dependencies = [
-  "mypy>=1.0.0",
-]
-
 [tool.hatch.build]
 include = [
   "src/templates/**",
@@ -81,8 +76,9 @@ include = [
 [tool.hatch.build.targets.wheel]
 packages = ["src/geosave_engine"]
 
-[tool.hatch.envs.types.scripts]
-check = "mypy --install-types --non-interactive {args:src/geosave_engine tests}"
+[tool.uv]
+managed = true
+package = true
 
 [tool.coverage.run]
 source_pkgs = ["geosave_engine", "tests"]
@@ -93,14 +89,20 @@ omit = [
 ]
 
 [tool.coverage.paths]
-geosave_engine = ["src/geosave_engine", "*/geosave-engine/src/geosave_engine"]
-tests = ["tests", "*/geosave-engine/tests"]
+geosave_engine = ["src/geosave_engine", "src/templates"]
+tests = ["tests"]
 
 [tool.coverage.report]
 exclude_lines = [
   "no cov",
   "if __name__ == .__main__.:",
   "if TYPE_CHECKING:",
+]
+
+[tool.pytest.ini_options]
+addopts = "--import-mode=importlib"
+markers = [
+  "integration: hits real CDSE STAC and S3, requires tests/.env with credentials",
 ]
 
 [dependency-groups]
