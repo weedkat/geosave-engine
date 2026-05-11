@@ -1,3 +1,4 @@
+from albumentations.augmentations.geometric.functional import remap
 import warnings
 from datetime import timedelta
 from pathlib import Path
@@ -59,7 +60,19 @@ def create_pipeline(tiff_path):
     )
 
     derived_layers = [
-        Derived.label_from_anchor(name="dynamicworld"),
+        Derived.label_from_anchor(name="dynamicworld", remap={
+            0: 255,  # nodata
+            1: 0,    # water
+            2: 1,    # trees
+            3: 2,    # grass
+            4: 3,    # flooded_vegetation
+            5: 4,    # crops
+            6: 5,    # shrub_and_scrub
+            7: 6,    # built
+            8: 7,    # bare
+            9: 255,  # snow_and_ice -> ignore_index
+            10: 255, # cloud -> ignore_index
+        }),
         Derived.image_from_source(name="sentinel_2_l1c", source="sentinel_2_l1c"),
         Derived.from_cache(
             name="cloud_mask", 
