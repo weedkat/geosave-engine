@@ -57,7 +57,7 @@ src
 - Dataset Management: TorchGeo-compatible geospatial datasets and aligned sampling.
 - Data Ingestion: odc-stac with xarray-based preprocessing.
 - Raster IO: rioxarray and rasterio for GeoTIFF read/write and CRS-aware raster operations.
-- Dataset Manifests: GeoPackage (GPKG) for dataset manifest handling.
+- Dataset Manifests: xlsx with multiple sheets (one per layer) for dataset manifest handling.
 
 ## Testing
 

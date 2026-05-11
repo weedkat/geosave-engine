@@ -46,12 +46,12 @@ class StacClient:
 
     @classmethod
     def cdse(cls) -> "StacClient":
-        return cls("https://cdse-catalog.copernicus.eu/stac/v1")
+        return cls("https://stac.dataspace.copernicus.eu/v1/")
     
     @classmethod
     def planetary_computer(cls) -> "StacClient":
-        return cls("https://planetarycomputer.microsoft.com/api/stac/v1")
+        return cls("https://planetarycomputer.microsoft.com/api/stac/v1/")
     
     @classmethod
     def element84(cls) -> "StacClient":
-        return cls("https://earth-search.aws.element84.com/v0")
+        return cls("https://earth-search.aws.element84.com/v1/")

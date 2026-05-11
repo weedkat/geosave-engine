@@ -96,7 +96,7 @@ class Workspace:
 
     def add_plugin(self, plugin_source: Path, flat: bool = False) -> None:
         """Copy plugin template into workspace folder tree."""
-        target = self.root.parent / plugin_source.parent.name
+        target = self.root / plugin_source.parent.name
         if not flat:
             target = target / plugin_source.name
         safe_copy(plugin_source, target)

@@ -1,0 +1,128 @@
+import warnings
+from datetime import timedelta
+from pathlib import Path
+
+from geosave_engine.geodata.algorithms import (
+    build_shadow_mask,
+    compute_b10_mask,
+    compute_cdi_mask,
+    compute_s2c_mask,
+)
+from geosave_engine.geodata.pipeline import (
+    BandMeta,
+    ClassMeta,
+    Derived,
+    ManifestWriter,
+    MaskMeta,
+    Pipeline,
+    Source,
+    Anchor,
+)
+from geosave_engine.geodata.stac import StacClient
+from geosave_engine.utils.geodata import spatial_da
+
+# --- Internal Registry / Config ---
+L1C_BANDS = [
+    "B01", "B02", "B03", "B04", "B05", "B07", "B08", 
+    "B8A", "B09", "B10", "B11", "B12"
+]
+
+sentinel_client = StacClient.cdse()
+
+def cloud_compute_fn(cache):
+    """
+    Consolidated compute function to minimize redundant .median() calls
+    and improve performance during the ingest pipeline.
+    """
+    source = cache["sentinel_2_l1c"]
+    ds = source.ds.median("time")
+    sun_az = source.items[0].properties["view:sun_azimuth"]
+
+    s2c = compute_s2c_mask(**{b.lower(): ds[b].values for b in L1C_BANDS})
+    cdi = compute_cdi_mask(b07=ds["B07"].values, b08=ds["B08"].values, b8a=ds["B8A"].values)
+    cirrus = compute_b10_mask(b10=ds["B10"].values)
+
+    cloud_combined = s2c & cdi & cirrus
+    shadow = build_shadow_mask(cloud_combined, sun_azimuth_deg=sun_az)
+    final_mask = cloud_combined | shadow
+
+    return spatial_da(final_mask, ds)
+
+def create_pipeline(tiff_path):
+    anchor = Anchor.from_tiff(tiff_path)
+    
+    source = Source.sentinel_2_l1c(
+        name="sentinel_2_l1c",
+        client=sentinel_client,
+        time_range=timedelta(days=1),
+        bands=L1C_BANDS,
+    )
+
+    derived_layers = [
+        Derived.label_from_anchor(name="dynamicworld"),
+        Derived.image_from_source(name="sentinel_2_l1c", source="sentinel_2_l1c"),
+        Derived.from_cache(
+            name="cloud_mask", 
+            compute_fn=cloud_compute_fn, 
+            sources=["sentinel_2_l1c"]
+        ),
+    ]
+
+    return Pipeline(anchor=anchor, sources=[source], deriveds=derived_layers)
+
+def run_ingest(raw_data_root: Path, output_dir: Path):
+    manifest = ManifestWriter(output_dir)
+    
+    # --- Metadata Initialization ---
+    manifest.create_layer(
+        name="sentinel_2_l1c", 
+        role="image", 
+        meta=[BandMeta(name=b) for b in L1C_BANDS]
+    )
+    
+    cloud_meta = [
+        MaskMeta(id=0, name="clear", color="#ffffff"),
+        MaskMeta(id=1, name="cloud_or_shadow", color="#000000"),
+    ]
+    manifest.create_layer(name="cloud_mask", role="mask", meta=cloud_meta)
+
+    dw_meta = [
+        ClassMeta(id=0, name="water", color="#419BDF"),
+        ClassMeta(id=1, name="trees", color="#397D49"),
+        ClassMeta(id=2, name="grass", color="#88B053"),
+        ClassMeta(id=3, name="flooded_vegetation", color="#7A87C6"),
+        ClassMeta(id=4, name="crops", color="#E49635"),
+        ClassMeta(id=5, name="shrub_and_scrub", color="#DFC35A"),
+        ClassMeta(id=6, name="built", color="#C4281B"),
+        ClassMeta(id=7, name="bare", color="#A59B8F"),
+        ClassMeta(id=255, name="ignore_index", color="#000000"),
+    ]
+    manifest.create_layer(name="dynamicworld", role="label", meta=dw_meta)
+
+    # --- Processing Loop ---
+    # Iterate through splits: train, test, val
+    for split in ["train", "test", "val"]:
+        split_path = raw_data_root / split
+        if not split_path.exists():
+            raise FileNotFoundError(f"Split directory not found: {split_path}")
+
+        tifs = list(split_path.rglob("*.tif"))
+        print(f"Processing {len(tifs)} files in '{split}' split...")
+
+        for tiff_path in tifs:
+            source_id = tiff_path.stem
+            if manifest.is_written(source_id):
+                print(f"Skipping {source_id} (already ingested)")
+                continue
+
+            try:
+                pipeline = create_pipeline(tiff_path)
+                result = pipeline.run()
+                manifest.write_tile(result, split=split, source_id=source_id)
+            except Exception as e:
+                warnings.warn(f"Failed to process {source_id}: {e}")
+
+if __name__ == "__main__":
+    DATA_ROOT = Path("../data/dynamicworld_raw/")
+    OUT_DIR = Path("../data/")
+    run_ingest(DATA_ROOT, OUT_DIR)

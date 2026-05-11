@@ -73,6 +73,7 @@ class Sentinel2Query(StacQuery):
 class Sentinel2L2AQuery(Sentinel2Query):
     collections: list[str] = field(default_factory=lambda: ["sentinel-2-l2a"])
 
+
 @dataclass(frozen=True)
 class Sentinel2L1CQuery(Sentinel2Query):
     collections: list[str] = field(default_factory=lambda: ["sentinel-2-l1c"])

@@ -52,6 +52,7 @@ dependencies = [
     "odc-stac>=0.5.2",
     "boto3>=1.42.91",
     "odc-geo>=0.5.1",
+    "geopy>=2.4.0",
     "albumentations>=2.0.8",
     "folium>=0.20.0",
     "mapclassify>=2.8.1",
@@ -97,12 +98,6 @@ exclude_lines = [
   "no cov",
   "if __name__ == .__main__.:",
   "if TYPE_CHECKING:",
-]
-
-[tool.pytest.ini_options]
-addopts = "--import-mode=importlib"
-markers = [
-  "integration: hits real CDSE STAC and S3, requires tests/.env with credentials",
 ]
 
 [dependency-groups]

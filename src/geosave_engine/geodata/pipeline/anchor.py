@@ -1,8 +1,11 @@
-import rasterio
 import re
-from dataclasses import dataclass
-from pathlib import Path
+from dataclasses import dataclass, field
 from datetime import datetime as dt
+from pathlib import Path
+
+import rasterio
+import rioxarray  # noqa: F401 — registers .rio accessor on xr.DataArray
+import xarray as xr
 from affine import Affine
 from odc.geo.geobox import GeoBox
 from rasterio.warp import transform_bounds
@@ -10,6 +13,7 @@ from rasterio.warp import transform_bounds
 
 DEFAULT_DATE_PATTERN: str = r"(?<!\d)(\d{8})(?!\d)"
 DEFAULT_DATE_FORMAT:  str = "%Y%m%d"
+ANCHOR_CACHE_KEY: str = "__anchor__"
 
 @dataclass(frozen=True)
 class Anchor:
@@ -19,6 +23,7 @@ class Anchor:
     width: int
     height: int
     datetime: dt
+    label: xr.DataArray | None = field(default=None, compare=False)
 
     @property
     def resolution(self) -> float:
@@ -31,7 +36,13 @@ class Anchor:
         return transform_bounds(self.crs, "EPSG:4326", bb.left, bb.bottom, bb.right, bb.top)
 
     @classmethod
-    def from_tiff(cls, path: str | Path, date_format: str = DEFAULT_DATE_FORMAT, date_pattern: str = DEFAULT_DATE_PATTERN) -> "Anchor":
+    def from_tiff(
+        cls,
+        path: str | Path,
+        date_format: str = DEFAULT_DATE_FORMAT,
+        date_pattern: str = DEFAULT_DATE_PATTERN,
+        load_label: bool = True,
+    ) -> "Anchor":
         path = Path(path)
         with rasterio.open(path) as src:
             affine = src.transform
@@ -44,15 +55,22 @@ class Anchor:
             if not match:
                 raise ValueError(f"No date found in TIFF filename '{path.name}'")
             date_str = match.group(1)
-        
+
         datetime = dt.strptime(date_str, date_format)
 
-        return cls(affine=affine, crs=crs, width=width, height=height, datetime=datetime)
+        label: xr.DataArray | None = None
+        if load_label:
+            da_raw = rioxarray.open_rasterio(path)
+            if not isinstance(da_raw, xr.DataArray):
+                raise TypeError(f"Expected DataArray from {path}, got {type(da_raw)}")
+            label = da_raw.squeeze("band", drop=True)
+
+        return cls(affine=affine, crs=crs, width=width, height=height, datetime=datetime, label=label)
     
     @classmethod
     def from_bbox(
-        cls, 
-        bbox: tuple[float, float, float, float], 
+        cls,
+        bbox: tuple[float, float, float, float],
         crs: str, 
         resolution: float,
         datetime: dt
