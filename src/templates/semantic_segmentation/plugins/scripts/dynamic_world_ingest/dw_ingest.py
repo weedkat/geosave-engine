@@ -1,7 +1,8 @@
-from albumentations.augmentations.geometric.functional import remap
 import warnings
 from datetime import timedelta
 from pathlib import Path
+from dotenv import load_dotenv
+from tqdm import tqdm
 
 from geosave_engine.geodata.algorithms import (
     build_shadow_mask,
@@ -29,6 +30,7 @@ L1C_BANDS = [
 ]
 
 sentinel_client = StacClient.cdse()
+load_dotenv()
 
 def cloud_compute_fn(cache):
     """
@@ -39,7 +41,12 @@ def cloud_compute_fn(cache):
     ds = source.ds.median("time")
     sun_az = source.items[0].properties["view:sun_azimuth"]
 
-    s2c = compute_s2c_mask(**{b.lower(): ds[b].values for b in L1C_BANDS})
+    s2c = compute_s2c_mask(
+        b01=ds["B01"].values, b02=ds["B02"].values, b04=ds["B04"].values,
+        b05=ds["B05"].values, b08=ds["B08"].values, b8a=ds["B8A"].values,
+        b09=ds["B09"].values, b10=ds["B10"].values, b11=ds["B11"].values,
+        b12=ds["B12"].values,
+    )
     cdi = compute_cdi_mask(b07=ds["B07"].values, b08=ds["B08"].values, b8a=ds["B8A"].values)
     cirrus = compute_b10_mask(b10=ds["B10"].values)
 
@@ -118,14 +125,16 @@ def run_ingest(raw_data_root: Path, output_dir: Path):
         split_path = raw_data_root / split
         if not split_path.exists():
             raise FileNotFoundError(f"Split directory not found: {split_path}")
+        
+        if split == "test":
+            tifs = list(split_path.glob("label_*.tif"))
+        else:
+            tifs = list(split_path.rglob("*.tif"))
 
-        tifs = list(split_path.rglob("*.tif"))
-        print(f"Processing {len(tifs)} files in '{split}' split...")
-
-        for tiff_path in tifs:
+        for tiff_path in tqdm(tifs, desc=f"{split} ingest", unit="tile"):
             source_id = tiff_path.stem
             if manifest.is_written(source_id):
-                print(f"Skipping {source_id} (already ingested)")
+                tqdm.write(f"Skipping {source_id} (already ingested)")
                 continue
 
             try:
@@ -136,6 +145,6 @@ def run_ingest(raw_data_root: Path, output_dir: Path):
                 warnings.warn(f"Failed to process {source_id}: {e}")
 
 if __name__ == "__main__":
-    DATA_ROOT = Path("../data/dynamicworld_raw/")
-    OUT_DIR = Path("../data/")
+    DATA_ROOT = Path("data/dynamicworld_raw/").resolve()
+    OUT_DIR = Path("data/").resolve()
     run_ingest(DATA_ROOT, OUT_DIR)

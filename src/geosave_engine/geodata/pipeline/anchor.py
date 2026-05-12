@@ -42,6 +42,7 @@ class Anchor:
         date_format: str = DEFAULT_DATE_FORMAT,
         date_pattern: str = DEFAULT_DATE_PATTERN,
         load_label: bool = True,
+        select_band: int = 0,
     ) -> "Anchor":
         path = Path(path)
         with rasterio.open(path) as src:
@@ -63,7 +64,7 @@ class Anchor:
             da_raw = rioxarray.open_rasterio(path)
             if not isinstance(da_raw, xr.DataArray):
                 raise TypeError(f"Expected DataArray from {path}, got {type(da_raw)}")
-            label = da_raw.squeeze("band", drop=True)
+            label = da_raw.isel(band=select_band, drop=True)
 
         return cls(affine=affine, crs=crs, width=width, height=height, datetime=datetime, label=label)
     
