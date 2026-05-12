@@ -25,7 +25,7 @@ from geosave_engine.utils.geodata import spatial_da
 
 # --- Internal Registry / Config ---
 L1C_BANDS = [
-    "B01", "B02", "B03", "B04", "B05", "B07", "B08", 
+    "B01", "B02", "B03", "B04", "B05", "B06", "B07", "B08", 
     "B8A", "B09", "B10", "B11", "B12"
 ]
 
@@ -45,10 +45,10 @@ def cloud_compute_fn(cache):
         b01=ds["B01"].values, b02=ds["B02"].values, b04=ds["B04"].values,
         b05=ds["B05"].values, b08=ds["B08"].values, b8a=ds["B8A"].values,
         b09=ds["B09"].values, b10=ds["B10"].values, b11=ds["B11"].values,
-        b12=ds["B12"].values,
+        b12=ds["B12"].values, cloud_threshold=0.65
     )
     cdi = compute_cdi_mask(b07=ds["B07"].values, b08=ds["B08"].values, b8a=ds["B8A"].values)
-    cirrus = compute_b10_mask(b10=ds["B10"].values)
+    cirrus = compute_b10_mask(b10=ds["B10"].values, b10_threshold=0.0012)
 
     cloud_combined = s2c & cdi & cirrus
     shadow = build_shadow_mask(cloud_combined, sun_azimuth_deg=sun_az)
@@ -80,7 +80,9 @@ def create_pipeline(tiff_path):
             9: 255,  # snow_and_ice -> ignore_index
             10: 255, # cloud -> ignore_index
         }),
-        Derived.image_from_source(name="sentinel_2_l1c", source="sentinel_2_l1c"),
+
+        # All bands except for B1, B8A, B9, and B10 were kept, as they are not used in the original Dynamic World model and can be noisy. --- IGNORE ---
+        Derived.image_from_source(name="sentinel_2_l1c", source="sentinel_2_l1c", bands=["B02", "B03", "B04", "B05", "B06", "B07", "B08", "B11", "B12"]),
         Derived.from_cache(
             name="cloud_mask", 
             compute_fn=cloud_compute_fn, 
