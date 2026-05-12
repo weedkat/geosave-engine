@@ -38,7 +38,7 @@ def cloud_compute_fn(cache):
     and improve performance during the ingest pipeline.
     """
     source = cache["sentinel_2_l1c"]
-    ds = source.ds.median("time")
+    ds = source.ds.isel(time=-1) # Use the last time step because the time_range is 1 day before after, and we want to ensure we get the most recent data for the mask computation.
     sun_az = source.items[0].properties["view:sun_azimuth"]
 
     s2c = compute_s2c_mask(
@@ -82,7 +82,7 @@ def create_pipeline(tiff_path):
         }),
 
         # All bands except for B1, B8A, B9, and B10 were kept, as they are not used in the original Dynamic World model and can be noisy. --- IGNORE ---
-        Derived.image_from_source(name="sentinel_2_l1c", source="sentinel_2_l1c", bands=["B02", "B03", "B04", "B05", "B06", "B07", "B08", "B11", "B12"]),
+        Derived.image_from_source(name="sentinel_2_l1c", source="sentinel_2_l1c", bands=["B02", "B03", "B04", "B05", "B06", "B07", "B08", "B11", "B12"], reduce="last"),
         Derived.from_cache(
             name="cloud_mask", 
             compute_fn=cloud_compute_fn, 
