@@ -1,0 +1,62 @@
+model_name: UNet
+
+trainer:
+  max_epochs: 100
+  log_every_n_steps: 10
+  callbacks:
+
+model:
+  threshold_calibration: false
+  input_size: [256, 256]
+  model_config:
+    name: UNet
+    init_args:
+      encoder_name: resnet34
+      encoder_weights: imagenet
+  optim_config:
+    name: AdamW.split
+    init_args:
+      weight_decay: 0.01
+      encoder_lr: 0.0001
+      decoder_lr: 0.001
+    scheduler:
+      name: CosineAnnealingLR
+      init_args:
+        T_max: 100
+  loss_config:
+    name: CrossEntropyLoss
+    init_args:
+  threshold_calibration:
+    metric: f1
+
+fit:
+  data:
+    batch_size: 16
+    num_workers: 4
+    data_image:
+      train: data/image/train
+      val: data/image/val
+    data_mask:
+      train: data/mask/train
+      val: data/mask/val
+    data_label:
+      train: data/label/train
+      val: data/label/val
+
+test:
+  data:
+    batch_size: 16
+    num_workers: 4
+    data_image:
+      test: data/image/test
+    data_mask:
+      test: data/mask/test
+
+predict:
+  data:
+    batch_size: 16
+    num_workers: 4
+    data_image:
+      predict: data/image/predict
+    data_mask:
+      predict: data/mask/predict

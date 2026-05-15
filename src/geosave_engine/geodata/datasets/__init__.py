@@ -1,5 +1,6 @@
 """TorchGeo-compatible dataset classes."""
+from geosave_engine.geodata.datasets.raster_mask import RasterMask
 from geosave_engine.geodata.datasets.raster_label import RasterLabel
-from geosave_engine.geodata.datasets.sentinel_2 import Sentinel2L1C
+from geosave_engine.geodata.datasets.raster_image import RasterImage
 
-__all__ = ["RasterLabel", "Sentinel2L1C"]
+__all__ = ["RasterImage", "RasterLabel", "RasterMask"]

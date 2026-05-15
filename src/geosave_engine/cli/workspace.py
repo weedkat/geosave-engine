@@ -119,7 +119,7 @@ class Workspace:
             command: Lightning command name (e.g., 'fit', 'test', 'predict').
             args: Additional arguments to pass to the lightning command.
         """
-        main_py = self.src_dir / "main.py"
+        main_py = self.root / "main.py"
         if not main_py.exists():
             raise WorkspaceError(f"Lightning main.py not found at: {main_py}")
 

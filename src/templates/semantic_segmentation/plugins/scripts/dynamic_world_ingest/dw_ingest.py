@@ -77,8 +77,8 @@ def create_pipeline(tiff_path):
             6: 5,    # shrub_and_scrub
             7: 6,    # built
             8: 7,    # bare
-            9: 255,  # snow_and_ice -> ignore_index
-            10: 255, # cloud -> ignore_index
+            9: 255,  # snow_and_ice -> nodata
+            10: 255, # cloud -> nodata
         }),
 
         # All bands except for B1, B8A, B9, and B10 were kept, as they are not used in the original Dynamic World model and can be noisy. --- IGNORE ---
@@ -117,7 +117,7 @@ def run_ingest(raw_data_root: Path, output_dir: Path):
         ClassMeta(id=5, name="shrub_and_scrub", color="#DFC35A"),
         ClassMeta(id=6, name="built", color="#C4281B"),
         ClassMeta(id=7, name="bare", color="#A59B8F"),
-        ClassMeta(id=255, name="ignore_index", color="#000000"),
+        ClassMeta(id=255, name="nodata", color="#000000"),
     ]
     manifest.create_layer(name="dynamicworld", role="label", meta=dw_meta)
 

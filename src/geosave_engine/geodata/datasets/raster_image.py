@@ -2,23 +2,17 @@ from __future__ import annotations
 
 from collections.abc import Callable, Iterable, Sequence
 from pathlib import Path
-from typing import Any
 
 from pyproj import CRS
 from torchgeo.datasets import RasterDataset
 from torchgeo.datasets.utils import Sample
 
 
-class RasterLabel(RasterDataset):
-    """Generic single-band raster label as a TorchGeo ``RasterDataset``.
+class RasterImage(RasterDataset):
+    """Generic multi-band image layer as a TorchGeo ``RasterDataset``.
 
-    Serves any raster label product (DynamicWorld, ESA WorldCover, etc.)
-    already ingested into the geosave workspace layout
-    (``<root>/<split>/*.tif``). Default filename convention is
-    ``<prefix>_<lon>_<lat>-<YYYYMMDD>.tif``; override ``filename_regex`` and/or
-    ``date_format`` per product when needed.
-
-    Returns samples under key ``"label"``.
+    Serves any multi-band GeoTIFF produced by the geosave ingest pipeline,
+    laid out as ``<root>/<split>/*.tif``. Returns samples under key ``"image"``.
     """
 
     filename_glob = "*.tif"
@@ -31,7 +25,7 @@ class RasterLabel(RasterDataset):
     """
     date_format = "%Y%m%d"
 
-    is_image = False
+    is_image = True
     separate_files = False
 
     def __init__(
@@ -51,8 +45,3 @@ class RasterLabel(RasterDataset):
         if date_format is not None:
             self.date_format = date_format
         super().__init__(paths, crs, res, bands, transforms, cache, time_series)
-
-    def __getitem__(self, index: Any) -> Sample:
-        sample = super().__getitem__(index)
-        sample["label"] = sample.pop("mask")
-        return sample

@@ -1,4 +1,4 @@
-from geosave_engine.ml.cli import GeosaveCLI
+from geosave_engine.ml.core.cli import GeosaveCLI
 from src.data_module import GeosaveDataModule # noqa: F401
 from src.lightning_module import GeosaveLightningModule # noqa: F401
 

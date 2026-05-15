@@ -1,0 +1,50 @@
+model:
+  num_classes: 8 # Except ignore_index
+  in_channels: 8
+  ignore_index: 255
+  class_map:
+    0:
+      name: water
+      color: "#0000FF"
+    1:
+      name: trees
+      color: "#00FF00"
+    2:
+      name: grass
+      color: "#FFFF00"
+    3:
+      name: flooded_vegetation
+      color: "#00FFFF"
+    4:
+      name: crops
+      color: "#FF00FF"
+    5:
+      name: shrub_and_scrub
+      color: "#DFC35A"
+    6:
+      name: built
+      color: "#C4281B"
+    7:
+      name: bare
+      color: "#A59B8F"
+    255:
+      name: nodata
+      color: "#000000"
+
+  band_map: # This is a mapping after stacking geospatial bands, orders matter. See how the data module stacks the bands.
+    0: 
+      name: B2
+    1: 
+      name: B3
+    2: 
+      name: B4
+    3: 
+      name: B5
+    4: 
+      name: B6
+    5: 
+      name: B7
+    6: 
+      name: B11
+    7: 
+      name: B12
