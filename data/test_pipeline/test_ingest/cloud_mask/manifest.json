@@ -1,0 +1,19 @@
+{
+  "metadata": {
+    "name": "cloud_mask",
+    "resolution": 10,
+    "description": "Cloud and shadow mask",
+    "type": "label",
+    "classes": {
+      "0": {
+        "name": "clear",
+        "color": "#ffffff"
+      },
+      "1": {
+        "name": "cloud_shadow",
+        "color": "#000000"
+      }
+    }
+  },
+  "anchors": {}
+}

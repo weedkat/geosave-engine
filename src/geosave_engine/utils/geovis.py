@@ -1,348 +1,267 @@
-"""Geospatial EDA visualization utilities.
-
-Provides composable layer descriptors for plotting xarray DataArrays in a
-grid layout. Each descriptor controls its own render type and parameters —
-no auto-detection, full caller control.
-
-Example usage::
-
-    from matplotlib.colors import BoundaryNorm, ListedColormap
-    from geosave_engine.utils.geovis import plot_eda_grid, ContinuousLayer, RGBLayer, LabelLayer
-
-    # Define label colormap in the notebook (domain knowledge stays with caller)
-    DW_LABELS = [
-        (0, "No data", "#000000"),
-        (1, "Water", "#419bdf"),
-        (2, "Trees", "#397d49"),
-    ]
-    dw_cmap = ListedColormap([c for _, _, c in DW_LABELS])
-    dw_norm = BoundaryNorm(range(len(DW_LABELS) + 1), dw_cmap.N)
-
-    layers = [
-        ContinuousLayer("ndvi", result["ndvi"].squeeze()),
-        RGBLayer("image", result["image"].squeeze(), bands=[3, 2, 1]),
-        LabelLayer("label", result["label"].squeeze(), label_entries=DW_LABELS, cmap=dw_cmap, norm=dw_norm),
-    ]
-
-    fig, axes = plot_eda_grid(layers, cols=3)
-    plt.show()
-"""
+"""Geospatial EDA visualization utilities."""
 
 from __future__ import annotations
 
-import functools
-from dataclasses import dataclass
-from typing import cast
+from dataclasses import dataclass, field
 
 import matplotlib.pyplot as plt
 import numpy as np
-import xarray as xr
 from matplotlib.colors import BoundaryNorm, ListedColormap
-from matplotlib.patches import Patch
+from matplotlib.patches import Patch, Rectangle
+from mpl_toolkits.axes_grid1 import make_axes_locatable
 
-from geosave_engine.geodata.pipeline.io import ClassMeta, MaskMeta
+from geosave_engine.geodata.core import GeoTile
+from geosave_engine.utils.geolocator import Place
 
-
-def _to_entry(e: tuple[int, str, str] | ClassMeta | MaskMeta) -> tuple[int, str, str]:
-    if not isinstance(e, tuple):
-        return (e.id, e.name, e.color or "#000000")
-    return cast(tuple[int, str, str], e)
-
-# ---------------------------------------------------------------------------
-# Geocoding (Nominatim via geopy)
-# Cached by rounded center coordinate (~1 km grid) to avoid repeat requests.
-# Graceful fallback if network unavailable or geopy not installed.
-# ---------------------------------------------------------------------------
+# Colorbar dimensions in inches — must match make_axes_locatable args in ContinuousLayer.plot().
+# plot_eda_grid uses these to pre-allocate extra column width so the image area stays at cell_w.
+_CB_WIDTH: float = 0.05
+_CB_PAD: float = 0.05
 
 
-@functools.lru_cache(maxsize=256)
-def _reverse_geocode(lat: float, lon: float) -> str:
-    """Return a human-readable place name for the given WGS84 coordinate.
-
-    Results are cached per (lat, lon) rounded to 2 decimal places (~1 km).
-    Returns empty string on failure — never raises.
-    """
-    try:
-        from geopy.geocoders import Nominatim  # optional dep
-
-        geolocator = Nominatim(user_agent="geosave-engine")
-        location = geolocator.reverse((lat, lon), timeout=5, language="en")
-        if location is None:
-            return ""
-        addr = location.raw.get("address", {})
-        parts = [
-            addr.get("city") or addr.get("town") or addr.get("village") or addr.get("county"),
-            addr.get("state") or addr.get("region"),
-            addr.get("country"),
-        ]
-        return ", ".join(p for p in parts if p)
-    except Exception:
-        return ""
-
-
-# ---------------------------------------------------------------------------
-# Extent helpers
-# ---------------------------------------------------------------------------
-
-
-def _get_extent(data: xr.DataArray) -> tuple[float, float, float, float]:
-    """Extract (left, right, bottom, top) WGS84 extent from a DataArray.
-
-    Reads attrs['bbox'] (set by Pipeline.run(), always WGS84) when available.
-    """
-    bbox = data.attrs.get("bbox")
-    if bbox is not None:
-        left, bottom, right, top = bbox  # rasterio: (left, bottom, right, top)
-        return (left, right, bottom, top)  # matplotlib: (left, right, bottom, top)
-    raise ValueError("DataArray missing 'bbox' attribute for extent")
-
-
-def _format_extent(extent: tuple[float, float, float, float]) -> str:
-    """Format extent as informative label with place name, center, and bounds.
-
-    Expects WGS84 (left, right, bottom, top) — as returned by _get_extent() from attrs['bbox'].
-
-    Example output::
-
-        Bandung, West Java, Indonesia | center: 6.90°S, 107.62°E
-    """
-    if extent is None:
-        return ""
-    left, right, bottom, top = extent
-
-    center_lat = (bottom + top) / 2
-    center_lon = (left + right) / 2
-
-    lat_str = f"{abs(center_lat):.2f}°{'N' if center_lat >= 0 else 'S'}"
-    lon_str = f"{abs(center_lon):.2f}°{'E' if center_lon >= 0 else 'W'}"
-    center = f"center: {lat_str}, {lon_str}"
-
-    place = _reverse_geocode(round(center_lat, 2), round(center_lon, 2))
-    if place:
-        return f"{place} | {center}"
-    return f"{center}"
-
-
-# ---------------------------------------------------------------------------
-# Shared axis setup
-# ---------------------------------------------------------------------------
-
-
-def _setup_ax(ax: plt.Axes, title: str) -> None:
-    ax.set_title(title, fontsize=10, fontweight="bold")
-    ax.set_xticks([])
-    ax.set_yticks([])
-
-
-# ---------------------------------------------------------------------------
-# Layer descriptors
-# ---------------------------------------------------------------------------
-
-
-@dataclass
-class ContinuousLayer:
-    """Single-band continuous value layer (e.g. NDVI, elevation).
-
-    Args:
-        title: Subplot title.
-        data: 2-D DataArray (extra dims squeezed automatically).
-        cmap: Matplotlib colormap name or object. Defaults to ``"RdYlGn"``.
-
-    Example::
-
-        ContinuousLayer("ndvi", result["ndvi"].squeeze())
-        ContinuousLayer("elevation", dem, cmap="terrain")
-    """
-
-    title: str
-    data: xr.DataArray
-    cmap: str = "RdYlGn"
-
-    def plot(self, ax: plt.Axes) -> None:
-        arr = np.ma.masked_invalid(np.asarray(self.data.squeeze()))
-        extent = _get_extent(self.data)
-        image = ax.imshow(arr, cmap=self.cmap, extent=extent, origin="upper")
-        _setup_ax(ax, self.title)
-        plt.colorbar(image, ax=ax, fraction=0.046, pad=0.04)
+def _first_frame(array: np.ndarray) -> np.ndarray:
+    """Drop a leading time axis for single-scene visualisation."""
+    if array.ndim == 4:
+        return array[0]
+    return array
 
 
 @dataclass
 class RGBLayer:
-    """Multi-band layer rendered as RGB composite with 2–98 percentile stretch.
+    """Multi-band GeoTile rendered as a 2–98 percentile-stretched RGB composite.
 
     Args:
         title: Subplot title.
-        data: 3-D DataArray with shape (bands, height, width).
-        bands: Band names (from 'band' coordinate) to composite as R, G, B.
-               If None, uses first three bands in coordinate order.
-
-    Example::
-
-        RGBLayer("true color", result["image"].squeeze(), bands=["B4", "B3", "B2"])
+        geotile: GeoTile with shape (bands, H, W).
+        bands: 0-based band indices for R, G, B. Defaults to (0, 1, 2).
     """
 
     title: str
-    data: xr.DataArray
-    bands: list[str] | None = None
+    geotile: GeoTile
+    bands: tuple[int, int, int] = (0, 1, 2)
 
     def plot(self, ax: plt.Axes) -> None:
-        arr = np.asarray(self.data.squeeze())
-        extent = _get_extent(self.data)
-        _setup_ax(ax, self.title)
+        if self.geotile.data is None:
+            ax.text(0.5, 0.5, "No data", ha="center", va="center", transform=ax.transAxes)
+            return
 
-        # Resolve band names to integer indices
-        band_indices: list[int]
-        if "band" in self.data.coords:
-            band_names_in_data = [str(b) for b in self.data["band"].values]
-            if self.bands is None:
-                band_indices = list(range(min(3, len(band_names_in_data))))
-            else:
-                try:
-                    band_indices = [band_names_in_data.index(b) for b in self.bands]
-                except ValueError as e:
-                    ax.text(0.5, 0.5, f"Band not found: {e}", ha="center", va="center", transform=ax.transAxes)
-                    return
-        else:
-            if self.bands is not None:
-                ax.text(0.5, 0.5, "Band names require 'band' coordinate", ha="center", va="center", transform=ax.transAxes)
-                return
-            band_indices = [0, 1, 2]
+        arr = _first_frame(self.geotile.to_numpy())
 
-        if arr.ndim < 3 or arr.shape[0] <= max(band_indices):
+        if arr.ndim < 3 or arr.shape[0] <= max(self.bands):
             ax.text(0.5, 0.5, "RGB needs ≥3 bands", ha="center", va="center", transform=ax.transAxes)
             return
 
-        rgb = arr[band_indices].transpose(1, 2, 0).astype(np.float32)
-        rgb_norm = np.zeros_like(rgb)
+        rgb = arr[list(self.bands)].transpose(1, 2, 0).astype(np.float32)
+        out = np.zeros_like(rgb)
         for i in range(3):
-            band = np.ma.masked_invalid(rgb[..., i])
+            channel = np.ma.masked_invalid(rgb[..., i])
             try:
-                vmin, vmax = np.percentile(band.compressed(), [2, 98])
+                lo, hi = np.percentile(channel.compressed(), [2, 98])
             except ValueError:
-                vmin, vmax = float(np.nanmin(band)), float(np.nanmax(band))
-            rgb_norm[..., i] = np.clip((rgb[..., i] - vmin) / (vmax - vmin + 1e-8), 0, 1)
+                lo, hi = float(np.nanmin(channel)), float(np.nanmax(channel))
+            out[..., i] = np.clip((rgb[..., i] - lo) / (hi - lo + 1e-8), 0, 1)
 
-        ax.imshow(rgb_norm, extent=extent, origin="upper")
+        ax.imshow(out, origin="upper")
+        ax.set_title(self.title, fontsize=10, fontweight="bold")
+        ax.set_xticks([])
+        ax.set_yticks([])
+
+
+@dataclass
+class ContinuousLayer:
+    """Single-band continuous GeoTile (e.g. NDVI, elevation).
+
+    Args:
+        title: Subplot title.
+        geotile: GeoTile with shape (1, H, W) or (H, W).
+        cmap: Matplotlib colormap name or object.
+    """
+
+    title: str
+    geotile: GeoTile
+    cmap: str = "RdYlGn"
+
+    def plot(self, ax: plt.Axes) -> None:
+        if self.geotile.data is None:
+            ax.text(0.5, 0.5, "No data", ha="center", va="center", transform=ax.transAxes)
+            return
+
+        arr = np.ma.masked_invalid(_first_frame(self.geotile.to_numpy()))
+        if arr.ndim == 3:
+            arr = arr[0]
+        img = ax.imshow(arr, cmap=self.cmap, origin="upper")
+
+        if fig := ax.get_figure():
+            divider = make_axes_locatable(ax)
+            cax = divider.append_axes("right", size=_CB_WIDTH, pad=_CB_PAD)
+            cb = fig.colorbar(img, cax=cax)
+            cb.ax.tick_params(labelsize=6)
+
+        ax.set_title(self.title, fontsize=10, fontweight="bold")
+        ax.set_xticks([])
+        ax.set_yticks([])
 
 
 @dataclass
 class LabelLayer:
-    """Discrete label layer rendered with auto-generated colormap and legend.
-
-    Builds colormap and norm from label_entries automatically, so caller
-    only needs to provide the label definitions.
+    """Discrete integer label GeoTile rendered with a caller-supplied color map.
 
     Args:
-        title: Subplot title.
-        data: 2-D integer DataArray.
-        label_entries: List of ``(value, name, hex_color)`` tuples defining
-                       the class registry. Used to build colormap and legend.
-        cmap: Optional ``ListedColormap``. Auto-generated from label_entries
-              if not provided.
-        norm: Optional ``BoundaryNorm``. Auto-generated from label_entries
-              if not provided.
-
-    Example::
-
-        LABELS = [(0, "No data", "#000"), (1, "Water", "#419bdf"), ...]
-        LabelLayer("labels", result["label"].squeeze(), label_entries=LABELS)
-
-        # Or with custom colormap:
-        custom_cmap = ListedColormap([c for _, _, c in LABELS])
-        LabelLayer("labels", data, label_entries=LABELS, cmap=custom_cmap)
+        title: Subplot title, also used as the legend group title.
+        geotile: GeoTile with integer class values.
+        color_map: ``{class_id: hex_color}`` for imshow rendering.
+        class_map: ``{class_id: name}`` for legend labels. Falls back to str(id) if None.
     """
 
     title: str
-    data: xr.DataArray
-    label_entries: list[tuple[int, str, str]] | list[ClassMeta] | list[MaskMeta]
-    cmap: ListedColormap | None = None
-    norm: BoundaryNorm | None = None
+    geotile: GeoTile
+    color_map: dict[int | str, str]
+    class_map: dict[int | str, str] | None = None
+    _cmap: ListedColormap = field(init=False, repr=False)
+    _norm: BoundaryNorm = field(init=False, repr=False)
 
     def __post_init__(self) -> None:
-        if self.cmap is None:
-            colors = [_to_entry(e)[2] for e in self.label_entries]
-            object.__setattr__(self, "cmap", ListedColormap(colors))
-        if self.norm is None:
-            boundaries = np.arange(-0.5, len(self.label_entries) + 0.5, 1)
-            cmap = cast(ListedColormap, self.cmap)
-            object.__setattr__(self, "norm", BoundaryNorm(boundaries, cmap.N))
+        values = [int(v) for v in sorted(self.color_map)]
+        colors = [self.color_map[v] for v in sorted(self.color_map)]
+        self._cmap = ListedColormap(colors)
+        boundaries = [v - 0.5 for v in values] + [values[-1] + 0.5]
+        self._norm = BoundaryNorm(boundaries, self._cmap.N)
+
+    def label(self, class_id: int | str) -> str:
+        if self.class_map and class_id in self.class_map:
+            return self.class_map[class_id]
+        return str(class_id)
+
+    def legend_handles(self) -> tuple[list[Patch], list[str]]:
+        """Return handles and labels filtered to class IDs present in the data."""
+        if self.geotile.data is None:
+            return [], []
+        unique = set(np.unique(_first_frame(self.geotile.to_numpy())).astype(int))
+        handles = [Patch(facecolor=self.color_map[cid], edgecolor="black") for cid in sorted(self.color_map) if cid in unique]
+        labels = [self.label(cid) for cid in sorted(self.color_map) if cid in unique]
+        return handles, labels
 
     def plot(self, ax: plt.Axes) -> None:
-        arr = np.asarray(self.data.squeeze())
-        arr_masked = np.ma.masked_invalid(arr.astype(float))
-        extent = _get_extent(self.data)
+        if self.geotile.data is None:
+            ax.text(0.5, 0.5, "No data", ha="center", va="center", transform=ax.transAxes)
+            return
 
-        ax.imshow(arr_masked, cmap=self.cmap, norm=self.norm, extent=extent, origin="upper")
-        _setup_ax(ax, self.title)
-
-        unique_vals = set(np.unique(arr[~np.isnan(arr.astype(float))]).astype(int))
-        handles = [
-            Patch(facecolor=color, edgecolor="black", label=f"{value} {name}")
-            for value, name, color in (_to_entry(e) for e in self.label_entries)
-            if value in unique_vals
-        ]
-        if handles:
-            ax.legend(handles=handles, loc="center left", bbox_to_anchor=(1.02, 0.5), fontsize=8, frameon=False)
+        arr = np.ma.masked_invalid(_first_frame(self.geotile.to_numpy()).astype(float))
+        if arr.ndim == 3:
+            arr = arr[0]
+        ax.imshow(arr, cmap=self._cmap, norm=self._norm, origin="upper")
+        ax.set_title(self.title, fontsize=10, fontweight="bold")
+        ax.set_xticks([])
+        ax.set_yticks([])
 
 
-# ---------------------------------------------------------------------------
-# Grid entry point
-# ---------------------------------------------------------------------------
+def _cell_dims(layers: list[RGBLayer | ContinuousLayer | LabelLayer]) -> tuple[float, float]:
+    """Return (cell_w, cell_h) in inches derived from the first layer with data."""
+    dpi = plt.rcParams["figure.dpi"]
+    for layer in layers:
+        if layer.geotile.data is not None:
+            data = _first_frame(layer.geotile.to_numpy())
+            return data.shape[-1] / dpi, data.shape[-2] / dpi
+    return 3.0, 3.0  # fallback when all layers have no data
 
 
 def plot_eda_grid(
-    layers: list[ContinuousLayer | RGBLayer | LabelLayer],
-    cols: int = 3,
-    figsize_per_subplot: tuple[float, float] = (3.5, 2.8),
-    dpi: int = 100,
+    layers: list[RGBLayer | ContinuousLayer | LabelLayer],
+    title: str = "EDA Grid",
+    cols: int | None = None,
+    gap: float = 0.1,
+    legend_width: float = 1.0,
+    legend_gap: float = 0.03,
 ) -> tuple[plt.Figure, np.ndarray]:
-    """Render a grid of EDA subplots from a list of layer descriptors.
-
-    The figure title shows the geographic location of the first layer's
-    extent, resolved via Nominatim reverse geocoding (cached, with fallback).
-
-    Args:
-        layers: Ordered list of layer descriptors.
-        cols: Columns in the grid; rows computed automatically.
-        figsize_per_subplot: (width, height) in inches per cell.
-        dpi: Figure resolution.
-
-    Returns:
-        ``(fig, axes)`` where axes is a 2-D numpy array of Axes objects.
-
-    Raises:
-        ValueError: If ``layers`` is empty.
-
-    Example::
-
-        layers = [
-            ContinuousLayer("ndvi", result["ndvi"].squeeze()),
-            RGBLayer("image", result["image"].squeeze(), bands=["B04", "B03", "B02"]),
-            LabelLayer("label", result["label"].squeeze(),
-                       label_entries=DW_LABELS, cmap=dw_cmap, norm=dw_norm),
-        ]
-        fig, axes = plot_eda_grid(layers, cols=3)
-        plt.show()
-    """
     if not layers:
         raise ValueError("layers list cannot be empty")
 
+    plt.rcParams["font.family"] = "sans-serif"
+    plt.rcParams["font.sans-serif"] = ["Inter", "Liberation Sans", "Noto Sans", "Helvetica", "Arial", "DejaVu Sans"]
+
     n = len(layers)
+    cols = min(cols or n, n)
     rows = int(np.ceil(n / cols))
-    figsize = (cols * figsize_per_subplot[0], rows * figsize_per_subplot[1])
 
-    fig, axes = plt.subplots(rows, cols, figsize=figsize, dpi=dpi, constrained_layout=True)
-    axes = np.array(axes).reshape(rows, cols)
+    label_layers = [ll for ll in layers if isinstance(ll, LabelLayer) and ll.legend_handles()[0]]
 
-    extent_label = _format_extent(_get_extent(layers[0].data))
-    if extent_label:
-        fig.subplots_adjust(bottom=0.15)
-        fig.text(0.5, -0.05, extent_label, ha="center", va="center", fontsize=9, wrap=True)
+    cell_w, cell_h = _cell_dims(layers)
 
-    for layer, ax in zip(layers, axes.flat):
+    has_cb = [
+        any(isinstance(layers[r * cols + c], ContinuousLayer) for r in range(rows) if r * cols + c < n)
+        for c in range(cols)
+    ]
+    col_widths = [cell_w + _CB_WIDTH + _CB_PAD if hc else cell_w for hc in has_cb]
+    plot_width = sum(col_widths)
+    fig_width = plot_width + (legend_width if label_layers else 0)
+    right = plot_width / fig_width if label_layers else 1.0
+
+    ref = layers[0].geotile
+    lon, lat = ref.centroid
+    coord_str = f"{abs(lat):.4f}°{'N' if lat >= 0 else 'S'}, {abs(lon):.4f}°{'E' if lon >= 0 else 'W'}"
+    place = Place.from_coordinate(lat, lon)
+    address = place.to_address() if place else None
+    geo_label = f"{address}  ·  {coord_str}" if address else coord_str
+
+    times = ref.times
+    if times:
+        t0 = str(times[0])[:10]
+        date_str = f"{t0} → {str(times[-1])[:10]}" if len(times) > 1 else t0
+    else:
+        date_str = ref.datetime.strftime("%Y-%m-%d")
+    geo_label = f"{date_str}  ·  {geo_label}"
+
+    fig, axes = plt.subplots(
+        rows, cols,
+        figsize=(fig_width, rows * cell_h + 0.2),
+        gridspec_kw={'wspace': gap, 'hspace': gap, 'width_ratios': col_widths},
+    )
+    axes_flat = np.array(axes).flatten()
+
+    for layer, ax in zip(layers, axes_flat):
         layer.plot(ax)
-
-    for ax in axes.flat[n:]:
+    for ax in axes_flat[n:]:
         ax.set_visible(False)
 
-    return fig, axes
+    fig.tight_layout()
+
+    cx = (min(ax.get_position().x0 for ax in axes_flat[:n]) +
+          max(ax.get_position().x1 for ax in axes_flat[:n])) / 2
+    fig.suptitle(title, fontsize=12, weight='bold', x=cx, y=0.97)
+
+    if label_layers:
+        panel_cx = right + (legend_width / fig_width) / 2
+        legends = []
+        for ll in label_layers:
+            handles, labels = ll.legend_handles()
+            leg = fig.legend(
+                handles, labels, title=ll.title,
+                loc="upper center",
+                bbox_to_anchor=(panel_cx, 1.0), bbox_transform=fig.transFigure,
+                fontsize=9, frameon=False,
+                title_fontproperties={"weight": "bold", "size": 9},
+            )
+            legends.append(leg)
+
+        fig.canvas.draw()
+        fig_h = fig.get_window_extent().height
+        total_h = sum(leg.get_window_extent().height for leg in legends) / fig_h + legend_gap * (len(legends) - 1)
+        y = 0.5 + total_h / 2
+        for i, leg in enumerate(legends):
+            leg.set_bbox_to_anchor((panel_cx, y), transform=fig.transFigure)
+            y -= leg.get_window_extent().height / fig_h + (legend_gap if i < len(legends) - 1 else 0)
+
+        fig.canvas.draw()
+        fig_ext = fig.get_window_extent()
+        exts = [leg.get_window_extent() for leg in legends]
+        pad = 6
+        bx0 = (min(e.x0 for e in exts) - pad) / fig_ext.width
+        by0 = (min(e.y0 for e in exts) - pad) / fig_ext.height
+        bw = (max(e.x1 for e in exts) + pad) / fig_ext.width - bx0
+        bh = (max(e.y1 for e in exts) + pad) / fig_ext.height - by0
+        fig.add_artist(Rectangle((bx0, by0), bw, bh, transform=fig.transFigure,
+                                  fill=False, edgecolor="grey", linewidth=0.8, clip_on=False))
+
+    fig.text(cx, 0.015, geo_label, ha="center", va="bottom", fontsize=9, color="#666666", style="italic")
+
+    return fig, axes_flat

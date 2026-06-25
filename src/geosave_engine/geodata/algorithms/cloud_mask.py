@@ -22,7 +22,7 @@ def compute_s2c_mask(
     b11: np.ndarray,
     b12: np.ndarray,
     *,
-    cloud_threshold: float = 0.4,
+    prob_threshold: float = 0.4,
 ) -> np.ndarray:
     """Cloud probability mask via s2cloudless.
 
@@ -31,15 +31,14 @@ def compute_s2c_mask(
 
     Args:
         b01..b12: Individual Sentinel-2 bands as (H, W) float32 arrays.
-        cloud_threshold: Probability threshold above which a pixel is flagged as cloud.
+        prob_threshold: Probability threshold above which a pixel is flagged as cloud.
 
     Returns:
-        (H, W) bool mask — True where cloud detected.
+        (H, W) int mask — True where cloud detected.
     """
     bands = np.stack([b01, b02, b04, b05, b08, b8a, b09, b10, b11, b12], axis=-1).astype(np.float32)
-    detector = S2PixelCloudDetector(threshold=cloud_threshold, all_bands=False)
-    prob = detector.get_cloud_probability_maps(bands[np.newaxis])  # (1, H, W)
-    return prob[0] >= cloud_threshold
+    detector = S2PixelCloudDetector(threshold=prob_threshold, all_bands=False)
+    return detector.get_cloud_masks(bands[np.newaxis])[0]  # (1, H, W)
 
 
 def compute_cdi_mask(

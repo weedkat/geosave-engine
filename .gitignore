@@ -220,5 +220,6 @@ lightning_logs/
 
 # Local state files testing
 /wawa
+/biomass
 /workspace
 .VSCodeCounter

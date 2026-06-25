@@ -12,6 +12,7 @@ Generate ready-to-use geospatial ML workspaces by reliably copying curated templ
 - Match existing project structure and style.
 - Ask questions when blocked or risk is high.
 - Keep durable rules here; task flow goes elsewhere.
+- if the files changes, the user must have a reason.
 
 ## Coding Rules
 
@@ -57,7 +58,7 @@ src
 - Dataset Management: TorchGeo-compatible geospatial datasets and aligned sampling.
 - Data Ingestion: odc-stac with xarray-based preprocessing.
 - Raster IO: rioxarray and rasterio for GeoTIFF read/write and CRS-aware raster operations.
-- Dataset Manifests: xlsx with multiple sheets (one per layer) for dataset manifest handling.
+- Dataset Manifests: json file with metadata and list of anchor.
 
 ## Testing
 

@@ -29,34 +29,24 @@ model:
   threshold_calibration:
     metric: f1
 
-fit:
-  data:
-    batch_size: 16
-    num_workers: 4
-    data_image:
-      train: data/image/train
-      val: data/image/val
-    data_mask:
-      train: data/mask/train
-      val: data/mask/val
-    data_label:
-      train: data/label/train
-      val: data/label/val
-
-test:
-  data:
-    batch_size: 16
-    num_workers: 4
-    data_image:
-      test: data/image/test
-    data_mask:
-      test: data/mask/test
+data:
+  batch_size: 16
+  num_workers: 4
+  root: data/dynamicworld
+  ingest_dirs:
+    train: data/dynamicworld_raw/train/
+    val: data/dynamicworld_raw/val/
+    test: data/dynamicworld_raw/test/
 
 predict:
   data:
-    batch_size: 16
-    num_workers: 4
-    data_image:
-      predict: data/image/predict
-    data_mask:
-      predict: data/mask/predict
+    root: run/
+    ingest_bboxes:
+      bbox: [-122.5, 37.7, -122.3, 37.8]
+      datetime: "2020-01-01/2020-12-31"
+  
+predict:
+  data:
+    root: run/
+    ingest_geojsons:
+      src: data/geojsons/input.geojson

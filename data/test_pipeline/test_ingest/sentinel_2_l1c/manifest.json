@@ -1,0 +1,47 @@
+{
+  "metadata": {
+    "name": "sentinel_2_l1c",
+    "resolution": 10,
+    "description": "Sentinel-2 L1C imagery",
+    "type": "image",
+    "bands": {
+      "B02": {
+        "name": "blue",
+        "wavelength(\u03bcm)": 490
+      },
+      "B03": {
+        "name": "green",
+        "wavelength(\u03bcm)": 560
+      },
+      "B04": {
+        "name": "red",
+        "wavelength(\u03bcm)": 665
+      },
+      "B05": {
+        "name": "rededge1",
+        "wavelength(\u03bcm)": 704
+      },
+      "B06": {
+        "name": "rededge2",
+        "wavelength(\u03bcm)": 740
+      },
+      "B07": {
+        "name": "rededge3",
+        "wavelength(\u03bcm)": 783
+      },
+      "B08": {
+        "name": "nir",
+        "wavelength(\u03bcm)": 842
+      },
+      "B11": {
+        "name": "swir16",
+        "wavelength(\u03bcm)": 1610
+      },
+      "B12": {
+        "name": "swir22",
+        "wavelength(\u03bcm)": 2190
+      }
+    }
+  },
+  "anchors": {}
+}

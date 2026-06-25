@@ -28,7 +28,6 @@ def get_task_templates(file_exceptions: list[str] = FILE_EXCEPTION) -> list[Path
 
 def get_method_templates(file_exceptions: list[str] = FILE_EXCEPTION) -> template_struct:
     """Get mapping of task names to lists of method template paths,
-    
 
     Args: 
         file_exceptions: List of file or directory names to exclude from templates. Only top-level names are checked, not recursive. For example, if "common" is in file_exceptions, any template path containing a directory named "common" will be excluded, regardless of its position in the directory structure. This allows for flexible exclusion of templates based on their names,

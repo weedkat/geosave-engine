@@ -1,21 +1,15 @@
 from typing import Any
-from dataclasses import dataclass, replace, field
+from dataclasses import dataclass
 from datetime import datetime
-from typing import Protocol, runtime_checkable, TypeVar
+from typing import TypeVar
 
-from geosave_engine.utils.cql2 import CQL2
-from geosave_engine.utils.geom import validate_bbox
+from geosave_engine.utils.stac_query import CQL2
+from geosave_engine.utils.crs import validate_bbox
 
 T = TypeVar("T", bound="StacQuery")
+SortBy = list[dict[str, str]] | dict[str, str] | str
 
-
-@runtime_checkable
-class BaseQuery(Protocol):
-    def to_search_params(self) -> dict[str, Any]:
-        ...
-
-
-@dataclass(frozen=True)
+@dataclass
 class StacQuery:
     collections: list[str]
     ids: list[str] | None = None
@@ -27,7 +21,7 @@ class StacQuery:
     query: dict[str, Any] | None = None
     filter: dict[str, Any] | None = None
     fields: list[str] | None = None
-    sortby: str | list[str] | None = None
+    sortby: SortBy | None = None
 
     def __post_init__(self):
         """Strict validation for WGS84 logic."""
@@ -52,28 +46,43 @@ class StacQuery:
         # Remove None values to avoid passing them to the STAC client
         return {k: v for k, v in params.items() if v is not None}
 
-    def with_filter(self: T, expr: dict[str, Any]) -> T:
+    def with_filter(self: T, expr: dict[str, Any]):
         """Chainable filter merger that preserves existing filters."""
         if self.filter is None:
-            new_filter = expr
+            self.filter = expr
         else:
-            new_filter = CQL2.and_(self.filter, expr)
-            
-        return replace(self, filter=new_filter)
+            self.filter = CQL2.and_(self.filter, expr)
+    
+    def with_sortby(self: T, field: str, direction: str = "asc"):
+        """Chainable sortby setter that preserves existing sort order."""
+        new_sort = {"field": field, "direction": direction}
+        if self.sortby is None:
+            self.sortby = [new_sort]
+        elif isinstance(self.sortby, list):
+            self.sortby.append(new_sort)
+        elif isinstance(self.sortby, dict):
+            self.sortby = [self.sortby, new_sort]
+        elif isinstance(self.sortby, str):
+            parsed_sort = parse_sortby(self.sortby)
+            self.sortby = [parsed_sort, new_sort]
 
 
-@dataclass(frozen=True)
-class Sentinel2Query(StacQuery):
-    def max_cloud_cover(self: T, max_cover: float) -> T:
-        """Add a cloud cover filter to the query."""
-        cloud_filter = CQL2.lte("eo:cloud_cover", max_cover)
-        return self.with_filter(cloud_filter)
+def parse_sortby(sortby: str) -> dict[str, str]:
+    """Convert pystac-client sort string to STAC sort dict."""
+    direction = "asc"
 
-@dataclass(frozen=True)
-class Sentinel2L2AQuery(Sentinel2Query):
-    collections: list[str] = field(default_factory=lambda: ["sentinel-2-l2a"])
+    if sortby.startswith("-"):
+        direction = "desc"
+        field = sortby[1:]
+    elif sortby.startswith("+"):
+        field = sortby[1:]
+    else:
+        field = sortby
 
+    if not field:
+        raise ValueError("sortby field cannot be empty")
 
-@dataclass(frozen=True)
-class Sentinel2L1CQuery(Sentinel2Query):
-    collections: list[str] = field(default_factory=lambda: ["sentinel-2-l1c"])
+    return {
+        "field": field,
+        "direction": direction,
+    }

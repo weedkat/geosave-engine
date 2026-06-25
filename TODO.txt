@@ -1,0 +1,10 @@
+1. Refactor geodata pipeline
+2. Refactor model factory
+3. create pgstac instance to upload raster
+4. fix workspace
+
+1. create ImageProcessor
+2. test the new data module
+3. fix lightning_module
+4. refactor factory
+5. try 

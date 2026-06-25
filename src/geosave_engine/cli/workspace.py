@@ -9,7 +9,7 @@ from geosave_engine.cli.paths import common_template_dir, templates_dir, get_wor
 from geosave_engine.cli.errors import WorkspaceError
 
 REQUIRED_FIELDS = ["project_name"]
-REQUIRED_DIRS = ["data", "configs", "artifacts", "scripts", "notebooks", "logs", "src", "predictions"]
+REQUIRED_DIRS = ["data", "configs", "artifacts", "scripts", "logs", "modules", "predictions", "notebooks"]
 
 
 @dataclass

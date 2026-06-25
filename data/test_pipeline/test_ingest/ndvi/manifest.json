@@ -1,0 +1,10 @@
+{
+  "metadata": {
+    "name": "ndvi",
+    "resolution": 10,
+    "description": "Normalized Difference Vegetation Index",
+    "type": "image",
+    "bands": {}
+  },
+  "anchors": {}
+}

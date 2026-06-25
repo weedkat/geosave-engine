@@ -3,7 +3,7 @@ from __future__ import annotations
 import numpy as np
 import torch
 
-Palette = dict[int, tuple[int, int, int] | str]
+Palette = dict[int, tuple[int, int, int]] | dict[int, str]
 
 
 def _parse_color(color: tuple[int, int, int] | str) -> tuple[int, int, int]:

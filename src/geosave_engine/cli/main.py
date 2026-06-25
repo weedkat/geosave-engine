@@ -21,7 +21,7 @@ CURRENT_DIR = Path.cwd()
 app = typer.Typer(help="Geosave Engine CLI")
 
 @app.command()
-def build(
+def create(
     dir: str = typer.Option(
         CURRENT_DIR,
         '-d',

@@ -1,6 +1,21 @@
-"""TorchGeo-compatible dataset classes."""
-from geosave_engine.geodata.datasets.raster_mask import RasterMask
-from geosave_engine.geodata.datasets.raster_label import RasterLabel
-from geosave_engine.geodata.datasets.raster_image import RasterImage
+"""GeoTile-backed PyTorch dataset classes and samplers."""
+from torchgeo.datasets.utils import stack_samples
 
-__all__ = ["RasterImage", "RasterLabel", "RasterMask"]
+from geosave_engine.geodata.datasets.geo_dataset import GeoDataset
+from geosave_engine.geodata.datasets.non_geo_dataset import NonGeoDataset
+from geosave_engine.geodata.datasets.samplers import (
+    GeoTileSampler,
+    GridSampler,
+    PreChippedSampler,
+    patch_tile,
+)
+
+__all__ = [
+    "GeoDataset",
+    "NonGeoDataset",
+    "GeoTileSampler",
+    "PreChippedSampler",
+    "GridSampler",
+    "patch_tile",
+    "stack_samples",
+]

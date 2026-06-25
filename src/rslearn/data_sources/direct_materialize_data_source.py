@@ -1,0 +1,342 @@
+"""Base class for data sources that support direct materialization via TileStore."""
+
+from abc import abstractmethod
+from collections.abc import Callable
+from datetime import datetime
+from typing import Any, Generic, cast
+
+import affine
+import numpy.typing as npt
+import rasterio
+import rasterio.vrt
+from rasterio.enums import Resampling
+from typing_extensions import override
+from upath import UPath
+
+from rslearn.config import LayerConfig
+from rslearn.data_sources.data_source import DataSource, Item, ItemType
+from rslearn.dataset import Window
+from rslearn.dataset.materialize import RasterMaterializer
+from rslearn.tile_stores import TileStore, TileStoreWithLayer
+from rslearn.utils import Feature
+from rslearn.utils.geometry import PixelBounds, Projection
+from rslearn.utils.raster_array import RasterArray, RasterMetadata
+
+
+class DirectMaterializeDataSource(DataSource[ItemType], TileStore, Generic[ItemType]):
+    """Base class for data sources that support direct materialization via TileStore.
+
+    This class provides common TileStore functionality for data sources that can read
+    raster data on-demand from remote sources (like cloud buckets or APIs) without
+    first ingesting into a local tile store.
+
+    We assume here that the same asset across items has the same nodata value. The
+    nodata value is cached so we don't need to probe the raster repeatedly.
+
+    Subclasses must implement:
+        - get_asset_url(): Get the URL for an asset given item and bands
+
+    Subclasses may optionally override:
+        - get_raster_bands(): By default, we assume that items have all assets. If
+            items may have a subset of assets, override get_raster_bands to return
+            the sets of bands available for that item.
+        - get_read_callback(): Returns a callback to transform the raster array,
+            for post-processing like Sentinel-2 harmonization.
+    """
+
+    def __init__(self, asset_bands: dict[str, list[str]]):
+        """Initialize the DirectMaterializeDataSource.
+
+        Args:
+            asset_bands: mapping from asset key to the list of band names in that asset.
+        """
+        self.asset_bands = asset_bands
+        self._nodata_cache: dict[str, float | None] = {}
+
+    def _get_asset_key_by_bands(self, bands: list[str]) -> str:
+        """Get the asset key based on the band names.
+
+        Args:
+            bands: list of band names to look up.
+
+        Returns:
+            the asset key that provides those bands.
+
+        Raises:
+            ValueError: if no asset provides those bands.
+        """
+        for asset_key, asset_bands in self.asset_bands.items():
+            if bands == asset_bands:
+                return asset_key
+        raise ValueError(f"no known asset with bands {bands}")
+
+    # --- Methods that subclasses must implement ---
+
+    @abstractmethod
+    def get_asset_url(self, item: ItemType, asset_key: str) -> str:
+        """Get the URL to read the asset for the given item and asset key.
+
+        Args:
+            item: the item.
+            asset_key: the key identifying which asset to get.
+
+        Returns:
+            the URL to read the asset from (must be readable by rasterio).
+        """
+        raise NotImplementedError
+
+    # --- Optional hooks for subclasses ---
+
+    def get_read_callback(
+        self, item: ItemType, asset_key: str
+    ) -> Callable[[npt.NDArray[Any]], npt.NDArray[Any]] | None:
+        """Return a callback to post-process raster data (e.g., harmonization).
+
+        Subclasses can override this to apply transformations to the raw raster data
+        after reading, such as harmonization for Sentinel-2 data.
+
+        Args:
+            item: the item being read.
+            asset_key: the key identifying which asset is being read.
+
+        Returns:
+            A callback function that takes an array and returns a modified array,
+            or None if no post-processing is needed.
+        """
+        return None
+
+    # --- TileStore implementation ---
+
+    @override
+    def is_raster_ready(self, layer_name: str, item: Item, bands: list[str]) -> bool:
+        """Checks if this raster has been written to the store.
+
+        For remote-backed tile stores, this always returns True since data is
+        read on-demand from the remote source.
+
+        Args:
+            layer_name: the layer name or alias.
+            item: the item.
+            bands: the list of bands identifying which specific raster to read.
+
+        Returns:
+            True, since data is always available from the remote source.
+        """
+        return True
+
+    @override
+    def get_raster_bands(self, layer_name: str, item: Item) -> list[list[str]]:
+        """Get the sets of bands that have been stored for the specified item.
+
+        By default, returns all band sets from the asset_bands configuration.
+        Subclasses can override this if not all items have all assets.
+
+        Args:
+            layer_name: the layer name or alias.
+            item: the item.
+
+        Returns:
+            a list of lists of bands available for this item.
+        """
+        return list(self.asset_bands.values())
+
+    @override
+    def get_raster_bounds(
+        self, layer_name: str, item: Item, bands: list[str], projection: Projection
+    ) -> PixelBounds:
+        geom = item.geometry.to_projection(projection)
+        return (
+            int(geom.shp.bounds[0]),
+            int(geom.shp.bounds[1]),
+            int(geom.shp.bounds[2]),
+            int(geom.shp.bounds[3]),
+        )
+
+    def _read_raster_from_url(
+        self,
+        url: str,
+        projection: Projection,
+        bounds: PixelBounds,
+        resampling: Resampling,
+    ) -> tuple[npt.NDArray[Any], float | None]:
+        """Read raster data from a URL with reprojection.
+
+        This is the common logic for reading raster data from a URL and reprojecting
+        it to the target projection and bounds using rasterio's WarpedVRT.
+
+        Args:
+            url: the URL to read from (must be readable by rasterio).
+            projection: the projection to read in.
+            bounds: the bounds to read.
+            resampling: the resampling method to use.
+
+        Returns:
+            A tuple of (raster array, nodata value or None).
+        """
+        wanted_transform = affine.Affine(
+            projection.x_resolution,
+            0,
+            bounds[0] * projection.x_resolution,
+            0,
+            projection.y_resolution,
+            bounds[1] * projection.y_resolution,
+        )
+
+        with rasterio.open(url) as src:
+            src_nodata = src.nodata
+            with rasterio.vrt.WarpedVRT(
+                src,
+                crs=projection.crs,
+                transform=wanted_transform,
+                width=bounds[2] - bounds[0],
+                height=bounds[3] - bounds[1],
+                resampling=resampling,
+            ) as vrt:
+                return vrt.read(), src_nodata
+
+    @override
+    def get_raster_metadata(
+        self, layer_name: str, item: Item, bands: list[str]
+    ) -> RasterMetadata:
+        """Get metadata for a stored raster without reading pixel data.
+
+        Opens the remote file to read the nodata value from the header and
+        caches the result per asset key.
+        """
+        typed_item = cast(ItemType, item)
+        asset_key = self._get_asset_key_by_bands(bands)
+
+        if asset_key not in self._nodata_cache:
+            asset_url = self.get_asset_url(typed_item, asset_key)
+            with rasterio.open(asset_url) as src:
+                self._nodata_cache[asset_key] = src.nodata
+
+        nodata = self._nodata_cache[asset_key]
+        if nodata is not None:
+            return RasterMetadata(nodata_value=nodata)
+        return RasterMetadata()
+
+    @override
+    def read_raster(
+        self,
+        layer_name: str,
+        item: Item,
+        bands: list[str],
+        projection: Projection,
+        bounds: PixelBounds,
+        resampling: Resampling = Resampling.bilinear,
+    ) -> RasterArray:
+        # Cast to ItemType -- callers must always pass the correct subtype
+        # (deserialized via the data source's deserialize_item).
+        typed_item = cast(ItemType, item)
+
+        # Get the asset key for the requested bands
+        asset_key = self._get_asset_key_by_bands(bands)
+
+        # Get the asset URL from the subclass
+        asset_url = self.get_asset_url(typed_item, asset_key)
+
+        # Read the raster data
+        raw_data, src_nodata = self._read_raster_from_url(
+            asset_url, projection, bounds, resampling
+        )
+
+        # Cache nodata for get_raster_metadata.
+        if asset_key not in self._nodata_cache:
+            self._nodata_cache[asset_key] = src_nodata
+
+        # Apply any post-processing callback
+        callback = self.get_read_callback(typed_item, asset_key)
+        if callback is not None:
+            raw_data = callback(raw_data)
+
+        raster_metadata = None
+        if src_nodata is not None:
+            raster_metadata = RasterMetadata(nodata_value=src_nodata)
+
+        return RasterArray(
+            chw_array=raw_data,
+            time_range=item.geometry.time_range,
+            metadata=raster_metadata,
+        )
+
+    def materialize(
+        self,
+        window: Window,
+        item_groups: list[list[ItemType]],
+        layer_name: str,
+        layer_cfg: LayerConfig,
+        group_time_ranges: list[tuple[datetime, datetime] | None] | None = None,
+    ) -> None:
+        """Materialize data for the window.
+
+        Args:
+            window: the window to materialize.
+            item_groups: the items from get_items.
+            layer_name: the name of this layer.
+            layer_cfg: the config of this layer.
+            group_time_ranges: optional request time range for each item group.
+        """
+        RasterMaterializer().materialize(
+            TileStoreWithLayer(self, layer_name),
+            window,
+            layer_name,
+            layer_cfg,
+            item_groups,
+            group_time_ranges=group_time_ranges,
+        )
+
+    # --- TileStore methods that are not supported ---
+
+    @override
+    def write_raster(
+        self,
+        layer_name: str,
+        item: Item,
+        bands: list[str],
+        projection: Projection,
+        bounds: PixelBounds,
+        raster: RasterArray,
+    ) -> None:
+        raise NotImplementedError(
+            "DirectMaterializeDataSource does not support writing raster data"
+        )
+
+    @override
+    def write_raster_file(
+        self,
+        layer_name: str,
+        item: Item,
+        bands: list[str],
+        fname: UPath,
+        time_range: tuple[datetime, datetime] | None = None,
+    ) -> None:
+        raise NotImplementedError(
+            "DirectMaterializeDataSource does not support writing raster files"
+        )
+
+    @override
+    def is_vector_ready(self, layer_name: str, item: Item) -> bool:
+        raise NotImplementedError(
+            "DirectMaterializeDataSource does not support vector operations"
+        )
+
+    @override
+    def read_vector(
+        self,
+        layer_name: str,
+        item: Item,
+        projection: Projection,
+        bounds: PixelBounds,
+    ) -> list[Feature]:
+        raise NotImplementedError(
+            "DirectMaterializeDataSource does not support vector operations"
+        )
+
+    @override
+    def write_vector(
+        self, layer_name: str, item: Item, features: list[Feature]
+    ) -> None:
+        raise NotImplementedError(
+            "DirectMaterializeDataSource does not support vector operations"
+        )
