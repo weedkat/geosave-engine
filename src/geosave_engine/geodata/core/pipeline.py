@@ -7,6 +7,8 @@ from typing import Any
 from datetime import datetime as dt
 from pathlib import Path
 
+from tqdm import tqdm
+
 from .manifest import ManifestWriter, layer_metadata
 from .geotile import GeoTile
 
@@ -191,7 +193,8 @@ class Pipeline(ABC):
         else:
             geotiffs = [src]
 
-        for geotiff in geotiffs[:max_item]:
+        items = geotiffs[:max_item]
+        for geotiff in tqdm(items, desc=f"Ingesting {self.__class__.__name__}", unit="tile"):
             anchor = GeoTile.from_geotiff(geotiff)
             self.ingest_from_anchor(anchor, source=geotiff.name)
 
@@ -212,7 +215,7 @@ class Pipeline(ABC):
         res = resolution or self._default_resolution()
 
         anchors = GeoTile.from_geojson(src, resolution=res, datetime=datetime)
-        for anchor in anchors:
+        for anchor in tqdm(anchors, desc=f"Ingesting {self.__class__.__name__}", unit="tile"):
             self.ingest_from_anchor(anchor, source=str(src))
 
     def _default_resolution(self) -> float:
