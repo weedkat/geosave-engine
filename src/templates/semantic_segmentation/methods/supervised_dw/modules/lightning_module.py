@@ -35,8 +35,8 @@ class GeosaveLightningModule(LightningModule):
         optim_config: dict,
         loss_config: dict,
         input_size: tuple[int, int] | int,
-        num_classes: int,
-        in_channels: int,
+        num_classes: int | None = None,
+        in_channels: int | None = None,
         mean_norm: list[float] | None = None,
         std_norm: list[float] | None = None,
         ignore_index: int = 255,
@@ -49,6 +49,11 @@ class GeosaveLightningModule(LightningModule):
     ):
         if (mean_norm is None) != (std_norm is None):
             raise ValueError("mean_norm and std_norm must both be set or both be None")
+
+        if num_classes is None:
+            num_classes = len({k for k in LabelPipeline.class_map() if k != ignore_index})
+        if in_channels is None:
+            in_channels = len(DataPipeline.band_map())
 
         super().__init__()
         self.save_hyperparameters()

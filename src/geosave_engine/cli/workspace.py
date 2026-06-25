@@ -1,3 +1,4 @@
+import os
 import toml
 import subprocess
 import sys
@@ -130,8 +131,9 @@ class Workspace:
         return [sys.executable, str(script_path), *args]
 
     def _execute_command(self, command: list[str], cwd: Path, script_path: Path) -> None:
+        env = {**os.environ, "PYTHONPATH": str(cwd)}
         try:
-            subprocess.run(command, cwd=cwd, check=True)
+            subprocess.run(command, cwd=cwd, env=env, check=True)
         except subprocess.CalledProcessError as e:
             raise WorkspaceError(f"Script failed (exit {e.returncode}): {script_path}")
 
