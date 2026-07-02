@@ -115,8 +115,8 @@ class LabelLayer:
 
     title: str
     geotile: GeoTile
-    color_map: dict[int | str, str]
-    class_map: dict[int | str, str] | None = None
+    color_map: dict[int, str] | dict[str, str] = field(default_factory=dict)
+    class_map: dict[int, str] | dict[str, str] | None = None
     _cmap: ListedColormap = field(init=False, repr=False)
     _norm: BoundaryNorm = field(init=False, repr=False)
 

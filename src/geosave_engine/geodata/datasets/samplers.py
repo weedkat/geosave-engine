@@ -3,8 +3,10 @@ from __future__ import annotations
 import abc
 import logging
 from datetime import timedelta
+from typing import Any, Iterable, Mapping
 
 import geopandas as gpd
+import torch
 from shapely.geometry import box
 
 from geosave_engine.geodata.core import GeoTile, align
@@ -16,17 +18,45 @@ AnchorGroup = dict[LayerName, GeoTile]  # one co-located tile per layer
 WGS84 = "EPSG:4326"
 
 
-def patch_tile(tile: GeoTile, size: int, stride: int) -> list[GeoTile]:
-    """Slide a window over a tile's grid → lazy patch tiles.
+def stack_samples(samples: Iterable[Mapping[str, Any]]) -> dict[str, Any]:
+    """Stack list of sample dicts into one batched dict for DataLoader.
 
-    Each patch shares the parent's lazy ``data`` with only a narrowed sub-geobox,
-    so ``to_tensor`` later reads just the patch's extent. Pure geometry: no pixels
-    read or copied here.
+    Tensor values are stacked on dim 0; dict values collated recursively; non-tensor values gathered as list.
 
     Args:
-        tile: Source tile (header-only or data-loaded).
+        samples: Iterable of sample dicts from GeoDataset.__getitem__.
+
+    Returns:
+        {
+            "<key>": torch.Tensor,  # stacked if value was Tensor
+            "<key>": dict,          # recursively collated if value was dict
+            "<key>": list,          # gathered as list otherwise
+        }.
+    """
+    sample_list = list(samples)
+    sample_keys = set(sample_list[0].keys())
+    out: dict[str, Any] = {}
+    for key in sample_keys:
+        values = [s[key] for s in sample_list]
+        if isinstance(values[0], torch.Tensor):
+            out[key] = torch.stack(values)
+        elif isinstance(values[0], dict):
+            out[key] = stack_samples(values)
+        else:
+            out[key] = values
+    return out
+
+
+def patch_tile(tile: GeoTile, size: int, stride: int) -> list[GeoTile]:
+    """Slide window over tile grid. No pixels read — geometry only.
+
+    Args:
+        tile: Source tile.
         size: Patch height and width in pixels.
         stride: Step between patches.
+
+    Returns:
+        List of lazy patch tiles sharing parent data.
     """
     h, w = tile.height, tile.width
     patches: list[GeoTile] = []
@@ -40,18 +70,16 @@ def colocate(
     catalog: dict[LayerName, gpd.GeoDataFrame],
     datetime_tol: timedelta | None = None,
 ) -> gpd.GeoDataFrame:
-    """Spatially join per-layer tile frames into a co-located sample GeoDataFrame.
+    """Spatially join per-layer tile frames into co-located sample rows.
 
-    Each input frame has columns ``[geometry, tile]`` (WGS84 footprints). Layers
-    are joined via ``overlay(intersection)`` so the result geometry is the actual
-    overlap polygon (not the left tile's bbox). ``keep_geom_type=True`` drops
-    edge-touching neighbours whose intersection is a line or point. Rows with mixed
-    CRS across layers are skipped. If ``datetime_tol`` is set, rows where any two
-    tiles' anchor datetimes differ beyond the tolerance are also dropped. Surviving
-    rows have their tiles aligned to the common pixel window.
+    Drops edge-touch overlaps, mixed-CRS rows, and datetime mismatches.
 
-    Returns a GeoDataFrame with ``geometry`` (WGS84 intersection) plus one aligned
-    ``GeoTile`` column per layer, one row per sample.
+    Args:
+        catalog: Layer name → GeoDataFrame with ``[geometry, tile]`` columns (WGS84).
+        datetime_tol: Max datetime gap between layers. ``None`` skips check.
+
+    Returns:
+        GeoDataFrame with ``geometry`` (WGS84 intersection) + one GeoTile column per layer.
     """
     layers = list(catalog)
     if not layers:
@@ -92,12 +120,9 @@ def colocate(
 
 
 class GeoTileSampler(abc.ABC):
-    """Builds the sample index from a per-layer catalog.
+    """Build sample index from per-layer catalog.
 
-    ``build_index`` joins the catalog ``{layer: frame}`` into a single
-    GeoDataFrame whose rows are samples (``geometry`` + one ``GeoTile`` column per
-    layer, tiles aligned). PreChipped emits one row per co-located group; Grid
-    explodes each group into windowed patch rows.
+    Subclasses define how catalog rows become sample rows.
     """
 
     @abc.abstractmethod
@@ -106,9 +131,13 @@ class GeoTileSampler(abc.ABC):
 
 
 class PreChippedSampler(GeoTileSampler):
-    """One sample per co-located group — each chip is used whole."""
+    """One sample per co-located group — each chip used whole."""
 
     def __init__(self, datetime_tol: timedelta | None = None) -> None:
+        """
+        Args:
+            datetime_tol: Max datetime gap between layers. ``None`` skips check.
+        """
         self.datetime_tol = datetime_tol
 
     def build_index(self, catalog: dict[LayerName, gpd.GeoDataFrame]) -> gpd.GeoDataFrame:
@@ -116,16 +145,7 @@ class PreChippedSampler(GeoTileSampler):
 
 
 class GridSampler(GeoTileSampler):
-    """Sliding-window sampler: explodes each co-located group into patch rows.
-
-    Groups are aligned by :func:`colocate`, so every layer slices on the same grid
-    and each patch row holds the co-located window across layers.
-
-    Args:
-        patch_size: Patch height and width in pixels.
-        stride: Step between patches. Defaults to ``patch_size`` (no overlap).
-        datetime_tol: Passed to :func:`colocate`; ``None`` skips datetime check.
-    """
+    """Sliding-window sampler. Explodes each co-located group into patch rows."""
 
     def __init__(
         self,
@@ -133,6 +153,12 @@ class GridSampler(GeoTileSampler):
         stride: int | None = None,
         datetime_tol: timedelta | None = None,
     ) -> None:
+        """
+        Args:
+            patch_size: Patch height and width in pixels.
+            stride: Step between patches. Defaults to ``patch_size`` (no overlap).
+            datetime_tol: Max datetime gap between layers. ``None`` skips check.
+        """
         self.patch_size = patch_size
         self.stride = stride or patch_size
         self.datetime_tol = datetime_tol

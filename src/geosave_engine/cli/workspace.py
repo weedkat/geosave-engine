@@ -6,7 +6,7 @@ from pathlib import Path
 from dataclasses import dataclass
 
 from geosave_engine.utils import safe_copy
-from geosave_engine.cli.paths import common_template_dir, templates_dir, get_workspace_scripts, get_workspace_artifacts
+from geosave_engine.cli.paths import common_template_dir, templates_dir, get_workspace_scripts, get_workspace_notebooks, get_workspace_artifacts
 from geosave_engine.cli.errors import WorkspaceError
 
 REQUIRED_FIELDS = ["project_name"]
@@ -26,8 +26,8 @@ class Workspace:
         rp = Path(root)
         self.root = rp if (rp / "geosave.toml").exists() else rp / spec.project_name
         self.spec = spec
-        # Cache discovered scripts and artifacts on init
         self._scripts = get_workspace_scripts(self.scripts_dir)
+        self._notebooks = get_workspace_notebooks(self.notebooks_dir)
         self._artifacts = get_workspace_artifacts(self.artifacts_dir)
 
     # standard directory properties for clarity and discovery
@@ -67,6 +67,11 @@ class Workspace:
     def scripts(self) -> dict[str, Path]:
         """Cached mapping of script keys to paths."""
         return self._scripts
+
+    @property
+    def notebooks(self) -> dict[str, Path]:
+        """Cached mapping of notebook keys to paths."""
+        return self._notebooks
 
     @property
     def artifacts(self) -> dict[str, Path]:
@@ -113,6 +118,23 @@ class Workspace:
         cmd = self._build_python_command(script_path, args)
         self._execute_command(cmd, cwd=self.root, script_path=script_path)
 
+    def run_notebook(self, notebook_path: Path, args: list[str]) -> None:
+        """Execute a notebook in-place using jupyter nbconvert.
+
+        Args:
+            notebook_path: Absolute path to the .ipynb file.
+            args: Extra arguments passed as --ExecutePreprocessor.timeout=N etc.
+        """
+        if not notebook_path.exists() or not notebook_path.is_file():
+            raise WorkspaceError(f"Notebook not found: {notebook_path}")
+        cmd = [
+            sys.executable, "-m", "jupyter", "nbconvert",
+            "--to", "notebook", "--execute", "--inplace",
+            str(notebook_path),
+            *args,
+        ]
+        self._execute_command(cmd, cwd=self.root, script_path=notebook_path)
+
     def run_lightning(self, command: str, args: list[str]) -> None:
         """Run the workspace's src/main.py with a lightning CLI command (fit, test, predict).
 
@@ -153,7 +175,7 @@ class Workspace:
     
     def _add_task(self) -> None:
         """Copy task template into workspace src tree."""
-        templates = templates_dir() / self.spec.project_task / "methods" / self.spec.project_method
+        templates = templates_dir() / self.spec.project_task / self.spec.project_method
         safe_copy(templates, self.root)
 
     @staticmethod

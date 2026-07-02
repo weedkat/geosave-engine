@@ -1,3 +1,3 @@
-from .calibration import CalibrationCallback
+from .calibration import DenseCalibrationCallback
 
-__all__ = ["CalibrationCallback"]
+__all__ = ["DenseCalibrationCallback"]

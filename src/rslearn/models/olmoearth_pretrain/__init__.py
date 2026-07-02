@@ -1,1 +1,0 @@
-"""OlmoEarth model architecture."""

@@ -3,220 +3,214 @@ from __future__ import annotations
 import logging
 
 from abc import ABC, abstractmethod
-from typing import Any
-from datetime import datetime as dt
 from pathlib import Path
+from typing import Any
 
 from tqdm import tqdm
 
-from .manifest import ManifestWriter, layer_metadata
+from .manifest import ManifestWriter, LayerSpec, layer_metadata
 from .geotile import GeoTile
+from .specs import AnyIngestSource
 
 log = logging.getLogger(__name__)
 
 
-Result = dict[str, GeoTile]
-
-
 class Pipeline(ABC):
-    """Abstract base class for geospatial data pipelines.
+    """Abstract base class for single-layer geospatial data pipelines.
 
-    Subclasses define ``layer_schema`` and implement ``ingest``.
-    Dedup and crash recovery are handled by AnchorTracker (anchors.json).
+    Each subclass writes exactly one layer. Chain pipelines by passing
+    a layer's zarr dir to the next pipeline's ``ingest_from_zarr``.
 
-    Directory layout: ``root/<layer>/<tile_id>_<lon>_<lat>_<date>_<res>.tif``
+    Directory layout: ``<root>/<layer_name>/<stem>.zarr``
 
-    Usage:
-        layer_schema = {
-            "sentinel_2_l1c": {
-                "resolution": 10,
-                "description": "Sentinel-2 L1C imagery",
-                "bands": {
-                    "B02": {"name": "blue"},
-                    "B03": {"name": "green"},
-                    "B04": {"name": "red"},
-                },
-            },
-            "cloud_mask": {
-                "resolution": 10,
-                "description": "Cloud and shadow mask",
-                "classes": {
-                    0: {"name": "clear", "color": "#ffffff"},
-                    1: {"name": "cloud_shadow", "color": "#000000"},
-                },
-            },
-        }
+    Subclass must declare class attributes:
+
+        layer_name  — layer directory name and tile identifier
+        resolution  — pixel size in CRS units
+        description — human-readable layer description (optional)
+        nodata      — nodata/ignore value (optional)
+        schema      — list of ``{"id": ..., "name": ..., ...}`` dicts (optional)
+
+    Examples:
+        class Sentinel2Pipeline(Pipeline):
+            layer_name = "sentinel_2_l1c"
+            resolution = 10
+            description = "Sentinel-2 L1C imagery"
+            schema = [
+                {"id": "B02", "name": "blue"},
+                {"id": "B04", "name": "red"},
+            ]
+
+            def ingest(self, anchor: GeoTile) -> GeoTile:
+                ...
     """
 
-    layer_schema: dict[str, Any] = {}
+    layer_name: str
+    resolution: float
+    description: str = ""
+    nodata: int | float | None = None
+    schema: list[dict[str, Any]] = []
 
     def __init__(self, root: str | Path) -> None:
+        """
+        Args:
+            root: Workspace root directory; layer subdir is created inside.
+        """
         self.root = Path(root)
-        self.manifests: dict[str, ManifestWriter] = {
-            name: ManifestWriter(self.root, name, spec)
-            for name, spec in self.layer_schema.items()
+        spec: LayerSpec = {
+            "name": self.layer_name,
+            "resolution": self.resolution,
+            "description": self.description,
+            "nodata": self.nodata,
+            "schema": self.schema,
         }
+        self.manifest = ManifestWriter(self.root, spec)
 
     @abstractmethod
-    def ingest(self, anchor: GeoTile) -> Result:
-        """Fetch and process data for a spatial anchor.
+    def ingest(self, anchor: GeoTile) -> GeoTile:
+        """Fetch or derive data for one anchor tile.
 
         Args:
-            anchor: Spatial reference defining the area and resolution.
+            anchor: Spatial reference defining area and resolution.
+                    May carry loaded data when chained via ingest_from_zarr.
 
         Returns:
-            Named layers produced by this source. Each value is a single
-            ``GeoTile``; time-series data uses a time-dim GeoTile.
+            GeoTile with data for this pipeline's layer.
         """
         ...
-    
-    def make_prefix(self, anchor: GeoTile, layer_name: str) -> str:
-        """Return the prefix for the anchor-level filename.
 
-        Override to customise naming.
-        """
-        return layer_name
+    def make_prefix(self, anchor: GeoTile) -> str:  # noqa: ARG002
+        """Return filename prefix. Defaults to layer_name. Override to customise."""
+        return self.layer_name
 
-    def make_stem(self, anchor: GeoTile, layer_name: str) -> str:  # noqa: ARG002
-        """Return the anchor-level filename stem (no extension, no tile-date suffix).
+    def make_stem(self, anchor: GeoTile) -> str:
+        """Return anchor-level filename stem (no extension).
 
-        Override to customise naming. The tile-date postfix and ``.tif`` extension
-        are always appended by the pipeline and must not be included here.
+        Args:
+            anchor: Spatial reference tile.
 
-        Default: ``{layer}_{lon:.6f}_{lat:.6f}_{anchor_date}_{res}``
+        Returns:
+            Stem string, e.g. ``sentinel_2_l1c_13.000000_52.000000_20240101_10m``.
         """
         lon, lat = anchor.centroid
         res = anchor.resolution
         res_str = f"{int(res * 100)}cm" if res < 1 else f"{int(res)}m"
-
-        prefix = self.make_prefix(anchor, layer_name)
-
+        prefix = self.make_prefix(anchor)
         return f"{prefix}_{lon:.6f}_{lat:.6f}_{anchor.datetime.strftime('%Y%m%d')}_{res_str}"
 
-    @staticmethod
-    def _geo_key(anchor: GeoTile) -> str:
-        """Stable spatial identity key for an anchor — layer-agnostic."""
-        bbox = anchor.bbox
-        return (
-            f"{anchor.crs}"
-            f"|{bbox[0]:.6f},{bbox[1]:.6f},{bbox[2]:.6f},{bbox[3]:.6f}"
-            f"|{anchor.resolution:.4f}"
-            f"|{anchor.datetime.strftime('%Y%m%d')}"
-        )
-
-    @classmethod
-    def get_layers(cls) -> list[str]:
-        """Return layer names declared in ``layer_schema``."""
-        return list(cls.layer_schema.keys())
-
-    @classmethod
-    def get_meta(cls, layer_name: str) -> dict:
-        """Return band or class metadata dict from ``layer_schema``."""
-        spec = cls.layer_schema.get(layer_name)
-        if spec is None:
-            return {}
-        return spec.get("bands") or spec.get("classes") or {}
-
-    @classmethod
-    def get_meta_map(cls, layer_name: str, meta_name: str) -> dict:
-        """Return ``{id: name}`` for a layer, or ``{}`` if not declared."""
-        meta = cls.get_meta(layer_name)
-        if meta is None:
-            return {}
-        return {k: v[meta_name] for k, v in meta.items() if meta_name in v}
-
-    def validate_result(self, result: Result) -> Result:
-        """Validate ingest() output against declared layers and schemas."""
-        declared = set(self.get_layers())
-        missing = declared - result.keys()
-        if missing:
-            raise ValueError(f"Ingest result missing declared layers: {missing}")
-        extra_keys = result.keys() - declared
-        if extra_keys:
-            raise ValueError(f"Ingest result contains undeclared layers: {extra_keys}")
-
-        for layer_name, tile in result.items():
-            spec = self.layer_schema[layer_name]
-            resolution = spec["resolution"]
-            bands = spec.get("bands") or {}
-            if tile.data is None:
-                raise ValueError(f"Layer '{layer_name}': GeoTile has no data")
-            if abs(tile.resolution - resolution) / resolution > 0.01:
-                raise ValueError(
-                    f"Layer '{layer_name}': resolution {tile.resolution} != spec {resolution}"
-                )
-            if bands:
-                n_bands = tile.num_bands
-                if n_bands != len(bands):
-                    raise ValueError(
-                        f"Layer '{layer_name}': expected {len(bands)} bands, got {n_bands}"
-                    )
-        return result
-
-    def save_layer_store(self, anchor: GeoTile, layer_name: str, tile: GeoTile) -> str:
-        """Write one layer's tile to a Zarr store. Returns the store name (relative to the layer dir)."""
-        stem = self.make_stem(anchor, layer_name)
-        store = tile.to_zarr(self.root / layer_name / f"{stem}.zarr", save_stac=True)
-        return store.name
-
-    def ingest_from_anchor(self, anchor: GeoTile, source: str) -> None:
-        """Deduplicate, ingest, validate, save, and track one anchor across all layers."""
-        geo_key = self._geo_key(anchor)
-        stems = {name: self.make_stem(anchor, name) for name in self.manifests}
-        if all(mw.is_processed(geo_key) for mw in self.manifests.values()):
-            log.debug("Skipping anchor (already processed): %s", source)
-            return
-        for name, mw in self.manifests.items():
-            mw.add(geo_key, stems[name], source=source)
-        try:
-            result = self.ingest(anchor)
-            result = self.validate_result(result)
-            for layer_name, tile in result.items():
-                # infuse the layer schema (flat) so the saved tile is self-describing
-                tile = tile.with_metadata(layer_metadata(layer_name, self.layer_schema[layer_name]))
-                store = self.save_layer_store(anchor, layer_name, tile)
-                self.manifests[layer_name].mark_done(geo_key, store)
-        except Exception as e:
-            log.error("Failed to ingest anchor (source=%s): %s", source, e)
-            for mw in self.manifests.values():
-                mw.mark_error(geo_key, str(e))
-
-    def ingest_from_geotiff(
-        self,
-        src: str | Path,
-        max_item: int | None = None,
-    ) -> None:
-        """Ingest one GeoTIFF file, or all GeoTIFFs under a directory."""
-        src = Path(src)
-        if src.is_dir():
-            geotiffs = list(src.rglob("*.tif")) + list(src.rglob("*.tiff"))
-        else:
-            geotiffs = [src]
-
-        items = geotiffs[:max_item]
-        for geotiff in tqdm(items, desc=f"Ingesting {self.__class__.__name__}", unit="tile"):
-            anchor = GeoTile.from_geotiff(geotiff)
-            self.ingest_from_anchor(anchor, source=geotiff.name)
-
-    def ingest_from_geojson(
-        self,
-        src: str | Path,
-        datetime: str | dt,
-        resolution: float | None = None,
-    ) -> None:
-        """Ingest one anchor per feature in a GeoJSON file.
+    def get_meta_map(self, field: str) -> dict:
+        """Return ``{id: field_value}`` for all schema entries that have ``field``.
 
         Args:
-            src: Path to a GeoJSON FeatureCollection, Feature, or raw geometry.
-            datetime: Acquisition datetime applied to all features.
-            resolution: Pixel size in CRS units. Defaults to minimum across declared layers.
+            field: Key to extract from each schema entry (e.g. ``"name"``).
+
+        Returns:
+            ``{"B02": "blue", "B04": "red"}`` or ``{0: "#ffffff", 1: "#000000"}``.
+
+        Examples:
+            >>> pipeline.get_meta_map("name")
+            {'B02': 'blue', 'B04': 'red'}
         """
-        src = Path(src)
-        res = resolution or self._default_resolution()
+        return {item["id"]: item[field] for item in self.schema if field in item}
 
-        anchors = GeoTile.from_geojson(src, resolution=res, datetime=datetime)
+    def validate(self, tile: GeoTile) -> GeoTile:
+        """Validate ingest() output against declared layer spec.
+
+        Args:
+            tile: GeoTile returned by ingest().
+
+        Returns:
+            Same tile if valid.
+
+        Raises:
+            ValueError: If tile has no data, wrong resolution, or wrong band count.
+        """
+        if tile.data is None:
+            raise ValueError(f"Layer '{self.layer_name}': GeoTile has no data")
+        if abs(tile.resolution - self.resolution) / self.resolution > 0.01:
+            raise ValueError(
+                f"Layer '{self.layer_name}': resolution {tile.resolution} != spec {self.resolution}"
+            )
+        # Band count check applies only to image layers (schema ids are str).
+        # Class schemas (int ids) describe pixel values, not band count.
+        if self.schema and isinstance(self.schema[0].get("id"), str):
+            if tile.num_bands != len(self.schema):
+                raise ValueError(
+                    f"Layer '{self.layer_name}': expected {len(self.schema)} bands, got {tile.num_bands}"
+                )
+        return tile
+
+    def save_layer(self, anchor: GeoTile, tile: GeoTile) -> str:
+        """Write tile to zarr store under ``<root>/<layer_name>/``.
+
+        Args:
+            anchor: Reference tile used to compute the stem filename.
+            tile: GeoTile to write.
+
+        Returns:
+            Store directory name relative to the layer dir (e.g. ``stem.zarr``).
+        """
+        stem = self.make_stem(anchor)
+        store = tile.to_zarr(self.root / self.layer_name / f"{stem}.zarr", save_stac=True)
+        return store.name
+
+    def _spec_dict(self) -> dict[str, Any]:
+        return {
+            "name": self.layer_name,
+            "resolution": self.resolution,
+            "description": self.description,
+            "nodata": self.nodata,
+            "schema": self.schema,
+        }
+
+    def ingest_from_anchor(self, anchor: GeoTile, source: str) -> None:
+        """Deduplicate, ingest, validate, save, and track one anchor.
+
+        Args:
+            anchor: Spatial reference tile defining area and resolution.
+            source: Human-readable provenance string recorded in the manifest.
+        """
+        if self.manifest.is_processed(anchor):
+            log.debug("Skipping anchor (already processed): %s", source)
+            return
+        stem = self.make_stem(anchor)
+        self.manifest.add(anchor, stem, source=source)
+        try:
+            tile = self.ingest(anchor)
+            tile = self.validate(tile)
+            tile = tile.with_metadata(layer_metadata(self._spec_dict()), replace=True)
+            store = self.save_layer(anchor, tile)
+            self.manifest.mark_done(anchor, store)
+        except Exception as e:
+            log.error("Failed to ingest anchor (source=%s): %s", source, e)
+            self.manifest.mark_error(anchor, str(e))
+
+    def ingest_from(self, src: AnyIngestSource, max_item: int | None = None) -> None:
+        """Ingest anchors produced by a typed source spec.
+
+        Chain pipelines by passing a ``ZarrSource`` pointing at the upstream
+        layer directory. For new data use ``GeoJSONSource``, ``CoordinateSource``,
+        ``PolygonSource``, or ``GeotiffSource``.
+
+        Args:
+            src: Typed source spec; call ``src.to_anchors(resolution)`` to get anchors.
+            max_item: Cap on anchors to process; None means all.
+        """
+        anchors = src.to_anchors(limit=max_item)
         for anchor in tqdm(anchors, desc=f"Ingesting {self.__class__.__name__}", unit="tile"):
-            self.ingest_from_anchor(anchor, source=str(src))
+            self.ingest_from_anchor(anchor, source=repr(src))
+        
+    @classmethod
+    def band_map(cls) -> dict[str, str]:
+        """Return ``{band_id: band_name}`` from schema."""
+        return {str(item["id"]): str(item["name"]) for item in cls.schema if "name" in item}
 
-    def _default_resolution(self) -> float:
-        return min(spec["resolution"] for spec in self.layer_schema.values())
+    @classmethod
+    def class_map(cls) -> dict[int, str]:
+        """Return ``{id: name}`` from schema."""
+        return {int(item["id"]): str(item["name"]) for item in cls.schema if "name" in item}
+
+    @classmethod
+    def color_map(cls) -> dict[int, str]:
+        """Return ``{id: color}`` from schema."""
+        return {int(item["id"]): str(item["color"]) for item in cls.schema if "color" in item}

@@ -1,6 +1,4 @@
 """GeoTile-backed PyTorch dataset classes and samplers."""
-from torchgeo.datasets.utils import stack_samples
-
 from geosave_engine.geodata.datasets.geo_dataset import GeoDataset
 from geosave_engine.geodata.datasets.non_geo_dataset import NonGeoDataset
 from geosave_engine.geodata.datasets.samplers import (
@@ -8,6 +6,7 @@ from geosave_engine.geodata.datasets.samplers import (
     GridSampler,
     PreChippedSampler,
     patch_tile,
+    stack_samples,
 )
 
 __all__ = [

@@ -5,27 +5,24 @@ from typing import Optional
 from geosave_engine.cli.scaffhold import create_scaffold
 from geosave_engine.cli.workspace import Workspace
 from geosave_engine.cli.errors import WorkspaceError
-from geosave_engine.cli.paths import (
-    plugins,
-    get_plugin_templates,
-)
+from geosave_engine.cli.paths import get_plugin_templates
 
 from geosave_engine.cli.prompts import (
-    prompt_for_plugin_type,
-    prompt_for_plugin_name,
-    prompt_for_script_name,
+    prompt_for_plugin,
+    prompt_for_runnable,
     prompt_for_artifact,
 )
 
 CURRENT_DIR = Path.cwd()
 app = typer.Typer(help="Geosave Engine CLI")
 
+
 @app.command()
 def create(
     dir: str = typer.Option(
         CURRENT_DIR,
         '-d',
-        '--dir', 
+        '--dir',
         help="Directory to build the Geosave Engine in")
 ):
     spec = create_scaffold()
@@ -35,61 +32,72 @@ def create(
 
 @app.command()
 def add(
-    project_dir: Optional[str] = typer.Argument(None, help="Directory of the Geosave Engine project to add a component to"),
-    plugin_type: Optional[plugins] = typer.Argument(None, help="Type of component to add (e.g., 'script', 'notebook')"),
-    plugin_name: Optional[str] = typer.Argument(None, help="Name of the component to add"),
+    project_dir: Optional[str] = typer.Argument(None, help="Workspace directory"),
+    plugin_path: Optional[str] = typer.Argument(
+        None, help="Namespaced plugin path, e.g. 'scripts/dynamicworld' or 'notebooks/tutorial'"),
     flat: bool = typer.Option(
         False,
         '--flat', '-f',
-        help="Whether to add the plugin directly to the project root instead of within a subdirectory")
-):  
+        help="Copy plugin directly into project root instead of its namespace subdirectory"),
+):
     work_dir = _get_work_dir(project_dir)
-    
     workspace = Workspace.load_workspace(work_dir)
+    plugin_templates = get_plugin_templates()
 
-    if plugin_type is None:
-        plugin_type = prompt_for_plugin_type()
+    if not plugin_templates:
+        raise WorkspaceError("No plugins available.")
 
-    task = workspace.spec.project_task
-    plugin_templates = get_plugin_templates(plugin_type)[task]
-    
-    if plugin_name is None:
-        plugin_name = prompt_for_plugin_name(plugin_type, task) 
-    plugin_path = plugin_templates[plugin_name]
+    if plugin_path is None:
+        plugin_path = prompt_for_plugin(plugin_templates)
 
-    workspace.add_plugin(plugin_path, flat=flat)
+    if plugin_path not in plugin_templates:
+        raise WorkspaceError(
+            f"Plugin {plugin_path!r} not found. Available: {', '.join(sorted(plugin_templates))}"
+        )
+
+    workspace.add_plugin(plugin_templates[plugin_path], flat=flat)
 
 
 @app.command(context_settings={"allow_extra_args": True, "ignore_unknown_options": True})
 def run(
     ctx: typer.Context,
-    project_dir: Optional[str] = typer.Argument(
-        None, help="Directory of the Geosave Engine project to run"),
-    script_name: Optional[str] = typer.Option(
-        None, '-s', '--script', help="Specific script to run within the Geosave Engine project")
+    project_dir: Optional[str] = typer.Argument(None, help="Workspace directory"),
+    name: Optional[str] = typer.Option(
+        None, '-s', '--script', help="Script or notebook name to run"),
 ):
     work_dir = _get_work_dir(project_dir)
-
     workspace = Workspace.load_workspace(work_dir)
 
-    if script_name is None:
-        if not workspace.scripts:
-            raise WorkspaceError(f"No runnable scripts found in: {workspace.scripts_dir}")
-        script_name = prompt_for_script_name(list(workspace.scripts.keys()))
+    scripts = {f"scripts/{k}": v for k, v in workspace.scripts.items()}
+    notebooks = {f"notebooks/{k}": v for k, v in workspace.notebooks.items()}
+    runnables = {**scripts, **notebooks}
 
-    # Normalize input and resolve solely via discovered mapping.
-    key = str(script_name).lstrip("./")
-    if key.startswith("scripts/"):
-        key = key.split("/", 1)[1]
-    candidates = (key,) if key.endswith(".py") else (key, f"{key}.py")
-    for c in candidates:
-        if c in workspace.scripts:
-            script_path = workspace.scripts[c]
-            break
+    if name is None:
+        if not runnables:
+            raise WorkspaceError(
+                f"No scripts or notebooks found in: {workspace.scripts_dir}, {workspace.notebooks_dir}"
+            )
+        name = prompt_for_runnable(sorted(runnables.keys()))
+
+    # Normalize: strip leading ./ and optional scripts/ or notebooks/ prefix for lookup
+    key = name.lstrip("./")
+    if key not in runnables:
+        # try adding namespace prefix if user passed bare name
+        for prefix in ("scripts/", "notebooks/"):
+            candidate = f"{prefix}{key}"
+            if candidate in runnables:
+                key = candidate
+                break
+        else:
+            raise WorkspaceError(
+                f"{name!r} not found. Available: {', '.join(sorted(runnables))}"
+            )
+
+    path = runnables[key]
+    if path.suffix == ".ipynb":
+        workspace.run_notebook(path, ctx.args)
     else:
-        raise WorkspaceError(f"Script not found. Available: {', '.join(sorted(workspace.scripts.keys()))}")
-
-    workspace.run_script(script_path, ctx.args)
+        workspace.run_script(path, ctx.args)
 
 
 @app.command(context_settings={"allow_extra_args": True, "ignore_unknown_options": True})
@@ -133,25 +141,25 @@ def predict(
     work_dir = _get_work_dir(project_dir)
     workspace = Workspace.load_workspace(work_dir)
 
-    # Resolve artifact
     if artifact is None:
         if not workspace.artifacts:
             raise WorkspaceError(f"No artifacts found in: {workspace.artifacts_dir}")
         artifact = prompt_for_artifact(list(workspace.artifacts.keys()))
 
-    # Resolve config: if artifact provided, read config from artifact; else use --config
     if artifact in workspace.artifacts:
         config_path = workspace.artifacts[artifact]
     elif config:
         config_path = Path(config)
     else:
-        raise WorkspaceError(f"Artifact not found: {artifact}. Available: {', '.join(sorted(workspace.artifacts.keys()))}")
+        raise WorkspaceError(
+            f"Artifact not found: {artifact}. Available: {', '.join(sorted(workspace.artifacts.keys()))}"
+        )
 
     args = ['-c', str(config_path), *ctx.args]
     workspace.run_lightning('predict', args)
 
+
 def _get_work_dir(dir: str | None) -> Path:
     if dir is None:
         return CURRENT_DIR
-    else:
-        return CURRENT_DIR / dir
+    return CURRENT_DIR / dir

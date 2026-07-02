@@ -13,14 +13,21 @@ _METRIC_FNS: dict[str, Callable[..., torch.Tensor]] = {
 }
 
 
-class CalibrationCallback(Callback):
-    """Calibrates per-class confidence thresholds once at the end of fit.
+class DenseCalibrationCallback(Callback):
+    """Per-class confidence threshold calibration, run once at end of fit.
 
-    Runs a single forward pass over the validation dataloader after training,
-    sweeps ``threshold_steps`` points in ``[threshold_begin, threshold_end]``
-    per class, and picks the threshold that maximises ``metric`` (f1 or iou)
-    evaluated over all classes. Learned thresholds are written into
-    ``pl_module.class_thresholds``.
+    Sweeps candidate thresholds over val set after training. For each class,
+    picks threshold that maximises ``metric``. Writes result into
+    ``pl_module.class_thresholds``. Batch must contain ``image``, ``label``, and optionally ``mask``. Masked pixels are ignored in metric computation.
+
+    Args:
+        threshold_begin: Start of sweep range.
+        threshold_end: End of sweep range.
+        threshold_steps: Number of candidate thresholds to try per class.
+        metric: Metric to maximise — ``'f1'`` or ``'iou'``.
+
+    Raises:
+        ValueError: If ``metric`` is not ``'f1'`` or ``'iou'``.
     """
 
     def __init__(
@@ -37,6 +44,7 @@ class CalibrationCallback(Callback):
         self._metric_fn = _METRIC_FNS[metric]
 
     def on_fit_end(self, trainer, pl_module) -> None:
+        """Collect val predictions, sweep thresholds, write best per class."""
         if trainer.datamodule is None:
             return
 
@@ -53,12 +61,11 @@ class CalibrationCallback(Callback):
             for batch in loader:
                 image = batch["image"].to(pl_module.device)
                 label = batch["label"].to(pl_module.device)
-                mask = batch.get("mask")
-                if mask is not None:
-                    label = label & mask.to(pl_module.device)
+                context = batch["context"]
 
-                logits = pl_module.model(image)
+                logits = pl_module(image, **context)
                 probs = logits.softmax(dim=1)
+                # max_probs: [B,H,W] top confidence; preds: [B,H,W] argmax class
                 max_probs, preds = probs.max(dim=1)
 
                 val_preds.append(preds.detach().cpu())
@@ -68,15 +75,7 @@ class CalibrationCallback(Callback):
         if not val_preds:
             return
 
-        self._compute_and_apply_thresholds(pl_module, val_preds, val_max_probs, val_labels)
-
-    def _compute_and_apply_thresholds(
-        self,
-        pl_module,
-        val_preds: list[torch.Tensor],
-        val_max_probs: list[torch.Tensor],
-        val_labels: list[torch.Tensor],
-    ) -> None:
+        # flatten [B,H,W] → [N] for pixel-wise metric computation
         all_preds = torch.cat(val_preds).view(-1)
         all_max_probs = torch.cat(val_max_probs).view(-1)
         all_labels = torch.cat(val_labels).view(-1)
@@ -85,17 +84,24 @@ class CalibrationCallback(Callback):
         ignore_index: int = pl_module.ignore_index
         new_thresholds = torch.full((n_classes,), 0.5)
 
+        # Remap GT nodata (ignore_index=255) → n_classes so values stay in [0, n_classes].
+        # n_classes acts as the abstain/ignore slot; metric ignores it via ignore_index=n_classes.
+        labels_r = all_labels.clone()
+        labels_r[labels_r == ignore_index] = n_classes
+
         for c in range(n_classes):
             best_t, best_score = 0.5, -1.0
             for t in self.threshold_range:
                 adjusted = all_preds.clone()
-                adjusted[(all_preds == c) & (all_max_probs < t)] = ignore_index
+                # suppress low-confidence class-c predictions → abstain slot
+                adjusted[(all_preds == c) & (all_max_probs < t)] = n_classes
 
                 score = self._metric_fn(
                     adjusted,
-                    all_labels,
-                    num_classes=n_classes + 1,  # add one for ignore_index class
+                    labels_r,
+                    num_classes=n_classes + 1,  # +1 for abstain/ignore slot at index n_classes
                     average="macro",
+                    ignore_index=n_classes,
                 ).item()
 
                 if score > best_score:

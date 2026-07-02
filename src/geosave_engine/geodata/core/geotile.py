@@ -13,7 +13,7 @@ from pystac import Item, ItemCollection
 from dataclasses import dataclass, field
 from datetime import datetime as dt
 from pathlib import Path
-from typing import Any, cast
+from typing import Any, cast, Literal, Mapping
 from rioxarray.merge import merge_datasets
 from affine import Affine
 from odc.geo.geobox import GeoBox
@@ -27,7 +27,7 @@ from geosave_engine.utils.datetime import DEFAULT_DATE_FORMAT, DEFAULT_DATE_PATT
 
 def _datetime_from_attrs_or_stem(
     path: Path,
-    attrs: dict[str, Any],
+    attrs: Mapping[str, Any],
     date_format: str = DEFAULT_DATE_FORMAT,
     date_pattern: str = DEFAULT_DATE_PATTERN,
 ) -> dt:
@@ -56,25 +56,18 @@ def _datetime_from_attrs_or_stem(
 
 @dataclass(frozen=True)
 class GeoTile:
-    """Geospatial tile: a geobox, an anchor datetime, and optional pixel data.
+    """Geospatial tile with a geobox, anchor datetime, and optional pixel data.
 
-    ``datetime`` is the anchor time — when the tile was requested or created.
-    ``data`` is an ``xr.Dataset`` whose variables are bands keyed by name, each
-    shaped ``(y, x)`` or ``(time, y, x)``. It may be lazy (opened from a
-    GeoTIFF/COG/Zarr and read only on access) or fully in memory; ``None`` means a
-    header-only tile carrying just the geobox and datetime.
-
-    ``bands`` and ``times`` are derived from ``data`` via properties — they are
-    not stored as fields to avoid manual synchronisation. Combining tiles
-    (``mosaic``, ``align``) and label remapping (``remap``) are module-level free
-    functions, not methods — a tile renders itself, it does not stitch others.
+    data is an xr.DataArray with dims (band, y, x) or (time, band, y, x).
+    May be lazy or fully in memory; None means a header-only tile.
     """
 
     geobox: GeoBox
     datetime: dt
-    data: xr.Dataset | None = field(default=None, compare=False)
+    data: xr.DataArray | None = field(default=None, compare=False)
     stac: list[Item] = field(default_factory=list, compare=False)
     metadata: dict[str, Any] = field(default_factory=dict, compare=False)
+    polygon: Geometry | None = field(default=None, compare=False)
 
     # ------------------------------------------------------------------
     # Derived properties
@@ -82,10 +75,10 @@ class GeoTile:
 
     @property
     def bands(self) -> tuple[str, ...]:
-        """Band (variable) names from loaded data. Empty when data is None."""
+        """Band names from loaded data. Empty when data is None."""
         if self.data is None:
             return ()
-        return tuple(str(name) for name in self.data.data_vars)
+        return tuple(str(b) for b in self.data.coords["band"].values)
 
     @property
     def times(self) -> tuple[dt, ...]:
@@ -131,6 +124,13 @@ class GeoTile:
         return self.geobox.height
 
     @property
+    def area_m2(self) -> float:
+        """Polygon area if stored, else pixel-grid area. Both in native CRS units² (m² for projected CRS)."""
+        if self.polygon is not None:
+            return self.polygon.geom.area
+        return self.width * self.height * (self.resolution ** 2)
+
+    @property
     def bbox(self) -> tuple[float, float, float, float]:
         """Bounding box in native CRS: (minx, miny, maxx, maxy)."""
         return self.geobox.boundingbox.bbox
@@ -147,13 +147,15 @@ class GeoTile:
         return ((left + right) / 2, (bottom + top) / 2)
 
     @property
-    def polygon(self) -> Geometry:
+    def bbox_polygon(self) -> Geometry:
         return self.geobox.boundingbox.polygon
 
     @property
     def geojson(self) -> dict:
         """WGS84 footprint as a GeoJSON Polygon dict."""
-        return self.polygon.geojson()
+        if self.polygon is not None:
+            return self.polygon.to_crs("EPSG:4326").geojson()
+        return self.bbox_polygon.geojson()
 
     @property
     def location(self) -> dict[str, Any]:
@@ -166,15 +168,17 @@ class GeoTile:
     # Data manipulation
     # ------------------------------------------------------------------
 
-    def with_data(self, data: xr.Dataset) -> "GeoTile":
-        """Return a new GeoTile with the given Dataset as pixel data.
+    def with_data(self, data: xr.DataArray) -> "GeoTile":
+        """Return new GeoTile with given DataArray as pixel data.
 
-        ``data`` variables are bands keyed by name, each shaped ``(y, x)`` or
-        ``(time, y, x)``. Callers holding a DataArray or numpy array convert it to
-        a Dataset first (e.g. ``da.to_dataset(dim="band")``).
+        Args:
+            data: Band values shaped (band, y, x) or (time, band, y, x) with a "band" coordinate.
+
+        Raises:
+            TypeError: If data is not an xr.DataArray.
         """
-        if not isinstance(data, xr.Dataset):
-            raise TypeError(f"with_data expects an xr.Dataset, got {type(data).__name__}")
+        if not isinstance(data, xr.DataArray):
+            raise TypeError(f"with_data expects an xr.DataArray, got {type(data).__name__}")
         return dataclasses.replace(self, data=data)
 
     def with_np(
@@ -183,36 +187,37 @@ class GeoTile:
         names: list[str],
         times: list[dt] | None = None,
     ) -> "GeoTile":
-        """Build a Dataset from a numpy array on this tile's geobox and attach it.
+        """Build DataArray from numpy array on this tile's geobox and attach it.
 
-        The band axis (length ``len(names)``) becomes one variable per name, with
-        spatial coords and CRS taken from the geobox. Accepts ``(y, x)`` (one
-        band), ``(band, y, x)``, or ``(time, band, y, x)`` (pass ``times``).
+        Accepts (y, x), (band, y, x), or (time, band, y, x). Spatial coords from geobox.
 
         Args:
-            array: Pixel array; the last two axes are ``(y, x)``.
-            names: Variable name per band, in order.
-            times: Observation datetimes — required for a 4D array.
+            array: Pixel array; last two axes are (y, x).
+            names: Band names in order.
+            times: Observation datetimes; required for 4D array.
         """
         arr = np.asarray(array)
         if arr.ndim == 2:
             arr = arr[np.newaxis]
-        coords: dict[Any, Any] = dict(xr_coords(self.geobox))
+        base_coords: dict[Any, Any] = dict(xr_coords(self.geobox))
         if arr.ndim == 3:
             if len(names) != arr.shape[0]:
                 raise ValueError(f"Expected {arr.shape[0]} names, got {len(names)}")
-            data_vars = {name: (("y", "x"), arr[i]) for i, name in enumerate(names)}
+            da = xr.DataArray(arr, dims=("band", "y", "x"), coords={**base_coords, "band": names})
         elif arr.ndim == 4:
             if len(names) != arr.shape[1]:
                 raise ValueError(f"Expected {arr.shape[1]} names, got {len(names)}")
             if times is None or len(times) != arr.shape[0]:
                 got = 0 if times is None else len(times)
                 raise ValueError(f"Expected {arr.shape[0]} times, got {got}")
-            coords["time"] = [np.datetime64(t, "ns") for t in times]
-            data_vars = {name: (("time", "y", "x"), arr[:, i]) for i, name in enumerate(names)}
+            time_coord = [np.datetime64(t, "ns") for t in times]
+            da = xr.DataArray(
+                arr, dims=("time", "band", "y", "x"),
+                coords={**base_coords, "band": names, "time": time_coord},
+            )
         else:
             raise ValueError(f"with_np expects a 2-4D array, got {arr.ndim}D")
-        return self.with_data(xr.Dataset(data_vars, coords=coords))
+        return self.with_data(da)
 
     def with_stac(self, items: list[Item]) -> "GeoTile":
         """Append pystac Items as provenance, de-duplicated by id."""
@@ -220,11 +225,15 @@ class GeoTile:
         merged = [*self.stac, *(i for i in items if i.id not in seen)]
         return dataclasses.replace(self, stac=merged)
 
-    def with_metadata(self, extra: dict[str, Any], replace: bool = False) -> "GeoTile":
-        """Merge key-value pairs into the metadata field.
+    def with_metadata(self, extra: Mapping[str, Any], replace: bool = False) -> "GeoTile":
+        """Merge key-value pairs into metadata field.
 
-        Append-only by default: raises if any key is already present, so
-        accidental clobbering is loud. Pass ``replace=True`` to overwrite.
+        Args:
+            extra: Key-value pairs to merge.
+            replace: If True, overwrite existing keys instead of raising.
+
+        Raises:
+            ValueError: If any key in extra already exists and replace is False.
         """
         if not replace:
             clash = set(extra) & set(self.metadata)
@@ -235,11 +244,9 @@ class GeoTile:
         return dataclasses.replace(self, metadata={**self.metadata, **extra})
 
     def with_geobox(self, geobox: GeoBox) -> "GeoTile":
-        """Return a new GeoTile rebased onto ``geobox``, sharing data.
+        """Return new GeoTile rebased onto geobox, sharing data reference.
 
-        Used to derive lazy patch tiles: pass a sub-geobox (e.g. ``self.geobox[
-        y0:y1, x0:x1]``) and the tile keeps its lazy ``data``, so ``to_tensor``
-        reads only the patch's extent. Pure geometry — no pixels are read or copied.
+        Pure geometry — no pixels are read or copied.
         """
         return dataclasses.replace(self, geobox=geobox)
 
@@ -247,35 +254,39 @@ class GeoTile:
     # Tensor loading
     # ------------------------------------------------------------------
 
-    def to_tensor(self, bands: list[str] | None = None) -> Any:
-        """Render the data as a single ``torch.Tensor``, bands stacked.
+    def to_tensor(self, bands: list[str] | None = None, squeeze: bool = False) -> Any:
+        """Render data as a single torch.Tensor with bands stacked.
 
-        Clips the (possibly lazy) data to ``self.bbox`` so windowed patch tiles
-        read only their own extent, then stacks the band variables along a band
-        axis: shape ``(band, y, x)`` or ``(time, band, y, x)``.
+        Clips to self.bbox before reading; output shape (band, y, x) or (time, band, y, x).
 
         Args:
-            bands: Band (variable) names to select, in order. None uses all bands.
+            bands: Variable names to select, in order. None uses all bands.
         """
-        return torch.from_numpy(self.to_numpy(bands=bands))
+        result = torch.from_numpy(self.to_numpy(bands=bands))
+        if squeeze and result.ndim == 3 and result.shape[0] == 1:
+            result = result.squeeze(0)
+        return result
 
     def to_numpy(self, bands: list[str] | None = None) -> np.ndarray:
-        """Render the data as a contiguous NumPy array, bands stacked.
+        """Render data as a contiguous NumPy array with bands stacked.
 
-        Clips the (possibly lazy) data to ``self.bbox`` so windowed patch tiles
-        read only their own extent, then stacks the band variables along a band
-        axis: shape ``(band, y, x)`` or ``(time, band, y, x)``.
+        Clips to self.bbox before reading; output shape (band, y, x) or (time, band, y, x).
 
         Args:
-            bands: Band (variable) names to select, in order. None uses all bands.
+            bands: Band names to select, in order. None uses all bands.
+
+        Raises:
+            ValueError: If tile has no data.
         """
         if self.data is None:
             raise ValueError("GeoTile has no data — load data first")
-        da = self.data.rio.clip_box(*self.bbox).to_array(dim="band")
+        da = self.data.rio.clip_box(*self.bbox)
         if bands is not None:
             da = da.sel(band=bands)
         if "time" in da.dims:
             da = da.transpose("time", "band", "y", "x")
+        else:
+            da = da.transpose("band", "y", "x")
         return np.ascontiguousarray(da.values)
 
     # ------------------------------------------------------------------
@@ -291,18 +302,16 @@ class GeoTile:
         date_pattern: str = DEFAULT_DATE_PATTERN,
         bands: tuple[str, ...] | None = None,
     ) -> "GeoTile":
-        """Create a GeoTile from a single GeoTIFF or COG file.
+        """Create GeoTile from a single GeoTIFF or COG file.
 
-        The raster is opened lazily (chunked) as a Dataset with one variable per
-        band: pixels are read only when accessed via ``to_tensor`` or
-        ``load_data=True``. COGs and tiled GeoTIFFs serve windowed reads cheaply;
-        plain striped TIFFs read whole strips per window.
+        Opened lazily by default; pixels read only on to_tensor or load_data=True.
 
         Args:
-            path: Path to a GeoTIFF/COG file.
-            load_data: Materialise all pixels into memory when True. Defaults to
-                lazy (False).
-            bands: Band (variable) names to select. None keeps all bands.
+            path: Path to GeoTIFF/COG file.
+            load_data: Materialise all pixels into memory; default lazy.
+            date_format: strftime format for parsing date from filename stem.
+            date_pattern: Regex pattern for extracting date from filename stem.
+            bands: Band variable names to select; None keeps all.
         """
         p = Path(path)
         opened = rioxarray.open_rasterio(p, chunks=True, band_as_variable=True)
@@ -317,6 +326,13 @@ class GeoTile:
         if band_names and len(band_names) == len(data.data_vars):
             data = data.rename(dict(zip(list(data.data_vars), band_names)))
 
+        poly_geojson = tag.pop("polygon_geojson", None)
+        poly_crs = tag.pop("polygon_crs", None)
+        stored_polygon: Geometry | None = None
+        if poly_geojson and poly_crs:
+            geojson_dict = poly_geojson if isinstance(poly_geojson, dict) else json.loads(poly_geojson)
+            stored_polygon = Geometry(geojson_dict, crs=poly_crs)
+
         if bands:
             data = cast(xr.Dataset, data[list(bands)])
         if load_data:
@@ -325,54 +341,78 @@ class GeoTile:
         anchor_dt = _datetime_from_attrs_or_stem(
             p, data.attrs, date_format=date_format, date_pattern=date_pattern
         )
+        geobox = data.odc.geobox
+        da = data.to_array(dim="band").transpose("band", "y", "x")
         return cls(
-            geobox=data.odc.geobox,
+            geobox=geobox,
             datetime=anchor_dt,
-            data=data,
+            data=da,
             stac=_read_stac(p),
             metadata=tag,
+            polygon=stored_polygon,
         )
 
     @classmethod
-    def from_zarr(cls, path: str | Path, load_data: bool = False) -> "GeoTile":
-        """Create a GeoTile from a Zarr store written by ``to_zarr``.
+    def from_zarr(
+        cls, path: str | Path, 
+        load_data: bool = False,
+        date_format: str = DEFAULT_DATE_FORMAT,
+        date_pattern: str = DEFAULT_DATE_PATTERN,
+    ) -> "GeoTile":
+        """Create GeoTile from a Zarr store written by to_zarr.
 
-        Opened lazily by default — pixels are read only when accessed via
-        ``to_tensor`` or ``load_data=True``. Zarr carries the full data cube,
-        including any time dimension. The geobox, anchor datetime, and metadata
-        are restored from the store attributes.
+        Opened lazily by default. Geobox, datetime, and metadata restored from store attrs.
 
         Args:
-            path: Path to a Zarr store.
-            load_data: Materialise all pixels into memory when True.
+            path: Path to Zarr store.
+            load_data: Materialise all pixels into memory; default lazy.
+            date_format: strftime format for parsing date from filename stem.
+            date_pattern: Regex pattern for extracting date from filename stem.
         """
         path = Path(path)
         ds = xr.open_zarr(path)
         # zarr restores the CRS grid-mapping as a data variable; demote it to a coord
         grid_mappings = {
-            da.attrs["grid_mapping"]
-            for da in ds.data_vars.values()
-            if "grid_mapping" in da.attrs
+            var.attrs["grid_mapping"]
+            for var in ds.data_vars.values()
+            if "grid_mapping" in var.attrs
         } & set(ds.data_vars)
         if grid_mappings:
             ds = ds.set_coords(grid_mappings)
+        geobox = ds.odc.geobox
+        anchor_dt = _datetime_from_attrs_or_stem(
+            path, ds.attrs, date_format=date_format, date_pattern=date_pattern
+        )
+        metadata = json.loads(ds.attrs.get("metadata", "{}"))
+        poly_geojson_raw = ds.attrs.get("polygon_geojson")
+        poly_crs = ds.attrs.get("polygon_crs")
+        stored_polygon: Geometry | None = None
+        if poly_geojson_raw and poly_crs:
+            geojson_dict = json.loads(poly_geojson_raw) if isinstance(poly_geojson_raw, str) else poly_geojson_raw
+            stored_polygon = Geometry(geojson_dict, crs=poly_crs)
+        da = ds.to_array(dim="band")
+        if "time" in da.dims:
+            da = da.transpose("time", "band", "y", "x")
+        else:
+            da = da.transpose("band", "y", "x")
         if load_data:
-            ds = ds.load()
+            da = da.load()
         return cls(
-            geobox=ds.odc.geobox,
-            datetime=_datetime_from_attrs_or_stem(path, ds.attrs),
-            data=ds,
+            geobox=geobox,
+            datetime=anchor_dt,
+            data=da,
             stac=_read_stac(path),
-            metadata=json.loads(ds.attrs.get("metadata", "{}")),
+            metadata=metadata,
+            polygon=stored_polygon,
         )
 
     @classmethod
     def from_bbox(
         cls,
         bbox: tuple[float, float, float, float],
-        crs: str,
-        resolution: float,
         datetime: dt | str,
+        crs: str = "EPSG:4326",
+        resolution: float = 10.0,
     ) -> "GeoTile":
         """Create a GeoTile from a bounding box and resolution.
 
@@ -393,9 +433,9 @@ class GeoTile:
         latitude: float,
         longitude: float,
         *,
-        size_m: float | tuple[float, float],
-        resolution: float,
         datetime: dt | str,
+        size_m: float | tuple[float, float],
+        resolution: float = 10.0,
         crs: str | None = None,
     ) -> "GeoTile":
         """Create a GeoTile centered on a WGS84 coordinate.
@@ -437,8 +477,8 @@ class GeoTile:
     def from_polygon(
         cls,
         polygon: dict,
-        resolution: float,
         datetime: dt | str,
+        resolution: float = 10.0,
         crs: str | None = None,
     ) -> "GeoTile":
         """Create a GeoTile from a GeoJSON polygon geometry dict.
@@ -464,19 +504,19 @@ class GeoTile:
             raise ValueError(
                 "from_polygon requires a projected CRS; omit crs to use local UTM/UPS"
             )
+        projected_geom = geom.to_crs(target_crs)
         return cls(
-            geobox=GeoBox.from_geopolygon(
-                geom.to_crs(target_crs), resolution=resolution, anchor="edge"
-            ),
+            geobox=GeoBox.from_geopolygon(projected_geom, resolution=resolution, anchor="edge"),
             datetime=parse_datetime(datetime),
+            polygon=projected_geom,
         )
 
     @classmethod
     def from_geojson(
         cls,
         path: str | Path,
-        resolution: float,
         datetime: dt | str,
+        resolution: float = 10.0,
         crs: str | None = None,
     ) -> "list[GeoTile]":
         """Create one GeoTile per feature/geometry in a GeoJSON file.
@@ -506,47 +546,62 @@ class GeoTile:
     # ------------------------------------------------------------------
 
     def to_geotiff(self, path: str | Path, save_stac: bool = False) -> Path:
-        """Write a single-step tile to a GeoTIFF file (one band per variable).
+        """Write single-step tile to GeoTIFF (one band per variable).
 
-        Raises ``ValueError`` if the tile has a time dimension — use ``to_zarr``
-        for time-series cubes. With ``save_stac=True``, STAC provenance is written
-        to a ``<stem>.stac.json`` sidecar beside the file.
+        Args:
+            path: Output .tif path.
+            save_stac: Write STAC provenance as <stem>.stac.json sidecar.
 
         Returns:
             The written path.
+
+        Raises:
+            ValueError: If tile has a time dimension or no data.
         """
         return self._write(path, driver="GTiff", save_stac=save_stac)
 
     def to_cog(self, path: str | Path, save_stac: bool = False) -> Path:
-        """Write a single-step tile to a Cloud-Optimized GeoTIFF file.
+        """Write single-step tile to Cloud-Optimized GeoTIFF.
 
-        Raises ``ValueError`` if the tile has a time dimension — use ``to_zarr``
-        for time-series cubes. With ``save_stac=True``, STAC provenance is written
-        to a ``<stem>.stac.json`` sidecar beside the file.
+        Args:
+            path: Output .tif path.
+            save_stac: Write STAC provenance as <stem>.stac.json sidecar.
 
         Returns:
             The written path.
+
+        Raises:
+            ValueError: If tile has a time dimension or no data.
         """
         return self._write(path, driver="COG", save_stac=save_stac)
 
     def to_zarr(self, path: str | Path, save_stac: bool = False) -> Path:
-        """Write tile data — including any time dimension — to a Zarr store.
+        """Write tile data including any time dimension to a Zarr store.
 
-        Anchor datetime and metadata are stored as store attributes. With
-        ``save_stac=True``, STAC provenance is written to a ``<stem>.stac.json``
-        sidecar (a pystac ItemCollection) beside the store.
+        Anchor datetime and metadata stored as store attributes.
+
+        Args:
+            path: Output Zarr store path.
+            save_stac: Write STAC provenance as <stem>.stac.json sidecar.
 
         Returns:
             The written store path.
+
+        Raises:
+            ValueError: If tile has no data.
         """
         if self.data is None:
             raise ValueError("GeoTile has no data to save")
         path = Path(path)
         path.parent.mkdir(parents=True, exist_ok=True)
-        ds = self.data.assign_attrs(
-            datetime=self.datetime.isoformat(),
-            metadata=json.dumps(self.metadata),
-        )
+        attrs: dict[str, Any] = {
+            "datetime": self.datetime.isoformat(),
+            "metadata": json.dumps(self.metadata),
+        }
+        if self.polygon is not None:
+            attrs["polygon_geojson"] = json.dumps(self.polygon.geojson())
+            attrs["polygon_crs"] = str(self.polygon.crs)
+        ds = self.data.to_dataset(dim="band").assign_attrs(**attrs)
         ds.to_zarr(path, mode="w")
         if save_stac:
             _write_stac(self.stac, path)
@@ -563,7 +618,10 @@ class GeoTile:
         if path.suffix.lower() not in (".tif", ".tiff"):
             raise ValueError(f"Expected .tif path, got: {path}")
         path.parent.mkdir(parents=True, exist_ok=True)
-        tag: dict[str, Any] = {**self.metadata, "bands": [str(b) for b in self.data.data_vars]}
+        tag: dict[str, Any] = {**self.metadata, "bands": [str(b) for b in self.data.coords["band"].values]}
+        if self.polygon is not None:
+            tag["polygon_geojson"] = self.polygon.geojson()
+            tag["polygon_crs"] = str(self.polygon.crs)
         self.data.rio.to_raster(
             path,
             driver=driver,
@@ -578,7 +636,7 @@ class GeoTile:
 # Tile operations
 # ----------------------------------------------------------------------
 
-def remap(tile: GeoTile, mapping: dict[int, int]) -> GeoTile:
+def remap(tile: GeoTile, mapping: Mapping[int, int]) -> GeoTile:
     """Return a new GeoTile with label values remapped per ``mapping``."""
     if tile.data is None:
         raise ValueError("Cannot remap a GeoTile without data")
@@ -589,12 +647,12 @@ def remap(tile: GeoTile, mapping: dict[int, int]) -> GeoTile:
 
 
 def align(*tiles: GeoTile) -> tuple[GeoTile, ...]:
-    """Narrow each tile's geobox to their common intersection — pure geometry.
+    """Narrow each tile's geobox to their common intersection.
 
-    Tiles must share CRS, resolution, and a common pixel grid (as produced by
-    ingesting every layer onto the same anchor geobox). Only the geobox is
-    narrowed; data is shared untouched, so the intersection is read lazily on
-    ``to_tensor``. Reproject mismatched grids first — not align's concern.
+    Pure geometry — data is shared untouched. Tiles must share CRS, resolution, and pixel grid.
+
+    Raises:
+        ValueError: If fewer than 2 tiles, CRS/resolution mismatch, no overlap, or misaligned grid.
     """
     if len(tiles) < 2:
         raise ValueError("align() requires at least 2 tiles")
@@ -624,22 +682,37 @@ def align(*tiles: GeoTile) -> tuple[GeoTile, ...]:
             raise ValueError("Tiles are not on a common pixel grid; reproject first")
         col0, row0, ncols, nrows = round(col0), round(row0), round(ncols), round(nrows)
         sub = t.geobox[row0:row0 + nrows, col0:col0 + ncols]
-        aligned.append(t.with_geobox(sub))
+        aligned_t = t.with_geobox(sub)
+        if t.polygon is not None:
+            clip_box = Geometry(
+                {
+                    "type": "Polygon",
+                    "coordinates": [[(minx, miny), (minx, maxy), (maxx, maxy), (maxx, miny), (minx, miny)]],
+                },
+                crs=t.polygon.crs,
+            )
+            aligned_t = dataclasses.replace(aligned_t, polygon=t.polygon & clip_box)
+        aligned.append(aligned_t)
     return tuple(aligned)
 
+TimeRound = Literal["D", "H", "T", "S", "L", "U", "N"]  # Pandas offset aliases
 
 def mosaic(
     tiles: list[GeoTile],
     crs: str | None = None,
-    round_to: str | None = None,
+    time_round_to: TimeRound = 'D',
 ) -> GeoTile:
     """Stitch spatially non-overlapping tiles into one larger tile.
 
-    Materialises a union grid via rioxarray ``merge_datasets``. All tiles must
-    have data loaded and share band names + time coordinates. Pass ``crs=`` to
-    reproject differing-CRS tiles first; pass ``round_to`` (a pandas offset alias,
-    e.g. ``"D"``) to floor time coordinates before matching, tolerating
-    sub-period acquisition jitter.
+    All tiles must have data loaded and share band names and time coordinates.
+
+    Args:
+        tiles: Tiles to merge; all must have data.
+        crs: Reproject tiles to this CRS before merging. Required if tiles differ in CRS.
+        time_round_to: Pandas offset alias (e.g. "D") to floor time coords before matching.
+
+    Raises:
+        ValueError: If tiles is empty, any tile has no data, CRS mismatch without crs=, or band/time mismatch.
     """
     if not tiles:
         raise ValueError("Cannot mosaic an empty tile list")
@@ -652,38 +725,57 @@ def mosaic(
             f"Cannot mosaic: tiles have different CRS: {tile_crss}. Pass crs= to reproject."
         )
 
-    datasets: list[xr.Dataset] = []
+    das: list[xr.DataArray] = []
     for t in tiles:
-        ds = t.data
-        assert ds is not None
-        if round_to is not None and "time" in ds.dims:
-            ds = ds.assign_coords(time=ds.time.dt.floor(round_to))
+        da = t.data
+        assert da is not None
+        if time_round_to is not None and "time" in da.dims:
+            da = da.assign_coords(time=da.time.dt.floor(time_round_to))
         if crs is not None and t.crs != crs:
-            ds = ds.rio.reproject(crs)
-        datasets.append(ds)
+            da = da.rio.reproject(crs)
+        das.append(da)
 
-    band_sets = {tuple(d.data_vars) for d in datasets}
+    band_sets = {tuple(str(b) for b in da.coords["band"].values) for da in das}
     if len(band_sets) > 1:
         raise ValueError(f"Cannot mosaic: tiles have different bands: {band_sets}")
     time_sets = {
-        tuple(str(v) for v in d.time.values) if "time" in d.dims else ()
-        for d in datasets
+        tuple(str(v) for v in da.time.values) if "time" in da.dims else ()
+        for da in das
     }
     if len(time_sets) > 1:
         raise ValueError(
-            "Cannot mosaic: tiles have different time steps; pass round_to= for tolerance"
+            "Cannot mosaic: tiles have different time steps; pass time_round_to= for tolerance"
         )
 
-    merged = merge_datasets(datasets)
+    merged_ds = merge_datasets([da.to_dataset(dim="band") for da in das])
+    merged = merged_ds.to_array(dim="band")
+    if "time" in merged.dims:
+        merged = merged.transpose("time", "band", "y", "x")
+    else:
+        merged = merged.transpose("band", "y", "x")
     geobox = GeoBox.from_bbox(
         merged.rio.bounds(),
         crs=merged.rio.crs.to_string(),
         resolution=tiles[0].resolution,
     )
+    mosaic_polygon: Geometry | None = None
+    tile_polys = [t.polygon for t in tiles]
+    if all(p is not None for p in tile_polys):
+        target_crs_str: str | None = crs or tiles[0].crs
+        first_poly = tile_polys[0]
+        assert first_poly is not None
+        merged_poly: Geometry = first_poly
+        for p in tile_polys[1:]:
+            if p is not None:
+                if target_crs_str is not None and str(merged_poly.crs) != target_crs_str:
+                    merged_poly = merged_poly.to_crs(target_crs_str)
+                merged_poly = merged_poly | p
+        mosaic_polygon = merged_poly
     base = GeoTile(
         geobox=geobox,
         datetime=max(t.datetime for t in tiles),
         metadata={k: v for t in tiles for k, v in t.metadata.items()},
+        polygon=mosaic_polygon,
     ).with_stac([item for t in tiles for item in t.stac])
     return base.with_data(merged)
 
@@ -698,11 +790,7 @@ def _stac_sidecar(path: Path) -> Path:
 
 
 def _write_stac(items: list[Item], path: Path) -> None:
-    """Write STAC provenance as a pystac ItemCollection sidecar (no-op if empty).
-
-    All of a tile's items — every time step included — live in this one
-    ItemCollection file; an ItemCollection is itself "multiple items".
-    """
+    """Write STAC items as pystac ItemCollection sidecar. No-op if empty."""
     if items:
         ItemCollection(items).save_object(str(_stac_sidecar(path)))
 

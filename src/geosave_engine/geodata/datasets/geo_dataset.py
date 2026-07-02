@@ -19,40 +19,44 @@ LayerName = str
 
 
 class GeoDataset(Dataset):
-    """A georeferenced PyTorch dataset over a per-layer catalog of lazy tiles.
+    """Georeferenced PyTorch dataset over lazy GeoTiles under a workspace root.
 
-    The catalog maps each layer name to a GeoDataFrame of that layer's tiles
-    (columns ``[geometry, tile]``, WGS84 footprints). A :class:`GeoTileSampler`
-    joins the catalog into a sample-row index. :meth:`__getitem__` returns one
-    rendered sample: ``{output_key: tensor, ..., "geobox": GeoBox, "datetime": dt}``.
-    :attr:`collate_fn` stacks a batch of those dicts into batched tensors.
+    Examples:
+        >>> ds = GeoDataset("/workspace/train")
+        >>> loader = DataLoader(ds, batch_size=4, collate_fn=stack_samples)
+        >>> batch = next(iter(loader))  # {"s2": Tensor[4,C,H,W], "label": Tensor[4,1,H,W]}
 
-    Subclasses may set ``output_key``/``sel_bands`` as class defaults; either can
-    also be passed per-instance to override.
+        Subclass to remap output keys and select bands:
 
-    Args:
-        catalog: ``{layer: GeoDataFrame[geometry, tile]}``.
-        sampler: Index builder. Defaults to :class:`PreChippedSampler`.
-        output_key: Layer name → tensor key in the batch (default: the layer name).
-        sel_bands: Layer name → band names to keep (default: all bands).
+        >>> class SegDataset(GeoDataset):
+        ...     output_key = {"sentinel2": "image", "cloud_mask": "mask"}
+        ...     sel_bands = {"sentinel2": ["B02", "B03", "B04"]}
     """
 
-    output_key: dict[LayerName, str] = {}
+    output_key: dict[LayerName, str | tuple[str, torch.dtype]] = {}
     sel_bands: dict[LayerName, list[str]] = {}
 
     def __init__(
         self,
-        catalog: dict[LayerName, gpd.GeoDataFrame],
+        root: str | Path,
         *,
         sampler: GeoTileSampler | None = None,
-        output_key: dict[LayerName, str] | None = None,
+        output_key: dict[LayerName, str | tuple[str, torch.dtype]] | None = None,
         sel_bands: dict[LayerName, list[str]] | None = None,
     ) -> None:
-        self.catalog = catalog
+        """
+        Args:
+            root: Workspace root directory with per-layer subdirs.
+            sampler: Index builder. Defaults to PreChippedSampler.
+            output_key: Layer name → batch key, or ``(batch_key, dtype)`` to cast on load.
+            sel_bands: Layer name → band names to keep; default is all bands.
+        """
+        self.root = Path(root)
+        self.catalog = self._scan(self.root)
         self.sampler = sampler or PreChippedSampler()
         self.output_key = output_key if output_key is not None else self.__class__.output_key
         self.sel_bands = sel_bands if sel_bands is not None else self.__class__.sel_bands
-        self.index: gpd.GeoDataFrame = self.sampler.build_index(catalog)
+        self.index: gpd.GeoDataFrame = self.sampler.build_index(self.catalog)
         if len(self.index) == 0:
             log.warning("Empty dataset: no co-located samples across layers")
 
@@ -65,52 +69,46 @@ class GeoDataset(Dataset):
         return len(self.index)
 
     def __getitem__(self, index: int) -> dict[str, Any]:
-        """Render one sample → ``{output_key: tensor, ...}`` plus any ``extra_meta``."""
+        """Render one sample.
+
+        Args:
+            index: Row index into the sample index.
+
+        Returns:
+            {
+                "<output_key>": torch.Tensor,  # one entry per layer; tensors stacked if keys collide
+                **extra_meta(...),
+            }.
+        """
         row = self.index.iloc[index]
         out: dict[str, Any] = {}
         tiles: dict[LayerName, GeoTile] = {}
         for layer in self.layers:
             tile: GeoTile = row[layer]
             tiles[layer] = tile
-            key = self.output_key.get(layer, layer)
-            tensor = tile.to_tensor(self.sel_bands.get(layer))
+            entry = self.output_key.get(layer, layer)
+            key, dtype = entry if isinstance(entry, tuple) else (entry, None)
+            tensor = tile.to_tensor(self.sel_bands.get(layer), squeeze=True)
+            if dtype is not None:
+                tensor = tensor.to(dtype)
             out[key] = torch.cat([out[key], tensor], dim=0) if key in out else tensor
-        out.update(self.extra_meta(tiles))
+
+        out['context'] = self.context(tiles)
+        
         return out
 
-    def extra_meta(self, tiles: dict[LayerName, GeoTile]) -> dict[str, Any]:  # noqa: ARG002  # subclasses use tiles
-        """Override to add per-sample metadata to the batch as tensors or arrays.
+    def context(self, tiles: dict[LayerName, GeoTile]) -> dict[str, Any]:  # noqa: ARG002  # subclasses use tiles
+        """Override to add per-sample metadata to the batch.
 
-        All returned values must be stackable by ``stack_samples`` — use tensors,
-        numpy arrays, or Python scalars. Python objects (e.g. GeoTile, GeoBox) will
-        not stack and will confuse the DataLoader.
+        Args:
+            tiles: Rendered tiles for this sample, keyed by layer name.
+
+        Returns:
+            Dict merged into the sample. All values must be stackable by
+            :func:`stack_samples` — tensors, numpy arrays, or Python scalars only.
+            Python objects (e.g. GeoBox) will break the DataLoader.
         """
         return {}
-
-    # ------------------------------------------------------------------
-    # Discovery
-    # ------------------------------------------------------------------
-
-    @classmethod
-    def from_dir(
-        cls,
-        root: str | Path,
-        *,
-        sampler: GeoTileSampler | None = None,
-        output_key: dict[LayerName, str] | None = None,
-        sel_bands: dict[LayerName, list[str]] | None = None,
-    ) -> "GeoDataset":
-        """Build by scanning ``root/<layer>/*`` tile files into the catalog.
-
-        Tiles open header-only (lazy); the files are the source of truth — no
-        manifest is read.
-        """
-        return cls(
-            cls._scan(Path(root)),
-            sampler=sampler,
-            output_key=output_key,
-            sel_bands=sel_bands,
-        )
 
     @classmethod
     def _scan(cls, root: Path) -> dict[LayerName, gpd.GeoDataFrame]:

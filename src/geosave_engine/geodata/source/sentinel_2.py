@@ -1,89 +1,75 @@
 from __future__ import annotations
 
+from typing import Literal
+
 import pystac
 import xarray as xr
-from dataclasses import dataclass
-from typing import TypeVar
+from typing_extensions import Self
 
-from geosave_engine.geodata.stac.query import StacQuery
 from geosave_engine.utils.geodata import extract_raster_scale_offset
 from geosave_engine.utils.stac_query import CQL2
 
-from .base import BaseSource, BaseSourceSeries, _SourceBase
-
-T = TypeVar("T", bound="_SourceBase")
+from .base import Source
 
 
-def preprocess_sentinel2(ds: xr.Dataset, items: list[pystac.Item]) -> xr.Dataset:
-    """Apply radiometric scaling to Sentinel-2 data using item metadata.
+class Sentinel2Source(Source):
+    """Source with Sentinel-2 specific query filter helpers.
 
-    Scaling broadcasts over every band variable in the Dataset.
+    Filter methods are sugar over ``with_filter(CQL2.*(...))``.
+    Only valid for collections that carry the corresponding STAC properties
+    (``eo:cloud_cover``, ``view:sun_elevation``, etc.).
     """
-    scale, offset = extract_raster_scale_offset(items[0])
-    return ds * scale + offset
 
+    def preprocess(self, ds: xr.Dataset, items: list[pystac.Item]) -> xr.Dataset:
+        """Apply radiometric scaling using per-item scale/offset from STAC metadata."""
+        scale, offset = extract_raster_scale_offset(items[0])
+        return ds * scale + offset
 
-class _Sentinel2Mixin:
-    """Cloud cover filtering and sorting shared by all Sentinel-2 source types."""
+    def max_cloud_cover(self, max_cover: float) -> Self:
+        """Filter scenes with cloud cover above ``max_cover`` percent.
 
-    def max_cloud_cover(self: T, max_cover: float) -> T:
-        """Add a cloud cover filter to the query."""
-        self.query.with_filter(CQL2.lte("eo:cloud_cover", max_cover))
-        return self
+        Args:
+            max_cover: Maximum allowed cloud cover (0–100).
+        """
+        return self.with_filter(CQL2.lte("eo:cloud_cover", max_cover))
 
-    def sortby_cloud_cover(self: T, direction: str = "asc") -> T:
-        """Sort results by cloud cover ascending to prioritize clearer scenes."""
+    def max_snow_cover(self, max_cover: float) -> Self:
+        """Filter scenes with snow cover above ``max_cover`` percent.
+
+        Args:
+            max_cover: Maximum allowed snow cover (0–100).
+        """
+        return self.with_filter(CQL2.lte("eo:snow_cover", max_cover))
+
+    def min_sun_elevation(self, min_elev: float) -> Self:
+        """Filter scenes with sun elevation below ``min_elev`` degrees.
+
+        Args:
+            min_elev: Minimum sun elevation angle in degrees. Low values → long shadows.
+        """
+        return self.with_filter(CQL2.gte("view:sun_elevation", min_elev))
+
+    def platform(self, name: Literal["sentinel-2a", "sentinel-2b"]) -> Self:
+        """Filter to a specific Sentinel-2 platform.
+
+        Args:
+            name: ``'sentinel-2a'`` or ``'sentinel-2b'``.
+        """
+        return self.with_filter(CQL2.eq("platform", name))
+
+    def relative_orbit(self, orbit: int) -> Self:
+        """Filter by relative orbit number for consistent viewing geometry.
+
+        Args:
+            orbit: Relative orbit number (1–143 for Sentinel-2).
+        """
+        return self.with_filter(CQL2.eq("sat:relative_orbit", orbit))
+
+    def sortby_cloud_cover(self, direction: str = "asc") -> Self:
+        """Sort results by cloud cover to prioritize clearer scenes.
+
+        Args:
+            direction: ``'asc'`` (clearest first) or ``'desc'``.
+        """
         self.query.with_sortby("eo:cloud_cover", direction)
         return self
-
-
-@dataclass
-class Sentinel2(_Sentinel2Mixin, BaseSource):
-    """Base class for single-scene Sentinel-2 sources. Applies radiometric preprocessing by default."""
-
-    def __post_init__(self) -> None:
-        if self.preprocess is None:
-            self.preprocess = preprocess_sentinel2
-        super().__post_init__()
-
-
-@dataclass
-class Sentinel2L2A(Sentinel2):
-    """Sentinel-2 L2A (surface reflectance). Scales DN to reflectance via item metadata."""
-
-    def _default_query(self) -> StacQuery:
-        return StacQuery(collections=["sentinel-2-l2a"])
-
-
-@dataclass
-class Sentinel2L1C(Sentinel2):
-    """Sentinel-2 L1C (top-of-atmosphere radiance). No atmospheric correction applied."""
-
-    def _default_query(self) -> StacQuery:
-        return StacQuery(collections=["sentinel-2-l1c"])
-
-
-@dataclass
-class Sentinel2Series(_Sentinel2Mixin, BaseSourceSeries):
-    """Base class for time-series Sentinel-2 sources. Applies radiometric preprocessing by default."""
-
-    def __post_init__(self) -> None:
-        if self.preprocess is None:
-            self.preprocess = preprocess_sentinel2
-        super().__post_init__()
-
-
-@dataclass
-class Sentinel2L2ASeries(Sentinel2Series):
-    """Sentinel-2 L2A time series. Returns ``n_steps`` composited or per-scene GeoTiles."""
-
-    def _default_query(self) -> StacQuery:
-        return StacQuery(collections=["sentinel-2-l2a"])
-
-
-@dataclass
-class Sentinel2L1CSeries(Sentinel2Series):
-    """Sentinel-2 L1C time series. Returns ``n_steps`` composited or per-scene GeoTiles."""
-
-    def _default_query(self) -> StacQuery:
-        return StacQuery(collections=["sentinel-2-l1c"])

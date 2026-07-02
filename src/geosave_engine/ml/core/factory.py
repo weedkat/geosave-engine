@@ -34,24 +34,52 @@ SCHEDULERS = {
 }
 
 def uppercase_keys(d: dict) -> dict:
-    """Return a copy of d with all keys uppercased."""
+    """Return copy of ``d`` with all keys uppercased."""
     return {k.upper(): v for k, v in d.items()}
 
 
 def builder(name: str, config: dict, registry: dict):
-    """Direct callable lookup. Use for models and losses."""
+    """Instantiate entry from registry by name.
+
+    Case-insensitive. Use for losses and models.
+
+    Args:
+        name: Registry key (e.g. ``"CELoss"``).
+        config: Keyword args passed to the constructor.
+        registry: Mapping of name → callable.
+
+    Returns:
+        Instantiated object from registry.
+
+    Raises:
+        ValueError: If ``name`` not found in registry.
+    """
     reg = uppercase_keys(registry)
     key = name.upper()
     if key not in reg:
         raise ValueError(f"Unknown '{name}'. Available: {list(registry.keys())}")
-
     return reg[key](**config)
 
 
 def method_builder(name: str, config: dict, registry: dict):
-    """Dot-notation method dispatch ('key.method'). Use for optimizers and schedulers."""
+    """Instantiate via dot-notation method dispatch (``"key.method"``).
+
+    Use for optimizers where variant is a module-level function.
+    If no method given, falls back to ``default``.
+
+    Args:
+        name: ``"key"`` or ``"key.method"`` (e.g. ``"AdamW.split"``).
+        config: Keyword args passed to the method.
+        registry: Mapping of name → module with callable methods.
+
+    Returns:
+        Result of calling ``registry[key].method(**config)``.
+
+    Raises:
+        ValueError: If key or method not found in registry.
+    """
     if "." not in name:
-        name = name + ".default" # Allow default method if not specified
+        name = name + ".default"
 
     reg = uppercase_keys(registry)
     raw_key, method = name.split(".", 1)
@@ -66,24 +94,72 @@ def method_builder(name: str, config: dict, registry: dict):
 
     return getattr(entry, method)(**config)
 
-def build_model(config: dict, registry: dict) -> nn.Module:
-    if "name" not in config:
-        raise ValueError("Model config must have a 'name' field.")
-    return builder(config["name"], config.get("init_args", {}), registry)
 
-def build_loss(config: dict, registry: dict = LOSSES) -> nn.Module:
-    if "name" not in config:
-        raise ValueError("Loss config must have a 'name' field.")
-    return builder(config["name"], config.get("init_args", {}), registry)
+def build_model(name: str, config: dict, registry: dict) -> nn.Module:
+    """Build model by name from registry.
 
-def build_optimizer(config: dict, model: nn.Module, registry: dict = OPTIMIZERS) -> Optimizer:
-    if "name" not in config:
-        raise ValueError("Optimizer config must have a 'name' field.")
-    return method_builder(config["name"], {**config.get("init_args", {}), "model": model}, registry)
+    Args:
+        name: Registry key.
+        config: Keyword args passed to the constructor.
+        registry: Mapping of name → model class.
 
-def build_scheduler(config: dict | None, optimizer: Optimizer, registry: dict = SCHEDULERS) -> LRScheduler | None:
-    if config is None:
-        return None
-    if "name" not in config:
-        raise ValueError("Scheduler config must have a 'name' field.")
-    return builder(config["name"], {**config.get("init_args", {}), "optimizer": optimizer}, registry)
+    Returns:
+        Instantiated ``nn.Module``.
+
+    Raises:
+        ValueError: If ``name`` not found in registry.
+    """
+    return builder(name, config, registry)
+
+
+def build_loss(name: str, config: dict, registry: dict = LOSSES) -> nn.Module:
+    """Build loss by name from registry.
+
+    Args:
+        name: Registry key (e.g. ``"CELoss"``).
+        config: Keyword args passed to the constructor.
+        registry: Mapping of name → loss class. Defaults to ``LOSSES``.
+
+    Returns:
+        Instantiated loss ``nn.Module``.
+
+    Raises:
+        ValueError: If ``name`` not found in registry.
+    """
+    return builder(name, config, registry)
+
+
+def build_optimizer(name: str, model: nn.Module, config: dict, registry: dict = OPTIMIZERS) -> Optimizer:
+    """Build optimizer by name from registry.
+
+    Args:
+        name: Registry key; supports dot notation (e.g. ``"AdamW.split"``).
+        config: Keyword args passed to the optimizer constructor.
+        model: Model whose parameters are passed to the optimizer.
+        registry: Mapping of name → optimizer module. Defaults to ``OPTIMIZERS``.
+
+    Returns:
+        Instantiated ``Optimizer``.
+
+    Raises:
+        ValueError: If ``name`` not found in registry.
+    """
+    return method_builder(name, {**config, "model": model}, registry)
+
+
+def build_scheduler(name: str, optimizer: Optimizer, config: dict, registry: dict = SCHEDULERS) -> LRScheduler | None:
+    """Build LR scheduler by name from registry.
+
+    Args:
+        name: Registry key (e.g. ``"CosineAnnealingLR"``).
+        optimizer: Optimizer passed to scheduler constructor.
+        config: Keyword args passed to the scheduler constructor.
+        registry: Mapping of name → scheduler class. Defaults to ``SCHEDULERS``.
+
+    Returns:
+        Instantiated ``LRScheduler``, or ``None`` if ``name`` is ``None``.
+
+    Raises:
+        ValueError: If ``name`` not found in registry.
+    """
+    return builder(name, {**config, "optimizer": optimizer}, registry)

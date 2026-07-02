@@ -5,7 +5,7 @@ import logging
 import numpy as np
 
 from pathlib import Path
-from typing import TYPE_CHECKING, Any, TypedDict
+from typing import TYPE_CHECKING, Any, Mapping, TypedDict
 
 if TYPE_CHECKING:
     from .geotile import GeoTile
@@ -13,73 +13,95 @@ if TYPE_CHECKING:
 log = logging.getLogger(__name__)
 
 
-class ImageSpec(TypedDict, total=False):
-    """Type hint for a multiband raster layer spec. Use as a plain dict in ``layer_schema``."""
+class LayerSpec(TypedDict, total=False):
+    """Layer spec passed to ManifestWriter and layer_metadata."""
+
+    name: str
     resolution: float
     description: str
-    bands: dict[str, dict[str, Any]]
+    nodata: int | float | None
+    schema: list[dict[str, Any]]
 
 
-class LabelSpec(TypedDict, total=False):
-    """Type hint for a classification layer spec. Use as a plain dict in ``layer_schema``."""
-    resolution: float
-    description: str
-    classes: dict[int, dict[str, Any]]
+def _geo_key(anchor: GeoTile) -> str:
+    """Stable spatial identity key for an anchor tile."""
+    bbox = anchor.bbox
+    return (
+        f"{anchor.crs}"
+        f"|{bbox[0]:.6f},{bbox[1]:.6f},{bbox[2]:.6f},{bbox[3]:.6f}"
+        f"|{anchor.resolution:.4f}"
+        f"|{anchor.datetime.strftime('%Y%m%d')}"
+    )
 
 
-LayerSpec = ImageSpec | LabelSpec
-
-
-def layer_metadata(name: str, spec: dict[str, Any]) -> dict[str, Any]:
+def layer_metadata(spec: Mapping[str, Any]) -> dict[str, Any]:
     """Normalize a layer spec into its self-describing metadata block.
 
-    The same block is recorded in the manifest and infused (flat) into every
-    saved tile's metadata, so a tile carries its own layer identity, resolution,
-    and band/class schema.
+    Block is recorded in manifest and infused into every saved tile's metadata.
+
+    Args:
+        spec: LayerSpec dict with required "name" and "resolution" keys.
+
+    Returns:
+        {
+            "name": str,
+            "resolution": float,
+            "description": str,
+            "nodata": int | float | None,   # omitted if None
+            "schema": list[dict],           # omitted if empty
+        }.
     """
-    if "bands" not in spec and "classes" not in spec:
-        raise ValueError(f"Layer spec for {name!r} must have 'bands' or 'classes' key")
     meta: dict[str, Any] = {
-        "name": name,
+        "name": spec["name"],
         "resolution": spec["resolution"],
         "description": spec.get("description", ""),
     }
-    if "bands" in spec:
-        meta["type"] = "image"
-        meta["bands"] = {k: dict(v) for k, v in spec["bands"].items()}
-    else:
-        meta["type"] = "label"
-        meta["classes"] = {str(k): dict(v) for k, v in spec["classes"].items()}
+    if spec.get("nodata") is not None:
+        meta["nodata"] = spec["nodata"]
+    if spec.get("schema"):
+        meta["schema"] = list(spec["schema"])
     return meta
 
 
 class ManifestWriter:
-    """One layer's self-contained manifest: ingestion tracking only.
+    """Ingestion tracking manifest for one layer.
 
-    Created one-per-layer (a Pipeline builds one per ``layer_schema`` entry).
-    Writes ``<root>/<layer>/manifest.json`` with layout:
+    Writes <root>/<layer>/manifest.json:
 
         {
           "metadata": { "name", "resolution", "description", "type", "bands"|"classes" },
           "anchors": {
             "<geo_key>": {
-              "stem": str,        // layer-specific filename stem
+              "stem": str,
               "source": str|null,
               "status": "pending"|"done"|"error",
               "error": str|null,
-              "store": "<stem>.zarr"|null  // zarr store dir, relative to layer dir
+              "store": "<stem>.zarr"|null
             }
           }
         }
 
-    Spatial metadata is intentionally absent — read it from the Zarr store via GeoTile.
     Store paths are relative to the layer directory.
+
+    Examples:
+        >>> spec = {"name": "sentinel2", "resolution": 10, "bands": {"B04": {"name": "red"}}}
+        >>> mw = ManifestWriter("/workspace", spec)
+        >>> mw.add(anchor, stem="sentinel2_13.00_52.00_20240101_10m")
+        >>> mw.mark_done(anchor, store="sentinel2_13.00_52.00_20240101_10m.zarr")
     """
 
-    def __init__(self, root: str | Path, layer: str, spec: dict[str, Any]) -> None:
+    def __init__(self, root: str | Path, spec: LayerSpec) -> None:
+        """
+        Args:
+            root: Workspace root directory.
+            spec: LayerSpec with required "name" and "resolution" keys.
+
+        Raises:
+            KeyError: If spec is missing "name".
+        """
         self.root = Path(root)
-        self.layer = layer
-        self.dir = self.root / layer
+        self.layer = spec["name"]
+        self.dir = self.root / self.layer
         self.dir.mkdir(parents=True, exist_ok=True)
         self.path = self.dir / "manifest.json"
 
@@ -91,10 +113,10 @@ class ManifestWriter:
             self._metadata = data.get("metadata", {})
             self._anchors = data.get("anchors", {})
 
-        self._declare(layer, spec)
+        self._declare(spec)
 
-    def _declare(self, name: str, spec: dict[str, Any]) -> None:
-        self._metadata = layer_metadata(name, spec)
+    def _declare(self, spec: Mapping[str, Any]) -> None:
+        self._metadata = layer_metadata(spec)
         self._save()
 
     def _save(self) -> None:
@@ -104,11 +126,12 @@ class ManifestWriter:
 
     # --- anchor lifecycle ---
 
-    def add(self, geo_key: str, stem: str, source: str | None = None) -> None:
-        """Register anchor under geo_key. No-op if already registered."""
-        if geo_key in self._anchors:
+    def add(self, anchor: GeoTile, stem: str, source: str | None = None) -> None:
+        """Register anchor. No-op if already registered."""
+        key = _geo_key(anchor)
+        if key in self._anchors:
             return
-        self._anchors[geo_key] = {
+        self._anchors[key] = {
             "stem": stem,
             "source": source,
             "status": "pending",
@@ -117,14 +140,14 @@ class ManifestWriter:
         }
         self._save()
 
-    def is_processed(self, geo_key: str) -> bool:
-        """Return True if geo_key was already attempted (status done or error)."""
-        entry = self._anchors.get(geo_key)
+    def is_processed(self, anchor: GeoTile) -> bool:
+        """Return True if anchor was already attempted (status done or error)."""
+        entry = self._anchors.get(_geo_key(anchor))
         return entry is not None and entry["status"] in ("done", "error")
 
-    def is_done(self, geo_key: str) -> bool:
-        """Return True if done and the zarr store exists on disk."""
-        entry = self._anchors.get(geo_key)
+    def is_done(self, anchor: GeoTile) -> bool:
+        """Return True if anchor is done and the zarr store exists on disk."""
+        entry = self._anchors.get(_geo_key(anchor))
         if entry is None or entry["status"] != "done" or not entry["store"]:
             return False
         if not (self.dir / entry["store"]).exists():
@@ -132,19 +155,28 @@ class ManifestWriter:
             return False
         return True
 
-    def mark_done(self, geo_key: str, store: str) -> None:
+    def mark_done(self, anchor: GeoTile, store: str) -> None:
         """Record the zarr store name (relative to layer dir)."""
-        entry = self._anchors[geo_key]
+        entry = self._anchors[_geo_key(anchor)]
         entry["status"] = "done"
         entry["store"] = store
         self._save()
 
-    def mark_error(self, geo_key: str, message: str = "") -> None:
-        """Mark anchor as failed with optional message."""
-        if geo_key not in self._anchors:
-            raise KeyError(f"No anchor with geo_key {geo_key!r}")
-        self._anchors[geo_key]["status"] = "error"
-        self._anchors[geo_key]["error"] = message
+    def mark_error(self, anchor: GeoTile, message: str = "") -> None:
+        """Mark anchor as failed.
+
+        Args:
+            anchor: Anchor tile to mark.
+            message: Error description.
+
+        Raises:
+            KeyError: If anchor is not registered.
+        """
+        key = _geo_key(anchor)
+        if key not in self._anchors:
+            raise KeyError(f"No anchor with geo_key {key!r}")
+        self._anchors[key]["status"] = "error"
+        self._anchors[key]["error"] = message
         self._save()
 
 
@@ -152,17 +184,25 @@ class ManifestWriter:
 # Utilities
 # ---------------------------------------------------------------------------
 
-def compute_class_pct(geo_layer: GeoTile, class_dict: dict[int, str], decimal: int = 4) -> dict[str, float]:
+def compute_class_pct(geo_layer: GeoTile, class_dict: Mapping[int, str], decimal: int = 4) -> dict[str, float]:
     """Compute per-class pixel percentages from a label GeoTile.
 
     Args:
         geo_layer: GeoTile containing label data.
-        class_dict: Maps class values to names.
+        class_dict: Maps class int values to names.
         decimal: Decimal places to round to.
+
+    Returns:
+        {
+            "<class_name>": float,  # pixel fraction [0.0, 1.0]; key falls back to "class_{value}"
+        }.
+
+    Raises:
+        ValueError: If geo_layer has no data.
     """
     if geo_layer.data is None:
         raise ValueError("GeoTile has no data to compute class percentages")
-    values = geo_layer.data.to_array().values.flatten()
+    values = geo_layer.data.values.flatten()
     unique, counts = np.unique(values, return_counts=True)
     total = values.size
     return {class_dict.get(u, f"class_{u}"): round(int(c) / total, decimal) for u, c in zip(unique, counts)}

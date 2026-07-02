@@ -1,7 +1,6 @@
 """Unit tests for GeoTile: round-trips, spatial ops, and tensor rendering.
 
-No network — all tiles are synthetic, built from a projected geobox with the
-one-band-per-variable Dataset pattern GeoTile expects.
+No network — all tiles are synthetic, built from a projected geobox.
 """
 from __future__ import annotations
 
@@ -12,7 +11,7 @@ import pystac
 import pytest
 import xarray as xr
 from odc.geo.geobox import GeoBox
-from odc.geo.xr import xr_zeros
+from odc.geo.xr import xr_zeros, xr_coords
 
 from geosave_engine.geodata.core import GeoTile, align, mosaic, remap
 
@@ -40,20 +39,26 @@ def _tile(
     meta=None,
     stac=(),
 ) -> GeoTile:
-    """Synthetic tile: one single-band variable per name, optional time axis."""
+    """Synthetic tile: one band per name, optional time axis."""
     gb = GeoBox.from_bbox(bbox, crs=UTM, resolution=10, anchor="edge")
-    base = xr_zeros(gb, dtype="uint16")
-    vars_ = {}
-    for i, name in enumerate(names):
-        da = base + i
-        if times is not None:
-            da = da.expand_dims(time=[np.datetime64(t) for t in times]).copy()
-        vars_[name] = da
-    ds = xr.Dataset(vars_).rio.write_crs(UTM)
+    base_coords = dict(xr_coords(gb))
+    n = len(names)
+    if times is None:
+        arr = np.stack([np.full((gb.height, gb.width), i, dtype="uint16") for i in range(n)])
+        da = xr.DataArray(arr, dims=("band", "y", "x"), coords={**base_coords, "band": list(names)})
+    else:
+        time_coord = [np.datetime64(t) for t in times]
+        nt = len(time_coord)
+        arr = np.stack([
+            np.stack([np.full((gb.height, gb.width), i, dtype="uint16") for _ in range(nt)])
+            for i in range(n)
+        ], axis=1)  # (time, band, y, x)
+        da = xr.DataArray(arr, dims=("time", "band", "y", "x"),
+                          coords={**base_coords, "band": list(names), "time": time_coord})
     return GeoTile(
         geobox=gb,
         datetime=dt,
-        data=ds,
+        data=da,
         metadata=meta or {"foo": "bar"},
         stac=[_item(s) for s in stac],
     )
@@ -67,11 +72,11 @@ class TestHeader:
         assert t.num_bands == 0
         assert not t.has_time
 
-    def test_with_data_rejects_non_dataset(self):
+    def test_with_data_rejects_non_dataarray(self):
         t = GeoTile.from_bbox(BBOX, crs=UTM, resolution=10, datetime="2023-02-01")
         gb = GeoBox.from_bbox(BBOX, crs=UTM, resolution=10, anchor="edge")
         with pytest.raises(TypeError):
-            t.with_data(xr_zeros(gb, dtype="uint16"))  # DataArray, not Dataset
+            t.with_data(xr.Dataset({"a": xr_zeros(gb)}))  # Dataset, not DataArray
 
 
 class TestGeotiffRoundtrip:
@@ -100,22 +105,22 @@ class TestGeotiffRoundtrip:
 
     def test_datetime_falls_back_to_stem_when_missing(self, monkeypatch, tmp_path):
         t = _tile()
-        data = t.data.copy()
-        data.attrs.pop("datetime", None)
-        data.attrs.pop("metadata", None)
+        ds = t.data.to_dataset(dim="band")
+        ds.attrs.pop("datetime", None)
+        ds.attrs.pop("metadata", None)
 
-        monkeypatch.setattr("geosave_engine.geodata.core.geotile.rioxarray.open_rasterio", lambda *args, **kwargs: data)
+        monkeypatch.setattr("geosave_engine.geodata.core.geotile.rioxarray.open_rasterio", lambda *args, **kwargs: ds)
 
         r = GeoTile.from_geotiff(tmp_path / "scene_20230201.tif")
         assert r.datetime == datetime(2023, 2, 1)
 
     def test_datetime_missing_everywhere_raises(self, monkeypatch, tmp_path):
         t = _tile()
-        data = t.data.copy()
-        data.attrs.pop("datetime", None)
-        data.attrs.pop("metadata", None)
+        ds = t.data.to_dataset(dim="band")
+        ds.attrs.pop("datetime", None)
+        ds.attrs.pop("metadata", None)
 
-        monkeypatch.setattr("geosave_engine.geodata.core.geotile.rioxarray.open_rasterio", lambda *args, **kwargs: data)
+        monkeypatch.setattr("geosave_engine.geodata.core.geotile.rioxarray.open_rasterio", lambda *args, **kwargs: ds)
 
         with pytest.raises(ValueError, match="Could not determine datetime"):
             GeoTile.from_geotiff(tmp_path / "scene.tif")
@@ -139,7 +144,7 @@ class TestZarrRoundtrip:
 
     def test_datetime_falls_back_to_stem_when_missing(self, monkeypatch, tmp_path):
         t = _tile(names=("red",))
-        ds = t.data.copy()
+        ds = t.data.to_dataset(dim="band")
         ds.attrs.pop("datetime", None)
         ds.attrs.pop("metadata", None)
 
