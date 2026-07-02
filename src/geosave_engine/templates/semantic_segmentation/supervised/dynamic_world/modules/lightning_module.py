@@ -14,15 +14,14 @@ from geosave_engine.ml.core.transforms import ImageAugmenter, ImageProcessor
 from geosave_engine.ml.core.factory import build_loss, build_optimizer, build_scheduler
 from geosave_engine.ml.models.task.segmentation import SemanticSegmentation
 
-from .data_pipeline import Sentinel2Pipeline, LabelPipeline
+from modules.pipeline import LabelPipeline, Sentinel2Pipeline
 
 
 class GeosaveLightningModule(LightningModule):
-    """Semantic-segmentation Lightning module driven by manifest metadata.
+    """Semantic-segmentation Lightning module for DynamicWorld / Sentinel-2.
 
-    ``in_channels``, ``num_classes``, ``ignore_index`` are pulled from
-    ``self.trainer.datamodule`` (via ``training_meta`` + ``in_channels``) at
-    ``configure_model`` time, so the YAML config does not need to repeat them.
+    ``num_classes`` and ``in_channels`` default to pipeline schema counts.
+    ``class_map``, ``band_map``, ``palette`` are derived from pipeline classes.
 
     Panel rendering and live progress display are owned by
     :class:`geosave_engine.ml.callbacks.LiveTrainingMonitor`. The module should
@@ -31,6 +30,8 @@ class GeosaveLightningModule(LightningModule):
 
     def __init__(
         self,
+        num_classes: int | None = None,
+        in_channels: int | None = None,
         encoder: str = 'dinov3',
         decoder: str = 'dpt',
         head: str = 'dense',
@@ -39,9 +40,7 @@ class GeosaveLightningModule(LightningModule):
         loss: str = 'CELoss',
         config: dict | None = None,
         input_size: tuple[int, int] | int | None = 224,
-        num_classes: int | None = None,
-        in_channels: int | None = None,
-        ignore_index: int | None = None,
+        ignore_index: int = 255,
         metrics: list[str] | None = None,
         mean_norm: list[float] | None = None,
         std_norm: list[float] | None = None,
@@ -52,11 +51,9 @@ class GeosaveLightningModule(LightningModule):
         pad_size: int = 64,
     ):
         if num_classes is None:
-            num_classes = len({k for k in LabelPipeline.class_map() if k != ignore_index})
+            num_classes = len(LabelPipeline.schema)
         if in_channels is None:
-            in_channels = len(Sentinel2Pipeline.band_map())
-        if ignore_index is None:
-            ignore_index = LabelPipeline.nodata
+            in_channels = len(Sentinel2Pipeline.bands)
 
         super().__init__()
         self.save_hyperparameters()
@@ -71,6 +68,9 @@ class GeosaveLightningModule(LightningModule):
         self.num_classes = num_classes
         self.in_channels = in_channels
         self.ignore_index = ignore_index
+        self.class_map = LabelPipeline.class_map()
+        self.band_map = Sentinel2Pipeline.band_map()
+        self.palette = LabelPipeline.color_map()
         self.metrics = metrics or []
         self.mean_norm = mean_norm
         self.std_norm = std_norm
@@ -80,19 +80,15 @@ class GeosaveLightningModule(LightningModule):
         self.overlap_ratio = overlap_ratio
         self.pad_size = pad_size
 
-        self.class_map = LabelPipeline.class_map()
-        self.band_map = Sentinel2Pipeline.band_map()
-        self.palette = LabelPipeline.color_map()
-        
         self.loss_fn = build_loss(loss, {**self.config.get('loss', {}), "ignore_index": self.ignore_index})
-        
+
     # ---------------------------------------------------------------------
     # Configuration
     # ---------------------------------------------------------------------
     def configure_model(self) -> None:
         if hasattr(self, "model"):
             return  # idempotent — Lightning may call this more than once
-    
+
         self.model = SemanticSegmentation(
             encoder=self.encoder,
             decoder=self.decoder,
@@ -110,7 +106,7 @@ class GeosaveLightningModule(LightningModule):
             mean_norm=self.mean_norm,
             std_norm=self.std_norm,
         )
-        
+
         self.register_buffer(
             "class_thresholds",
             torch.full((self.num_classes,), 0.5),
@@ -165,7 +161,7 @@ class GeosaveLightningModule(LightningModule):
             coordinate: Per-sample centroid coordinates in (lon, lat) order. Length = B.
             transform: Per-sample affine transforms. Length = B.
             time: Per-sample timestamps or labels. Length = B.
-        """             
+        """
         image = self.preprocessor(image)
         sample_meta = dict(crs=crs, coordinate=coordinate, transform=transform, time=time)
         if self.training:
@@ -194,10 +190,10 @@ class GeosaveLightningModule(LightningModule):
         self.log_dict(self.train_metrics, on_step=False, on_epoch=True, prog_bar=False, batch_size=batch_size)
 
         return loss
-    
+
     def validation_step(self, batch, batch_idx, dataloader_idx=0):
         image, label = batch["image"], batch["label"]
-        mask = batch["mask"]
+        mask = batch.get("mask")
         context = batch.get("context") or {}
 
         logits = self(image, **context)
@@ -206,26 +202,26 @@ class GeosaveLightningModule(LightningModule):
         self.val_metrics.update(logits, label)
         self.log("val_loss", loss, on_step=False, on_epoch=True, prog_bar=True, sync_dist=True)
         self.log_dict(self.val_metrics, on_step=False, on_epoch=True, prog_bar=False, sync_dist=True)
-        
+
         if batch_idx == 0 and (self.current_epoch % self.log_image_every_n_epochs == 0):
             self._log_prediction("val", logits, label, mask)
 
     def test_step(self, batch, batch_idx, dataloader_idx=0):
         image, label = batch["image"], batch["label"]
-        mask = batch["mask"]
+        mask = batch.get("mask")
         context = batch.get("context") or {}
 
         logits = self(image, **context)
 
         if batch_idx == 0 and (self.current_epoch % self.log_image_every_n_epochs == 0):
             self._log_prediction("test", logits, label, mask)
-                
+
         self.test_metrics.update(logits, label)
         self.log_dict(self.test_metrics, on_step=False, on_epoch=True, prog_bar=False, sync_dist=True)
 
     def predict_step(self, batch, batch_idx, dataloader_idx=0):
         image = batch["image"]
-        mask = batch["mask"]
+        mask = batch.get("mask")
         context = batch.get("context") or {}
 
         logits = self(image, **context)
@@ -244,7 +240,7 @@ class GeosaveLightningModule(LightningModule):
         mask: torch.Tensor | None = None,
     ) -> None:
         if self.palette is None:
-            warnings.warn("No palette defined in class_map; skipping prediction logging.")
+            warnings.warn("No palette defined in LabelPipeline.schema; skipping prediction logging.")
             return
 
         preds, _ = self.postprocess(logits, mask)

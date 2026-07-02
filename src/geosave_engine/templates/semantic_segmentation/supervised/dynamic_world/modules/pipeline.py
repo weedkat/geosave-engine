@@ -1,32 +1,29 @@
 from __future__ import annotations
-from typing import Any
 
+import dataclasses
 import numpy as np
-from pathlib import Path
-from pydantic import TypeAdapter
 from scipy.ndimage import binary_opening
 
-from geosave_engine.geodata.core import GeoTile, Pipeline, AnyIngestSource, GeotiffSource, ZarrSource
-from geosave_engine.geodata.core import remap as remap_tile
 from geosave_engine.geodata.algorithms import (
-    compute_s2c_mask,
-    compute_cdi_mask,
-    compute_b10_mask,
     build_shadow_mask,
+    compute_b10_mask,
+    compute_cdi_mask,
     compute_ndvi,
+    compute_s2c_mask,
 )
+from geosave_engine.geodata.core import GeoTile, Pipeline
+from geosave_engine.geodata.core import remap as remap_tile
 from geosave_engine.geodata.stac import StacClient
+from geosave_engine.geodata.stac.query import StacQuery
 
-stac_client = StacClient.cdse()
-
-_source_adapter: TypeAdapter[list[AnyIngestSource]] = TypeAdapter(list[AnyIngestSource])
+_stac_client = StacClient.cdse()
 
 
 class Sentinel2Pipeline(Pipeline):
-    """Fetch all Sentinel-2 L1C bands for one anchor tile.
+    """Fetch all 13 Sentinel-2 L1C bands for one anchor tile.
 
-    Saves full 13-band set so downstream pipelines (cloud mask, NDVI)
-    can read directly from zarr without re-fetching.
+    Saves full band set so downstream pipelines (cloud mask, NDVI)
+    can read from zarr without re-fetching.
     """
 
     layer_name = "sentinel_2_l1c"
@@ -48,7 +45,7 @@ class Sentinel2Pipeline(Pipeline):
         {"id": "B8A", "name": "nir_narrow"},
     ]
     bands = [item["id"] for item in schema]
-    source = stac_client.source(
+    source = _stac_client.source(
         "sentinel-2-l1c",
         slot_mode="daily",
         composite="nearest",
@@ -56,11 +53,43 @@ class Sentinel2Pipeline(Pipeline):
     )
 
     def ingest(self, anchor: GeoTile) -> GeoTile:
-        sentinel_2 = self.source.load(anchor, bands=self.bands)
-        ds = sentinel_2.data
-        if ds is None:
+        tile = self.source.load(anchor, bands=self.bands)
+        if tile.data is None:
             raise ValueError(f"Sentinel-2 data missing for anchor at {anchor.centroid}")
-        return sentinel_2.with_data(ds.astype(np.float32))
+        return tile.with_data(tile.data.astype(np.float32))
+
+    def _expand_anchor(self, anchor: GeoTile) -> list[GeoTile]:
+        if not isinstance(anchor.datetime, tuple):
+            return [anchor]
+        start, end = anchor.datetime
+        query = StacQuery(
+            collections=[self.source.collection_id],
+            bbox=anchor.wgs84_bbox,
+            datetime=(start, end),
+        )
+        items = self.source.client.search(query)
+        if not items:
+            raise ValueError(
+                f"No Sentinel-2 scenes found for bbox={anchor.wgs84_bbox} "
+                f"between {start.date()} and {end.date()}"
+            )
+        return [
+            dataclasses.replace(anchor, datetime=item.datetime)
+            for item in items
+            if item.datetime is not None
+        ]
+
+
+class Sentinel2RGBPipeline(Sentinel2Pipeline):
+    """Fetch only B04/B03/B02 from Sentinel-2 L1C. Faster ingest, no cloud mask or NDVI."""
+
+    description = "Sentinel-2 L1C RGB bands (B04, B03, B02)"
+    schema = [
+        {"id": "B04", "name": "red"},
+        {"id": "B03", "name": "green"},
+        {"id": "B02", "name": "blue"},
+    ]
+    bands = ["B04", "B03", "B02"]
 
 
 class CloudMaskPipeline(Pipeline):
@@ -75,7 +104,6 @@ class CloudMaskPipeline(Pipeline):
     ]
 
     def ingest(self, anchor: GeoTile) -> GeoTile:
-        """Compute cloud + shadow mask from anchor loaded via ingest_from_zarr."""
         ds = anchor.data
         if ds is None:
             raise ValueError(f"No data in anchor at {anchor.centroid}")
@@ -141,74 +169,16 @@ class LabelPipeline(Pipeline):
         {"id": 6, "name": "built",              "color": "#c4281b"},
         {"id": 7, "name": "bare",               "color": "#a59b8f"},
     ]
-    # DynamicWorld Tier 1 → contiguous class ID (255 = nodata)
     # src: 0=No data, 1=Water, 2=Trees, 3=Grass, 4=Flooded Veg,
     #      5=Crops, 6=Scrub, 7=Built Area, 8=Bare Ground, 9=Snow/Ice, 10=Cloud
     _remap = {
-        1: 0,    # Water          → 0
-        2: 1,    # Trees          → 1
-        3: 2,    # Grass          → 2
-        4: 3,    # Flooded Veg    → 3
-        5: 4,    # Crops          → 4
-        6: 5,    # Scrub          → 5
-        7: 6,    # Built Area     → 6
-        8: 7,    # Bare Ground    → 7
-        0: 255,  # No data        → nodata
-        9: 255,  # Snow/Ice       → nodata
-        10: 255, # Cloud          → nodata
+        1: 0, 2: 1, 3: 2, 4: 3, 5: 4, 6: 5, 7: 6, 8: 7,
+        0: 255, 9: 255, 10: 255,
     }
 
-    @classmethod
-    def class_map(cls) -> dict[int, str]:
-        """Return ``{id: name}`` from schema."""
-        return {int(item["id"]): str(item["name"]) for item in cls.schema if "name" in item}
-
-    @classmethod
-    def color_map(cls) -> dict[int, str]:
-        """Return ``{id: color}`` from schema."""
-        return {int(item["id"]): str(item["color"]) for item in cls.schema if "color" in item}
-
     def ingest(self, anchor: GeoTile) -> GeoTile:
-        """Apply remap to anchor. Keeps first band only if multi-band input."""
         if anchor.data is not None and anchor.num_bands > 1:
             first_band = anchor.bands[0]
             data = anchor.data.sel(band=[first_band]).assign_coords(band=[self.layer_name])
             anchor = anchor.with_data(data.astype("int64"))
         return remap_tile(anchor, self._remap)
-
-
-def training_pipeline(root: str | Path, geotiff_src: str | Path, max_item: int | None = None) -> None:
-    """Run full training ingestion: S2 → cloud mask → NDVI → labels.
-
-    Args:
-        root: Workspace root; layer subdirs created inside.
-        geotiff_src: Directory of GeoTIFF files used as anchors for S2 and label pipelines.
-        max_item: Cap on tiles per pipeline stage. None processes all.
-    """
-    root = Path(root)
-    tiff = GeotiffSource(src=Path(geotiff_src))
-    zarr = ZarrSource(src=root / Sentinel2Pipeline.layer_name)
-    Sentinel2Pipeline(root).ingest_from(tiff, max_item=max_item)
-    CloudMaskPipeline(root).ingest_from(zarr, max_item=max_item)
-    NdviPipeline(root).ingest_from(zarr, max_item=max_item)
-    LabelPipeline(root).ingest_from(tiff, max_item=max_item)
-
-
-def predict_pipeline(root: str | Path, sources: list[dict], max_item: int | None = None) -> None:
-    """Run predict ingestion: S2 → cloud mask → NDVI (no labels).
-
-    Args:
-        root: Workspace root; layer subdirs created inside.
-        sources: List of source dicts, each with a ``"type"`` discriminator key.
-        max_item: Cap on tiles per pipeline stage. None processes all.
-
-    Raises:
-        ValidationError: If any source dict is missing required fields or has unknown type.
-    """
-    root = Path(root)
-    zarr = ZarrSource(src=root / Sentinel2Pipeline.layer_name)
-    s2 = Sentinel2Pipeline(root)
-    for src in _source_adapter.validate_python(sources):
-        s2.ingest_from(src, max_item=max_item)
-    CloudMaskPipeline(root).ingest_from(zarr, max_item=max_item)
-    NdviPipeline(root).ingest_from(zarr, max_item=max_item)

@@ -185,19 +185,42 @@ class Pipeline(ABC):
             log.error("Failed to ingest anchor (source=%s): %s", source, e)
             self.manifest.mark_error(anchor, str(e))
 
+    def _expand_anchor(self, anchor: GeoTile) -> list[GeoTile]:
+        """Expand a range-datetime anchor into real single-datetime anchors.
+
+        Base implementation passes through single-datetime anchors unchanged.
+        Subclasses that have a STAC client (e.g. Sentinel2Pipeline) override this
+        to query available scenes within the date range.
+
+        Raises:
+            TypeError: If anchor carries a date range and the subclass has no STAC expansion.
+        """
+        if isinstance(anchor.datetime, tuple):
+            raise TypeError(
+                f"{type(self).__name__} cannot expand date-range anchors; "
+                "override _expand_anchor in a STAC-capable pipeline subclass"
+            )
+        return [anchor]
+
     def ingest_from(self, src: AnyIngestSource, max_item: int | None = None) -> None:
         """Ingest anchors produced by a typed source spec.
 
         Chain pipelines by passing a ``ZarrSource`` pointing at the upstream
         layer directory. For new data use ``GeoJSONSource``, ``CoordinateSource``,
-        ``PolygonSource``, or ``GeotiffSource``.
+        ``PolygonSource``, or ``GeotiffSource``. Range-datetime anchors are expanded
+        into real single-datetime anchors via ``_expand_anchor`` before ingestion.
 
         Args:
             src: Typed source spec; call ``src.to_anchors(resolution)`` to get anchors.
             max_item: Cap on anchors to process; None means all.
         """
-        anchors = src.to_anchors(limit=max_item)
-        for anchor in tqdm(anchors, desc=f"Ingesting {self.__class__.__name__}", unit="tile"):
+        raw_anchors = src.to_anchors(limit=None)
+        expanded: list[GeoTile] = []
+        for anchor in raw_anchors:
+            expanded.extend(self._expand_anchor(anchor))
+        if max_item is not None:
+            expanded = expanded[:max_item]
+        for anchor in tqdm(expanded, desc=f"Ingesting {self.__class__.__name__}", unit="tile"):
             self.ingest_from_anchor(anchor, source=repr(src))
         
     @classmethod

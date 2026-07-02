@@ -1,18 +1,20 @@
 services:
-  db:
-    image: postgis/postgis:18-3.5
+
+  # ── Core ──────────────────────────────────────────────────────────────────
+  spatial-db:
+    # PostGIS + pgSTAC schema pre-installed.
+    # Pin this tag before going to production.
+    image: ghcr.io/stac-utils/pgstac:latest
     restart: always
     volumes:
-      - postgres_data:/var/lib/postgresql/data
-    env_file:
-      - ./.env
+      - spatial_data:/var/lib/postgresql/data
     environment:
       PGDATA: /var/lib/postgresql/data
-      POSTGRES_USER: ${POSTGRES_USER}
-      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD}
-      POSTGRES_DB: postgres
+      POSTGRES_USER: ${POSTGRES_USER:-geosave}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-changeme}
+      POSTGRES_DB: ${POSTGRES_DB:-geosave}
     healthcheck:
-      test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER} -d postgres"]
+      test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER:-geosave} -d ${POSTGRES_DB:-geosave}"]
       interval: 10s
       timeout: 5s
       retries: 5
@@ -34,11 +36,10 @@ services:
     environment:
       RUSTFS_ADDRESS: 0.0.0.0:9000
       RUSTFS_CONSOLE_ADDRESS: 0.0.0.0:9001
-      RUSTFS_SERVER_DOMAINS: s3.${DOMAIN},console.s3.${DOMAIN}
       RUSTFS_REGION: ${AWS_DEFAULT_REGION:-us-east-1}
-      RUSTFS_ACCESS_KEY: ${AWS_ACCESS_KEY_ID}
-      RUSTFS_SECRET_KEY: ${AWS_SECRET_ACCESS_KEY}
-      RUSTFS_CONSOLE_ENABLE: ${RUSTFS_CONSOLE_ENABLE:-true}
+      RUSTFS_ACCESS_KEY: ${AWS_ACCESS_KEY_ID:-minioadmin}
+      RUSTFS_SECRET_KEY: ${AWS_SECRET_ACCESS_KEY:-minioadmin}
+      RUSTFS_CONSOLE_ENABLE: "true"
     volumes:
       - storage_data:/data
     healthcheck:
@@ -64,33 +65,35 @@ services:
     networks:
       - backend_net
     environment:
-      AWS_ACCESS_KEY_ID: ${AWS_ACCESS_KEY_ID}
-      AWS_SECRET_ACCESS_KEY: ${AWS_SECRET_ACCESS_KEY}
+      AWS_ACCESS_KEY_ID: ${AWS_ACCESS_KEY_ID:-minioadmin}
+      AWS_SECRET_ACCESS_KEY: ${AWS_SECRET_ACCESS_KEY:-minioadmin}
       AWS_DEFAULT_REGION: ${AWS_DEFAULT_REGION:-us-east-1}
       AWS_S3_ADDRESSING_STYLE: path
-      S3_ENDPOINT_URL: ${S3_ENDPOINT_URL}
-      S3_BUCKET_MLFLOW: ${S3_BUCKET_MLFLOW}
-      S3_BUCKET_PREDICTIONS: ${S3_BUCKET_PREDICTIONS}
+      S3_ENDPOINT_URL: ${S3_ENDPOINT_URL:-http://storage:9000}
+      S3_BUCKET_PREDICTIONS: ${S3_BUCKET_PREDICTIONS:-predictions}
+      S3_BUCKET_MLFLOW: ${S3_BUCKET_MLFLOW:-mlflow-artifacts}
     entrypoint: >
       /bin/sh -c "
         set -e
-        for bucket in ${S3_BUCKET_MLFLOW} ${S3_BUCKET_PREDICTIONS}; do
-          if aws --endpoint-url=${S3_ENDPOINT_URL} s3api head-bucket --bucket $${bucket} 2>/dev/null; then
+        for bucket in ${S3_BUCKET_PREDICTIONS:-predictions} ${S3_BUCKET_MLFLOW:-mlflow-artifacts}; do
+          if aws --endpoint-url=${S3_ENDPOINT_URL:-http://storage:9000} s3api head-bucket --bucket $${bucket} 2>/dev/null; then
             echo \"Bucket $${bucket} already exists.\";
           else
             echo \"Creating bucket $${bucket}...\";
-            aws --endpoint-url=${S3_ENDPOINT_URL} s3api create-bucket --bucket $${bucket} --region ${AWS_DEFAULT_REGION:-us-east-1};
+            aws --endpoint-url=${S3_ENDPOINT_URL:-http://storage:9000} s3api create-bucket --bucket $${bucket} --region ${AWS_DEFAULT_REGION:-us-east-1};
           fi
         done
       "
 
+  # ── Profile: mlflow ───────────────────────────────────────────────────────
   mlflow:
+    profiles: [mlflow]
     image: ghcr.io/mlflow/mlflow:v3.11.1
     restart: always
     ports:
       - "${MLFLOW_PORT:-5000}:${MLFLOW_PORT:-5000}"
     depends_on:
-      db:
+      spatial-db:
         condition: service_healthy
       storage:
         condition: service_healthy
@@ -99,14 +102,14 @@ services:
     networks:
       - backend_net
     environment:
-      MLFLOW_BACKEND_STORE_URI: ${MLFLOW_BACKEND_STORE_URI}
-      MLFLOW_ARTIFACTS_DESTINATION: ${MLFLOW_ARTIFACTS_DESTINATION}
-      MLFLOW_S3_ENDPOINT_URL: ${S3_ENDPOINT_URL}
+      MLFLOW_BACKEND_STORE_URI: "postgresql+psycopg2://${POSTGRES_USER:-geosave}:${POSTGRES_PASSWORD:-changeme}@spatial-db:5432/${POSTGRES_DB:-geosave}"
+      MLFLOW_ARTIFACTS_DESTINATION: "s3://${S3_BUCKET_MLFLOW:-mlflow-artifacts}"
+      MLFLOW_S3_ENDPOINT_URL: ${S3_ENDPOINT_URL:-http://storage:9000}
       MLFLOW_S3_IGNORE_TLS: "true"
-      AWS_ACCESS_KEY_ID: ${AWS_ACCESS_KEY_ID}
-      AWS_SECRET_ACCESS_KEY: ${AWS_SECRET_ACCESS_KEY}
+      AWS_ACCESS_KEY_ID: ${AWS_ACCESS_KEY_ID:-minioadmin}
+      AWS_SECRET_ACCESS_KEY: ${AWS_SECRET_ACCESS_KEY:-minioadmin}
       AWS_DEFAULT_REGION: ${AWS_DEFAULT_REGION:-us-east-1}
-      MLFLOW_HOST: ${MLFLOW_HOST:-0.0.0.0}
+      MLFLOW_HOST: 0.0.0.0
       MLFLOW_PORT: ${MLFLOW_PORT:-5000}
     command:
       - /bin/bash
@@ -117,7 +120,7 @@ services:
           --backend-store-uri "${MLFLOW_BACKEND_STORE_URI}" \
           --artifacts-destination "${MLFLOW_ARTIFACTS_DESTINATION}" \
           --serve-artifacts \
-          --host "${MLFLOW_HOST:-0.0.0.0}" \
+          --host 0.0.0.0 \
           --port "${MLFLOW_PORT:-5000}"
     healthcheck:
       test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://localhost:${MLFLOW_PORT:-5000}/health')"]
@@ -131,7 +134,9 @@ services:
         max-size: "10m"
         max-file: "5"
 
+  # ── Profile: viz ──────────────────────────────────────────────────────────
   titiler:
+    profiles: [viz]
     image: ghcr.io/developmentseed/titiler:latest
     restart: unless-stopped
     expose:
@@ -142,10 +147,10 @@ services:
     networks:
       - backend_net
     environment:
-      AWS_ACCESS_KEY_ID: ${AWS_ACCESS_KEY_ID}
-      AWS_SECRET_ACCESS_KEY: ${AWS_SECRET_ACCESS_KEY}
+      AWS_ACCESS_KEY_ID: ${AWS_ACCESS_KEY_ID:-minioadmin}
+      AWS_SECRET_ACCESS_KEY: ${AWS_SECRET_ACCESS_KEY:-minioadmin}
       AWS_REGION: ${AWS_DEFAULT_REGION:-us-east-1}
-      AWS_S3_ENDPOINT: ${S3_ENDPOINT_URL}
+      AWS_S3_ENDPOINT: ${S3_ENDPOINT_URL:-http://storage:9000}
       AWS_VIRTUAL_HOSTING: "FALSE"
       GDAL_DISABLE_READDIR_ON_OPEN: "EMPTY_DIR"
       GDAL_CACHEMAX: "200"
@@ -159,13 +164,15 @@ services:
         max-size: "10m"
         max-file: "3"
 
+  # ── Profile: db-admin ─────────────────────────────────────────────────────
   adminer:
+    profiles: [db-admin]
     image: adminer
     restart: always
     networks:
       - backend_net
     depends_on:
-      - db
+      - spatial-db
     environment:
       ADMINER_DESIGN: pepa-linha-dark
     logging:
@@ -179,5 +186,5 @@ networks:
     name: geosave_backend_net
 
 volumes:
-  postgres_data:
+  spatial_data:
   storage_data:

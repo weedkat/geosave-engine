@@ -13,6 +13,7 @@ from pystac import Item, ItemCollection
 from dataclasses import dataclass, field
 from datetime import datetime as dt
 from pathlib import Path
+
 from typing import Any, cast, Literal, Mapping
 from rioxarray.merge import merge_datasets
 from affine import Affine
@@ -24,13 +25,25 @@ from geosave_engine.utils.geolocator import Place
 from geosave_engine.utils.crs import calculate_crs, validate_coordinate
 from geosave_engine.utils.datetime import DEFAULT_DATE_FORMAT, DEFAULT_DATE_PATTERN, date_from_path, parse_datetime
 
+DateRange = tuple[dt, dt]
+
+def _parse_anchor_datetime(v: str | dt | tuple) -> dt | DateRange:
+    """Parse a single datetime string/dt or a (start, end) tuple into dt or DateRange."""
+    if isinstance(v, tuple):
+        if len(v) != 2:
+            raise ValueError(f"Date range must be a 2-tuple (start, end), got length {len(v)}")
+        a, b = v
+        return (parse_datetime(a) if isinstance(a, str) else a,
+                parse_datetime(b) if isinstance(b, str) else b)
+    return parse_datetime(v)
+
 
 def _datetime_from_attrs_or_stem(
     path: Path,
     attrs: Mapping[str, Any],
     date_format: str = DEFAULT_DATE_FORMAT,
     date_pattern: str = DEFAULT_DATE_PATTERN,
-) -> dt:
+) -> dt | DateRange:
     """Read datetime from attrs first, then fall back to the filename stem."""
     raw_datetime = attrs.get("datetime")
     if raw_datetime is None:
@@ -43,6 +56,10 @@ def _datetime_from_attrs_or_stem(
             raw_datetime = tag.get("datetime")
 
     if raw_datetime is not None:
+        # ISO 8601 interval notation: "2024-01-01T00:00:00/2024-12-31T23:59:59"
+        if isinstance(raw_datetime, str) and "/" in raw_datetime:
+            parts = raw_datetime.split("/", 1)
+            return (parse_datetime(parts[0]), parse_datetime(parts[1]))
         return parse_datetime(raw_datetime)
 
     try:
@@ -63,7 +80,7 @@ class GeoTile:
     """
 
     geobox: GeoBox
-    datetime: dt
+    datetime: dt | DateRange
     data: xr.DataArray | None = field(default=None, compare=False)
     stac: list[Item] = field(default_factory=list, compare=False)
     metadata: dict[str, Any] = field(default_factory=dict, compare=False)
@@ -410,7 +427,7 @@ class GeoTile:
     def from_bbox(
         cls,
         bbox: tuple[float, float, float, float],
-        datetime: dt | str,
+        datetime: dt | str | tuple[str, str] | DateRange,
         crs: str = "EPSG:4326",
         resolution: float = 10.0,
     ) -> "GeoTile":
@@ -420,11 +437,11 @@ class GeoTile:
             bbox: (minx, miny, maxx, maxy) in the given CRS.
             crs: Coordinate reference system string (e.g. "EPSG:4326").
             resolution: Pixel size in CRS units.
-            datetime: Anchor datetime for this tile.
+            datetime: Anchor datetime or (start, end) date range for this tile.
         """
         return cls(
             geobox=GeoBox.from_bbox(bbox, crs=crs, resolution=resolution, anchor="edge"),
-            datetime=parse_datetime(datetime),
+            datetime=_parse_anchor_datetime(datetime),
         )
 
     @classmethod
@@ -433,7 +450,7 @@ class GeoTile:
         latitude: float,
         longitude: float,
         *,
-        datetime: dt | str,
+        datetime: dt | str | tuple[str, str] | DateRange,
         size_m: float | tuple[float, float],
         resolution: float = 10.0,
         crs: str | None = None,
@@ -445,7 +462,7 @@ class GeoTile:
             longitude: Center longitude in WGS84 degrees.
             size_m: Tile size in meters. Single number = square; ``(w, h)`` = rectangle.
             resolution: Pixel size in meters.
-            datetime: Anchor datetime for this tile.
+            datetime: Anchor datetime or (start, end) date range for this tile.
             crs: Target projected CRS. Defaults to the local UTM/UPS zone.
         """
         validate_coordinate(latitude, longitude)
@@ -470,14 +487,14 @@ class GeoTile:
             geobox=GeoBox.from_bbox(
                 bbox, crs=target_crs.to_string(), resolution=resolution, tight=True
             ),
-            datetime=parse_datetime(datetime),
+            datetime=_parse_anchor_datetime(datetime),
         )
 
     @classmethod
     def from_polygon(
         cls,
         polygon: dict,
-        datetime: dt | str,
+        datetime: dt | str | tuple[str, str] | DateRange,
         resolution: float = 10.0,
         crs: str | None = None,
     ) -> "GeoTile":
@@ -489,7 +506,7 @@ class GeoTile:
         Args:
             polygon: GeoJSON geometry dict with WGS84 lon/lat coordinates.
             resolution: Pixel size in meters.
-            datetime: Anchor datetime for this tile.
+            datetime: Anchor datetime or (start, end) date range for this tile.
             crs: Target projected CRS. Defaults to local UTM/UPS zone.
         """
         geom = Geometry(polygon, crs="EPSG:4326")
@@ -507,7 +524,7 @@ class GeoTile:
         projected_geom = geom.to_crs(target_crs)
         return cls(
             geobox=GeoBox.from_geopolygon(projected_geom, resolution=resolution, anchor="edge"),
-            datetime=parse_datetime(datetime),
+            datetime=_parse_anchor_datetime(datetime),
             polygon=projected_geom,
         )
 
@@ -515,7 +532,7 @@ class GeoTile:
     def from_geojson(
         cls,
         path: str | Path,
-        datetime: dt | str,
+        datetime: dt | str | tuple[str, str] | DateRange,
         resolution: float = 10.0,
         crs: str | None = None,
     ) -> "list[GeoTile]":
@@ -524,10 +541,10 @@ class GeoTile:
         Args:
             path: Path to a GeoJSON FeatureCollection, Feature, or raw geometry.
             resolution: Pixel size in meters.
-            datetime: Anchor datetime applied to all features.
+            datetime: Anchor datetime or (start, end) date range applied to all features.
             crs: Target projected CRS. Defaults to local UTM/UPS per feature centroid.
         """
-        parsed_dt = parse_datetime(datetime) if isinstance(datetime, str) else datetime
+        parsed_dt = _parse_anchor_datetime(datetime)
         with open(path) as f:
             geojson = json.load(f)
         if geojson.get("type") == "FeatureCollection":
@@ -594,8 +611,13 @@ class GeoTile:
             raise ValueError("GeoTile has no data to save")
         path = Path(path)
         path.parent.mkdir(parents=True, exist_ok=True)
+        dt_str = (
+            f"{self.datetime[0].isoformat()}/{self.datetime[1].isoformat()}"
+            if isinstance(self.datetime, tuple)
+            else self.datetime.isoformat()
+        )
         attrs: dict[str, Any] = {
-            "datetime": self.datetime.isoformat(),
+            "datetime": dt_str,
             "metadata": json.dumps(self.metadata),
         }
         if self.polygon is not None:
@@ -622,10 +644,15 @@ class GeoTile:
         if self.polygon is not None:
             tag["polygon_geojson"] = self.polygon.geojson()
             tag["polygon_crs"] = str(self.polygon.crs)
+        dt_str = (
+            f"{self.datetime[0].isoformat()}/{self.datetime[1].isoformat()}"
+            if isinstance(self.datetime, tuple)
+            else self.datetime.isoformat()
+        )
         self.data.rio.to_raster(
             path,
             driver=driver,
-            tags={"metadata": json.dumps(tag), "datetime": self.datetime.isoformat()},
+            tags={"metadata": json.dumps(tag), "datetime": dt_str},
         )
         if save_stac:
             _write_stac(self.stac, path)
@@ -718,6 +745,8 @@ def mosaic(
         raise ValueError("Cannot mosaic an empty tile list")
     if any(t.data is None for t in tiles):
         raise ValueError("All tiles must have data loaded before mosaicking")
+    if any(isinstance(t.datetime, tuple) for t in tiles):
+        raise ValueError("Cannot mosaic range-datetime tiles; ingest first to resolve to single datetimes")
 
     tile_crss = {t.crs for t in tiles}
     if crs is None and len(tile_crss) > 1:

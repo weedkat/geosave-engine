@@ -5,9 +5,9 @@ from datetime import datetime as dt
 from pathlib import Path
 from typing import Annotated, Any, Literal
 
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, TypeAdapter, field_validator
 
-from .geotile import GeoTile
+from .geotile import GeoTile, DateRange
 
 
 class IngestSource(BaseModel):
@@ -62,16 +62,23 @@ class GeoJSONSource(IngestSource):
 
     Args:
         src: Path to a GeoJSON FeatureCollection, Feature, or raw geometry.
-        datetime: Acquisition datetime applied to all features.
+        datetime: Acquisition datetime or (start, end) date range applied to all features.
         resolution: Pixel size in meters. Overrides pipeline default if set.
         crs: Target projected CRS. Defaults to local UTM/UPS per feature.
     """
 
     type: Literal["geojson"] = "geojson"
     src: Path
-    datetime: str | dt
+    datetime: str | dt | tuple[str, str] | DateRange
     resolution: float = 10.0
     crs: str | None = None
+
+    @field_validator("datetime", mode="before")
+    @classmethod
+    def _coerce_datetime(cls, v: Any) -> Any:
+        if isinstance(v, list) and len(v) == 2:
+            return tuple(v)
+        return v
 
     def to_anchors(self, limit: int | None = None) -> list[GeoTile]:
         return GeoTile.from_geojson(self.src, datetime=self.datetime, resolution=self.resolution, crs=self.crs)[:limit]
@@ -83,7 +90,7 @@ class CoordinateSource(IngestSource):
     Args:
         lat: Center latitude in WGS84 degrees.
         lon: Center longitude in WGS84 degrees.
-        datetime: Acquisition datetime.
+        datetime: Acquisition datetime or (start, end) date range.
         size_m: Tile size in meters (square).
         resolution: Pixel size in meters. Overrides pipeline default if set.
         crs: Target projected CRS. Defaults to local UTM/UPS.
@@ -92,10 +99,17 @@ class CoordinateSource(IngestSource):
     type: Literal["coordinate"] = "coordinate"
     lat: float
     lon: float
-    datetime: str | dt
+    datetime: str | dt | tuple[str, str] | DateRange
     size_m: float
     resolution: float = 10.0
     crs: str | None = None
+
+    @field_validator("datetime", mode="before")
+    @classmethod
+    def _coerce_datetime(cls, v: Any) -> Any:
+        if isinstance(v, list) and len(v) == 2:
+            return tuple(v)
+        return v
 
     def to_anchors(self, limit: int | None = None) -> list[GeoTile]:  # noqa: ARG002
         return [GeoTile.from_coordinate(
@@ -112,16 +126,23 @@ class PolygonSource(IngestSource):
 
     Args:
         geom: GeoJSON geometry dict with WGS84 lon/lat coordinates.
-        datetime: Acquisition datetime.
+        datetime: Acquisition datetime or (start, end) date range.
         resolution: Pixel size in meters. Overrides pipeline default if set.
         crs: Target projected CRS. Defaults to local UTM/UPS.
     """
 
     type: Literal["polygon"] = "polygon"
     geom: dict[str, Any]
-    datetime: str | dt
+    datetime: str | dt | tuple[str, str] | DateRange
     resolution: float = 10.0
     crs: str | None = None
+
+    @field_validator("datetime", mode="before")
+    @classmethod
+    def _coerce_datetime(cls, v: Any) -> Any:
+        if isinstance(v, list) and len(v) == 2:
+            return tuple(v)
+        return v
 
     def to_anchors(self, limit: int | None = None) -> list[GeoTile]:  # noqa: ARG002
         return [GeoTile.from_polygon(
@@ -136,3 +157,21 @@ AnyIngestSource = Annotated[
     ZarrSource | GeotiffSource | GeoJSONSource | CoordinateSource | PolygonSource,
     Field(discriminator="type"),
 ]
+
+_source_adapter: TypeAdapter[AnyIngestSource] = TypeAdapter(AnyIngestSource)
+
+
+def source_from_dict(data: dict) -> AnyIngestSource:
+    """Parse a source config dict into a typed AnyIngestSource.
+
+    Args:
+        data: Dict with a ``"type"`` discriminator key.
+            Example: ``{"type": "geotiff", "src": "data/labels/"}``.
+
+    Returns:
+        Typed source instance (GeotiffSource, GeoJSONSource, etc.).
+
+    Raises:
+        ValidationError: If ``data`` is missing required fields or has unknown type.
+    """
+    return _source_adapter.validate_python(data)

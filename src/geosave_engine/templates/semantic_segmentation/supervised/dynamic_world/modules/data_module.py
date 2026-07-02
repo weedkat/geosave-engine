@@ -3,69 +3,34 @@ from __future__ import annotations
 from pathlib import Path
 from typing import Literal
 
-import torch
-
 from lightning import LightningDataModule
 from torch.utils.data import DataLoader
 
-from geosave_engine.geodata.core import GeoTile
+from geosave_engine.geodata.core import ZarrSource, source_from_dict
 from geosave_engine.geodata.datasets import GeoDataset, GridSampler, PreChippedSampler, stack_samples
 
-from .data_pipeline import (
-    predict_pipeline,
-    training_pipeline,
+from modules.pipeline import (
+    Sentinel2Pipeline,
+    Sentinel2RGBPipeline,
+    CloudMaskPipeline,
+    NdviPipeline,
+    LabelPipeline,
 )
-
-class DynamicWorldDataset(GeoDataset):
-    output_key = {
-        "sentinel_2_l1c": "image",
-        "cloud_mask":      ("mask",  torch.bool),
-        "ndvi":            ("ndvi",  torch.float32),
-        "dynamicworld":    ("label", torch.int64),
-    }
-
-    def context(self, tiles: dict[str, GeoTile]) -> dict:
-        """Add spatial and temporal metadata to each batch sample.
-
-        Returns:
-            {
-                "crs": str,
-                "transform": Affine,
-                "coordinate": tuple[float, float],
-                "time": int,  # day of year (1–365)
-            }.
-        """
-        ref_tile = next(iter(tiles.values()))
-        return {
-            "crs": ref_tile.crs,
-            "transform": ref_tile.affine,
-            "coordinate": ref_tile.centroid,
-            "time": ref_tile.datetime.timetuple().tm_yday,
-        }
-
-
-class DynamicWorldDatasetRGB(DynamicWorldDataset):
-    """RGB-only variant — loads B04/B03/B02 instead of all S2 bands."""
-
-    sel_bands = {
-        "sentinel_2_l1c": ["B04", "B03", "B02"],
-    }
+from modules.dataset import DynamicWorldDataset, DynamicWorldRGBDataset
 
 
 class GeosaveDataModule(LightningDataModule):
     """Semantic-segmentation datamodule for Sentinel-2 / DynamicWorld.
 
-    Creates one pipeline set per split (train/val/test/predict) rooted at
-    ``<root>/<split>/``. Ingestion runs in ``prepare_data`` only when
-    ``ingest=True``.
+    Ingestion runs in ``prepare_data`` only when ``ingest=True``.
+    Each split is specified as a source dict under ``sources``.
 
     Args:
-        root: Base directory. Split subdirs are created automatically.
-        split_dirs: Map of split → GeoTIFF source directory for training ingestion.
-            Example: ``{"train": "data/raw/train/", "val": "data/raw/val/"}``.
-        predict_sources: List of ingest source dicts for the predict stage.
-            Each entry must include a ``"type"`` discriminator key.
-            Example: ``[{"type": "geojson", "src": "aoi.geojson", "datetime": "2024-06-01"}]``.
+        root: Base directory. Split subdirs created inside.
+        sources: Map of split name → source config dict.
+            Example: ``{"train": {"type": "geotiff", "src": "data/raw/train/"}, ...}``.
+        rgb: RGB-only mode. Uses Sentinel2RGBPipeline (3 bands, faster ingest).
+            Skips cloud mask and NDVI. Use ``in_channels: 3`` in model config.
         batch_size: Samples per batch.
         num_workers: DataLoader worker processes.
         pin_memory: Pin memory for faster GPU transfer.
@@ -81,8 +46,8 @@ class GeosaveDataModule(LightningDataModule):
     def __init__(
         self,
         root: str | Path,
-        split_dirs: dict[str, str] | None = None,
-        predict_sources: list[dict] | None = None,
+        sources: dict[str, dict] | None = None,
+        rgb: bool = False,
         batch_size: int = 16,
         num_workers: int = 0,
         pin_memory: bool = False,
@@ -96,8 +61,8 @@ class GeosaveDataModule(LightningDataModule):
     ) -> None:
         super().__init__()
         self.root = Path(root)
-        self.split_dirs: dict[str, str] = split_dirs or {}
-        self.predict_sources: list[dict] = predict_sources or []
+        self.sources: dict[str, dict] = sources or {}
+        self.rgb = rgb
         self.batch_size = batch_size
         self.num_workers = num_workers
         self.pin_memory = pin_memory
@@ -109,37 +74,38 @@ class GeosaveDataModule(LightningDataModule):
         self.ingest = ingest
         self.max_tiles = max_tiles
 
-    def _dataset_cls(self) -> type[GeoDataset]:
-        return DynamicWorldDatasetRGB
-
     def prepare_data(self) -> None:
         if not self.ingest:
             return
-
-        if self.predict_sources:
-            predict_pipeline(self.root / "predict", self.predict_sources, max_item=self.max_tiles)
-            return
-
-        for split, dir_ in self.split_dirs.items():
-            if split not in {"train", "val", "test"}:
-                raise ValueError(f"Invalid split in split_dirs: {split!r}")
-            training_pipeline(self.root / split, dir_, max_item=self.max_tiles)
+        for split, src_dict in self.sources.items():
+            source = source_from_dict(src_dict)
+            split_root = self.root / split
+            if self.rgb:
+                Sentinel2RGBPipeline(split_root).ingest_from(source, max_item=self.max_tiles)
+            else:
+                zarr_src = ZarrSource(src=split_root / Sentinel2Pipeline.layer_name)
+                Sentinel2Pipeline(split_root).ingest_from(source, max_item=self.max_tiles)
+                CloudMaskPipeline(split_root).ingest_from(zarr_src, max_item=self.max_tiles)
+                NdviPipeline(split_root).ingest_from(zarr_src, max_item=self.max_tiles)
+            if split != "predict":
+                LabelPipeline(split_root).ingest_from(source, max_item=self.max_tiles)
 
     def setup(self, stage: str | None = None) -> None:
-        cls = self._dataset_cls()
+        dataset_cls = DynamicWorldRGBDataset if self.rgb else DynamicWorldDataset
         if stage == "fit":
-            self.train_dataset = cls(self.root / "train")
-            self.val_dataset = cls(self.root / "val")
+            self.train_dataset = dataset_cls(self.root / "train")
+            self.val_dataset = dataset_cls(self.root / "val")
         elif stage == "validate":
-            self.val_dataset = cls(self.root / "val")
+            self.val_dataset = dataset_cls(self.root / "val")
         elif stage == "test":
-            self.test_dataset = cls(self.root / "test")
+            self.test_dataset = dataset_cls(self.root / "test")
         elif stage == "predict":
-            if self.predict_sampler_type == "grid":
-                sampler = GridSampler(self.patch_size, self.stride)
-            else:
-                sampler = PreChippedSampler()
-            self.predict_dataset = cls(self.root / "predict", sampler=sampler)
+            sampler = (
+                GridSampler(self.patch_size, self.stride)
+                if self.predict_sampler_type == "grid"
+                else PreChippedSampler()
+            )
+            self.predict_dataset = dataset_cls(self.root / "predict", sampler=sampler)
         else:
             raise ValueError(f"Invalid stage: {stage!r}")
 

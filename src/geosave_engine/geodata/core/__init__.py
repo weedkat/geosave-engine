@@ -9,6 +9,7 @@ from .specs import (
     IngestSource,
     PolygonSource,
     ZarrSource,
+    source_from_dict,
 )
 
 __all__ = [
@@ -28,4 +29,5 @@ __all__ = [
     "IngestSource",
     "PolygonSource",
     "ZarrSource",
+    "source_from_dict",
 ]

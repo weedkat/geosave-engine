@@ -6,19 +6,19 @@ FILE_EXCEPTION = ['__pycache__', 'common', '.ipynb_checkpoints']
 def _package_dir() -> Path:
     return Path(__file__).parent.parent
 
+
 def templates_dir() -> Path:
     return _package_dir() / "templates"
 
+
 def common_template_dir() -> Path:
     return Path(__file__).parent / "common"
-
-def plugins_dir() -> Path:
-    return _package_dir() / "plugins"
 
 
 def get_task_templates(file_exceptions: list[str] = FILE_EXCEPTION) -> list[Path]:
     templates = [p for p in templates_dir().iterdir() if p.name not in file_exceptions and p.is_dir()]
     return templates
+
 
 def get_method_templates(file_exceptions: list[str] = FILE_EXCEPTION) -> dict[str, dict[str, Path]]:
     """Get mapping of task names to method template paths.
@@ -29,7 +29,7 @@ def get_method_templates(file_exceptions: list[str] = FILE_EXCEPTION) -> dict[st
     Returns:
         {
             "semantic_segmentation": {"supervised_dw": Path(...)},
-            "object_detection": {"supervised": Path(...)},
+            "pixelwise_regression": {"ibm_granite_biomass": Path(...)},
             ...
         }
     """
@@ -46,62 +46,22 @@ def get_method_templates(file_exceptions: list[str] = FILE_EXCEPTION) -> dict[st
     return method_templates
 
 
-def get_plugin_templates(file_exceptions: list[str] = FILE_EXCEPTION) -> dict[str, Path]:
-    """Get all available plugin template paths keyed by namespaced path.
+def get_catalog_options(task: str, method: str, file_exceptions: list[str] = FILE_EXCEPTION) -> list[str]:
+    """List available catalog names for a given task + method template.
 
-    Args:
-        file_exceptions: Directory names to exclude.
-
-    Returns:
-        {
-            "scripts/dynamicworld": Path(...),
-            "notebooks/tutorial": Path(...),
-            ...
-        }
-    """
-    pd = plugins_dir()
-    if not pd.exists() or not pd.is_dir():
-        return {}
-    result: dict[str, Path] = {}
-    for type_dir in sorted(pd.iterdir()):
-        if not type_dir.is_dir() or type_dir.name in file_exceptions:
-            continue
-        for plugin in sorted(type_dir.iterdir()):
-            if plugin.is_dir() and plugin.name not in file_exceptions:
-                result[f"{type_dir.name}/{plugin.name}"] = plugin
-    return result
-
-
-def get_workspace_scripts(scripts_dir: Path, file_exceptions: list[str] = FILE_EXCEPTION) -> dict[str, Path]:
-    """Get runnable Python scripts from a workspace scripts directory.
+    A catalog is a subdir of the method dir that contains its own ``modules/``.
+    If the method dir itself has ``modules/``, it is a direct-copy template with no catalog.
 
     Returns:
-        {"dynamic_world_ingest/ingest.py": Path(...), ...}
+        Sorted list of catalog directory names. Empty list if method is direct-copy.
     """
-    if not scripts_dir.exists() or not scripts_dir.is_dir():
-        return {}
-    scripts: dict[str, Path] = {}
-    for path in sorted(scripts_dir.rglob("*.py")):
-        if any(part in file_exceptions for part in path.parts):
-            continue
-        scripts[path.relative_to(scripts_dir).as_posix()] = path.resolve()
-    return scripts
-
-
-def get_workspace_notebooks(notebooks_dir: Path, file_exceptions: list[str] = FILE_EXCEPTION) -> dict[str, Path]:
-    """Get Jupyter notebooks from a workspace notebooks directory.
-
-    Returns:
-        {"tutorial.ipynb": Path(...), ...}
-    """
-    if not notebooks_dir.exists() or not notebooks_dir.is_dir():
-        return {}
-    notebooks: dict[str, Path] = {}
-    for path in sorted(notebooks_dir.rglob("*.ipynb")):
-        if any(part in file_exceptions for part in path.parts):
-            continue
-        notebooks[path.relative_to(notebooks_dir).as_posix()] = path.resolve()
-    return notebooks
+    method_dir = templates_dir() / task / method
+    if not method_dir.exists():
+        return []
+    return sorted(
+        p.name for p in method_dir.iterdir()
+        if p.is_dir() and p.name not in file_exceptions and (p / "modules").exists()
+    )
 
 
 def get_workspace_artifacts(artifacts_dir: Path) -> dict[str, Path]:
