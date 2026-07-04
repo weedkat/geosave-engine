@@ -3,9 +3,7 @@ from __future__ import annotations
 import torch
 import torch.nn as nn
 
-import torch.nn as nn
-
-from geosave_engine.ml.models.contract import ModelContext, model_context
+from geosave_engine.ml.models.contract import model_context
 
 
 class DenseHead(nn.Module):
@@ -48,18 +46,14 @@ class DenseHead(nn.Module):
         """Map ``(B, in_channels, H, W)`` -> ``(B, num_classes, H, W)``."""
         return self.layers(x)
 
-    @model_context(inputs=(['feature_map'], ['logits']))
-    def forward_logits(self, ctx: ModelContext) -> ModelContext:
-        """Project feature map to per-pixel outputs (logits or regression values).
+    @model_context(requires=['feature_map'])
+    def forward_logits(self, ctx: dict) -> torch.Tensor:
+        """Project feature map to per-pixel logits.
 
         Args:
-            ctx: ModelContext with ctx.inputs['feature_map'] as (B, in_channels, H, W).
+            ctx: Context dict with 'feature_map' as (B, in_channels, H, W).
 
         Returns:
-            ModelContext with ctx.inputs = {'logits': (B, num_classes, H, W)}.
+            (B, num_classes, H, W) logits tensor.
         """
-        return ModelContext(
-            inputs={'logits': self.forward(ctx.inputs['feature_map'])},
-            sample_meta=ctx.sample_meta,
-            metadata=ctx.metadata,
-        )
+        return self.forward(ctx['feature_map'])

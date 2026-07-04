@@ -1,6 +1,7 @@
 from .colorize import colorize
 from .datetime import date_from_path, parse_datetime
 from .file_ops import safe_copy
+from .fn import filter_kwargs
 from .geodata import extract_raster_scale_offset, extract_stac_attrs
 from .weights import cached_weights_path, download_weights
 
@@ -11,6 +12,7 @@ __all__ = [
     "download_weights",
     "extract_raster_scale_offset",
     "extract_stac_attrs",
+    "filter_kwargs",
     "parse_datetime",
     "safe_copy",
 ]

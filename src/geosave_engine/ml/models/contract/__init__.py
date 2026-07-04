@@ -1,15 +1,9 @@
 from .normalization import Normalization
-from .context import (
-    ChannelSpec,
-    ModelContextSpec,
-    ModelContext,
-    model_context,
-)
+from .context import model_context
+from .chain import ContextChain
 
 __all__ = [
     "Normalization",
-    "ChannelSpec",
-    "ModelContextSpec",
-    "ModelContext",
     "model_context",
+    "ContextChain",
 ]

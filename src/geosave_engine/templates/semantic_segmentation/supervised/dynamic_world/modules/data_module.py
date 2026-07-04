@@ -3,23 +3,38 @@ from __future__ import annotations
 from pathlib import Path
 from typing import Literal
 
-from lightning import LightningDataModule
-from torch.utils.data import DataLoader
+import torch
 
 from geosave_engine.geodata.core import ZarrSource, source_from_dict
-from geosave_engine.geodata.datasets import GeoDataset, GridSampler, PreChippedSampler, stack_samples
+from geosave_engine.ml.data import GeoDataModule
 
 from modules.pipeline import (
+    CloudMaskPipeline,
+    LabelPipeline,
+    NdviPipeline,
     Sentinel2Pipeline,
     Sentinel2RGBPipeline,
-    CloudMaskPipeline,
-    NdviPipeline,
-    LabelPipeline,
 )
-from modules.dataset import DynamicWorldDataset, DynamicWorldRGBDataset
+
+_OUTPUT_KEY: dict[str, str | tuple[str, torch.dtype]] = {
+    "sentinel_2_l1c": "image",
+    "cloud_mask":     ("mask",  torch.bool),
+    "ndvi":           ("ndvi",  torch.float32),
+    "dynamicworld":   ("label", torch.int64),
+}
+_RGB_OUTPUT_KEY: dict[str, str | tuple[str, torch.dtype]] = {
+    "sentinel_2_l1c": "image",
+    "dynamicworld":   ("label", torch.int64),
+}
+_RGB_SEL_BANDS: dict[str, list[str]] = {
+    "sentinel_2_l1c": ["B04", "B03", "B02"],
+}
+_ALL_CONTEXT_FIELDS: list[str] = [
+    "crs", "transform", "coordinate", "time", "datetime", "bbox_wgs84", "stac_item_ids",
+]
 
 
-class GeosaveDataModule(LightningDataModule):
+class GeosaveDataModule(GeoDataModule):
     """Semantic-segmentation datamodule for Sentinel-2 / DynamicWorld.
 
     Ingestion runs in ``prepare_data`` only when ``ingest=True``.
@@ -31,6 +46,9 @@ class GeosaveDataModule(LightningDataModule):
             Example: ``{"train": {"type": "geotiff", "src": "data/raw/train/"}, ...}``.
         rgb: RGB-only mode. Uses Sentinel2RGBPipeline (3 bands, faster ingest).
             Skips cloud mask and NDVI. Use ``in_channels: 3`` in model config.
+        context_fields: GeoTile metadata fields per sample. Defaults to all fields.
+            Valid: ``crs``, ``transform``, ``coordinate``, ``time``,
+            ``datetime``, ``bbox_wgs84``, ``stac_item_ids``.
         batch_size: Samples per batch.
         num_workers: DataLoader worker processes.
         pin_memory: Pin memory for faster GPU transfer.
@@ -48,6 +66,7 @@ class GeosaveDataModule(LightningDataModule):
         root: str | Path,
         sources: dict[str, dict] | None = None,
         rgb: bool = False,
+        context_fields: list[str] | None = None,
         batch_size: int = 16,
         num_workers: int = 0,
         pin_memory: bool = False,
@@ -59,20 +78,24 @@ class GeosaveDataModule(LightningDataModule):
         ingest: bool = False,
         max_tiles: int | None = None,
     ) -> None:
-        super().__init__()
-        self.root = Path(root)
-        self.sources: dict[str, dict] = sources or {}
+        super().__init__(
+            root=root,
+            output_key=_RGB_OUTPUT_KEY if rgb else _OUTPUT_KEY,
+            sources=sources,
+            sel_bands=_RGB_SEL_BANDS if rgb else None,
+            context_fields=context_fields if context_fields is not None else _ALL_CONTEXT_FIELDS,
+            batch_size=batch_size,
+            num_workers=num_workers,
+            pin_memory=pin_memory,
+            prefetch_factor=prefetch_factor,
+            persistent_workers=persistent_workers,
+            predict_sampler=predict_sampler,
+            patch_size=patch_size,
+            stride=stride,
+            ingest=ingest,
+            max_tiles=max_tiles,
+        )
         self.rgb = rgb
-        self.batch_size = batch_size
-        self.num_workers = num_workers
-        self.pin_memory = pin_memory
-        self.prefetch_factor = prefetch_factor
-        self.persistent_workers = persistent_workers
-        self.predict_sampler_type = predict_sampler
-        self.patch_size = patch_size
-        self.stride = stride or patch_size
-        self.ingest = ingest
-        self.max_tiles = max_tiles
 
     def prepare_data(self) -> None:
         if not self.ingest:
@@ -89,46 +112,3 @@ class GeosaveDataModule(LightningDataModule):
                 NdviPipeline(split_root).ingest_from(zarr_src, max_item=self.max_tiles)
             if split != "predict":
                 LabelPipeline(split_root).ingest_from(source, max_item=self.max_tiles)
-
-    def setup(self, stage: str | None = None) -> None:
-        dataset_cls = DynamicWorldRGBDataset if self.rgb else DynamicWorldDataset
-        if stage == "fit":
-            self.train_dataset = dataset_cls(self.root / "train")
-            self.val_dataset = dataset_cls(self.root / "val")
-        elif stage == "validate":
-            self.val_dataset = dataset_cls(self.root / "val")
-        elif stage == "test":
-            self.test_dataset = dataset_cls(self.root / "test")
-        elif stage == "predict":
-            sampler = (
-                GridSampler(self.patch_size, self.stride)
-                if self.predict_sampler_type == "grid"
-                else PreChippedSampler()
-            )
-            self.predict_dataset = dataset_cls(self.root / "predict", sampler=sampler)
-        else:
-            raise ValueError(f"Invalid stage: {stage!r}")
-
-    def _loader(self, dataset: GeoDataset, *, drop_last: bool = False) -> DataLoader:
-        return DataLoader(
-            dataset,
-            batch_size=self.batch_size,
-            num_workers=self.num_workers,
-            drop_last=drop_last,
-            pin_memory=self.pin_memory,
-            prefetch_factor=self.prefetch_factor,
-            persistent_workers=self.persistent_workers,
-            collate_fn=stack_samples,
-        )
-
-    def train_dataloader(self) -> DataLoader:
-        return self._loader(self.train_dataset, drop_last=True)
-
-    def val_dataloader(self) -> DataLoader:
-        return self._loader(self.val_dataset)
-
-    def test_dataloader(self) -> DataLoader:
-        return self._loader(self.test_dataset)
-
-    def predict_dataloader(self) -> DataLoader:
-        return self._loader(self.predict_dataset)

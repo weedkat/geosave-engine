@@ -6,7 +6,7 @@ import torch.nn as nn
 from typing import cast
 from timm.models.eva import Eva
 
-from geosave_engine.ml.models.contract import ModelContext, model_context
+from geosave_engine.ml.models.contract import model_context
 
 # out_indices are even quarters of each model's block depth:
 #   depth=12 (S, S+, B) -> [2, 5, 8, 11]
@@ -123,31 +123,26 @@ class DINOv3(nn.Module):
         """
         return self.model(x, rope=rope, attn_mask=attn_mask, is_causal=is_causal)
 
-    @model_context(inputs=(['image'], ['pyramid', 'prefix_tokens']))
-    def forward_pyramid(self, ctx: ModelContext) -> ModelContext:
+    @model_context(requires=['image'])
+    def forward_pyramid(self, ctx: dict) -> dict:
         """Extract multi-scale intermediate features from the ViT.
 
-        Reads ctx.inputs['image'] (B, C, H, W). Writes 'pyramid' (list of
-        per-level feature maps) and 'prefix_tokens' (list of per-level prefix
-        tokens) to ctx.inputs.
+        Reads ctx['image'] (B, C, H, W). Writes 'pyramid' (list of per-level
+        feature maps) and 'prefix_tokens' (list of per-level prefix tokens).
 
         Args:
-            ctx: ModelContext with ctx.inputs['image'] as (B, C, H, W).
+            ctx: Context dict with 'image' as (B, C, H, W).
 
         Returns:
-            ModelContext with ctx.inputs = {'pyramid': [...], 'prefix_tokens': [...]}.
+            {'pyramid': [...], 'prefix_tokens': [...]}.
         """
         pairs = self.model.forward_intermediates(
-            ctx.inputs['image'],
+            ctx['image'],
             indices=self.out_indices,
             intermediates_only=True,
             return_prefix_tokens=True,
             output_fmt='NCHW',
         )
         features, prefix_tokens = map(list, zip(*pairs))
-        return ModelContext(
-            inputs={'pyramid': features, 'prefix_tokens': prefix_tokens},
-            sample_meta=ctx.sample_meta,
-            metadata=ctx.metadata,
-        )
+        return {'pyramid': features, 'prefix_tokens': prefix_tokens}
 

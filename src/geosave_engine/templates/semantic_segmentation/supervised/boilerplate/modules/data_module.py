@@ -3,17 +3,20 @@ from __future__ import annotations
 from pathlib import Path
 from typing import Literal
 
-from lightning import LightningDataModule
-from torch.utils.data import DataLoader
+import torch
 
 from geosave_engine.geodata.core import source_from_dict
-from geosave_engine.geodata.datasets import GeoDataset, GridSampler, PreChippedSampler, stack_samples
+from geosave_engine.ml.data import GeoDataModule
 
 from modules.pipeline import ImagePipeline, LabelPipeline
-from modules.dataset import WorkspaceDataset
+
+_DEFAULT_OUTPUT_KEY: dict[str, str | tuple[str, torch.dtype]] = {
+    "image": "image",
+    "label": ("label", torch.int64),
+}
 
 
-class GeosaveDataModule(LightningDataModule):
+class GeosaveDataModule(GeoDataModule):
     """Segmentation datamodule — customize for your catalog.
 
     Add your pipeline classes to ``prepare_data`` and update
@@ -22,6 +25,9 @@ class GeosaveDataModule(LightningDataModule):
     Args:
         root: Base directory. Split subdirs created inside.
         sources: Map of split name → source config dict.
+        context_fields: GeoTile metadata fields per sample. Defaults to none.
+            Valid: ``crs``, ``transform``, ``coordinate``, ``time``,
+            ``datetime``, ``bbox_wgs84``, ``stac_item_ids``.
         batch_size: Samples per batch.
         num_workers: DataLoader worker processes.
         pin_memory: Pin memory for faster GPU transfer.
@@ -38,6 +44,7 @@ class GeosaveDataModule(LightningDataModule):
         self,
         root: str | Path,
         sources: dict[str, dict] | None = None,
+        context_fields: list[str] | None = None,
         batch_size: int = 16,
         num_workers: int = 0,
         pin_memory: bool = False,
@@ -49,23 +56,22 @@ class GeosaveDataModule(LightningDataModule):
         ingest: bool = False,
         max_tiles: int | None = None,
     ) -> None:
-        super().__init__()
-        self.root = Path(root)
-        self.sources: dict[str, dict] = sources or {}
-        self.batch_size = batch_size
-        self.num_workers = num_workers
-        self.pin_memory = pin_memory
-        self.prefetch_factor = prefetch_factor
-        self.persistent_workers = persistent_workers
-        self.predict_sampler_type = predict_sampler
-        self.patch_size = patch_size
-        self.stride = stride or patch_size
-        self.ingest = ingest
-        self.max_tiles = max_tiles
-
-    # ------------------------------------------------------------------
-    # Schema metadata — consumed by GeosaveLightningModule.setup()
-    # ------------------------------------------------------------------
+        super().__init__(
+            root=root,
+            output_key=_DEFAULT_OUTPUT_KEY,
+            sources=sources,
+            context_fields=context_fields,
+            batch_size=batch_size,
+            num_workers=num_workers,
+            pin_memory=pin_memory,
+            prefetch_factor=prefetch_factor,
+            persistent_workers=persistent_workers,
+            predict_sampler=predict_sampler,
+            patch_size=patch_size,
+            stride=stride,
+            ingest=ingest,
+            max_tiles=max_tiles,
+        )
 
     @property
     def class_map(self) -> dict[int, str]:
@@ -79,10 +85,6 @@ class GeosaveDataModule(LightningDataModule):
     def palette(self) -> dict[int, str]:
         return LabelPipeline.color_map()
 
-    # ------------------------------------------------------------------
-    # Lifecycle
-    # ------------------------------------------------------------------
-
     def prepare_data(self) -> None:
         if not self.ingest:
             return
@@ -92,45 +94,3 @@ class GeosaveDataModule(LightningDataModule):
             ImagePipeline(split_root).ingest_from(source, max_item=self.max_tiles)
             if split != "predict":
                 LabelPipeline(split_root).ingest_from(source, max_item=self.max_tiles)
-
-    def setup(self, stage: str | None = None) -> None:
-        if stage == "fit":
-            self.train_dataset = WorkspaceDataset(self.root / "train")
-            self.val_dataset = WorkspaceDataset(self.root / "val")
-        elif stage == "validate":
-            self.val_dataset = WorkspaceDataset(self.root / "val")
-        elif stage == "test":
-            self.test_dataset = WorkspaceDataset(self.root / "test")
-        elif stage == "predict":
-            sampler = (
-                GridSampler(self.patch_size, self.stride)
-                if self.predict_sampler_type == "grid"
-                else PreChippedSampler()
-            )
-            self.predict_dataset = WorkspaceDataset(self.root / "predict", sampler=sampler)
-        else:
-            raise ValueError(f"Invalid stage: {stage!r}")
-
-    def _loader(self, dataset: GeoDataset, *, drop_last: bool = False) -> DataLoader:
-        return DataLoader(
-            dataset,
-            batch_size=self.batch_size,
-            num_workers=self.num_workers,
-            drop_last=drop_last,
-            pin_memory=self.pin_memory,
-            prefetch_factor=self.prefetch_factor,
-            persistent_workers=self.persistent_workers,
-            collate_fn=stack_samples,
-        )
-
-    def train_dataloader(self) -> DataLoader:
-        return self._loader(self.train_dataset, drop_last=True)
-
-    def val_dataloader(self) -> DataLoader:
-        return self._loader(self.val_dataset)
-
-    def test_dataloader(self) -> DataLoader:
-        return self._loader(self.test_dataset)
-
-    def predict_dataloader(self) -> DataLoader:
-        return self._loader(self.predict_dataset)

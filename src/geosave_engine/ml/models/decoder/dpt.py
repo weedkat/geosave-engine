@@ -4,7 +4,7 @@ import torch.nn.functional as F
 
 from typing import Literal
 
-from geosave_engine.ml.models.contract import ModelContext, model_context
+from geosave_engine.ml.models.contract import model_context
 
 
 class _ReadoutProjectBlock(nn.Module):
@@ -244,23 +244,18 @@ class DPTDecoder(nn.Module):
         assert fused is not None, "Fusion blocks should produce a fused output"
         return fused
 
-    @model_context(inputs=(['pyramid', 'prefix_tokens'], ['feature_map']))
-    def forward_feature_map(self, ctx: ModelContext) -> ModelContext:
+    @model_context(requires=['pyramid', 'prefix_tokens'])
+    def forward_feature_map(self, ctx: dict) -> dict:
         """Fuse multi-scale ViT features into a single dense map.
 
-        Reads ctx.inputs['pyramid'] and ctx.inputs['prefix_tokens'].
-        Writes ctx.inputs['feature_map'] as (B, fusion_channels, H, W).
+        Reads ctx['pyramid'] and ctx['prefix_tokens'].
+        Writes 'feature_map' as (B, fusion_channels, H, W).
 
         Args:
-            ctx: ModelContext with 'pyramid' and 'prefix_tokens' in inputs.
+            ctx: Context dict with 'pyramid' and 'prefix_tokens'.
 
         Returns:
-            ModelContext with ctx.inputs = {'feature_map': tensor}.
+            {'feature_map': tensor}.
         """
-        fused = self.forward(ctx.inputs['pyramid'], ctx.inputs['prefix_tokens'])
-        return ModelContext(
-            inputs={'feature_map': fused},
-            sample_meta=ctx.sample_meta,
-            metadata=ctx.metadata,
-        )
+        return {'feature_map': self.forward(ctx['pyramid'], ctx['prefix_tokens'])}
 

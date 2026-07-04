@@ -10,6 +10,7 @@ from shapely.geometry import box
 from torch.utils.data import Dataset
 
 from geosave_engine.geodata.core import GeoTile
+from geosave_engine.geodata.datasets.geo_context import GEO_CONTEXT_EXTRACTORS
 from geosave_engine.geodata.datasets.samplers import GeoTileSampler, PreChippedSampler
 
 log = logging.getLogger(__name__)
@@ -43,6 +44,7 @@ class GeoDataset(Dataset):
         sampler: GeoTileSampler | None = None,
         output_key: dict[LayerName, str | tuple[str, torch.dtype]] | None = None,
         sel_bands: dict[LayerName, list[str]] | None = None,
+        context_fields: list[str] | None = None,
     ) -> None:
         """
         Args:
@@ -50,12 +52,23 @@ class GeoDataset(Dataset):
             sampler: Index builder. Defaults to PreChippedSampler.
             output_key: Layer name → batch key, or ``(batch_key, dtype)`` to cast on load.
             sel_bands: Layer name → band names to keep; default is all bands.
+            context_fields: GeoTile metadata fields to include per sample.
+                Valid values: ``crs``, ``transform``, ``coordinate``, ``time``,
+                ``datetime``, ``bbox_wgs84``, ``stac_item_ids``.
         """
+        if context_fields is not None:
+            unknown = set(context_fields) - GEO_CONTEXT_EXTRACTORS.keys()
+            if unknown:
+                raise ValueError(
+                    f"Unknown context_fields: {unknown}. "
+                    f"Valid: {set(GEO_CONTEXT_EXTRACTORS)}"
+                )
         self.root = Path(root)
         self.catalog = self._scan(self.root)
         self.sampler = sampler or PreChippedSampler()
         self.output_key = output_key if output_key is not None else self.__class__.output_key
         self.sel_bands = sel_bands if sel_bands is not None else self.__class__.sel_bands
+        self._context_fields: list[str] = context_fields or []
         self.index: gpd.GeoDataFrame = self.sampler.build_index(self.catalog)
         if len(self.index) == 0:
             log.warning("Empty dataset: no co-located samples across layers")
@@ -97,18 +110,17 @@ class GeoDataset(Dataset):
         
         return out
 
-    def context(self, tiles: dict[LayerName, GeoTile]) -> dict[str, Any]:  # noqa: ARG002  # subclasses use tiles
-        """Override to add per-sample metadata to the batch.
-
-        Args:
-            tiles: Rendered tiles for this sample, keyed by layer name.
+    def context(self, tiles: dict[LayerName, GeoTile]) -> dict[str, Any]:
+        """Extract per-sample metadata from the reference tile.
 
         Returns:
-            Dict merged into the sample. All values must be stackable by
-            :func:`stack_samples` — tensors, numpy arrays, or Python scalars only.
-            Python objects (e.g. GeoBox) will break the DataLoader.
+            Dict of fields from ``context_fields``, keyed by field name.
+            Empty if ``context_fields`` was not set.
         """
-        return {}
+        if not self._context_fields:
+            return {}
+        ref = next(iter(tiles.values()))
+        return {field: GEO_CONTEXT_EXTRACTORS[field](ref) for field in self._context_fields}
 
     @classmethod
     def _scan(cls, root: Path) -> dict[LayerName, gpd.GeoDataFrame]:
