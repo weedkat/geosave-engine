@@ -13,7 +13,7 @@ import xarray as xr
 from odc.geo.geobox import GeoBox
 from odc.geo.xr import xr_zeros, xr_coords
 
-from geosave_engine.geodata.core import GeoTile, align, mosaic, remap
+from geosave_engine.geodata.core import GeoTile, align, mosaic
 
 UTM = "EPSG:32633"
 BBOX = (500000, 5000000, 500320, 5000320)  # 32 x 32 px at 10 m
@@ -112,7 +112,7 @@ class TestGeotiffRoundtrip:
         monkeypatch.setattr("geosave_engine.geodata.core.geotile.rioxarray.open_rasterio", lambda *args, **kwargs: ds)
 
         r = GeoTile.from_geotiff(tmp_path / "scene_20230201.tif")
-        assert r.datetime == datetime(2023, 2, 1)
+        assert r.ref_datetime == datetime(2023, 2, 1)
 
     def test_datetime_missing_everywhere_raises(self, monkeypatch, tmp_path):
         t = _tile()
@@ -151,7 +151,7 @@ class TestZarrRoundtrip:
         monkeypatch.setattr("geosave_engine.geodata.core.geotile.xr.open_zarr", lambda *args, **kwargs: ds)
 
         r = GeoTile.from_zarr(tmp_path / "cube_20230201.zarr")
-        assert r.datetime == datetime(2023, 2, 1)
+        assert r.ref_datetime == datetime(2023, 2, 1)
 
 
 class TestMetadata:
@@ -249,13 +249,6 @@ class TestTensor:
         patch = t.with_geobox(t.geobox[0:16, 0:16])
         out = patch.to_tensor()                   # (band, y, x)
         assert tuple(out.shape) == (1, 16, 16)
-
-
-class TestRemap:
-    def test_remap_values(self):
-        t = _tile(names=("label",))  # all zeros
-        out = remap(t, {0: 5}).to_tensor()        # (band, y, x)
-        assert (out == 5).all()
 
 
 class TestRealData:

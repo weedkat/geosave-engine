@@ -208,7 +208,7 @@ def plot_eda_grid(
         t0 = str(times[0])[:10]
         date_str = f"{t0} → {str(times[-1])[:10]}" if len(times) > 1 else t0
     else:
-        date_str = ref.datetime.strftime("%Y-%m-%d")
+        date_str = ref.ref_datetime.strftime("%Y-%m-%d")
     geo_label = f"{date_str}  ·  {geo_label}"
 
     fig, axes = plt.subplots(

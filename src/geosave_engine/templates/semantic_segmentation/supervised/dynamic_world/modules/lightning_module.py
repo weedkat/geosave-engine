@@ -14,7 +14,23 @@ from geosave_engine.ml.metrics.semantic_segmentation import SemanticSegmentation
 from geosave_engine.ml.tasks import SemanticSegmentationTask
 from geosave_engine.utils import colorize
 
-from modules.pipeline import LabelPipeline, Sentinel2Pipeline
+# Sentinel-2 L1C band schema — matches the "sentinel_2_l1c" stac step in configs/model.yaml.
+# DynamicWorld class/color schema — matches the "dynamicworld" pipeline step in configs/ingest.yaml.
+# Kept as literals here (not classes) since ingestion is now config-driven, not code-driven.
+_SENTINEL2_BAND_MAP = {
+    "B01": "coastal", "B02": "blue", "B03": "green", "B04": "red",
+    "B05": "rededge1", "B06": "rededge2", "B07": "rededge3", "B08": "nir",
+    "B09": "watervapor", "B10": "cirrus", "B11": "swir16", "B12": "swir22",
+    "B8A": "nir_narrow",
+}
+_CLASS_MAP = {
+    0: "water", 1: "trees", 2: "grass", 3: "flooded_vegetation",
+    4: "crops", 5: "shrub_and_scrub", 6: "built", 7: "bare",
+}
+_PALETTE = {
+    0: "#419bdf", 1: "#397d49", 2: "#88b053", 3: "#7a87c6",
+    4: "#e49635", 5: "#dfc35a", 6: "#c4281b", 7: "#a59b8f",
+}
 
 
 class GeosaveLightningModule(SemanticSegmentationTask):
@@ -34,7 +50,7 @@ class GeosaveLightningModule(SemanticSegmentationTask):
 
     All SemanticSegmentationTask args are also accepted.
     Schema defaults (num_classes, in_channels, class_map, band_map, palette) are
-    pre-filled from pipeline definitions.
+    pre-filled from the schema literals above, matching configs/ingest.yaml.
     """
 
     def __init__(
@@ -43,8 +59,8 @@ class GeosaveLightningModule(SemanticSegmentationTask):
         decoder: str | type[nn.Module] = 'dpt',
         head: str | type[nn.Module] = 'dense',
         monolith: str | type[nn.Module] | None = None,
-        num_classes: int = len(LabelPipeline.schema),
-        in_channels: int = len(Sentinel2Pipeline.bands),
+        num_classes: int = len(_CLASS_MAP),
+        in_channels: int = len(_SENTINEL2_BAND_MAP),
         input_size: int | tuple[int, int] = 224,
         ignore_index: int = 255,
         upsample_output: bool = True,
@@ -74,9 +90,9 @@ class GeosaveLightningModule(SemanticSegmentationTask):
             input_size=input_size,
             ignore_index=ignore_index,
             upsample_output=upsample_output,
-            class_map=class_map if class_map is not None else LabelPipeline.class_map(),
-            band_map=band_map if band_map is not None else Sentinel2Pipeline.band_map(),
-            palette=palette if palette is not None else LabelPipeline.color_map(),
+            class_map=class_map if class_map is not None else _CLASS_MAP,
+            band_map=band_map if band_map is not None else _SENTINEL2_BAND_MAP,
+            palette=palette if palette is not None else _PALETTE,
             mean_norm=mean_norm,
             std_norm=std_norm,
             overlap_ratio=overlap_ratio,

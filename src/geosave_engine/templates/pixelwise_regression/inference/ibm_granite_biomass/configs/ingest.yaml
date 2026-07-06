@@ -1,0 +1,18 @@
+# Consumed by ingest.py (plain yaml, no LightningCLI) — not part of the predict config.
+# data.root here must match predict.yaml's data.root; ingest populates it, predict reads it.
+# No requires: — HLS S30 tiles are pre-downloaded GeoTIFFs, no STAC pull needed.
+
+pipeline:
+  # Reads straight off the anchor (the HLS S30 GeoTIFF directory below) —
+  # no STAC upstream. No action: — bands: alone means passthrough (extract,
+  # rename, cast dtype), no math needed.
+  hls_s30:
+    bands:
+      anchor: {B02: B02, B03: B03, B04: B04, B8A: B8A, B11: B11, B12: B12}
+
+data:
+  root: workspace/biomass
+  sources:
+    predict:
+      type: geotiff
+      src: data/hls_s30/

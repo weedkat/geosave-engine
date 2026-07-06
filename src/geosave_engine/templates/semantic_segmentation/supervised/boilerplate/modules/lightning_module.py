@@ -14,7 +14,10 @@ from geosave_engine.ml.metrics.semantic_segmentation import SemanticSegmentation
 from geosave_engine.ml.tasks import SemanticSegmentationTask
 from geosave_engine.utils import colorize
 
-from modules.pipeline import ImagePipeline, LabelPipeline
+# Replace with your actual band/class/color schema, matching configs/ingest.yaml.
+_BAND_MAP: dict[str, str] = {}
+_CLASS_MAP: dict[int, str] = {}
+_PALETTE: dict[int, str] = {}
 
 
 class GeosaveLightningModule(SemanticSegmentationTask):
@@ -34,7 +37,7 @@ class GeosaveLightningModule(SemanticSegmentationTask):
 
     All SemanticSegmentationTask args are also accepted.
     Schema defaults (num_classes, in_channels, class_map, band_map, palette) are
-    pre-filled from pipeline definitions.
+    pre-filled from the schema literals above — replace them to match your data.
     """
 
     def __init__(
@@ -43,8 +46,8 @@ class GeosaveLightningModule(SemanticSegmentationTask):
         decoder: str | type[nn.Module] = 'dpt',
         head: str | type[nn.Module] = 'dense',
         monolith: str | type[nn.Module] | None = None,
-        num_classes: int = len(LabelPipeline.schema),
-        in_channels: int = len(ImagePipeline.schema),
+        num_classes: int = len(_CLASS_MAP),
+        in_channels: int = len(_BAND_MAP),
         input_size: int | tuple[int, int] = 224,
         ignore_index: int = 255,
         upsample_output: bool = True,
@@ -74,9 +77,9 @@ class GeosaveLightningModule(SemanticSegmentationTask):
             input_size=input_size,
             ignore_index=ignore_index,
             upsample_output=upsample_output,
-            class_map=class_map if class_map is not None else LabelPipeline.class_map(),
-            band_map=band_map if band_map is not None else ImagePipeline.band_map(),
-            palette=palette if palette is not None else LabelPipeline.color_map(),
+            class_map=class_map if class_map is not None else _CLASS_MAP,
+            band_map=band_map if band_map is not None else _BAND_MAP,
+            palette=palette if palette is not None else _PALETTE,
             mean_norm=mean_norm,
             std_norm=std_norm,
             overlap_ratio=overlap_ratio,

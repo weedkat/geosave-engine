@@ -1,13 +1,37 @@
-from typing import Any
+from typing import Any, Literal, TypedDict
 from dataclasses import dataclass
 from datetime import datetime
-from typing import TypeVar
 
-from geosave_engine.utils.stac_query import CQL2
 from geosave_engine.utils.crs import validate_bbox
 
-T = TypeVar("T", bound="StacQuery")
-SortBy = list[dict[str, str]] | dict[str, str] | str
+
+class SortEntry(TypedDict):
+    """One STAC sortby entry, e.g. {"field": "datetime", "direction": "desc"}."""
+
+    field: str
+    direction: Literal["asc", "desc"]
+
+
+class FilterEntry(TypedDict):
+    """One CQL2-JSON expression node: {"op": ..., "args": [...]}.
+
+    `args`' shape depends on `op`:
+        comparisons (`lt`/`lte`/`gt`/`gte`/`eq`/`neq`/`like`/`in`):
+            `[{"property": name}, value]`
+        `and`/`or`: two or more nested `FilterEntry`
+        `not`: exactly one nested `FilterEntry`
+
+    Examples:
+        >>> FilterEntry(op="<", args=[{"property": "eo:cloud_cover"}, 20])
+        >>> FilterEntry(op="and", args=[
+        ...     {"op": "<", "args": [{"property": "eo:cloud_cover"}, 10]},
+        ...     {"op": "=", "args": [{"property": "s2:nodata_pixel_percentage"}, 0]},
+        ... ])
+    """
+
+    op: str
+    args: list[Any]
+
 
 @dataclass
 class StacQuery:
@@ -22,9 +46,10 @@ class StacQuery:
         max_items: Client-side max items to return.
         limit: Server-side page size hint.
         query: Legacy STAC query extension filters.
-        filter: CQL2-JSON filter expression; build with ``CQL2`` helpers.
+        filter: CQL2-JSON filter expression — see `FilterEntry`. Passed
+            straight to pystac-client.
         fields: Item fields to include or exclude.
-        sortby: Sort order — string, dict, or list of ``{"field": ..., "direction": ...}``.
+        sortby: Sort order — list of ``{"field": ..., "direction": "asc"|"desc"}``.
     """
 
     collections: list[str]
@@ -35,9 +60,9 @@ class StacQuery:
     max_items: int | None = None
     limit: int | None = None
     query: dict[str, Any] | None = None
-    filter: dict[str, Any] | None = None
+    filter: FilterEntry | None = None
     fields: list[str] | None = None
-    sortby: SortBy | None = None
+    sortby: list[SortEntry] | None = None
 
     def __post_init__(self):
         """Validate bbox is valid WGS84."""
@@ -64,55 +89,3 @@ class StacQuery:
             "sortby": self.sortby,
         }
         return {k: v for k, v in params.items() if v is not None}
-
-    def with_filter(self: T, expr: dict[str, Any]) -> None:
-        """Merge CQL2 filter expression into existing filter.
-
-        Wraps both expressions in ``and`` if filter already exists.
-
-        Args:
-            expr: CQL2-JSON filter dict; use ``CQL2`` helpers to build.
-        """
-        if self.filter is None:
-            self.filter = expr
-        else:
-            self.filter = CQL2.and_(self.filter, expr)
-
-    def with_sortby(self: T, field: str, direction: str = "asc") -> None:
-        """Append a sort field to existing sort order.
-
-        Args:
-            field: STAC item property name to sort by.
-            direction: ``'asc'`` or ``'desc'``.
-        """
-        new_sort = {"field": field, "direction": direction}
-        if self.sortby is None:
-            self.sortby = [new_sort]
-        elif isinstance(self.sortby, list):
-            self.sortby.append(new_sort)
-        elif isinstance(self.sortby, dict):
-            self.sortby = [self.sortby, new_sort]
-        elif isinstance(self.sortby, str):
-            parsed_sort = parse_sortby(self.sortby)
-            self.sortby = [parsed_sort, new_sort]
-
-
-def parse_sortby(sortby: str) -> dict[str, str]:
-    """Convert pystac-client sort string to STAC sort dict."""
-    direction = "asc"
-
-    if sortby.startswith("-"):
-        direction = "desc"
-        field = sortby[1:]
-    elif sortby.startswith("+"):
-        field = sortby[1:]
-    else:
-        field = sortby
-
-    if not field:
-        raise ValueError("sortby field cannot be empty")
-
-    return {
-        "field": field,
-        "direction": direction,
-    }

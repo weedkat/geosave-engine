@@ -27,49 +27,6 @@ from geosave_engine.utils.datetime import DEFAULT_DATE_FORMAT, DEFAULT_DATE_PATT
 
 DateRange = tuple[dt, dt]
 
-def _parse_anchor_datetime(v: str | dt | tuple) -> dt | DateRange:
-    """Parse a single datetime string/dt or a (start, end) tuple into dt or DateRange."""
-    if isinstance(v, tuple):
-        if len(v) != 2:
-            raise ValueError(f"Date range must be a 2-tuple (start, end), got length {len(v)}")
-        a, b = v
-        return (parse_datetime(a) if isinstance(a, str) else a,
-                parse_datetime(b) if isinstance(b, str) else b)
-    return parse_datetime(v)
-
-
-def _datetime_from_attrs_or_stem(
-    path: Path,
-    attrs: Mapping[str, Any],
-    date_format: str = DEFAULT_DATE_FORMAT,
-    date_pattern: str = DEFAULT_DATE_PATTERN,
-) -> dt | DateRange:
-    """Read datetime from attrs first, then fall back to the filename stem."""
-    raw_datetime = attrs.get("datetime")
-    if raw_datetime is None:
-        metadata = attrs.get("metadata")
-        if metadata:
-            try:
-                tag = json.loads(metadata)
-            except (TypeError, ValueError, json.JSONDecodeError):
-                tag = {}
-            raw_datetime = tag.get("datetime")
-
-    if raw_datetime is not None:
-        # ISO 8601 interval notation: "2024-01-01T00:00:00/2024-12-31T23:59:59"
-        if isinstance(raw_datetime, str) and "/" in raw_datetime:
-            parts = raw_datetime.split("/", 1)
-            return (parse_datetime(parts[0]), parse_datetime(parts[1]))
-        return parse_datetime(raw_datetime)
-
-    try:
-        return date_from_path(path.stem, date_format=date_format, date_pattern=date_pattern)
-    except ValueError as exc:
-        raise ValueError(
-            f"Could not determine datetime for {path}: missing attrs and no date in stem "
-            f"matching pattern {date_pattern!r}"
-        ) from exc
-
 
 @dataclass(frozen=True)
 class GeoTile:
@@ -77,6 +34,10 @@ class GeoTile:
 
     data is an xr.DataArray with dims (band, y, x) or (time, band, y, x).
     May be lazy or fully in memory; None means a header-only tile.
+
+    datetime is always normalized to a (start, end) range in __post_init__ —
+    a single instant becomes a degenerate range (start == end). Use
+    is_datetime_range to tell a real search window from a resolved instant.
     """
 
     geobox: GeoBox
@@ -85,6 +46,31 @@ class GeoTile:
     stac: list[Item] = field(default_factory=list, compare=False)
     metadata: dict[str, Any] = field(default_factory=dict, compare=False)
     polygon: Geometry | None = field(default=None, compare=False)
+
+    def __post_init__(self) -> None:
+        """Normalize datetime to a validated (start, end) range.
+
+        A single instant becomes a degenerate (d, d) range.
+
+        Raises:
+            TypeError: If datetime (or either range element) isn't a `dt`.
+            ValueError: If a tuple isn't length 2, or start is after end.
+        """
+        value = self.datetime
+        if isinstance(value, tuple):
+            if len(value) != 2:
+                raise ValueError(f"datetime range must be a 2-tuple (start, end), got length {len(value)}")
+            start, end = value
+            if not isinstance(start, dt) or not isinstance(end, dt):
+                raise TypeError(
+                    f"datetime range must contain dt instances, got {type(start).__name__}/{type(end).__name__}"
+                )
+            if start > end:
+                raise ValueError(f"datetime range start {start!r} is after end {end!r}")
+            return
+        if not isinstance(value, dt):
+            raise TypeError(f"datetime must be a dt or (dt, dt) range, got {type(value).__name__}")
+        object.__setattr__(self, "datetime", (value, value))
 
     # ------------------------------------------------------------------
     # Derived properties
@@ -106,6 +92,21 @@ class GeoTile:
             dt.fromisoformat(str(t.astype("datetime64[s]")))
             for t in self.data.time.values
         )
+
+    @property
+    def date_range(self) -> DateRange:
+        """``datetime`` as a guaranteed ``(start, end)`` tuple (normalized in ``__post_init__``)."""
+        return cast(DateRange, self.datetime)
+
+    @property
+    def is_datetime_range(self) -> bool:
+        """True when ``datetime`` is a real ``(start, end)`` window rather than a resolved instant."""
+        return self.date_range[0] != self.date_range[1]
+
+    @property
+    def ref_datetime(self) -> dt:
+        """Single representative datetime — start of the range."""
+        return self.date_range[0]
 
     @property
     def num_bands(self) -> int:
@@ -310,6 +311,75 @@ class GeoTile:
     # Constructors
     # ------------------------------------------------------------------
 
+    @staticmethod
+    def parse_anchor_datetime(v: str | dt | tuple[str | dt, str | dt]) -> dt | DateRange:
+        """Parse a datetime string/dt, or a (start, end) tuple of either.
+
+        Shape (must be a real 2-tuple, start <= end) isn't validated here —
+        GeoTile's own __post_init__ is the single source of truth for that.
+
+        Args:
+            v: A single datetime (string or dt), or a (start, end) tuple of either.
+
+        Returns:
+            A dt, or a (start, end) tuple of dt.
+
+        Raises:
+            ValueError: If a string isn't a parseable datetime.
+        """
+        if isinstance(v, tuple):
+            a, b = v
+            return (parse_datetime(a), parse_datetime(b))
+        return parse_datetime(v)
+
+    @staticmethod
+    def datetime_from_attrs_or_stem(
+        path: Path,
+        attrs: Mapping[str, Any],
+        date_format: str = DEFAULT_DATE_FORMAT,
+        date_pattern: str = DEFAULT_DATE_PATTERN,
+    ) -> dt | DateRange:
+        """Read datetime from attrs first, then fall back to the filename stem.
+
+        Args:
+            path: Source file path — used for the filename-stem fallback.
+            attrs: Raster/store attrs dict; checks "datetime" then "metadata" (JSON) keys.
+            date_format: strftime format for parsing date from filename stem.
+            date_pattern: Regex pattern for extracting date from filename stem.
+
+        Returns:
+            A dt, or a (start, end) tuple parsed from ISO 8601 interval
+            notation (``"start/end"``).
+
+        Raises:
+            ValueError: If no datetime is found in attrs and the filename
+                stem doesn't match date_pattern.
+        """
+        raw_datetime = attrs.get("datetime")
+        if raw_datetime is None:
+            metadata = attrs.get("metadata")
+            if metadata:
+                try:
+                    tag = json.loads(metadata)
+                except (TypeError, ValueError, json.JSONDecodeError):
+                    tag = {}
+                raw_datetime = tag.get("datetime")
+
+        if raw_datetime is not None:
+            # ISO 8601 interval notation: "2024-01-01T00:00:00/2024-12-31T23:59:59"
+            if isinstance(raw_datetime, str) and "/" in raw_datetime:
+                parts = raw_datetime.split("/", 1)
+                return (parse_datetime(parts[0]), parse_datetime(parts[1]))
+            return parse_datetime(raw_datetime)
+
+        try:
+            return date_from_path(path.stem, date_format=date_format, date_pattern=date_pattern)
+        except ValueError as exc:
+            raise ValueError(
+                f"Could not determine datetime for {path}: missing attrs and no date in stem "
+                f"matching pattern {date_pattern!r}"
+            ) from exc
+
     @classmethod
     def from_geotiff(
         cls,
@@ -355,7 +425,7 @@ class GeoTile:
         if load_data:
             data = data.load()
 
-        anchor_dt = _datetime_from_attrs_or_stem(
+        anchor_dt = cls.datetime_from_attrs_or_stem(
             p, data.attrs, date_format=date_format, date_pattern=date_pattern
         )
         geobox = data.odc.geobox
@@ -397,7 +467,7 @@ class GeoTile:
         if grid_mappings:
             ds = ds.set_coords(grid_mappings)
         geobox = ds.odc.geobox
-        anchor_dt = _datetime_from_attrs_or_stem(
+        anchor_dt = cls.datetime_from_attrs_or_stem(
             path, ds.attrs, date_format=date_format, date_pattern=date_pattern
         )
         metadata = json.loads(ds.attrs.get("metadata", "{}"))
@@ -441,7 +511,7 @@ class GeoTile:
         """
         return cls(
             geobox=GeoBox.from_bbox(bbox, crs=crs, resolution=resolution, anchor="edge"),
-            datetime=_parse_anchor_datetime(datetime),
+            datetime=cls.parse_anchor_datetime(datetime),
         )
 
     @classmethod
@@ -487,7 +557,7 @@ class GeoTile:
             geobox=GeoBox.from_bbox(
                 bbox, crs=target_crs.to_string(), resolution=resolution, tight=True
             ),
-            datetime=_parse_anchor_datetime(datetime),
+            datetime=cls.parse_anchor_datetime(datetime),
         )
 
     @classmethod
@@ -524,7 +594,7 @@ class GeoTile:
         projected_geom = geom.to_crs(target_crs)
         return cls(
             geobox=GeoBox.from_geopolygon(projected_geom, resolution=resolution, anchor="edge"),
-            datetime=_parse_anchor_datetime(datetime),
+            datetime=cls.parse_anchor_datetime(datetime),
             polygon=projected_geom,
         )
 
@@ -544,7 +614,7 @@ class GeoTile:
             datetime: Anchor datetime or (start, end) date range applied to all features.
             crs: Target projected CRS. Defaults to local UTM/UPS per feature centroid.
         """
-        parsed_dt = _parse_anchor_datetime(datetime)
+        parsed_dt = cls.parse_anchor_datetime(datetime)
         with open(path) as f:
             geojson = json.load(f)
         if geojson.get("type") == "FeatureCollection":
@@ -612,9 +682,9 @@ class GeoTile:
         path = Path(path)
         path.parent.mkdir(parents=True, exist_ok=True)
         dt_str = (
-            f"{self.datetime[0].isoformat()}/{self.datetime[1].isoformat()}"
-            if isinstance(self.datetime, tuple)
-            else self.datetime.isoformat()
+            f"{self.date_range[0].isoformat()}/{self.date_range[1].isoformat()}"
+            if self.is_datetime_range
+            else self.ref_datetime.isoformat()
         )
         attrs: dict[str, Any] = {
             "datetime": dt_str,
@@ -645,11 +715,11 @@ class GeoTile:
             tag["polygon_geojson"] = self.polygon.geojson()
             tag["polygon_crs"] = str(self.polygon.crs)
         dt_str = (
-            f"{self.datetime[0].isoformat()}/{self.datetime[1].isoformat()}"
-            if isinstance(self.datetime, tuple)
-            else self.datetime.isoformat()
+            f"{self.date_range[0].isoformat()}/{self.date_range[1].isoformat()}"
+            if self.is_datetime_range
+            else self.ref_datetime.isoformat()
         )
-        self.data.rio.to_raster(
+        self.data.rio.write_crs(self.crs).rio.to_raster(
             path,
             driver=driver,
             tags={"metadata": json.dumps(tag), "datetime": dt_str},
@@ -663,14 +733,41 @@ class GeoTile:
 # Tile operations
 # ----------------------------------------------------------------------
 
-def remap(tile: GeoTile, mapping: Mapping[int, int]) -> GeoTile:
-    """Return a new GeoTile with label values remapped per ``mapping``."""
+def select_bands(tile: GeoTile, bands: Mapping[str, str]) -> GeoTile:
+    """Return a new GeoTile with only the named bands, renamed.
+
+    Args:
+        tile: Tile with loaded data.
+        bands: Output band name -> source band id present on ``tile``.
+
+    Raises:
+        ValueError: If ``tile`` has no data.
+    """
     if tile.data is None:
-        raise ValueError("Cannot remap a GeoTile without data")
-    remapped = tile.data
-    for src_val, dst_val in mapping.items():
-        remapped = remapped.where(remapped != src_val, other=dst_val)
-    return tile.with_data(remapped)
+        raise ValueError("Cannot select bands on a GeoTile without data")
+    data = tile.data.sel(band=list(bands.values())).assign_coords(band=list(bands.keys()))
+    return tile.with_data(data)
+
+
+def extract_bands(tile: GeoTile, bands: Mapping[str, str]) -> dict[str, np.ndarray]:
+    """Pull named ``(H, W)`` arrays off a tile for a ``derive`` function's args.
+
+    Thin wrapper over :func:`select_bands` — same band lookup, split into a
+    dict of raw arrays instead of a renamed multi-band tile.
+
+    Args:
+        tile: Tile with loaded data.
+        bands: Function arg name -> band id present on ``tile``.
+
+    Returns:
+        ``{arg_name: array}``, ready to pass as ``fn(**extract_bands(tile, bands))``.
+
+    Raises:
+        ValueError: If ``tile`` has no data.
+    """
+    selected = select_bands(tile, bands)
+    assert selected.data is not None  # select_bands always returns a tile with data
+    return {name: selected.data.sel(band=name).values for name in bands}
 
 
 def align(*tiles: GeoTile) -> tuple[GeoTile, ...]:
@@ -745,7 +842,7 @@ def mosaic(
         raise ValueError("Cannot mosaic an empty tile list")
     if any(t.data is None for t in tiles):
         raise ValueError("All tiles must have data loaded before mosaicking")
-    if any(isinstance(t.datetime, tuple) for t in tiles):
+    if any(t.is_datetime_range for t in tiles):
         raise ValueError("Cannot mosaic range-datetime tiles; ingest first to resolve to single datetimes")
 
     tile_crss = {t.crs for t in tiles}
@@ -802,7 +899,7 @@ def mosaic(
         mosaic_polygon = merged_poly
     base = GeoTile(
         geobox=geobox,
-        datetime=max(t.datetime for t in tiles),
+        datetime=max(t.ref_datetime for t in tiles),
         metadata={k: v for t in tiles for k, v in t.metadata.items()},
         polygon=mosaic_polygon,
     ).with_stac([item for t in tiles for item in t.stac])
@@ -830,3 +927,27 @@ def _read_stac(path: Path) -> list[Item]:
     if not sidecar.exists():
         return []
     return list(ItemCollection.from_file(str(sidecar)))
+
+
+def compute_class_pct(geo_layer: GeoTile, class_dict: Mapping[int, str], decimal: int = 4) -> dict[str, float]:
+    """Compute per-class pixel percentages from a label GeoTile.
+
+    Args:
+        geo_layer: GeoTile containing label data.
+        class_dict: Maps class int values to names.
+        decimal: Decimal places to round to.
+
+    Returns:
+        {
+            "<class_name>": float,  # pixel fraction [0.0, 1.0]; key falls back to "class_{value}"
+        }.
+
+    Raises:
+        ValueError: If geo_layer has no data.
+    """
+    if geo_layer.data is None:
+        raise ValueError("GeoTile has no data to compute class percentages")
+    values = geo_layer.data.values.flatten()
+    unique, counts = np.unique(values, return_counts=True)
+    total = values.size
+    return {class_dict.get(u, f"class_{u}"): round(int(c) / total, decimal) for u, c in zip(unique, counts)}

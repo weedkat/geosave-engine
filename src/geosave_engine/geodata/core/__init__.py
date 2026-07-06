@@ -1,7 +1,6 @@
-from .manifest import LayerSpec, ManifestWriter, compute_class_pct, layer_metadata
-from .geotile import GeoTile, align, mosaic, remap
-from .pipeline import Pipeline
-from .specs import (
+from .geotile import GeoTile, align, compute_class_pct, extract_bands, mosaic, select_bands
+from .registry import DERIVE_FUNCTIONS, derive_step
+from .sources import (
     AnyIngestSource,
     CoordinateSource,
     GeoJSONSource,
@@ -16,12 +15,11 @@ __all__ = [
     "GeoTile",
     "align",
     "mosaic",
-    "remap",
-    "LayerSpec",
-    "ManifestWriter",
-    "layer_metadata",
+    "select_bands",
     "compute_class_pct",
-    "Pipeline",
+    "DERIVE_FUNCTIONS",
+    "derive_step",
+    "extract_bands",
     "AnyIngestSource",
     "CoordinateSource",
     "GeoJSONSource",

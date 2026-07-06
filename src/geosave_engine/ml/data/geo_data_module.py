@@ -14,13 +14,13 @@ class GeoDataModule(LightningDataModule):
     """Base datamodule for GeoDataset-backed Lightning pipelines.
 
     Handles dataset creation, dataloader construction, and split routing.
-    Subclass and override ``prepare_data`` for ingestion logic.
+    Reads already-ingested data only — run ``geosave ingest`` separately to
+    populate ``root`` first (see ``geosave_engine.geodata.pipeline.PipelineRunner``).
 
     Args:
-        root: Base directory. Split subdirs created inside.
+        root: Base directory. Split subdirs read from inside.
         output_key: Layer name → batch key mapping.
             Example: ``{"sentinel_2_l1c": "image", "dynamicworld": ("label", torch.int64)}``.
-        sources: Map of split name → source config dict.
         sel_bands: Per-layer band selection.
             Example: ``{"sentinel_2_l1c": ["B04", "B03", "B02"]}``.
         context_fields: GeoTile metadata fields per sample.
@@ -34,15 +34,12 @@ class GeoDataModule(LightningDataModule):
         predict_sampler: Sampler strategy for predict stage.
         patch_size: Spatial patch size in pixels (grid sampler only).
         stride: Stride between patches. Defaults to ``patch_size``.
-        ingest: Run ingestion in ``prepare_data`` when ``True``.
-        max_tiles: Stop ingestion after this many tiles. ``None`` processes all.
     """
 
     def __init__(
         self,
         root: str | Path,
         output_key: dict[str, str | tuple[str, torch.dtype]],
-        sources: dict[str, dict] | None = None,
         sel_bands: dict[str, list[str]] | None = None,
         context_fields: list[str] | None = None,
         batch_size: int = 16,
@@ -53,13 +50,10 @@ class GeoDataModule(LightningDataModule):
         predict_sampler: Literal["prechipped", "grid"] = "prechipped",
         patch_size: int = 1024,
         stride: int | None = None,
-        ingest: bool = False,
-        max_tiles: int | None = None,
     ) -> None:
         super().__init__()
         self.root = Path(root)
         self.output_key = output_key
-        self.sources: dict[str, dict] = sources or {}
         self.sel_bands = sel_bands
         self.context_fields: list[str] = context_fields or []
         self.batch_size = batch_size
@@ -70,8 +64,6 @@ class GeoDataModule(LightningDataModule):
         self.predict_sampler_type = predict_sampler
         self.patch_size = patch_size
         self.stride = stride or patch_size
-        self.ingest = ingest
-        self.max_tiles = max_tiles
 
     def _make_dataset(self, root: Path, sampler: GeoTileSampler | None = None) -> GeoDataset:
         return GeoDataset(

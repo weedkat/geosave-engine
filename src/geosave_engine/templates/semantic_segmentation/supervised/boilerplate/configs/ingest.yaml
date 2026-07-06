@@ -1,0 +1,34 @@
+# Consumed by ingest.py (plain yaml, no LightningCLI) — not part of the training config.
+# data.root here must match model.yaml's data.root; ingest populates it, training reads it.
+#
+# Replace the placeholders below with your actual data source. See
+# templates/semantic_segmentation/supervised/dynamic_world/configs/ingest.yaml for a
+# full worked example (STAC fetch + derive steps).
+#
+# Label derivation is training-only, not declared here — handled directly in
+# the LightningDataModule (see dynamic_world's data_module.py for an example).
+
+# STAC-fetched layers go here (omit entirely if all your inputs are pre-downloaded).
+# requires:
+#   my_imagery:
+#     provider: cdse            # cdse | planetary_computer | element84
+#     collection: my-collection
+#     bands: [B02, B03, B04]
+
+pipeline:
+  # Image layer — reads straight off the anchor below, kept as-is.
+  # Point bands: at a requires: layer name instead of "anchor" if pulling from STAC.
+  # No action: — bands: alone means passthrough (extract, rename, cast dtype).
+  image:
+    bands:
+      anchor: {band_1: band_1}   # {output_band_name: source_band_id}
+
+data:
+  root: data/dataset
+  sources:
+    train:
+      type: geotiff
+      src: data/raw/train/
+    val:
+      type: geotiff
+      src: data/raw/val/

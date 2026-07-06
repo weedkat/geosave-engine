@@ -94,6 +94,21 @@ class Workspace:
         cmd = [sys.executable, str(main_py), command, *args]
         self._execute_command(cmd, cwd=self.root, script_path=main_py)
 
+    def run_ingest(self, config_path: str, splits: list[str] | None = None) -> None:
+        """Run the workspace's ingest.py to populate raw cache + derived layers.
+
+        Args:
+            config_path: Path to an ingest.yaml-shaped config.
+            splits: Limit to these split names. None runs every split.
+        """
+        ingest_py = self.root / "ingest.py"
+        if not ingest_py.exists():
+            raise WorkspaceError(f"ingest.py not found at: {ingest_py}")
+        cmd = [sys.executable, str(ingest_py), "--config", config_path]
+        if splits:
+            cmd += ["--splits", *splits]
+        self._execute_command(cmd, cwd=self.root, script_path=ingest_py)
+
     def _execute_command(self, command: list[str], cwd: Path, script_path: Path) -> None:
         env = {**os.environ, "PYTHONPATH": str(cwd)}
         try:

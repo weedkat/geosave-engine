@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from typing import TYPE_CHECKING, Any, Iterable, Literal, overload
+from typing import TYPE_CHECKING, Any, Iterable
 
 import pystac
 import planetary_computer
@@ -10,19 +10,10 @@ from typing_extensions import Unpack
 from urllib3.util import Retry
 
 from .query import StacQuery
-from geosave_engine.geodata.source.base import Source
-from geosave_engine.geodata.source.sentinel_2 import Sentinel2Source
-from geosave_engine.geodata.source.hls import HLSSource
+from .source import Source
 
 if TYPE_CHECKING:
-    from geosave_engine.geodata.source.base import SourceArgs
-
-_SOURCE_REGISTRY: dict[str, type[Source]] = {
-    "sentinel-2-l2a": Sentinel2Source,
-    "sentinel-2-l1c": Sentinel2Source,
-    "hls2-s30":       HLSSource,
-    "hls2-l30":       HLSSource,
-}
+    from .source import SourceArgs
 
 
 class StacClient:
@@ -101,86 +92,45 @@ class StacClient:
 
     # ---------------------------------------------------------------- source
 
-    def _cached_collection_ids(self) -> set[str]:
+    def collection_ids(self) -> set[str]:
+        """STAC collection IDs available on this endpoint, memoized after first call."""
         if self._collection_ids is None:
             self._collection_ids = {c.id for c in self.get_collections()}
         return self._collection_ids
 
-    def _validate_collection(self, collection: str) -> None:
-        ids = self._cached_collection_ids()
-        if collection not in ids:
+    def validate_collection(self, collection_id: str) -> None:
+        """Raise if `collection_id` doesn't exist on this endpoint.
+
+        Args:
+            collection_id: STAC collection ID to check.
+
+        Raises:
+            ValueError: If `collection_id` isn't in `collection_ids()`.
+        """
+        if collection_id not in self.collection_ids():
             raise ValueError(
-                f"Collection {collection!r} not found on this STAC endpoint. "
+                f"Collection {collection_id!r} not found on this STAC endpoint. "
                 f"Call get_collections() to see what is available."
             )
 
-    @overload
-    def source(
-        self,
-        collection: Literal["sentinel-2-l2a", "sentinel-2-l1c"],
-        **kwargs: Unpack[SourceArgs],
-    ) -> Sentinel2Source: ...
-
-    @overload
-    def source(
-        self,
-        collection: Literal["hls2-s30", "hls2-l30"],
-        **kwargs: Unpack[SourceArgs],
-    ) -> HLSSource: ...
-
-    @overload
-    def source(self, collection: str, **kwargs: Unpack[SourceArgs]) -> Source: ...
-
-    def source(self, collection: str, **kwargs: Unpack[SourceArgs]) -> Source:
-        """Create a typed source for a STAC collection on this client.
+    def source(self, collection_id: str, **kwargs: Unpack[SourceArgs]) -> Source:
+        """Create a source for a STAC collection on this client.
 
         Validates that the collection exists on this endpoint before returning.
-        Known collections return a typed subclass with preprocessing and filter helpers.
-        Unknown collections fall back to generic ``Source`` with no preprocessing.
+        Source always returns raw values as the provider publishes them — no
+        radiometric scaling. Apply scale/offset as an explicit pipeline step.
 
         Args:
-            collection: STAC collection ID. Discover via ``get_collections()``.
-            **kwargs: Forwarded to ``Source.__init__`` — see ``SourceArgs``.
-
-        Returns:
-            {
-                "sentinel-2-l2a" | "sentinel-2-l1c": Sentinel2Source,
-                "hls2-s30" | "hls2-l30": HLSSource,
-                str: Source,
-            }
+            collection_id: STAC collection ID. Discover via `get_collections()`.
+            **kwargs: Forwarded to `Source.__init__` — see `SourceArgs`.
 
         Raises:
-            ValueError: If ``collection`` does not exist on this endpoint.
+            ValueError: If `collection_id` does not exist on this endpoint.
 
         Examples:
             >>> cdse = StacClient.cdse()
-            >>> src = (
-            ...     cdse.source("sentinel-2-l2a", slot_mode="monthly", composite="median")
-            ...     .max_cloud_cover(20)
-            ... )
+            >>> src = cdse.source("sentinel-2-l1c", bands=["B02", "B03", "B04"], max_nodata_fraction=0.1)
+            >>> tiles = src.load(anchor)
         """
-        self._validate_collection(collection)
-        source_cls = _SOURCE_REGISTRY.get(collection, Source)
-        return source_cls(self, collection_id=collection, **kwargs)
-
-    def source_raw(self, collection: str, **kwargs: Unpack[SourceArgs]) -> Source:
-        """Create a source with preprocessing disabled.
-
-        Use when a model expects raw DN values (e.g. ``GraniteGeospatialBiomass``
-        expects HLS DN, not reflectance scaled by ×0.0001).
-
-        Args:
-            collection: STAC collection ID.
-            **kwargs: Forwarded to ``Source.__init__`` — see ``SourceArgs``.
-
-        Returns:
-            Source instance with preprocessing skipped on ``load()``.
-
-        Raises:
-            ValueError: If ``collection`` does not exist on this endpoint.
-
-        Examples:
-            >>> pc = StacClient.planetary_computer()
-            >>> src = pc.source_raw("hls2-s30", slot_mode="daily")
-        """
-        return self.source(collection, **kwargs).raw()
+        self.validate_collection(collection_id)
+        return Source(self, collection_id=collection_id, **kwargs)

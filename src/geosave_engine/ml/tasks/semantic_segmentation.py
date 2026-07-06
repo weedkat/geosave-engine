@@ -54,12 +54,10 @@ class SemanticSegmentationTask(LightningModule):
     Examples:
         # LightningCLI YAML:
         model:
-          class_path: geosave_engine.ml.tasks.SupervisedSegmentationTask
-          init_args:
-            encoder: dinov3
-            decoder: dpt
-            num_classes: 8
-            in_channels: 13
+          encoder: dinov3
+          decoder: dpt
+          num_classes: 8
+          in_channels: 13
     """
 
     ENCODERS: ClassVar[dict[str, type[nn.Module]]] = {'dinov3': DINOv3}

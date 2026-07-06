@@ -4,10 +4,8 @@ model:
   pad_size: 64
 
 data:
-  root: workspace/biomass/predict
-  geotiff_src: data/hls_s30/
+  root: workspace/biomass
   batch_size: 1
   num_workers: 4
   predict_sampler: grid
   patch_size: 224
-  ingest: false

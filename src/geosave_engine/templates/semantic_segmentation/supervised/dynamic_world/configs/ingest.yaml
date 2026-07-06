@@ -1,0 +1,87 @@
+# Consumed by ingest.py (plain yaml, no LightningCLI) — not part of the training config.
+# data.root here must match model.yaml's data.root; ingest populates it, training reads it.
+#
+# Every step writes <data.root>/<split>/<step_name>/<i>.zarr, one file per
+# anchor (i = anchor's position in this split's source list). requires:
+# steps are never saved (pure pass-through, straight from the STAC API —
+# pgstac or remote, doesn't matter which — into whatever pipeline: step reads
+# them). Label derivation (DynamicWorld class remap) is training-only, not
+# declared here — handled directly in the LightningDataModule.
+
+requires:
+  sentinel_2_l1c_dn:
+    provider: cdse            # cdse | planetary_computer | element84
+    collection: sentinel-2-l1c
+    bands: [B01, B02, B03, B04, B05, B06, B07, B08, B09, B10, B11, B12, B8A]
+    max_nodata_fraction: 0.1
+
+pipeline:
+  sentinel_2_l1c:
+    action: apply_scale
+    from: sentinel_2_l1c_dn
+    params: {mode: from_stac}
+
+  # Cloud detection is a chain of small, reusable steps rather than one
+  # monolithic action — s2cloudless/CDI/cirrus each independently, ANDed
+  # together, denoised, then ORed with the projected shadow.
+  # bands: is a plain ordered list per upstream — order must match the
+  # action's declared arg order (see each function's own docstring).
+  s2c_mask:
+    action: s2c_mask
+    bands:
+      sentinel_2_l1c: [B01, B02, B04, B05, B08, B8A, B09, B10, B11, B12]
+    params: {prob_threshold: 0.4}
+
+  cdi_mask:
+    action: cdi_mask
+    bands:
+      sentinel_2_l1c: [B07, B08, B8A]
+    params: {cdi_threshold: -0.5}
+
+  b10_mask:
+    action: b10_mask
+    bands:
+      sentinel_2_l1c: [B10]
+    params: {b10_threshold: 0.0012}
+
+  cloud_core:
+    action: intersect
+    bands:
+      s2c_mask: [s2c_mask]
+      cdi_mask: [cdi_mask]
+      b10_mask: [b10_mask]
+
+  cloud_denoised:
+    action: binary_open
+    bands:
+      cloud_core: [cloud_core]
+
+  shadow_mask:
+    action: shadow_mask
+    bands:
+      cloud_denoised: [cloud_denoised]
+    params: {shadow_distance_m: 500}
+
+  cloud_mask:
+    action: union
+    bands:
+      cloud_denoised: [cloud_denoised]
+      shadow_mask: [shadow_mask]
+
+  ndvi:
+    action: ndvi
+    bands:
+      sentinel_2_l1c: [B08, B04]   # order: nir, red
+
+data:
+  root: data/dynamicworld
+  sources:
+    train:
+      type: geotiff
+      src: data/raw/train/
+    val:
+      type: geotiff
+      src: data/raw/val/
+    test:
+      type: geotiff
+      src: data/raw/test/

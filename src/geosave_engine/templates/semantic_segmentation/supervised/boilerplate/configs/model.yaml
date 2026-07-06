@@ -6,8 +6,8 @@ trainer:
   callbacks:
 
 model:
-  num_classes: 10       # update to match your LabelPipeline.schema
-  in_channels: 3        # update to match your ImagePipeline.schema
+  num_classes: 10       # update to match your class schema in configs/ingest.yaml
+  in_channels: 3        # update to match your band schema in configs/ingest.yaml
   ignore_index: 255
   encoder: dinov3
   decoder: dpt
@@ -23,11 +23,3 @@ data:
   batch_size: 16
   num_workers: 4
   root: data/dataset
-  ingest: false
-  sources:
-    train:
-      type: geotiff
-      src: data/raw/train/
-    val:
-      type: geotiff
-      src: data/raw/val/

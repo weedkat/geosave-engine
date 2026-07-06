@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import logging
 from pathlib import Path
-from typing import Any
+from typing import Any, Callable
 
 import geopandas as gpd
 import torch
@@ -10,7 +10,6 @@ from shapely.geometry import box
 from torch.utils.data import Dataset
 
 from geosave_engine.geodata.core import GeoTile
-from geosave_engine.geodata.datasets.geo_context import GEO_CONTEXT_EXTRACTORS
 from geosave_engine.geodata.datasets.samplers import GeoTileSampler, PreChippedSampler
 
 log = logging.getLogger(__name__)
@@ -18,6 +17,15 @@ log = logging.getLogger(__name__)
 WGS84 = "EPSG:4326"
 LayerName = str
 
+GEO_CONTEXT_EXTRACTORS: dict[str, Callable[[GeoTile], Any]] = {
+    "crs":           lambda t: t.crs,
+    "transform":     lambda t: t.affine,
+    "coordinate":    lambda t: t.centroid,
+    "time":          lambda t: t.ref_datetime.timetuple().tm_yday,
+    "datetime":      lambda t: t.ref_datetime.isoformat(),
+    "bbox_wgs84":    lambda t: list(t.wgs84_bbox),
+    "stac_item_ids": lambda t: [i.id for i in t.stac],
+}
 
 class GeoDataset(Dataset):
     """Georeferenced PyTorch dataset over lazy GeoTiles under a workspace root.

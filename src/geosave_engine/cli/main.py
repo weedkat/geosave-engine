@@ -29,6 +29,17 @@ def create(
     workspace.setup_workspace()
 
 
+@app.command()
+def ingest(
+    project_dir: Optional[str] = typer.Argument(None, help="Workspace directory"),
+    config: str = typer.Option(..., '-c', '--config', help="Path to ingest.yaml"),
+    split: Optional[list[str]] = typer.Option(None, '--split', help="Limit to specific splits"),
+):
+    work_dir = _get_work_dir(project_dir)
+    workspace = Workspace.load_workspace(work_dir)
+    workspace.run_ingest(config, split)
+
+
 @app.command(context_settings={"allow_extra_args": True, "ignore_unknown_options": True})
 def fit(
     ctx: typer.Context,

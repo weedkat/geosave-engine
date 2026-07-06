@@ -107,7 +107,7 @@ def colocate(
             continue
 
         if datetime_tol is not None:
-            dts = [t.datetime for t in tiles]
+            dts = [t.ref_datetime for t in tiles]
             if any(abs(dts[0] - dt) > datetime_tol for dt in dts[1:]):
                 continue
 
