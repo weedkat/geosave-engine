@@ -1,7 +1,5 @@
-from .manifest import LayerSpec, ManifestWriter, compute_class_pct, layer_metadata
 from .geotile import GeoTile, align, mosaic, remap
-from .pipeline import Pipeline
-from .specs import (
+from .sources import (
     AnyIngestSource,
     CoordinateSource,
     GeoJSONSource,
@@ -17,11 +15,6 @@ __all__ = [
     "align",
     "mosaic",
     "remap",
-    "LayerSpec",
-    "ManifestWriter",
-    "layer_metadata",
-    "compute_class_pct",
-    "Pipeline",
     "AnyIngestSource",
     "CoordinateSource",
     "GeoJSONSource",

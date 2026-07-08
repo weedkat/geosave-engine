@@ -115,6 +115,7 @@ class DataBucket:
 - Vector geospatial: geopandas, shapely.
 - Models: timm, Terratorch, Clay, Hugging Face.
 - Manifests/provenance: JSON/TOML sidecars where repo already uses them.
+- Validation: pydantic
 
 ## Testing
 

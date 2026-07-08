@@ -9,8 +9,7 @@ from typing import Any
 from tqdm import tqdm
 
 from .manifest import ManifestWriter, LayerSpec, layer_metadata
-from .geotile import GeoTile
-from .specs import AnyIngestSource
+from geosave_engine.geodata.core import GeoTile, AnyIngestSource
 
 log = logging.getLogger(__name__)
 

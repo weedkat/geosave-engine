@@ -8,7 +8,7 @@ from pathlib import Path
 from typing import TYPE_CHECKING, Any, Mapping, TypedDict
 
 if TYPE_CHECKING:
-    from .geotile import GeoTile
+    from geosave_engine.geodata.core.geotile import GeoTile
 
 log = logging.getLogger(__name__)
 

@@ -164,6 +164,35 @@ class GeoTile:
         return ((left + right) / 2, (bottom + top) / 2)
 
     @property
+    def date_range(self) -> DateRange:
+        """`datetime` as a (start, end) tuple — a bare instant becomes a degenerate range.
+
+        Computed on access, not normalized at construction — `datetime` itself
+        stays whatever was passed in (bare `dt` or a real range).
+        """
+        if isinstance(self.datetime, tuple):
+            return self.datetime
+        return (self.datetime, self.datetime)
+
+    @property
+    def stem(self) -> str:
+        """Deterministic filename stem — same anchor always gets the same stem.
+
+        Derived from centroid + datetime + resolution, not list position, so
+        it's stable across runs even if a source's anchor list changes shape
+        (files added/removed/reordered) — two tiles at the same place/time/
+        resolution always produce the same stem.
+
+        Examples:
+            >>> tile.stem
+            '13.000000_52.000000_20240101_10m'
+        """
+        lon, lat = self.centroid
+        res = self.resolution
+        res_str = f"{int(res * 100)}cm" if res < 1 else f"{int(res)}m"
+        return f"{lon:.6f}_{lat:.6f}_{self.datetime.strftime('%Y%m%d')}_{res_str}"
+
+    @property
     def bbox_polygon(self) -> Geometry:
         return self.geobox.boundingbox.polygon
 

@@ -1,6 +1,7 @@
 from __future__ import annotations
 
-from typing import TYPE_CHECKING, Any, Iterable, Literal, overload
+import os
+from typing import TYPE_CHECKING, Any, Iterable
 
 import pystac
 import planetary_computer
@@ -10,19 +11,57 @@ from typing_extensions import Unpack
 from urllib3.util import Retry
 
 from .query import StacQuery
-from geosave_engine.geodata.source.base import Source
-from geosave_engine.geodata.source.sentinel_2 import Sentinel2Source
-from geosave_engine.geodata.source.hls import HLSSource
+from .source import Source
 
 if TYPE_CHECKING:
-    from geosave_engine.geodata.source.base import SourceArgs
+    from .source import SourceArgs
 
-_SOURCE_REGISTRY: dict[str, type[Source]] = {
-    "sentinel-2-l2a": Sentinel2Source,
-    "sentinel-2-l1c": Sentinel2Source,
-    "hls2-s30":       HLSSource,
-    "hls2-l30":       HLSSource,
-}
+
+def credentials_for(provider: str) -> dict[str, str]:
+    """Look up a STAC provider's static AWS-style raster credentials, namespaced by prefix.
+
+    Reads ``{PROVIDER}_AWS_ACCESS_KEY_ID`` / ``{PROVIDER}_AWS_SECRET_ACCESS_KEY``
+    (required) and ``{PROVIDER}_AWS_S3_ENDPOINT`` (optional) from the
+    environment — e.g. ``provider="cdse"`` reads ``CDSE_AWS_ACCESS_KEY_ID`` etc.
+    Namespaced per provider (not one generic ``AWS_ACCESS_KEY_ID``) so multiple
+    providers' credentials can coexist in the same process without colliding.
+
+    Ready to pass straight into ``rasterio.Env(**credentials_for(provider))``
+    scoped around one provider's fetch — scoping is what keeps it correct
+    under concurrent/sequential fetches for a different provider, not just
+    having the right value somewhere in the environment.
+
+    Not needed for providers that sign asset URLs instead of using static
+    keys (e.g. Planetary Computer's ``sign_inplace`` modifier).
+
+    Args:
+        provider: STAC provider name — same string as ``RequireSpec.provider``
+            or a ``StacClient`` classmethod name (e.g. ``"cdse"``).
+
+    Returns:
+        {
+            "AWS_ACCESS_KEY_ID": str,
+            "AWS_SECRET_ACCESS_KEY": str,
+            "AWS_S3_ENDPOINT": str,  # only present if {PROVIDER}_AWS_S3_ENDPOINT is set
+        }
+
+    Raises:
+        ValueError: If ``{PROVIDER}_AWS_ACCESS_KEY_ID`` or
+            ``{PROVIDER}_AWS_SECRET_ACCESS_KEY`` isn't set.
+    """
+    prefix = provider.upper()
+    access_key = os.environ.get(f"{prefix}_AWS_ACCESS_KEY_ID")
+    secret_key = os.environ.get(f"{prefix}_AWS_SECRET_ACCESS_KEY")
+    if not access_key or not secret_key:
+        raise ValueError(
+            f"Missing credentials for provider {provider!r}: "
+            f"set {prefix}_AWS_ACCESS_KEY_ID and {prefix}_AWS_SECRET_ACCESS_KEY"
+        )
+    creds = {"AWS_ACCESS_KEY_ID": access_key, "AWS_SECRET_ACCESS_KEY": secret_key}
+    endpoint = os.environ.get(f"{prefix}_AWS_S3_ENDPOINT")
+    if endpoint:
+        creds["AWS_S3_ENDPOINT"] = endpoint
+    return creds
 
 
 class StacClient:
@@ -38,7 +77,7 @@ class StacClient:
 
     def __init__(self, client: Client) -> None:
         self._client = client
-        self._collection_ids: set[str] | None = None
+        self._collections: set[str] | None = None
         retry_strategy = Retry(
             total=5,
             backoff_factor=1,
@@ -66,6 +105,19 @@ class StacClient:
     def element84(cls) -> StacClient:
         """Connect to Element84 Earth Search (AWS) STAC API."""
         return cls(Client.open("https://earth-search.aws.element84.com/v1/"))
+
+    @classmethod
+    def local(cls, url: str) -> StacClient:
+        """Connect to a self-hosted STAC API (e.g. stac-fastapi-pgstac).
+
+        A local pgstac instance is just another STAC endpoint — same
+        `.search()`/`.source()` interface as `cdse()`/`planetary_computer()`/
+        `element84()`, no separate caching mechanism needed.
+
+        Args:
+            url: Base URL of the STAC API (e.g. "http://localhost:8080").
+        """
+        return cls(Client.open(url))
 
     # ---------------------------------------------------------------- search
 
@@ -101,86 +153,45 @@ class StacClient:
 
     # ---------------------------------------------------------------- source
 
-    def _cached_collection_ids(self) -> set[str]:
-        if self._collection_ids is None:
-            self._collection_ids = {c.id for c in self.get_collections()}
-        return self._collection_ids
+    def collections(self) -> set[str]:
+        """STAC collection IDs available on this endpoint, memoized after first call."""
+        if self._collections is None:
+            self._collections = {c.id for c in self.get_collections()}
+        return self._collections
 
-    def _validate_collection(self, collection: str) -> None:
-        ids = self._cached_collection_ids()
-        if collection not in ids:
+    def validate_collection(self, collection: str) -> None:
+        """Raise if `collection` doesn't exist on this endpoint.
+
+        Args:
+            collection: STAC collection ID to check.
+
+        Raises:
+            ValueError: If `collection` isn't in `collections()`.
+        """
+        if collection not in self.collections():
             raise ValueError(
                 f"Collection {collection!r} not found on this STAC endpoint. "
                 f"Call get_collections() to see what is available."
             )
 
-    @overload
-    def source(
-        self,
-        collection: Literal["sentinel-2-l2a", "sentinel-2-l1c"],
-        **kwargs: Unpack[SourceArgs],
-    ) -> Sentinel2Source: ...
-
-    @overload
-    def source(
-        self,
-        collection: Literal["hls2-s30", "hls2-l30"],
-        **kwargs: Unpack[SourceArgs],
-    ) -> HLSSource: ...
-
-    @overload
-    def source(self, collection: str, **kwargs: Unpack[SourceArgs]) -> Source: ...
-
     def source(self, collection: str, **kwargs: Unpack[SourceArgs]) -> Source:
-        """Create a typed source for a STAC collection on this client.
+        """Create a source for a STAC collection on this client.
 
         Validates that the collection exists on this endpoint before returning.
-        Known collections return a typed subclass with preprocessing and filter helpers.
-        Unknown collections fall back to generic ``Source`` with no preprocessing.
+        Source always returns raw values as the provider publishes them — no
+        radiometric scaling. Apply scale/offset as an explicit pipeline step.
 
         Args:
-            collection: STAC collection ID. Discover via ``get_collections()``.
-            **kwargs: Forwarded to ``Source.__init__`` — see ``SourceArgs``.
-
-        Returns:
-            {
-                "sentinel-2-l2a" | "sentinel-2-l1c": Sentinel2Source,
-                "hls2-s30" | "hls2-l30": HLSSource,
-                str: Source,
-            }
+            collection: STAC collection ID. Discover via `get_collections()`.
+            **kwargs: Forwarded to `Source.__init__` — see `SourceArgs`.
 
         Raises:
-            ValueError: If ``collection`` does not exist on this endpoint.
+            ValueError: If `collection` does not exist on this endpoint.
 
         Examples:
             >>> cdse = StacClient.cdse()
-            >>> src = (
-            ...     cdse.source("sentinel-2-l2a", slot_mode="monthly", composite="median")
-            ...     .max_cloud_cover(20)
-            ... )
+            >>> src = cdse.source("sentinel-2-l1c", bands=["B02", "B03", "B04"], max_nodata_fraction=0.1)
+            >>> tiles = src.load(anchor)
         """
-        self._validate_collection(collection)
-        source_cls = _SOURCE_REGISTRY.get(collection, Source)
-        return source_cls(self, collection_id=collection, **kwargs)
-
-    def source_raw(self, collection: str, **kwargs: Unpack[SourceArgs]) -> Source:
-        """Create a source with preprocessing disabled.
-
-        Use when a model expects raw DN values (e.g. ``GraniteGeospatialBiomass``
-        expects HLS DN, not reflectance scaled by ×0.0001).
-
-        Args:
-            collection: STAC collection ID.
-            **kwargs: Forwarded to ``Source.__init__`` — see ``SourceArgs``.
-
-        Returns:
-            Source instance with preprocessing skipped on ``load()``.
-
-        Raises:
-            ValueError: If ``collection`` does not exist on this endpoint.
-
-        Examples:
-            >>> pc = StacClient.planetary_computer()
-            >>> src = pc.source_raw("hls2-s30", slot_mode="daily")
-        """
-        return self.source(collection, **kwargs).raw()
+        self.validate_collection(collection)
+        return Source(self, collection=collection, **kwargs)
