@@ -1,310 +1,247 @@
-"""Stitch per-patch predictions into scene-level GeoTIFFs and emit STAC metadata.
-
-Output layout (under ``output_dir``):
-
-    <output_dir>/
-    ├── outputs/
-    │   └── <model_name>_<scene_id>/
-    │       └── <model_name>_<scene_id>.tif
-    └── stac/
-        ├── collection.json
-        └── items/
-            └── <model_name>_<scene_id>.json
-
-Each source scene in ``input_dir`` (``<input_dir>/*.tif`` with filenames like
-``<prefix>_<lon>_<lat>-<YYYYMMDD>.tif``) becomes one output GeoTIFF and one
-STAC Item. STAC items and the collection can be loaded into pgstac via
-``pypgstac load collections collection.json && pypgstac load items items/*.json``.
-"""
 from __future__ import annotations
 
-import re
-from dataclasses import dataclass
-from datetime import datetime, timezone
+import json
+import logging
+from datetime import datetime as dt
 from pathlib import Path
-from typing import Any
+from typing import Any, Sequence
 
 import numpy as np
-import pystac
-import rasterio
-import shapely.geometry
-import shapely.ops
 import torch
+from lightning import LightningModule, Trainer
 from lightning.pytorch.callbacks import BasePredictionWriter
-from pyproj import Transformer
-from rasterio.windows import Window, from_bounds
+from odc.geo.geobox import GeoBox
 
-from geosave_engine.utils.geodata.tiff import parse_tiff_datetime
+from geosave_engine.geodata.tile import GeoAnchor, GeoTile, mosaic
 
-
-_SCENE_NAME_RE = re.compile(
-    r"^(?P<prefix>[A-Za-z0-9_]+?)_(?P<lon>-?\d+(?:\.\d+)?)_(?P<lat>-?\d+(?:\.\d+)?)-(?P<date>\d{8})\.tif$"
-)
+log = logging.getLogger(__name__)
 
 
-@dataclass
-class _SceneContext:
-    """Per-scene state held for the duration of a predict run."""
+def _tile_from_context(context: dict[str, Any], i: int, shape: tuple[int, int]) -> GeoAnchor:
+    """Reconstruct an anchor for sample i from stacked batch context.
 
-    scene_id: str
-    source_path: Path
-    output_path: Path
-    datetime: datetime
-    crs: str
-    bounds: tuple[float, float, float, float]          # native CRS (left, bottom, right, top)
-    geometry_wgs84: Any                                # shapely Polygon in EPSG:4326
-    writer: rasterio.io.DatasetWriter
-    transform: rasterio.Affine
+    Args:
+        context: ``batch["context"]`` dict; non-tensor values are lists of length B.
+        i: Sample index within the batch.
+        shape: ``(H, W)`` spatial shape of the prediction tensor.
+
+    Raises:
+        KeyError: If ``crs``, ``transform``, or ``datetime`` are missing from context.
+    """
+    geobox = GeoBox(shape=shape, affine=context["transform"][i], crs=context["crs"][i])
+    return GeoAnchor(geobox=geobox, datetime=dt.fromisoformat(context["datetime"][i]))
+
+
+class MosaicBuilder:
+    """Merge per-tile prediction COGs into a single mosaic COG.
+
+    Loads all ``pred_label.tif`` and ``pred_proba.tif`` under ``tiles_dir``,
+    merges via :func:`geosave_engine.geodata.tile.geotile.mosaic`, then writes
+    the result to ``mosaic_dir``.
+
+    Args:
+        tiles_dir: Directory containing per-tile subdirectories.
+        mosaic_dir: Output directory for mosaic files.
+    """
+
+    def __init__(self, tiles_dir: Path, mosaic_dir: Path) -> None:
+        self.tiles_dir = tiles_dir
+        self.mosaic_dir = mosaic_dir
+
+    def build(self) -> None:
+        """Merge all prediction tiles into mosaic COGs.
+
+        Raises:
+            KeyError: If a tile's ``context.json`` sidecar is missing its ``datetime``.
+        """
+        for layer in ("pred_label.tif", "pred_proba.tif"):
+            paths = sorted(self.tiles_dir.rglob(layer))
+            if not paths:
+                log.warning("No tiles found for mosaic layer %s", layer)
+                continue
+            tiles = [
+                GeoTile.from_geotiff(
+                    p, datetime=json.loads((p.parent / "context.json").read_text())["datetime"],
+                    load_data=True,
+                )
+                for p in paths
+            ]
+            out_path = self.mosaic_dir / layer
+            mosaic(tiles).to_cog(out_path)
+            log.info("Mosaic written: %s", out_path)
 
 
 class PredictionWriter(BasePredictionWriter):
-    """Write prediction patches into stitched per-scene GeoTIFFs + STAC metadata.
+    """Write per-tile predictions and input layers to a structured output directory.
+
+    Writes ``pred_label.tif``, ``pred_proba.tif``, optional input layer COGs,
+    and a ``context.json`` sidecar per tile. Writes ``manifest.json`` at the
+    end of predict. Optionally merges all tiles into a spatial mosaic.
+
+    Requires ``batch["context"]`` to contain: ``crs``, ``transform``, ``datetime``.
+    Optional provenance keys: ``bbox_wgs84``, ``stac_item_ids``.
+
+    Output layout::
+
+        <output_dir>/
+          <model_name>/
+            tiles/
+              pred_<lon>_<lat>_<date>_<res>/
+                pred_label.tif
+                pred_proba.tif
+                inputs/
+                  image.tif       # one file per key in input_keys
+                context.json
+            mosaic/               # only when mosaic=True
+              pred_label.tif
+              pred_proba.tif
+            manifest.json
 
     Args:
-        output_dir: Root directory for predictions. Written under
-            ``<output_dir>/outputs/...`` and ``<output_dir>/stac/...``.
-        input_dir: Directory holding the source scenes (``*.tif``). Defaults to
-            the predict dataset's ``paths`` when left as ``None``.
-        model_name: Prefix used in output filenames and STAC IDs.
-        collection_id: STAC Collection ID registered into pgstac.
-        collection_description: Human description for the collection.
-        asset_key: Key under which each GeoTIFF is registered on its STAC Item.
-        dtype: numpy dtype string for the output raster (e.g. ``"uint8"``).
-        nodata: Value written into pixels not covered by any patch.
+        output_dir: Base directory. Model-named subdirectory created inside.
+        input_keys: Batch tensor keys to copy as input layer COGs.
+        mosaic: Merge all prediction tiles into mosaic COGs after predict.
+        model_name: Model name for the output directory and manifest.
+            Falls back to checkpoint stem, then a timestamp.
+
+    Examples:
+        # LightningCLI YAML:
+        callbacks:
+          - class_path: geosave_engine.ml.callbacks.PredictionWriter
+            init_args:
+              output_dir: predictions/
+              input_keys: [image]
+              mosaic: true
     """
 
     def __init__(
         self,
-        output_dir: str,
-        input_dir: str | None = None,
-        model_name: str = "model",
-        collection_id: str = "predictions",
-        collection_description: str = "Model predictions generated by geosave-engine.",
-        asset_key: str = "prediction",
-        dtype: str = "uint8",
-        nodata: int = 255,
+        output_dir: str | Path,
+        input_keys: list[str] | None = None,
+        mosaic: bool = False,
+        model_name: str | None = None,
     ) -> None:
         super().__init__(write_interval="batch")
         self.output_dir = Path(output_dir)
-        self.input_dir = Path(input_dir) if input_dir is not None else None
-        self.model_name = model_name
-        self.collection_id = collection_id
-        self.collection_description = collection_description
-        self.asset_key = asset_key
-        self.dtype = dtype
-        self.nodata = nodata
+        self.input_keys: list[str] = input_keys or ["image"]
+        self.mosaic = mosaic
+        self._model_name_override = model_name
+        self._tiles_dir: Path | None = None
+        self._model_name: str = ""
+        self._written_stems: list[str] = []
 
-        self._scenes: dict[str, _SceneContext] = {}
+    def _resolve_model_name(self, trainer: Trainer) -> str:
+        if self._model_name_override:
+            return self._model_name_override
+        if trainer.ckpt_path:
+            return Path(trainer.ckpt_path).stem
+        return f"predict_{dt.now().strftime('%Y%m%dT%H%M%S')}"
 
-    # ------------------------------------------------------------------
-    # Lifecycle
-    # ------------------------------------------------------------------
-
-    def on_predict_start(self, trainer, pl_module) -> None:
-        input_dir = self._resolve_input_dir(trainer)
-        if not input_dir.is_dir():
-            raise FileNotFoundError(f"prediction input directory does not exist: {input_dir}")
-
-        outputs_root = self.output_dir / "outputs"
-        outputs_root.mkdir(parents=True, exist_ok=True)
-        (self.output_dir / "stac" / "items").mkdir(parents=True, exist_ok=True)
-
-        for src in sorted(input_dir.glob("*.tif")):
-            scene = self._prepare_scene(src, outputs_root)
-            self._scenes[scene.scene_id] = scene
-
-        if not self._scenes:
-            raise FileNotFoundError(f"no scenes (*.tif) discovered in {input_dir}")
+    def setup(self, trainer: Trainer, pl_module: LightningModule, stage: str) -> None:
+        if stage != "predict":
+            return
+        self._model_name = self._resolve_model_name(trainer)
+        self._tiles_dir = self.output_dir / self._model_name / "tiles"
+        self._tiles_dir.mkdir(parents=True, exist_ok=True)
+        self._written_stems = []
 
     def write_on_batch_end(
         self,
-        trainer,
-        pl_module,
-        prediction: torch.Tensor,
-        batch_indices,
-        batch: dict[str, torch.Tensor],
+        trainer: Trainer,
+        pl_module: LightningModule,
+        prediction: Any,
+        batch_indices: Sequence[int] | None,
+        batch: Any,
         batch_idx: int,
         dataloader_idx: int,
     ) -> None:
-        preds = prediction.detach().cpu().numpy()
-        bounds = batch["bounds"].detach().cpu().numpy()
-
+        if self._tiles_dir is None:
+            raise RuntimeError("PredictionWriter.setup() was not called before write_on_batch_end")
+        preds, max_probs = prediction  # both [B, H, W]
+        context: dict[str, Any] = batch.get("context", {})
+        h, w = preds.shape[-2:]
         for i in range(preds.shape[0]):
-            xmin, xmax = float(bounds[i][0]), float(bounds[i][1])
-            ymin, ymax = float(bounds[i][3]), float(bounds[i][4])
-            scene = self._find_scene_for_bounds((xmin, ymin, xmax, ymax))
-            if scene is None:
-                continue
-            self._write_patch(scene, preds[i], (xmin, ymin, xmax, ymax))
+            stem = self._write_tile(i, preds[i], max_probs[i], batch, context, (h, w), trainer, self._tiles_dir)
+            self._written_stems.append(stem)
 
-    def write_on_epoch_end(self, trainer, pl_module, predictions, batch_indices) -> None:
-        # All writes happen per-batch; nothing to do here.
-        pass
-
-    def on_predict_end(self, trainer, pl_module) -> None:
-        for scene in self._scenes.values():
-            scene.writer.close()
-
-        collection = self._build_collection()
-        items_dir = self.output_dir / "stac" / "items"
-        for scene in self._scenes.values():
-            item = self._build_item(scene, collection)
-            item.set_self_href(str(items_dir / f"{item.id}.json"))
-            item.save_object(include_self_link=False)
-
-        collection_path = self.output_dir / "stac" / "collection.json"
-        collection.set_self_href(str(collection_path))
-        collection.save_object(include_self_link=False)
-
-        self._scenes.clear()
-
-    # ------------------------------------------------------------------
-    # Scene setup
-    # ------------------------------------------------------------------
-
-    def _resolve_input_dir(self, trainer) -> Path:
-        if self.input_dir is not None:
-            return self.input_dir
-        dm = getattr(trainer, "datamodule", None)
-        ds = getattr(dm, "predict_dataset", None) if dm is not None else None
-        paths = getattr(ds, "paths", None)
-        if isinstance(paths, (str, Path)):
-            return Path(paths)
-        if isinstance(paths, (list, tuple)) and paths:
-            return Path(paths[0])
-        raise ValueError(
-            "PredictionWriter requires input_dir or a datamodule.predict_dataset with a resolvable `paths`."
-        )
-
-    def _prepare_scene(self, source_path: Path, outputs_root: Path) -> _SceneContext:
-        match = _SCENE_NAME_RE.match(source_path.name)
-        if not match:
-            raise ValueError(
-                f"cannot parse scene id from filename {source_path.name!r} "
-                "(expected <prefix>_<lon>_<lat>-<YYYYMMDD>.tif)"
-            )
-        scene_id = (
-            f"{match.group('prefix')}_{match.group('lon')}_{match.group('lat')}-{match.group('date')}"
-        )
-        scene_dir = outputs_root / f"{self.model_name}_{scene_id}"
-        scene_dir.mkdir(parents=True, exist_ok=True)
-        output_path = scene_dir / f"{self.model_name}_{scene_id}.tif"
-
-        acquisition_dt = parse_tiff_datetime(source_path)
-        with rasterio.open(source_path) as src:
-            profile = src.profile.copy()
-            crs = src.crs.to_string()
-            bounds = (src.bounds.left, src.bounds.bottom, src.bounds.right, src.bounds.top)
-            transform = src.transform
-            transformer = Transformer.from_crs(src.crs, "EPSG:4326", always_xy=True)
-            geometry_wgs84 = shapely.ops.transform(
-                transformer.transform,
-                shapely.geometry.box(*bounds),
-            )
-
-        profile.update(
-            count=1,
-            dtype=self.dtype,
-            nodata=self.nodata,
-            compress="lzw",
-            tiled=True,
-            predictor=2,
-        )
-        writer = rasterio.open(output_path, "w", **profile)
-        writer.write(
-            np.full((profile["height"], profile["width"]), self.nodata, dtype=self.dtype),
-            1,
-        )
-
-        return _SceneContext(
-            scene_id=scene_id,
-            source_path=source_path,
-            output_path=output_path,
-            datetime=acquisition_dt,
-            crs=crs,
-            bounds=bounds,
-            geometry_wgs84=geometry_wgs84,
-            writer=writer,
-            transform=transform,
-        )
-
-    # ------------------------------------------------------------------
-    # Per-patch write
-    # ------------------------------------------------------------------
-
-    def _find_scene_for_bounds(self, bbox: tuple[float, float, float, float]) -> _SceneContext | None:
-        pxmin, pymin, pxmax, pymax = bbox
-        cx = 0.5 * (pxmin + pxmax)
-        cy = 0.5 * (pymin + pymax)
-        for scene in self._scenes.values():
-            sxmin, symin, sxmax, symax = scene.bounds
-            if sxmin <= cx <= sxmax and symin <= cy <= symax:
-                return scene
-        return None
-
-    def _write_patch(
+    def _write_tile(
         self,
-        scene: _SceneContext,
-        patch: Any,
-        bbox: tuple[float, float, float, float],
-    ) -> None:
-        pxmin, pymin, pxmax, pymax = bbox
-        window: Window = from_bounds(pxmin, pymin, pxmax, pymax, transform=scene.transform).round_offsets().round_lengths()
-        data = patch.astype(self.dtype, copy=False)
-        if data.ndim == 3 and data.shape[0] == 1:
-            data = data[0]
-        scene.writer.write(data, 1, window=window)
+        i: int,
+        pred: torch.Tensor,
+        max_prob: torch.Tensor,
+        batch: dict[str, Any],
+        context: dict[str, Any],
+        shape: tuple[int, int],
+        trainer: Trainer,
+        tiles_dir: Path,
+    ) -> str:
+        base = _tile_from_context(context, i, shape)
 
-    # ------------------------------------------------------------------
-    # STAC
-    # ------------------------------------------------------------------
+        lon, lat = base.centroid
+        res = int(base.resolution)
+        date_part = context["datetime"][i][:10].replace("-", "")
+        stem = f"pred_{lon:.6f}_{lat:.6f}_{date_part}_{res}m"
 
-    def _build_collection(self) -> pystac.Collection:
-        geoms = [scene.geometry_wgs84 for scene in self._scenes.values()]
-        datetimes = [scene.datetime for scene in self._scenes.values()]
-        union = shapely.ops.unary_union(geoms)
-        spatial_extent = pystac.SpatialExtent([list(union.bounds)])
-        temporal_extent = pystac.TemporalExtent([[min(datetimes), max(datetimes)]])
+        tile_dir = tiles_dir / stem
+        tile_dir.mkdir(parents=True, exist_ok=True)
 
-        return pystac.Collection(
-            id=self.collection_id,
-            description=self.collection_description,
-            extent=pystac.Extent(spatial=spatial_extent, temporal=temporal_extent),
-            license="proprietary",
+        base.with_np(pred.cpu().numpy().astype(np.uint8), ["pred_label"]).to_cog(
+            tile_dir / "pred_label.tif"
+        )
+        base.with_np(max_prob.cpu().numpy().astype(np.float32), ["pred_proba"]).to_cog(
+            tile_dir / "pred_proba.tif"
         )
 
-    def _build_item(self, scene: _SceneContext, collection: pystac.Collection) -> pystac.Item:
-        dt_utc = scene.datetime.astimezone(timezone.utc) if scene.datetime.tzinfo else scene.datetime.replace(tzinfo=timezone.utc)
-        item = pystac.Item(
-            id=f"{self.model_name}_{scene.scene_id}",
-            geometry=shapely.geometry.mapping(scene.geometry_wgs84),
-            bbox=list(scene.geometry_wgs84.bounds),
-            datetime=dt_utc,
-            properties={
-                "proj:epsg": _epsg_from_crs(scene.crs),
-                "model:name": self.model_name,
-                "source:scene_id": scene.scene_id,
-                "source:path": str(scene.source_path),
+        saved_inputs: dict[str, str] = {}
+        inputs_dir = tile_dir / "inputs"
+        for key in self.input_keys:
+            if key not in batch or not isinstance(batch[key], torch.Tensor):
+                continue
+            arr = batch[key][i].cpu().numpy().astype(np.float32)
+            if arr.ndim == 2:
+                arr = arr[np.newaxis]
+            bands = [f"{key}_{j}" for j in range(arr.shape[0])]
+            base.with_np(arr, bands).to_cog(inputs_dir / f"{key}.tif")
+            saved_inputs[key] = f"inputs/{key}.tif"
+
+        stac_ids: list[str] = list(context.get("stac_item_ids", [None] * (i + 1))[i] or [])
+        bbox: list[float] = list(context["bbox_wgs84"][i]) if "bbox_wgs84" in context else list(base.wgs84_bbox)
+
+        ctx: dict[str, Any] = {
+            "tile_stem": stem,
+            "crs": base.crs,
+            "datetime": context["datetime"][i],
+            "bbox_wgs84": bbox,
+            "stac_item_ids": stac_ids,
+            "model_name": self._model_name,
+            "model_checkpoint": str(trainer.ckpt_path) if trainer.ckpt_path else None,
+            "layers": {
+                "pred_label": "pred_label.tif",
+                "pred_proba": "pred_proba.tif",
+                **saved_inputs,
             },
-            collection=collection.id,
-        )
-        rel_href = Path("..") / ".." / scene.output_path.relative_to(self.output_dir)
-        item.add_asset(
-            self.asset_key,
-            pystac.Asset(
-                href=str(rel_href),
-                media_type=pystac.MediaType.COG,
-                roles=["data"],
-                title=f"{self.model_name} prediction for {scene.scene_id}",
-            ),
-        )
-        return item
+        }
+        with open(tile_dir / "context.json", "w") as f:
+            json.dump(ctx, f, indent=2)
 
+        log.debug("Tile written: %s", tile_dir)
+        return stem
 
-def _epsg_from_crs(crs_str: str) -> int | None:
-    if crs_str.upper().startswith("EPSG:"):
-        try:
-            return int(crs_str.split(":", 1)[1])
-        except ValueError:
-            return None
-    return None
+    def on_predict_end(self, trainer: Trainer, pl_module: LightningModule) -> None:
+        if self._tiles_dir is None:
+            return
+
+        manifest: dict[str, Any] = {
+            "model_name": self._model_name,
+            "model_checkpoint": str(trainer.ckpt_path) if trainer.ckpt_path else None,
+            "tiles": self._written_stems,
+            "mosaic": self.mosaic,
+        }
+        manifest_path = self._tiles_dir.parent / "manifest.json"
+        with open(manifest_path, "w") as f:
+            json.dump(manifest, f, indent=2)
+        log.info("Manifest: %s (%d tiles)", manifest_path, len(self._written_stems))
+
+        if self.mosaic:
+            mosaic_dir = self._tiles_dir.parent / "mosaic"
+            MosaicBuilder(self._tiles_dir, mosaic_dir).build()

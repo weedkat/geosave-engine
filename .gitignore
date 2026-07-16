@@ -136,6 +136,7 @@ celerybeat.pid
 
 # Environments
 .env
+!src/geosave_engine/templates/common/.env
 .envrc
 .venv
 env/
@@ -220,5 +221,6 @@ lightning_logs/
 
 # Local state files testing
 /wawa
+/biomass
 /workspace
 .VSCodeCounter
