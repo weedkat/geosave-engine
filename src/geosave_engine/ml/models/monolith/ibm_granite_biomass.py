@@ -119,7 +119,7 @@ class GraniteGeospatialBiomass(nn.Module):
             model_fn, image, input_size, overlap_ratio, pad_size
         )
 
-    @model_context(requires=['image'])
+    @model_context(requires={'image': torch.Tensor})
     def forward_logits(self, ctx: dict) -> torch.Tensor:
         """Run biomass regression on a pre-normalized 6-band HLS S30 image.
 

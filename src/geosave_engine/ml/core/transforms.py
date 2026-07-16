@@ -50,15 +50,24 @@ class ImageProcessor(nn.Module):
     Normalization source priority: explicit ``mean_norm``/``std_norm`` > ``model.img_mean``/``img_std`` > skip.
 
     Args:
+        in_channels: Expected input channel count (from ``band_map``). Used to
+            validate ``mean_norm``/``std_norm`` line up with the configured bands.
         model: Optional nn.Module. If it implements ``Normalization`` and no explicit
             mean/std are given, normalization stats are pulled from it.
         mean_norm: Per-channel mean override. Takes precedence over ``model``.
         std_norm: Per-channel std override. Takes precedence over ``model``.
         size: Output spatial size ``(H, W)`` or single int.
+
+    Raises:
+        ValueError: If resolved ``mean_norm``/``std_norm`` length doesn't match
+            ``in_channels`` — a hardcoded model default (e.g. 3-channel ImageNet
+            stats) silently mismatched against a multispectral ``band_map`` would
+            otherwise fail deep inside kornia with a confusing broadcast error.
     """
 
     def __init__(
         self,
+        in_channels: int,
         model: nn.Module | None = None,
         mean_norm: list[float] | None = None,
         std_norm: list[float] | None = None,
@@ -75,6 +84,14 @@ class ImageProcessor(nn.Module):
                     "(no img_mean/img_std). Normalization will be skipped.",
                     UserWarning,
                     stacklevel=2,
+                )
+        if mean_norm is not None and std_norm is not None:
+            if len(mean_norm) != in_channels or len(std_norm) != in_channels:
+                raise ValueError(
+                    f"mean_norm (len {len(mean_norm)}) / std_norm (len {len(std_norm)}) "
+                    f"do not match in_channels ({in_channels}) from band_map. "
+                    "Set model.init_args.mean_norm and model.init_args.std_norm to "
+                    f"lists of length {in_channels}, one value per band in band_map."
                 )
         self.resize = K.Resize(size) if size is not None else nn.Identity()
         self.normalize: K.Normalize | None = (
@@ -119,16 +136,16 @@ class ImageAugmenter(nn.Module):
     ) -> tuple[torch.Tensor, torch.Tensor]:
         """Apply stochastic pipeline to image, label, and optional nodata mask.
 
-        All three tensors receive the same spatial transform so label 
+        All three tensors receive the same spatial transform so label
         stay aligned with the augmented image.
 
         Args:
             img: Float image ``[B, C, H, W]``.
-            label: Integer label ``[B, H, W]``.
-        
+            label: Integer label ``[B, 1, H, W]``.
+
         Returns:
-            Tuple of ``(augmented_img, augmented_label)``.
+            Tuple of ``(augmented_img, augmented_label)``, label still ``[B, 1, H, W]``.
         """
         if self.pipeline is not None:
             img, label = self.pipeline(img, label)
-        return img, label.squeeze(1)
+        return img, label

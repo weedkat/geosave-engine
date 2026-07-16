@@ -11,7 +11,7 @@ from dotenv import load_dotenv
 from odc.geo.geobox import GeoBox
 from odc.geo.xr import xr_zeros
 
-from geosave_engine.geodata.core import GeoTile as GeoLayer
+from geosave_engine.geodata.tile import GeoTile as GeoLayer
 
 
 def pytest_configure(config):

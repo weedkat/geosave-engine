@@ -1,13 +1,14 @@
 services:
 
   # ── Core ──────────────────────────────────────────────────────────────────
-  spatial-db:
-    # PostGIS + pgSTAC schema pre-installed.
+  mlflow-db:
+    # Plain Postgres — MLflow's tracking/registry backend store only.
+    # Rasters are plain COGs in the storage bucket, no STAC catalog DB.
     # Pin this tag before going to production.
-    image: ghcr.io/stac-utils/pgstac:latest
+    image: postgres:16-alpine
     restart: always
     volumes:
-      - spatial_data:/var/lib/postgresql/data
+      - mlflow_db_data:/var/lib/postgresql/data
     environment:
       PGDATA: /var/lib/postgresql/data
       POSTGRES_USER: ${POSTGRES_USER:-geosave}
@@ -93,7 +94,7 @@ services:
     ports:
       - "${MLFLOW_PORT:-5000}:${MLFLOW_PORT:-5000}"
     depends_on:
-      spatial-db:
+      mlflow-db:
         condition: service_healthy
       storage:
         condition: service_healthy
@@ -102,7 +103,7 @@ services:
     networks:
       - backend_net
     environment:
-      MLFLOW_BACKEND_STORE_URI: "postgresql+psycopg2://${POSTGRES_USER:-geosave}:${POSTGRES_PASSWORD:-changeme}@spatial-db:5432/${POSTGRES_DB:-geosave}"
+      MLFLOW_BACKEND_STORE_URI: "postgresql+psycopg2://${POSTGRES_USER:-geosave}:${POSTGRES_PASSWORD:-changeme}@mlflow-db:5432/${POSTGRES_DB:-geosave}"
       MLFLOW_ARTIFACTS_DESTINATION: "s3://${S3_BUCKET_MLFLOW:-mlflow-artifacts}"
       MLFLOW_S3_ENDPOINT_URL: ${S3_ENDPOINT_URL:-http://storage:9000}
       MLFLOW_S3_IGNORE_TLS: "true"
@@ -172,7 +173,7 @@ services:
     networks:
       - backend_net
     depends_on:
-      - spatial-db
+      - mlflow-db
     environment:
       ADMINER_DESIGN: pepa-linha-dark
     logging:
@@ -186,5 +187,5 @@ networks:
     name: geosave_backend_net
 
 volumes:
-  spatial_data:
+  mlflow_db_data:
   storage_data:

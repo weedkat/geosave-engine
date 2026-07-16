@@ -1,267 +1,351 @@
-"""Geospatial EDA visualization utilities."""
+"""Auto-typed plotting for GeoTile.
 
+One entry point, ``plot()``. No caller-picked layer type (there's no more
+``RGBLayer``/``ContinuousLayer``/``LabelLayer`` to choose between) — each
+tile's own band count, dtype, and value range decide how it's rendered:
+
+- Exactly 3 bands -> RGB, 2–98 percentile stretched, band order as stored.
+- More than 3 bands -> RGB too, but which 3 count as R/G/B is genuinely
+  ambiguous from shape alone — pass ``rgb_bands=(r_name, g_name, b_name)``
+  or this raises, naming the tile and its available bands, rather than
+  guess. Resolved per panel by band *name*, not position, so one shared
+  ``rgb_bands`` value works correctly across several differently-ordered
+  multiband tiles in the same call — each panel looks its own names up in
+  its own ``tile.bands``.
+- 1 band, floating point -> continuous colormap.
+- 1 band, integer with a small number of distinct values -> categorical
+  (a label map), auto-paletted unless ``class_map``/``color_map`` is given.
+- Anything else (2 bands, or an integer band with too many distinct values
+  to plausibly be a label map) -> band 0 shown continuous, flagged in the
+  panel caption.
+
+Every panel also outlines ``tile.polygon`` (the exact AOI footprint, when
+set) on top of the image, at ``polygon_alpha`` opacity — ``0`` hides it, a
+tile with no polygon draws nothing regardless of the value.
+
+Multiple tiles are grouped by ``(bands, date)`` first, then split into
+connected components by actual bbox adjacency/overlap (not just centroid
+proximity — an intentional tiling grid has *different* centroids by
+design) — only tiles that are genuinely part of one contiguous area mosaic
+together (via ``geosave_engine.geodata.tile.mosaic``); anything else facets
+as its own panel, even if it happens to share bands and date. A single tile
+with its own time dimension is split into one panel per timestep the same
+way. Each panel gets its own time/place caption — there's no one global
+caption, since panels in a facet grid can legitimately differ on both.
+"""
 from __future__ import annotations
 
-from dataclasses import dataclass, field
+import dataclasses
+from dataclasses import dataclass
+from typing import Literal, Sequence, TypedDict, cast
 
 import matplotlib.pyplot as plt
 import numpy as np
-from matplotlib.colors import BoundaryNorm, ListedColormap
-from matplotlib.patches import Patch, Rectangle
-from mpl_toolkits.axes_grid1 import make_axes_locatable
+from matplotlib.patches import Patch
+from typing_extensions import Unpack
 
-from geosave_engine.geodata.core import GeoTile
-from geosave_engine.utils.geolocator import Place
+from geosave_engine.geodata.tile import GeoTile, mosaic
+from geosave_engine.utils.colorize import Palette, colorize
 
-# Colorbar dimensions in inches — must match make_axes_locatable args in ContinuousLayer.plot().
-# plot_eda_grid uses these to pre-allocate extra column width so the image area stays at cell_w.
-_CB_WIDTH: float = 0.05
-_CB_PAD: float = 0.05
+_CATEGORICAL_MAX_CLASSES = 32  # beyond this, an integer band is probably not a label map
 
-
-def _first_frame(array: np.ndarray) -> np.ndarray:
-    """Drop a leading time axis for single-scene visualisation."""
-    if array.ndim == 4:
-        return array[0]
-    return array
+PanelKind = Literal["rgb", "continuous", "categorical", "fallback"]
 
 
 @dataclass
-class RGBLayer:
-    """Multi-band GeoTile rendered as a 2–98 percentile-stretched RGB composite.
-
-    Args:
-        title: Subplot title.
-        geotile: GeoTile with shape (bands, H, W).
-        bands: 0-based band indices for R, G, B. Defaults to (0, 1, 2).
-    """
-
+class _Panel:
+    kind: PanelKind
+    tile: GeoTile
     title: str
-    geotile: GeoTile
-    bands: tuple[int, int, int] = (0, 1, 2)
-
-    def plot(self, ax: plt.Axes) -> None:
-        if self.geotile.data is None:
-            ax.text(0.5, 0.5, "No data", ha="center", va="center", transform=ax.transAxes)
-            return
-
-        arr = _first_frame(self.geotile.to_numpy())
-
-        if arr.ndim < 3 or arr.shape[0] <= max(self.bands):
-            ax.text(0.5, 0.5, "RGB needs ≥3 bands", ha="center", va="center", transform=ax.transAxes)
-            return
-
-        rgb = arr[list(self.bands)].transpose(1, 2, 0).astype(np.float32)
-        out = np.zeros_like(rgb)
-        for i in range(3):
-            channel = np.ma.masked_invalid(rgb[..., i])
-            try:
-                lo, hi = np.percentile(channel.compressed(), [2, 98])
-            except ValueError:
-                lo, hi = float(np.nanmin(channel)), float(np.nanmax(channel))
-            out[..., i] = np.clip((rgb[..., i] - lo) / (hi - lo + 1e-8), 0, 1)
-
-        ax.imshow(out, origin="upper")
-        ax.set_title(self.title, fontsize=10, fontweight="bold")
-        ax.set_xticks([])
-        ax.set_yticks([])
+    rgb_bands: tuple[str, str, str] = ("", "", "")
+    cmap: str = "viridis"
+    class_map: dict[int, str] | None = None
+    color_map: Palette | None = None
+    polygon_alpha: float = 0.8
 
 
-@dataclass
-class ContinuousLayer:
-    """Single-band continuous GeoTile (e.g. NDVI, elevation).
-
-    Args:
-        title: Subplot title.
-        geotile: GeoTile with shape (1, H, W) or (H, W).
-        cmap: Matplotlib colormap name or object.
-    """
-
-    title: str
-    geotile: GeoTile
-    cmap: str = "RdYlGn"
-
-    def plot(self, ax: plt.Axes) -> None:
-        if self.geotile.data is None:
-            ax.text(0.5, 0.5, "No data", ha="center", va="center", transform=ax.transAxes)
-            return
-
-        arr = np.ma.masked_invalid(_first_frame(self.geotile.to_numpy()))
-        if arr.ndim == 3:
-            arr = arr[0]
-        img = ax.imshow(arr, cmap=self.cmap, origin="upper")
-
-        if fig := ax.get_figure():
-            divider = make_axes_locatable(ax)
-            cax = divider.append_axes("right", size=_CB_WIDTH, pad=_CB_PAD)
-            cb = fig.colorbar(img, cax=cax)
-            cb.ax.tick_params(labelsize=6)
-
-        ax.set_title(self.title, fontsize=10, fontweight="bold")
-        ax.set_xticks([])
-        ax.set_yticks([])
+def _resolve_rgb_bands(tile: GeoTile, title: str, rgb_bands: tuple[str, str, str] | None) -> tuple[str, str, str]:
+    if tile.num_bands == 3 and rgb_bands is None:
+        return cast("tuple[str, str, str]", tile.bands)
+    if rgb_bands is None:
+        raise ValueError(
+            f"{title!r}: {tile.num_bands} bands {tile.bands} — which 3 are R/G/B is ambiguous. "
+            f"Pass rgb_bands=(r_name, g_name, b_name) to plot() explicitly."
+        )
+    missing = [b for b in rgb_bands if b not in tile.bands]
+    if missing:
+        raise ValueError(f"{title!r}: rgb_bands {missing} not in this tile's bands {tile.bands}")
+    return rgb_bands
 
 
-@dataclass
-class LabelLayer:
-    """Discrete integer label GeoTile rendered with a caller-supplied color map.
-
-    Args:
-        title: Subplot title, also used as the legend group title.
-        geotile: GeoTile with integer class values.
-        color_map: ``{class_id: hex_color}`` for imshow rendering.
-        class_map: ``{class_id: name}`` for legend labels. Falls back to str(id) if None.
-    """
-
-    title: str
-    geotile: GeoTile
-    color_map: dict[int, str] | dict[str, str] = field(default_factory=dict)
-    class_map: dict[int, str] | dict[str, str] | None = None
-    _cmap: ListedColormap = field(init=False, repr=False)
-    _norm: BoundaryNorm = field(init=False, repr=False)
-
-    def __post_init__(self) -> None:
-        values = [int(v) for v in sorted(self.color_map)]
-        colors = [self.color_map[v] for v in sorted(self.color_map)]
-        self._cmap = ListedColormap(colors)
-        boundaries = [v - 0.5 for v in values] + [values[-1] + 0.5]
-        self._norm = BoundaryNorm(boundaries, self._cmap.N)
-
-    def label(self, class_id: int | str) -> str:
-        if self.class_map and class_id in self.class_map:
-            return self.class_map[class_id]
-        return str(class_id)
-
-    def legend_handles(self) -> tuple[list[Patch], list[str]]:
-        """Return handles and labels filtered to class IDs present in the data."""
-        if self.geotile.data is None:
-            return [], []
-        unique = set(np.unique(_first_frame(self.geotile.to_numpy())).astype(int))
-        handles = [Patch(facecolor=self.color_map[cid], edgecolor="black") for cid in sorted(self.color_map) if cid in unique]
-        labels = [self.label(cid) for cid in sorted(self.color_map) if cid in unique]
-        return handles, labels
-
-    def plot(self, ax: plt.Axes) -> None:
-        if self.geotile.data is None:
-            ax.text(0.5, 0.5, "No data", ha="center", va="center", transform=ax.transAxes)
-            return
-
-        arr = np.ma.masked_invalid(_first_frame(self.geotile.to_numpy()).astype(float))
-        if arr.ndim == 3:
-            arr = arr[0]
-        ax.imshow(arr, cmap=self._cmap, norm=self._norm, origin="upper")
-        ax.set_title(self.title, fontsize=10, fontweight="bold")
-        ax.set_xticks([])
-        ax.set_yticks([])
-
-
-def _cell_dims(layers: list[RGBLayer | ContinuousLayer | LabelLayer]) -> tuple[float, float]:
-    """Return (cell_w, cell_h) in inches derived from the first layer with data."""
-    dpi = plt.rcParams["figure.dpi"]
-    for layer in layers:
-        if layer.geotile.data is not None:
-            data = _first_frame(layer.geotile.to_numpy())
-            return data.shape[-1] / dpi, data.shape[-2] / dpi
-    return 3.0, 3.0  # fallback when all layers have no data
-
-
-def plot_eda_grid(
-    layers: list[RGBLayer | ContinuousLayer | LabelLayer],
-    title: str = "EDA Grid",
-    cols: int | None = None,
-    gap: float = 0.1,
-    legend_width: float = 1.0,
-    legend_gap: float = 0.03,
-) -> tuple[plt.Figure, np.ndarray]:
-    if not layers:
-        raise ValueError("layers list cannot be empty")
-
-    plt.rcParams["font.family"] = "sans-serif"
-    plt.rcParams["font.sans-serif"] = ["Inter", "Liberation Sans", "Noto Sans", "Helvetica", "Arial", "DejaVu Sans"]
-
-    n = len(layers)
-    cols = min(cols or n, n)
-    rows = int(np.ceil(n / cols))
-
-    label_layers = [ll for ll in layers if isinstance(ll, LabelLayer) and ll.legend_handles()[0]]
-
-    cell_w, cell_h = _cell_dims(layers)
-
-    has_cb = [
-        any(isinstance(layers[r * cols + c], ContinuousLayer) for r in range(rows) if r * cols + c < n)
-        for c in range(cols)
-    ]
-    col_widths = [cell_w + _CB_WIDTH + _CB_PAD if hc else cell_w for hc in has_cb]
-    plot_width = sum(col_widths)
-    fig_width = plot_width + (legend_width if label_layers else 0)
-    right = plot_width / fig_width if label_layers else 1.0
-
-    ref = layers[0].geotile
-    lon, lat = ref.centroid
-    coord_str = f"{abs(lat):.4f}°{'N' if lat >= 0 else 'S'}, {abs(lon):.4f}°{'E' if lon >= 0 else 'W'}"
-    place = Place.from_coordinate(lat, lon)
-    address = place.to_address() if place else None
-    geo_label = f"{address}  ·  {coord_str}" if address else coord_str
-
-    times = ref.times
-    if times:
-        t0 = str(times[0])[:10]
-        date_str = f"{t0} → {str(times[-1])[:10]}" if len(times) > 1 else t0
-    else:
-        date_str = ref.datetime.strftime("%Y-%m-%d")
-    geo_label = f"{date_str}  ·  {geo_label}"
-
-    fig, axes = plt.subplots(
-        rows, cols,
-        figsize=(fig_width, rows * cell_h + 0.2),
-        gridspec_kw={'wspace': gap, 'hspace': gap, 'width_ratios': col_widths},
-    )
-    axes_flat = np.array(axes).flatten()
-
-    for layer, ax in zip(layers, axes_flat):
-        layer.plot(ax)
-    for ax in axes_flat[n:]:
-        ax.set_visible(False)
-
-    fig.tight_layout()
-
-    cx = (min(ax.get_position().x0 for ax in axes_flat[:n]) +
-          max(ax.get_position().x1 for ax in axes_flat[:n])) / 2
-    fig.suptitle(title, fontsize=12, weight='bold', x=cx, y=0.97)
-
-    if label_layers:
-        panel_cx = right + (legend_width / fig_width) / 2
-        legends = []
-        for ll in label_layers:
-            handles, labels = ll.legend_handles()
-            leg = fig.legend(
-                handles, labels, title=ll.title,
-                loc="upper center",
-                bbox_to_anchor=(panel_cx, 1.0), bbox_transform=fig.transFigure,
-                fontsize=9, frameon=False,
-                title_fontproperties={"weight": "bold", "size": 9},
+def _detect_panel(
+    tile: GeoTile,
+    title: str,
+    *,
+    cmap: str,
+    class_map: dict[int, str] | None,
+    color_map: Palette | None,
+    rgb_bands: tuple[str, str, str] | None,
+    polygon_alpha: float,
+) -> _Panel:
+    if tile.num_bands >= 3:
+        return _Panel(
+            "rgb", tile, title, rgb_bands=_resolve_rgb_bands(tile, title, rgb_bands), polygon_alpha=polygon_alpha
+        )
+    if tile.num_bands == 1:
+        if np.issubdtype(tile.data.dtype, np.floating):
+            return _Panel("continuous", tile, title, cmap=cmap, polygon_alpha=polygon_alpha)
+        n_unique = int(np.unique(tile.data.values).size)
+        if n_unique <= _CATEGORICAL_MAX_CLASSES:
+            return _Panel(
+                "categorical", tile, title, class_map=class_map, color_map=color_map, polygon_alpha=polygon_alpha
             )
-            legends.append(leg)
+        return _Panel("continuous", tile, title, cmap=cmap, polygon_alpha=polygon_alpha)
+    return _Panel("fallback", tile, title, cmap=cmap, polygon_alpha=polygon_alpha)  # 2 bands, no clean mapping
 
-        fig.canvas.draw()
-        fig_h = fig.get_window_extent().height
-        total_h = sum(leg.get_window_extent().height for leg in legends) / fig_h + legend_gap * (len(legends) - 1)
-        y = 0.5 + total_h / 2
-        for i, leg in enumerate(legends):
-            leg.set_bbox_to_anchor((panel_cx, y), transform=fig.transFigure)
-            y -= leg.get_window_extent().height / fig_h + (legend_gap if i < len(legends) - 1 else 0)
 
-        fig.canvas.draw()
-        fig_ext = fig.get_window_extent()
-        exts = [leg.get_window_extent() for leg in legends]
-        pad = 6
-        bx0 = (min(e.x0 for e in exts) - pad) / fig_ext.width
-        by0 = (min(e.y0 for e in exts) - pad) / fig_ext.height
-        bw = (max(e.x1 for e in exts) + pad) / fig_ext.width - bx0
-        bh = (max(e.y1 for e in exts) + pad) / fig_ext.height - by0
-        fig.add_artist(Rectangle((bx0, by0), bw, bh, transform=fig.transFigure,
-                                  fill=False, edgecolor="grey", linewidth=0.8, clip_on=False))
+def _as_mpl_color(color: tuple[int, int, int] | str) -> tuple[float, float, float] | str:
+    if isinstance(color, str):
+        return color
+    return tuple(c / 255 for c in color)
 
-    fig.text(cx, 0.015, geo_label, ha="center", va="bottom", fontsize=9, color="#666666", style="italic")
 
-    return fig, axes_flat
+def _default_palette(classes: list[int]) -> dict[int, tuple[int, int, int]]:
+    return {c: tuple(int(x * 255) for x in plt.cm.tab20(i % 20)[:3]) for i, c in enumerate(classes)}
+
+
+def _stretch(channel: np.ndarray) -> np.ndarray:
+    masked = np.ma.masked_invalid(channel)
+    try:
+        lo, hi = np.percentile(masked.compressed(), [2, 98])
+    except ValueError:
+        lo, hi = float(np.nanmin(channel)), float(np.nanmax(channel))
+    return np.clip((channel - lo) / (hi - lo + 1e-8), 0, 1)
+
+
+def _time_str(ts) -> str:
+    return ts.strftime("%Y-%m-%d %H:%M:%S")
+
+
+def _panel_caption(tile: GeoTile) -> str:
+    """Per-panel time + place caption — each panel may genuinely differ on both."""
+    time_str = _time_str(tile.start) if tile.start == tile.end else f"{_time_str(tile.start)} → {_time_str(tile.end)}"
+    address = tile.location.get("address")
+    geo_str = f"{address}  ·  {tile.coordinate_str}" if address else tile.coordinate_str
+    return f"{time_str}\n{geo_str}"
+
+
+def _draw_polygon(ax: plt.Axes, tile: GeoTile, alpha: float) -> None:
+    """Outline `tile.polygon` (exact AOI footprint) on top of the plotted image, if set.
+
+    Converts to pixel space via the tile's own affine transform (inverted),
+    the same coordinate system `imshow` already draws the array in — no
+    `extent=` needed on the image itself.
+
+    Uses `.exterior.points` (raw native-CRS coordinates), not `.geojson()`
+    — the latter always reprojects to WGS84 regardless of the geometry's
+    actual CRS (correct per the GeoJSON spec, wrong for pixel conversion).
+    """
+    if tile.polygon is None or alpha <= 0:
+        return
+    poly = tile.polygon.to_crs(tile.crs) if tile.crs else tile.polygon
+    inv = ~tile.affine
+    px, py = zip(*(inv * (x, y) for x, y in poly.exterior.points))
+    ax.plot(px, py, color="red", linewidth=1.5, alpha=alpha)
+
+
+def _render(ax: plt.Axes, panel: _Panel) -> None:
+    if panel.kind == "rgb":
+        arr = panel.tile.to_numpy(bands=list(panel.rgb_bands)).astype("float32")
+        rgb = np.stack([_stretch(arr[i]) for i in range(3)], axis=-1)
+        ax.imshow(rgb)
+    elif panel.kind in ("continuous", "fallback"):
+        arr = np.ma.masked_invalid(panel.tile.to_numpy()[0])
+        im = ax.imshow(arr, cmap=panel.cmap)
+        plt.colorbar(im, ax=ax, fraction=0.046, pad=0.04)
+    else:  # categorical
+        arr = panel.tile.to_numpy()[0].astype(int)
+        classes = sorted(np.unique(arr).tolist())
+        palette: Palette = panel.color_map or _default_palette(classes)
+        ax.imshow(colorize(arr, palette))
+        labels = panel.class_map or {}
+        handles = [Patch(color=_as_mpl_color(palette[c]), label=labels.get(c, str(c))) for c in classes]
+        ax.legend(handles=handles, loc="center left", bbox_to_anchor=(1.02, 0.5), fontsize=8)
+    _draw_polygon(ax, panel.tile, panel.polygon_alpha)
+    ax.set_title(panel.title, fontsize=10, fontweight="bold")
+    caption = _panel_caption(panel.tile)
+    if panel.kind == "fallback":
+        caption = f"band 0 of {panel.tile.num_bands} — no RGB/label mapping\n{caption}"
+    ax.set_xlabel(caption, fontsize=7, color="#666666", style="italic")
+    ax.set_xticks([])
+    ax.set_yticks([])
+
+
+def _group_key(tile: GeoTile) -> tuple[tuple[str, ...], str]:
+    return (tile.bands, tile.start.date().isoformat())
+
+
+def _adjacent_components(tiles: list[GeoTile]) -> list[list[GeoTile]]:
+    """Split tiles into groups that actually touch/overlap — not just share bands+date.
+
+    A tiling grid's adjacent tiles have different centroids by design, so
+    centroid proximity can't tell "meant to mosaic" apart from "unrelated
+    location that coincidentally shares bands and date." Real bbox
+    adjacency can.
+    """
+    n = len(tiles)
+    parent = list(range(n))
+
+    def find(i: int) -> int:
+        while parent[i] != i:
+            parent[i] = parent[parent[i]]
+            i = parent[i]
+        return i
+
+    def union(i: int, j: int) -> None:
+        ri, rj = find(i), find(j)
+        if ri != rj:
+            parent[ri] = rj
+
+    for i in range(n):
+        for j in range(i + 1, n):
+            if tiles[i].crs == tiles[j].crs and tiles[i].bbox_polygon.intersects(tiles[j].bbox_polygon):
+                union(i, j)
+
+    components: dict[int, list[GeoTile]] = {}
+    for i, t in enumerate(tiles):
+        components.setdefault(find(i), []).append(t)
+    return list(components.values())
+
+
+def _panel_title(component: list[GeoTile]) -> str:
+    description = component[0].metadata.get("description")
+    if description:
+        return description
+    return f"{len(component)} tiles mosaicked" if len(component) > 1 else ""
+
+
+class PlotKwargs(TypedDict, total=False):
+    """Keyword args accepted by `plot()` — also what `GeoTile.plot()` forwards."""
+
+    cmap: str
+    class_map: dict[int, str] | None
+    color_map: Palette | None
+    rgb_bands: tuple[str, str, str] | None
+    polygon_alpha: float
+    cols: int | None
+    title: str
+
+
+def plot(tiles: GeoTile | Sequence[GeoTile], **kwargs: Unpack[PlotKwargs]) -> tuple[plt.Figure, np.ndarray]:
+    """Plot one or more GeoTiles, auto-picking a renderer per tile.
+
+    Grouping, one tile pair at a time — same rule regardless of how many
+    tiles are passed:
+
+    | Same date? | Same/adjacent location? | Result |
+    | --- | --- | --- |
+    | Yes | Yes (touch or overlap) | One mosaicked panel (via ``mosaic()``) |
+    | Yes | No (unrelated location) | Two separate panels — same date alone isn't enough |
+    | No | Yes (same/overlapping spot, different day) | Two separate panels — a time series, not a mosaic |
+    | No | No | Two separate panels |
+
+    Concretely: an ingested tiling grid (adjacent chips, same acquisition
+    day) mosaics into one continuous image. A handful of anchors sampled
+    from across a whole training set (different places, maybe different
+    days) facets one panel per anchor. A single location revisited over
+    time facets one panel per date. Two unrelated locations that happen to
+    share an acquisition date do **not** silently merge into one panel just
+    because the group key matches — adjacency is checked for real (bbox
+    intersects), not guessed from date/bands alone.
+
+    A single tile with its own time dimension is split into one panel per
+    timestep first, then run through the same rule (so a multi-date single
+    tile still facets by date exactly like a list of single-date tiles
+    would). Each resulting panel carries its own time + place caption —
+    there's no one global caption, since panels can legitimately differ on
+    both.
+
+    Args:
+        tiles: One GeoTile, or several to mosaic/facet together.
+        cmap: Colormap for single-band float (continuous) tiles. Default `"viridis"`.
+        class_map: ``{value: name}`` for single-band integer (categorical)
+            tiles — applies to every categorical panel in this call.
+        color_map: ``{value: hex_or_rgb}`` for the same — auto-generated
+            from a fixed palette if omitted.
+        rgb_bands: ``(r_name, g_name, b_name)`` for tiles with more than 3
+            bands — required in that case, since which 3 count as color is
+            ambiguous from shape alone. Resolved per panel by name against
+            that panel's own ``tile.bands``, so one shared value works even
+            across several differently-ordered multiband tiles in one call.
+            Ignored for exactly-3-band tiles (band order as stored).
+        cols: Facet grid column count. Auto-sized (max 4) if omitted.
+        polygon_alpha: Opacity of a panel's ``tile.polygon`` outline (the
+            exact AOI footprint, when set — e.g. from ``from_polygon``/
+            ``from_geojson``), ``0`` hides it. Default `0.8`. A tile with no
+            polygon (built from a bbox/coordinate) draws nothing regardless.
+        title: Optional figure suptitle.
+
+    Returns:
+        ``(Figure, ndarray of Axes)`` — same shape whether one panel or several.
+
+    Raises:
+        ValueError: ``tiles`` is empty; a tile has more than 3 bands and
+            ``rgb_bands`` wasn't given; ``rgb_bands`` names a band a tile
+            doesn't have; or adjacent tiles can't mosaic (mismatched CRS
+            without reconciliation, etc — see ``mosaic()``).
+    """
+    cmap = kwargs.get("cmap", "viridis")
+    class_map = kwargs.get("class_map")
+    color_map = kwargs.get("color_map")
+    rgb_bands = kwargs.get("rgb_bands")
+    cols = kwargs.get("cols")
+    polygon_alpha = kwargs.get("polygon_alpha", 0.8)
+    title = kwargs.get("title", "")
+
+    tile_list = [tiles] if isinstance(tiles, GeoTile) else list(tiles)
+    if not tile_list:
+        raise ValueError("plot() needs at least one GeoTile")
+
+    if len(tile_list) == 1 and tile_list[0].has_time:
+        base = tile_list[0]
+        # with_data() alone would leave .datetime as the original (start != end)
+        # range — every split-off tile would then collide into one bogus group.
+        tile_list = [
+            dataclasses.replace(base, data=base.data.isel(time=i), datetime=base.times[i])
+            for i in range(len(base.times))
+        ]
+
+    groups: dict[tuple[tuple[str, ...], str], list[GeoTile]] = {}
+    for t in tile_list:
+        groups.setdefault(_group_key(t), []).append(t)
+
+    components = [component for group in groups.values() for component in _adjacent_components(group)]
+
+    panels = [
+        _detect_panel(
+            mosaic(component) if len(component) > 1 else component[0],
+            title=_panel_title(component),
+            cmap=cmap,
+            class_map=class_map,
+            color_map=color_map,
+            rgb_bands=rgb_bands,
+            polygon_alpha=polygon_alpha,
+        )
+        for component in components
+    ]
+
+    n = len(panels)
+    cols = cols or min(4, n)
+    rows = -(-n // cols)
+    fig, axes = plt.subplots(rows, cols, figsize=(4 * cols, 4.6 * rows), squeeze=False)
+    axes_flat = axes.flatten()
+    for ax, panel in zip(axes_flat, panels):
+        _render(ax, panel)
+    for ax in axes_flat[n:]:
+        ax.axis("off")
+
+    fig.tight_layout(rect=(0, 0, 1, 0.96) if title else None)
+    if title:
+        fig.suptitle(title, fontsize=11, y=0.99)
+    return fig, axes

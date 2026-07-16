@@ -4,35 +4,19 @@ src/
 │   │   ├── __init__.py
 │   │   └── upload.py
 │   ├── cli
-│   │   ├── docs
-│   │   │   ├── generator.py
+│   │   ├── commands
 │   │   │   ├── __init__.py
-│   │   │   ├── parser.py
-│   │   │   └── rendering.py
-│   │   ├── generate
-│   │   │   ├── generator.py
+│   │   │   ├── artifact.py
+│   │   │   ├── create.py
+│   │   │   └── infra.py
+│   │   ├── workspace
 │   │   │   ├── __init__.py
-│   │   │   ├── request.py
-│   │   │   └── scaffold.py
-│   │   ├── io
-│   │   │   ├── console.py
-│   │   │   ├── __init__.py
-│   │   │   └── prompter.py
-│   │   ├── runtime
-│   │   │   ├── arguments.py
-│   │   │   ├── environment.py
-│   │   │   ├── executor.py
-│   │   │   ├── __init__.py
-│   │   │   ├── runner.py
-│   │   │   └── workspace.py
-│   │   ├── search
-│   │   │   ├── __init__.py
-│   │   │   ├── library.py
-│   │   │   └── project.py
+│   │   │   ├── artifacts.py
+│   │   │   ├── model.py
+│   │   │   ├── scaffold.py
+│   │   │   └── templates.py
 │   │   ├── errors.py
-│   │   ├── __init__.py
-│   │   ├── main.py
-│   │   └── paths.py
+│   │   └── main.py
 │   ├── core
 │   │   ├── __init__.py
 │   │   └── resolver.py
@@ -108,6 +92,13 @@ src/
 │   │   └── optimizers
 │   │       ├── adamw.py
 │   │       └── __init__.py
+│   ├── templates
+│   │   ├── common
+│   │   │   ├── .env
+│   │   │   └── main.py
+│   │   ├── object_detection
+│   │   ├── pixelwise_regression
+│   │   └── semantic_segmentation
 │   ├── utils
 │   │   ├── archives.py
 │   │   ├── cql2.py
@@ -122,21 +113,3 @@ src/
 │   │   └── yaml_config.py
 │   ├── __about__.py
 │   └── __init__.py
-└── templates
-    ├── plugins
-    │   ├── notebook
-    │   │   └── exploratory_data_analysis.ipynb
-    │   └── scripts
-    │       ├── dynamic_world_ingest
-    │       └── sentinel2_l1c_ingest
-    └── workspace
-        ├── common
-        │   ├── artifacts
-        │   ├── data
-        │   ├── main.py
-        │   └── scripts
-        ├── object_detection
-        ├── pixelwise_regression
-        └── semantic_segmentation
-            ├── supervised
-            └── unimatch_v2

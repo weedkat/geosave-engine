@@ -9,6 +9,7 @@ Act as senior Python co-developer for GeoSave Engine. Build production-grade geo
 - Read relevant repo files before changing behavior.
 - Use real APIs, deps, commands, and paths from repo.
 - Match existing structure and style.
+- If there is a better design tell.
 - Keep diffs small and tied to task.
 - Ask questions when blocked or risk is high.
 - Give reason for every changed file.
@@ -21,9 +22,24 @@ Act as senior Python co-developer for GeoSave Engine. Build production-grade geo
 - Main goal: generate ready-to-use geospatial ML workspaces.
 - Source package: `src/geosave_engine`.
 - Workspace templates: `src/geosave_engine/templates`.
-- Plugin scripts/notebooks: `src/geosave_engine/plugins`.
-- Generated/manual workspace output: `workspace/`.
+- `workspace/` is not part of the library — it's a separate implementation built by running `geosave create` then filling in the scaffolded template. Treat it as an example/consumer, not source.
 - Test data: `tests/data/`.
+
+## Workflow
+
+Guides: `docs/guide/workflow.md` (full step-by-step, ingestion through registration). Reference: `docs/concept/geotile.md` (`GeoAnchor`/`GeoTile`/`GeoStack`), `docs/concept/pipeline.md` (`GeoPipeline`, sources, STAC), `docs/concept/model.md` (`GeoDataset`, `SemanticSegmentationTask`/`DataModule`, config.yaml).
+
+- `geosave infra`: local dev sandbox (Postgres + S3 + MLflow via docker compose). Real projects point env vars at their own MLflow/S3 directly.
+- `geosave create` scaffolds a workspace: pipeline, configs, and a data/lightning module for Path B — all editable.
+- `config.yaml` top-level run key: `run_name:`.
+- `GeoPipeline` builds one anchor's layers (`ingest(anchor) -> dict[layer_name, GeoTile]`), no disk I/O. `save_dataset(pipeline, anchors, root)` bulk-ingests to disk (`data/<split>/<anchor_stem>.geostack/<layer_name>.zarr` + `manifest.json`, resumable via `ManifestWriter`). `stream_ingest(pipeline, anchors)` is the no-disk equivalent. Anchors come from `AnchorSource` specs (`CoordinateSource`/`GeoJSONSource`/`PolygonSource`/`GeotiffSource`/`ZarrSource`) or a hand-built list.
+- `GeoDataset` discovers anchors via `root.rglob("*.geostack")`, any nesting depth.
+- Data versioning: plain `dvc` on `data/` — directory layout only, no DVC code/deps in this repo.
+- Model definition, two paths:
+  - Path A — prebuilt: `SemanticSegmentationTask` + `SemanticSegmentationDataModule`, config-only. `image_key`/`label_key`/`mask_key` map to your GeoDataset layer names; `class_map`/`band_map` derive `num_classes`/`in_channels`.
+  - Path B — custom: write your own `modules/lightning_module.py`. Never subclass `SemanticSegmentationTask` — write a fresh module.
+- Train/test/predict: `python main.py fit -c configs/model.yaml` from the workspace root. `GeosaveCLI` auto-injects `ModelCheckpoint` + TensorBoard/MLflow/CSV loggers unless the config sets its own; MLflow logger reads `MLFLOW_TRACKING_URI`.
+- `geosave upload -a <run>/<version>` rebuilds the model from checkpoint + config, registers it to MLflow's model registry.
 
 ## Change Rules
 
@@ -38,6 +54,7 @@ Act as senior Python co-developer for GeoSave Engine. Build production-grade geo
 
 - Use typed params and returns.
 - Avoid `Any` unless external APIs force it.
+- Avoid band aid solution
 - Validate inputs early; Raise clear errors.
 - Use named constants for repeated literals.
 - Keep functions/classes focused on one task.

@@ -1,8 +1,17 @@
-from typing import Any
+from __future__ import annotations
+
+import dataclasses
+from typing import TYPE_CHECKING, Any, TypeVar
 
 import numpy as np
 import pystac
 import xarray as xr
+from odc.geo.geobox import GeoboxTiles
+
+if TYPE_CHECKING:
+    from geosave_engine.geodata.tile.geoanchor import GeoAnchor
+
+T = TypeVar("T", bound="GeoAnchor")
 
 
 def extract_stac_attrs(item: pystac.Item, paths: dict[str, str]) -> dict[str, Any]:
@@ -96,3 +105,38 @@ def spatial_da(
         coords["spatial_ref"] = like.coords["spatial_ref"]
 
     return xr.DataArray(arr, dims=["y", "x"], coords=coords)
+
+
+def chunk_geotile(full: T, tile_size_m: float, resolution: float) -> list[T]:
+    """Split one large GeoAnchor/GeoTile into a grid of bounded sub-anchors.
+
+    Bounds per-anchor memory for large areas — each sub-tile covers at most
+    ``tile_size_m`` per side. Built via ``with_geobox`` (pure geometry,
+    shares any data reference, no pixels read or copied), so this works
+    whether ``full`` is a bare ``GeoAnchor`` (an AOI meant to be fetched
+    later, e.g. via STAC) or an already-loaded ``GeoTile`` (a Zarr/GeoTIFF
+    anchor read from disk) — the return type matches whichever was passed
+    in. In the loaded case, if ``full.data`` is lazy (dask-backed), nothing
+    is read from disk until a sub-tile is rendered (``to_tensor``/``to_numpy``,
+    which clips to the sub-tile's own bbox) — real windowed reads, not just
+    a smaller bounding box drawn on an already-materialized array.
+
+    ``full.polygon`` (if set) is dropped on each sub-tile — it describes the
+    whole original area, not any one grid cell, so keeping it would make
+    every sub-tile misreport its footprint. Sub-tiles fall back to their own
+    geobox-derived bbox polygon instead, same as any anchor with no stored
+    polygon.
+
+    Args:
+        full: GeoAnchor or GeoTile covering the whole area to split.
+        tile_size_m: Max sub-tile size in meters (square).
+        resolution: Pixel size in meters, used to convert tile_size_m to pixels.
+
+    Returns:
+        One instance (same type as ``full``) per grid cell intersecting
+        ``full``'s extent.
+    """
+    px = max(1, round(tile_size_m / resolution))
+    grid = GeoboxTiles(full.geobox, (px, px))
+    sub_tiles = [full.with_geobox(grid[idx]) for idx in grid.tiles(full.geobox.extent)]
+    return [dataclasses.replace(t, polygon=None) if t.polygon is not None else t for t in sub_tiles]

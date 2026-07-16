@@ -1,10 +1,19 @@
 from __future__ import annotations
 
+from typing import Any, NotRequired, TypedDict
+
 import torch
 from lightning import LightningModule
 
 from geosave_engine.ml.core.transforms import ImageProcessor
 from geosave_engine.ml.models.monolith.ibm_granite_biomass import GraniteGeospatialBiomass
+
+
+class GraniteBiomassBatch(TypedDict):
+    """Batch shape produced by GeoDataset — keyed by raw HLSS30Pipeline.layer_name."""
+
+    hls_s30: torch.Tensor
+    context: NotRequired[dict[str, Any]]
 
 
 class GraniteBiomassInference(LightningModule):
@@ -37,7 +46,7 @@ class GraniteBiomassInference(LightningModule):
         if hasattr(self, "model"):
             return
         self.model = GraniteGeospatialBiomass(pretrained=True)
-        self.preprocessor = ImageProcessor(model=self.model)
+        self.preprocessor = ImageProcessor(in_channels=6, model=self.model)
 
     def forward(self, image: torch.Tensor) -> torch.Tensor:
         """Normalize then run sliding-window biomass regression.
@@ -53,11 +62,11 @@ class GraniteBiomassInference(LightningModule):
             image, self.patch_size, self.overlap_ratio, self.pad_size
         )
 
-    def predict_step(self, batch: dict, batch_idx: int) -> dict:
+    def predict_step(self, batch: GraniteBiomassBatch, batch_idx: int) -> dict:
         """Run inference on one batch, pass through spatial metadata.
 
         Args:
-            batch: Dict with ``'image'`` as (B, 6, H, W) HLS S30 DN values.
+            batch: Dict with ``'hls_s30'`` as (B, 6, H, W) HLS S30 DN values.
 
         Returns:
             {
@@ -67,11 +76,12 @@ class GraniteBiomassInference(LightningModule):
                 'coordinate': list[tuple[float, float]] | None,
             }
         """
+        context = batch.get('context', {})
         return {
-            'prediction': self(batch['image']),
-            'crs': batch.get('crs'),
-            'transform': batch.get('transform'),
-            'coordinate': batch.get('coordinate'),
+            'prediction': self(batch['hls_s30']),
+            'crs': context.get('crs'),
+            'transform': context.get('transform'),
+            'coordinate': context.get('coordinate'),
         }
 
     def configure_optimizers(self):

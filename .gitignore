@@ -136,6 +136,7 @@ celerybeat.pid
 
 # Environments
 .env
+!src/geosave_engine/templates/common/.env
 .envrc
 .venv
 env/

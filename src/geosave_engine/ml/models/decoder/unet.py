@@ -4,6 +4,7 @@ import torch
 import torch.nn as nn
 import torch.nn.functional as F
 
+from geosave_engine.ml.core.factory import register_model
 from geosave_engine.ml.models.contract import model_context
 
 
@@ -132,6 +133,7 @@ class _UpBlock(nn.Module):
         return self.conv(x)
 
 
+@register_model('decoder', 'unet')
 class UnetDecoder(nn.Module):
     """
     U-Net Decoder with a toggleable `vit_adapter` parameter.
@@ -207,7 +209,7 @@ class UnetDecoder(nn.Module):
 
         return x
 
-    @model_context(requires=['pyramid'])
+    @model_context(requires={'pyramid': list}, provides={'feature_map': torch.Tensor})
     def forward_feature_map(self, ctx: dict) -> dict:
         """Fuse multi-scale pyramid into a single dense feature map.
 

@@ -13,8 +13,8 @@ class NonGeoDataset(Dataset, abc.ABC):
     For benchmark-style data that is already aligned and chipped to a fixed size:
     plain arrays read from disk and returned as tensor dicts. Unlike
     :class:`~geosave_engine.geodata.datasets.geo_dataset.GeoDataset`, there is no
-    GeoTile, geobox, or CRS — and no :class:`GeoTileSampler`; ordering is left to
-    the DataLoader's plain ``shuffle`` / ``sampler``.
+    GeoTile, geobox, or CRS; ordering is left to the DataLoader's plain
+    ``shuffle`` / ``sampler``.
 
     Use for image classification or regression where spatial referencing is not
     needed past ingest. Subclasses implement ``__len__`` and ``__getitem__``.

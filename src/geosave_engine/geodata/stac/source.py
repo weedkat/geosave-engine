@@ -12,7 +12,8 @@ from dask.diagnostics import ProgressBar
 from odc.stac import load as odc_load
 from tenacity import retry, retry_if_exception_type, stop_after_attempt, wait_exponential
 
-from geosave_engine.geodata.core import GeoTile
+from geosave_engine.geodata.errors import AnchorFetchError
+from geosave_engine.geodata.tile import GeoAnchor, GeoTile
 
 from .query import StacQuery
 
@@ -27,8 +28,8 @@ class SearchClient(Protocol):
     def search(self, query: StacQuery | dict[str, Any]) -> list[pystac.Item]: ...
 
 
-class SourceArgs(TypedDict, total=False):
-    """Constructor kwargs for Source, used with Unpack in client.source() overloads."""
+class StacSourceArgs(TypedDict, total=False):
+    """Constructor kwargs for StacSource, used with Unpack in client.source() overloads."""
 
     bands: Bands
     max_nodata_fraction: float
@@ -38,13 +39,14 @@ class SourceArgs(TypedDict, total=False):
     dtype: str
 
 
-class Source:
+class StacSource:
     """Generic satellite data source. Loads every scene in an anchor's window, exactly as published.
 
     No radiometric preprocessing, no compositing — always returns raw values
-    per real STAC item, one GeoTile per matching scene. Apply scale/offset or
-    temporal compositing as explicit downstream pipeline steps instead,
-    reading from per-scene cache entries this produces.
+    per real STAC item. A range window comes back as one GeoTile with a time
+    axis (one step per matching scene); a resolved single instant comes back
+    with no time axis. Apply scale/offset or temporal compositing as explicit
+    downstream pipeline steps.
 
     Args:
         client: STAC client used to search for items.
@@ -97,11 +99,11 @@ class Source:
         """Set the bands to load for this source.
 
         Args:
-            bands: Band names to load for every anchor.
+            bands: List of band names to load.
         """
         self.bands = bands
 
-    def load(self, anchor: GeoTile) -> list[GeoTile]:
+    def load(self, anchor: GeoAnchor) -> GeoTile:
         """Load every scene within anchor's own datetime window, for this source's bands.
 
         A degenerate window (a resolved single instant) naturally finds at
@@ -110,15 +112,19 @@ class Source:
         anchor's own, nothing wider.
 
         Args:
-            anchor: Reference tile providing bbox, geobox, and datetime window.
+            anchor: Reference bbox, geobox, and datetime window.
 
         Returns:
-            One GeoTile per matching scene that passes `max_nodata_fraction`,
-            chronological order — no time dimension, each stamped with its
-            own real acquisition datetime (never anchor's). Empty list if
-            nothing matches, or everything found is rejected as nodata.
+            One GeoTile. `(band, y, x)`, no time axis, if exactly one scene
+            matched. `(time, band, y, x)` if several did — each time step
+            stamped with its own real acquisition instant; the tile's own
+            `datetime` stays anchor's requested window.
+
+        Raises:
+            AnchorFetchError: Nothing matched anchor's bbox/datetime window,
+                or everything found was rejected as nodata.
         """
-        start, end = anchor.date_range
+        start, end = anchor.start, anchor.end
         query = replace(
             self.query,
             bbox=anchor.wgs84_bbox,
@@ -127,7 +133,10 @@ class Source:
         )
         items = self.client.search(query)
         if not items:
-            return []
+            raise AnchorFetchError(
+                f"{self.collection!r}: no scenes matched anchor bbox/datetime window "
+                f"(anchor at {anchor.centroid}, window {start}–{end})"
+            )
 
         ds: xr.Dataset = odc_load(
             items,
@@ -140,16 +149,28 @@ class Source:
         )
         ds = self.download(ds)
 
-        tiles: list[GeoTile] = []
+        kept_times = []
+        kept_slices: list[xr.DataArray] = []
         for t in ds.time.values:
             slice_ds = ds.sel(time=t)
             nodata_fraction = slice_ds.to_array().isnull().mean().item()
             if nodata_fraction > self.max_nodata_fraction:
                 continue
-            da = slice_ds.to_array(dim="band").transpose("band", "y", "x")
-            item_dt = dt.fromisoformat(str(t.astype("datetime64[s]")))
-            tiles.append(GeoTile(geobox=anchor.geobox, datetime=item_dt, data=da).with_stac(items))
-        return tiles
+            kept_times.append(t)
+            kept_slices.append(slice_ds.to_array(dim="band").transpose("band", "y", "x"))
+
+        if not kept_slices:
+            raise AnchorFetchError(
+                f"{self.collection!r}: {len(items)} scene(s) matched but all exceeded "
+                f"nodata threshold (anchor at {anchor.centroid}, window {start}–{end})"
+            )
+
+        if len(kept_slices) == 1:
+            item_dt = dt.fromisoformat(str(kept_times[0].astype("datetime64[s]")))
+            return GeoTile(geobox=anchor.geobox, datetime=item_dt, data=kept_slices[0]).with_stac(items)
+
+        da = xr.concat(kept_slices, dim="time").assign_coords(time=kept_times)
+        return GeoTile(geobox=anchor.geobox, datetime=anchor.datetime, data=da).with_stac(items)
 
     @retry(
         stop=stop_after_attempt(3),

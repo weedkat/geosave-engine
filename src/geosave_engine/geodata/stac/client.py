@@ -1,6 +1,5 @@
 from __future__ import annotations
 
-import os
 from typing import TYPE_CHECKING, Any, Iterable
 
 import pystac
@@ -11,57 +10,10 @@ from typing_extensions import Unpack
 from urllib3.util import Retry
 
 from .query import StacQuery
-from .source import Source
+from .source import StacSource
 
 if TYPE_CHECKING:
-    from .source import SourceArgs
-
-
-def credentials_for(provider: str) -> dict[str, str]:
-    """Look up a STAC provider's static AWS-style raster credentials, namespaced by prefix.
-
-    Reads ``{PROVIDER}_AWS_ACCESS_KEY_ID`` / ``{PROVIDER}_AWS_SECRET_ACCESS_KEY``
-    (required) and ``{PROVIDER}_AWS_S3_ENDPOINT`` (optional) from the
-    environment — e.g. ``provider="cdse"`` reads ``CDSE_AWS_ACCESS_KEY_ID`` etc.
-    Namespaced per provider (not one generic ``AWS_ACCESS_KEY_ID``) so multiple
-    providers' credentials can coexist in the same process without colliding.
-
-    Ready to pass straight into ``rasterio.Env(**credentials_for(provider))``
-    scoped around one provider's fetch — scoping is what keeps it correct
-    under concurrent/sequential fetches for a different provider, not just
-    having the right value somewhere in the environment.
-
-    Not needed for providers that sign asset URLs instead of using static
-    keys (e.g. Planetary Computer's ``sign_inplace`` modifier).
-
-    Args:
-        provider: STAC provider name — same string as ``RequireSpec.provider``
-            or a ``StacClient`` classmethod name (e.g. ``"cdse"``).
-
-    Returns:
-        {
-            "AWS_ACCESS_KEY_ID": str,
-            "AWS_SECRET_ACCESS_KEY": str,
-            "AWS_S3_ENDPOINT": str,  # only present if {PROVIDER}_AWS_S3_ENDPOINT is set
-        }
-
-    Raises:
-        ValueError: If ``{PROVIDER}_AWS_ACCESS_KEY_ID`` or
-            ``{PROVIDER}_AWS_SECRET_ACCESS_KEY`` isn't set.
-    """
-    prefix = provider.upper()
-    access_key = os.environ.get(f"{prefix}_AWS_ACCESS_KEY_ID")
-    secret_key = os.environ.get(f"{prefix}_AWS_SECRET_ACCESS_KEY")
-    if not access_key or not secret_key:
-        raise ValueError(
-            f"Missing credentials for provider {provider!r}: "
-            f"set {prefix}_AWS_ACCESS_KEY_ID and {prefix}_AWS_SECRET_ACCESS_KEY"
-        )
-    creds = {"AWS_ACCESS_KEY_ID": access_key, "AWS_SECRET_ACCESS_KEY": secret_key}
-    endpoint = os.environ.get(f"{prefix}_AWS_S3_ENDPOINT")
-    if endpoint:
-        creds["AWS_S3_ENDPOINT"] = endpoint
-    return creds
+    from .source import StacSourceArgs
 
 
 class StacClient:
@@ -75,8 +27,9 @@ class StacClient:
         >>> e84  = StacClient.element84()
     """
 
-    def __init__(self, client: Client) -> None:
+    def __init__(self, client: Client, cache: Client | None = None) -> None:
         self._client = client
+        self._cache = cache
         self._collections: set[str] | None = None
         retry_strategy = Retry(
             total=5,
@@ -132,6 +85,7 @@ class StacClient:
         """
         if isinstance(query, StacQuery):
             query = query.to_search_params()
+
         return list(self._client.search(**query).items())
 
     def search_iter(self, query: StacQuery | dict[str, Any]) -> Iterable[pystac.Item]:
@@ -174,16 +128,16 @@ class StacClient:
                 f"Call get_collections() to see what is available."
             )
 
-    def source(self, collection: str, **kwargs: Unpack[SourceArgs]) -> Source:
+    def source(self, collection: str, **kwargs: Unpack[StacSourceArgs]) -> StacSource:
         """Create a source for a STAC collection on this client.
 
         Validates that the collection exists on this endpoint before returning.
-        Source always returns raw values as the provider publishes them — no
+        StacSource always returns raw values as the provider publishes them — no
         radiometric scaling. Apply scale/offset as an explicit pipeline step.
 
         Args:
             collection: STAC collection ID. Discover via `get_collections()`.
-            **kwargs: Forwarded to `Source.__init__` — see `SourceArgs`.
+            **kwargs: Forwarded to `StacSource.__init__` — see `StacSourceArgs`.
 
         Raises:
             ValueError: If `collection` does not exist on this endpoint.
@@ -194,4 +148,4 @@ class StacClient:
             >>> tiles = src.load(anchor)
         """
         self.validate_collection(collection)
-        return Source(self, collection=collection, **kwargs)
+        return StacSource(self, collection=collection, **kwargs)

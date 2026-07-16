@@ -1,13 +1,17 @@
 model:
-  patch_size: 224
-  overlap_ratio: 0.5
-  pad_size: 64
+  class_path: modules.lightning_module.GraniteBiomassInference
+  init_args:
+    patch_size: 224
+    overlap_ratio: 0.5
+    pad_size: 64
 
 data:
-  root: workspace/biomass/predict
-  geotiff_src: data/hls_s30/
-  batch_size: 1
-  num_workers: 4
-  predict_sampler: grid
-  patch_size: 224
-  ingest: false
+  class_path: modules.data_module.GraniteBiomassDataModule
+  init_args:
+    root: workspace/biomass/predict
+    geotiff_src: data/hls_s30/
+    batch_size: 1
+    num_workers: 4
+    predict_sampler: grid
+    patch_size: 224
+    ingest: false

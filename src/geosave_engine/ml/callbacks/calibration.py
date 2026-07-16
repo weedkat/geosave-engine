@@ -18,7 +18,8 @@ class DenseCalibrationCallback(Callback):
 
     Sweeps candidate thresholds over val set after training. For each class,
     picks threshold that maximises ``metric``. Writes result into
-    ``pl_module.class_thresholds``. Batch must contain ``image``, ``label``, and optionally ``mask``. Masked pixels are ignored in metric computation.
+    ``pl_module.class_thresholds``. Reads batch via ``pl_module.image_key``/
+    ``label_key`` — same keys the task itself uses, no fixed batch layout required.
 
     Args:
         threshold_begin: Start of sweep range.
@@ -59,9 +60,9 @@ class DenseCalibrationCallback(Callback):
         pl_module.eval()
         with torch.no_grad():
             for batch in loader:
-                image = batch["image"].to(pl_module.device)
-                label = batch["label"].to(pl_module.device)
-                context = batch["context"]
+                image = batch[pl_module.image_key].to(pl_module.device)
+                label = batch[pl_module.label_key].to(pl_module.device)
+                context = batch.get("context", {})
 
                 logits = pl_module(image, **context)
                 probs = logits.softmax(dim=1)

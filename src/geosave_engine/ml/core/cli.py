@@ -1,7 +1,9 @@
 # geosave_engine/ml/cli.py
 from __future__ import annotations
-from lightning.pytorch.cli import LightningCLI, LightningArgumentParser
+
 import os
+
+from lightning.pytorch.cli import LightningArgumentParser, LightningCLI
 
 ARTIFACTS_ROOT = "artifacts"
 DEFAULT_RUN_NAME = "run"
@@ -9,8 +11,12 @@ DEFAULT_RUN_NAME = "run"
 
 class GeosaveCLI(LightningCLI):
     def add_arguments_to_parser(self, parser: LightningArgumentParser) -> None:
-        parser.add_argument("--run_name", type=str, default=DEFAULT_RUN_NAME,
-                            help="Logger experiment / folder name.")
+        parser.add_argument(
+            "--run_name",
+            type=str,
+            default=DEFAULT_RUN_NAME,
+            help="Logger experiment / folder name.",
+        )
 
     def before_instantiate_classes(self) -> None:
         self._append_default_callback()
@@ -29,16 +35,15 @@ class GeosaveCLI(LightningCLI):
             callbacks = [callbacks]
             cfg.trainer.callbacks = callbacks
 
-        run_name = getattr(cfg, "run_name", DEFAULT_RUN_NAME) or DEFAULT_RUN_NAME
         default_callbacks = [
             {
                 "class_path": "lightning.pytorch.callbacks.ModelCheckpoint",
                 "init_args": {
-                    "dirpath": f"{ARTIFACTS_ROOT}/model/{run_name}",
                     "monitor": "val_loss",
                     "mode": "min",
                     "save_top_k": 1,
                     "filename": "epoch={epoch:02d}-val_loss={val_loss:.4f}",
+                    "save_last": True,
                 },
             },
             {
@@ -62,30 +67,33 @@ class GeosaveCLI(LightningCLI):
             return  # user supplied a logger config — respect it entirely
 
         run_name = getattr(cfg, "run_name", DEFAULT_RUN_NAME) or DEFAULT_RUN_NAME
-        cfg.trainer.logger = [
+        loggers = [
             {
                 "class_path": "lightning.pytorch.loggers.TensorBoardLogger",
                 "init_args": {
-                    "save_dir": f"{ARTIFACTS_ROOT}/tensorboard",
+                    "save_dir": ARTIFACTS_ROOT,
                     "name": run_name,
                     "log_graph": True,
                 },
             },
-            {
-                "class_path": "lightning.pytorch.loggers.MLFlowLogger",
-                "init_args": {
-                    "experiment_name": run_name,
-                    "tracking_uri": os.getenv("MLFLOW_TRACKING_URI", f"file:./{ARTIFACTS_ROOT}/mlflow"),
-                },
-            },
-            {
-                "class_path": "lightning.pytorch.loggers.CSVLogger",
-                "init_args": {
-                    "save_dir": f"{ARTIFACTS_ROOT}/csv",
-                    "name": run_name,
-                },
-            },
         ]
+
+        tracking_uri = os.getenv("MLFLOW_TRACKING_URI")
+        if tracking_uri:
+            loggers.append(
+                {
+                    "class_path": "lightning.pytorch.loggers.MLFlowLogger",
+                    "init_args": {
+                        "experiment_name": os.getenv(
+                            "MLFLOW_EXPERIMENT_NAME", run_name
+                        ),
+                        "run_name": run_name,
+                        "tracking_uri": tracking_uri,
+                    },
+                }
+            )
+
+        cfg.trainer.logger = loggers
 
     def _subcommand_config(self):
         """

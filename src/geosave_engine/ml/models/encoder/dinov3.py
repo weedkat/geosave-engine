@@ -6,6 +6,7 @@ import torch.nn as nn
 from typing import cast
 from timm.models.eva import Eva
 
+from geosave_engine.ml.core.factory import register_model
 from geosave_engine.ml.models.contract import model_context
 
 # out_indices are even quarters of each model's block depth:
@@ -31,6 +32,7 @@ TIMM_MODELS: dict[str, dict] = {
 }
 
 
+@register_model('encoder', 'dinov3')
 class DINOv3(nn.Module):
     """A DINOv3 model with ImageNet normalization stats attached."""
 
@@ -123,7 +125,7 @@ class DINOv3(nn.Module):
         """
         return self.model(x, rope=rope, attn_mask=attn_mask, is_causal=is_causal)
 
-    @model_context(requires=['image'])
+    @model_context(requires={'image': torch.Tensor}, provides={'pyramid': list, 'prefix_tokens': list})
     def forward_pyramid(self, ctx: dict) -> dict:
         """Extract multi-scale intermediate features from the ViT.
 

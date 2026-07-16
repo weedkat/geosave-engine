@@ -1,3 +1,3 @@
-from .semantic_segmentation import SemanticSegmentationTask
+from .semantic_segmentation import SemanticSegmentationDataModule, SemanticSegmentationTask
 
-__all__ = ["SemanticSegmentationTask"]
+__all__ = ["SemanticSegmentationDataModule", "SemanticSegmentationTask"]

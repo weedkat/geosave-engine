@@ -12,13 +12,13 @@ from lightning import LightningModule, Trainer
 from lightning.pytorch.callbacks import BasePredictionWriter
 from odc.geo.geobox import GeoBox
 
-from geosave_engine.geodata.core.geotile import GeoTile, mosaic
+from geosave_engine.geodata.tile import GeoAnchor, GeoTile, mosaic
 
 log = logging.getLogger(__name__)
 
 
-def _tile_from_context(context: dict[str, Any], i: int, shape: tuple[int, int]) -> GeoTile:
-    """Reconstruct a header GeoTile for sample i from stacked batch context.
+def _tile_from_context(context: dict[str, Any], i: int, shape: tuple[int, int]) -> GeoAnchor:
+    """Reconstruct an anchor for sample i from stacked batch context.
 
     Args:
         context: ``batch["context"]`` dict; non-tensor values are lists of length B.
@@ -29,14 +29,14 @@ def _tile_from_context(context: dict[str, Any], i: int, shape: tuple[int, int]) 
         KeyError: If ``crs``, ``transform``, or ``datetime`` are missing from context.
     """
     geobox = GeoBox(shape=shape, affine=context["transform"][i], crs=context["crs"][i])
-    return GeoTile(geobox=geobox, datetime=dt.fromisoformat(context["datetime"][i]))
+    return GeoAnchor(geobox=geobox, datetime=dt.fromisoformat(context["datetime"][i]))
 
 
 class MosaicBuilder:
     """Merge per-tile prediction COGs into a single mosaic COG.
 
     Loads all ``pred_label.tif`` and ``pred_proba.tif`` under ``tiles_dir``,
-    merges via :func:`geosave_engine.geodata.core.geotile.mosaic`, then writes
+    merges via :func:`geosave_engine.geodata.tile.geotile.mosaic`, then writes
     the result to ``mosaic_dir``.
 
     Args:
@@ -49,13 +49,23 @@ class MosaicBuilder:
         self.mosaic_dir = mosaic_dir
 
     def build(self) -> None:
-        """Merge all prediction tiles into mosaic COGs."""
+        """Merge all prediction tiles into mosaic COGs.
+
+        Raises:
+            KeyError: If a tile's ``context.json`` sidecar is missing its ``datetime``.
+        """
         for layer in ("pred_label.tif", "pred_proba.tif"):
             paths = sorted(self.tiles_dir.rglob(layer))
             if not paths:
                 log.warning("No tiles found for mosaic layer %s", layer)
                 continue
-            tiles = [GeoTile.from_geotiff(p, load_data=True) for p in paths]
+            tiles = [
+                GeoTile.from_geotiff(
+                    p, datetime=json.loads((p.parent / "context.json").read_text())["datetime"],
+                    load_data=True,
+                )
+                for p in paths
+            ]
             out_path = self.mosaic_dir / layer
             mosaic(tiles).to_cog(out_path)
             log.info("Mosaic written: %s", out_path)
