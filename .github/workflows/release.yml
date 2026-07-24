@@ -71,13 +71,24 @@ jobs:
           name: dev-wheel
           path: dist
 
+      - name: Add fixed-name alias (stable install URL, TestPyPI never sees this)
+        run: |
+          wheel=$(ls dist/*.whl)
+          alias=$(basename "$wheel" | sed -E 's/^(.+)-[^-]+-([^-]+-[^-]+-[^-]+)\.whl$/\1-0+latest-\2.whl/')
+          cp "$wheel" "dist/$alias"
+
       - uses: softprops/action-gh-release@v2
         with:
           tag_name: dev
           name: Latest dev build
           prerelease: true
           make_latest: false
-          body: Rolling dev build from ${{ github.sha }}. Overwritten on every push to main.
+          body: |
+            Rolling dev build from ${{ github.sha }}. Overwritten on every push to main.
+
+            Install the exact build: pin the versioned `.whl` below.
+            Install "whatever's newest" with a URL that never changes:
+            `pip install https://github.com/${{ github.repository }}/releases/download/dev/geosave_engine-0+latest-py3-none-any.whl`
           files: dist/*.whl
 
   # --- push of a version tag (vX.Y.Z): real release -> PyPI + tagged GitHub release ---

@@ -33,14 +33,25 @@ It generates a ready-to-use boilerplate and applies proven best practices out of
 
 ## Installations
 
-Requires Python 3.12+ and [uv](https://docs.astral.sh/uv/).
+Requires Python 3.12+.
 
 ```bash
-git clone git@github.com:weedkat/geosave-engine.git
-cd geosave-engine
-uv sync
-uv run geosave --help
+pip install geosave-engine
+# or
+uv add geosave-engine
 ```
+
+Want the rolling dev build (rebuilt on every push to `main`) instead of the
+latest stable tag:
+
+```bash
+pip install --pre --index-url https://test.pypi.org/simple/ \
+  --extra-index-url https://pypi.org/simple/ geosave-engine
+```
+
+Working on GeoSave Engine itself (clone + `uv sync`), or installing an
+exact dev build off a GitHub release — see
+[docs/guide/installation.md](docs/guide/installation.md).
 
 ## Quick Start
 
