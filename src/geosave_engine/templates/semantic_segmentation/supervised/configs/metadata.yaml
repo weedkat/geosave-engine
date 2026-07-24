@@ -1,0 +1,9 @@
+model:
+  init_args:
+    image_key: sentinel_2_l1c   # TODO: your GeoDataset's raw layer name
+    label_key: label            # TODO
+    mask_key: cloud_mask        # TODO — optional, omit if unused
+    ignore_index: 255
+    class_map: {0: TODO}                       # TODO: dense 0..N-1, class_id -> name
+    color_map: {0: "#000000"}                  # TODO: class_id -> hex, for prediction visualization
+    band_map: {0: B02, 1: B03, 2: B04, 3: B08}  # TODO: channel_idx -> band name, must match `sources`' bands order

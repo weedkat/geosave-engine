@@ -1,10 +1,13 @@
+# geosave_engine/ml/cli/cli.py
 from __future__ import annotations
 
-from lightning.pytorch.cli import LightningCLI, LightningArgumentParser
+import os
 
+from lightning.pytorch.cli import LightningArgumentParser, LightningCLI
 
-DEFAULT_EXPERIMENT_NAME = "default"
-TENSORBOARD_LOGGER_CLASS_PATH = "lightning.pytorch.loggers.TensorBoardLogger"
+ARTIFACTS_ROOT = "artifacts"
+DEFAULT_MODEL_NAME = "model"
+PREDICTION_WRITER_CLASS_PATH = "geosave_engine.ml.callbacks.PredictionWriter"
 
 
 class GeosaveCLI(LightningCLI):
@@ -12,96 +15,125 @@ class GeosaveCLI(LightningCLI):
         parser.add_argument(
             "--model_name",
             type=str,
-            default=DEFAULT_EXPERIMENT_NAME,
-            help="Experiment name used by the auto-injected TensorBoardLogger.",
+            default=DEFAULT_MODEL_NAME,
+            help="Model identity — used as the artifacts/logger folder name, "
+            "default MLflow experiment/run name, and default registered model name at upload time.",
         )
 
     def before_instantiate_classes(self) -> None:
+        self._append_default_callback()
+        self._apply_default_loggers()
+
+    def _append_default_callback(self) -> None:
         cfg = self._subcommand_config()
-        exp_name = self._resolve_model_name() or DEFAULT_EXPERIMENT_NAME
+        callbacks = getattr(cfg.trainer, "callbacks", None)
 
-        tensorboard_logger = {
-            "class_path": TENSORBOARD_LOGGER_CLASS_PATH,
-            "init_args": {
-                "name": exp_name,
-                "save_dir": "artifacts",
-                "log_graph": True,
+        if callbacks is False:
+            return
+        if callbacks in (None, True):
+            callbacks = []
+            cfg.trainer.callbacks = callbacks
+        elif not isinstance(callbacks, list):
+            callbacks = [callbacks]
+            cfg.trainer.callbacks = callbacks
+
+        default_callbacks = [
+            {
+                "class_path": "lightning.pytorch.callbacks.ModelCheckpoint",
+                "init_args": {
+                    "monitor": "val_loss",
+                    "mode": "min",
+                    "save_top_k": 1,
+                    "filename": "epoch={epoch:02d}-val_loss={val_loss:.4f}",
+                    "save_last": True,
+                },
             },
-        }
-
-        trainer_cfg = cfg.trainer
-        current_logger = getattr(trainer_cfg, "logger", None)
-
-        if current_logger is False:
-            return  # respect explicit disable
-
-        if current_logger in (None, True):
-            trainer_cfg.logger = [tensorboard_logger]
-            return
-
-        # Single Namespace/dict logger: replace if it's the TB default,
-        # otherwise pair it with our injected one.
-        if not isinstance(current_logger, list):
-            class_path = self._logger_class_path(current_logger)
-            if class_path == TENSORBOARD_LOGGER_CLASS_PATH:
-                # Mutate in place so any other parser defaults stay intact.
-                init_args = getattr(current_logger, "init_args", current_logger)
-                if hasattr(init_args, "name"):
-                    init_args.name = exp_name
-                if hasattr(init_args, "save_dir"):
-                    init_args.save_dir = "artifacts"
-                return
-            trainer_cfg.logger = [current_logger, tensorboard_logger]
-            return
-
-        # List of loggers: ensure exactly one TB instance with our exp_name.
-        tb_existing = [
-            lg for lg in current_logger
-            if self._logger_class_path(lg) == TENSORBOARD_LOGGER_CLASS_PATH
+            {
+                "class_path": "lightning.pytorch.callbacks.LearningRateMonitor",
+                "init_args": {"logging_interval": "epoch"},
+            },
+            {
+                "class_path": "lightning.pytorch.callbacks.RichProgressBar",
+                "init_args": {},
+            },
         ]
-        if not tb_existing:
-            current_logger.append(tensorboard_logger)
-            return
-        for lg in tb_existing:
-            init_args = getattr(lg, "init_args", lg)
-            if hasattr(init_args, "name") or (isinstance(init_args, dict) and "name" in init_args):
-                if isinstance(init_args, dict):
-                    init_args["name"] = exp_name
-                    init_args["save_dir"] = "artifacts"
-                else:
-                    init_args.name = exp_name
-                    init_args.save_dir = "artifacts"
 
-    @staticmethod
-    def _logger_class_path(logger) -> str | None:
-        if isinstance(logger, dict):
-            return logger.get("class_path")
-        return getattr(logger, "class_path", None)
+        existing = [self._callback_class_path(cb) for cb in callbacks]
+        for default in default_callbacks:
+            if default["class_path"] not in existing:
+                callbacks.append(default)
 
-    def _resolve_model_name(self) -> str | None:
-        """Find ``model_name`` regardless of whether jsonargparse parked it on
-        the root namespace, the subcommand namespace, or as a dict key."""
-        candidates = [self.config, self._subcommand_config()]
-        for ns in candidates:
-            if ns is None:
-                continue
-            value = getattr(ns, "model_name", None)
-            if value:
-                return str(value)
-            if hasattr(ns, "get"):
-                value = ns.get("model_name")
-                if value:
-                    return str(value)
-        return None
+        self._fill_prediction_writer_model_name(cfg, callbacks)
+
+    def _fill_prediction_writer_model_name(self, cfg, callbacks: list) -> None:
+        """Back-fill a user-declared PredictionWriter's required model_name.
+
+        The callback itself is never auto-added — the user opts in by
+        listing it under trainer.callbacks (output_dir/input_keys are
+        deployment-specific, no sensible default). Once it's there, its
+        model_name comes from the same top-level `model_name:` key
+        loggers/artifacts already use — one source of truth, not a
+        second value to remember to set. An explicit `init_args.model_name`
+        already present is left untouched.
+        """
+        model_name = getattr(cfg, "model_name", DEFAULT_MODEL_NAME) or DEFAULT_MODEL_NAME
+        for cb in callbacks:
+            if isinstance(cb, dict) and cb.get("class_path") == PREDICTION_WRITER_CLASS_PATH:
+                cb.setdefault("init_args", {}).setdefault("model_name", model_name)
+
+    def _apply_default_loggers(self) -> None:
+        cfg = self._subcommand_config()
+        if getattr(cfg.trainer, "logger", None) not in (None, True):
+            return  # user supplied a logger config — respect it entirely
+
+        model_name = getattr(cfg, "model_name", DEFAULT_MODEL_NAME) or DEFAULT_MODEL_NAME
+        loggers = [
+            {
+                "class_path": "lightning.pytorch.loggers.TensorBoardLogger",
+                "init_args": {
+                    "save_dir": ARTIFACTS_ROOT,
+                    "name": model_name,
+                    "log_graph": True,
+                },
+            },
+        ]
+
+        tracking_uri = os.getenv("MLFLOW_TRACKING_URI")
+        if tracking_uri:
+            loggers.append(
+                {
+                    "class_path": "lightning.pytorch.loggers.MLFlowLogger",
+                    "init_args": {
+                        "experiment_name": os.getenv(
+                            "MLFLOW_EXPERIMENT_NAME", model_name
+                        ),
+                        # MLflow's own kwarg name for "this run's display label" —
+                        # bridged from our model_name, not a mismatch: this run
+                        # IS (an attempt at) that model, until upload registers one.
+                        "run_name": model_name,
+                        "tracking_uri": tracking_uri,
+                    },
+                }
+            )
+
+        cfg.trainer.logger = loggers
 
     def _subcommand_config(self):
-        """Return the active subcommand's config namespace.
-
-        LightningCLI nests parsed config under ``self.config[subcommand]`` when
-        invoked with subcommands (``fit``, ``test``, ...). Fall back to
-        ``self.config`` for the no-subcommand case.
         """
-        subcommand = getattr(self, "subcommand", None)
-        if subcommand and subcommand in self.config:
-            return self.config[subcommand]
-        return self.config
+        {
+        "fit": {
+            "model": {...},
+            "trainer": {...},
+            "model_name": "default"
+        },
+        "subcommand": "fit"
+        }
+        """
+        sub = getattr(self, "subcommand", None)
+        return self.config[sub] if sub and sub in self.config else self.config
+
+    @staticmethod
+    def _callback_class_path(cb) -> str | None:
+        if isinstance(cb, dict):
+            return cb.get("class_path")
+        return getattr(cb, "class_path", None)

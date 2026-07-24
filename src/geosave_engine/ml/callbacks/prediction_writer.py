@@ -1,310 +1,203 @@
-"""Stitch per-patch predictions into scene-level GeoTIFFs and emit STAC metadata.
-
-Output layout (under ``output_dir``):
-
-    <output_dir>/
-    ├── outputs/
-    │   └── <model_name>_<scene_id>/
-    │       └── <model_name>_<scene_id>.tif
-    └── stac/
-        ├── collection.json
-        └── items/
-            └── <model_name>_<scene_id>.json
-
-Each source scene in ``input_dir`` (``<input_dir>/*.tif`` with filenames like
-``<prefix>_<lon>_<lat>-<YYYYMMDD>.tif``) becomes one output GeoTIFF and one
-STAC Item. STAC items and the collection can be loaded into pgstac via
-``pypgstac load collections collection.json && pypgstac load items items/*.json``.
-"""
 from __future__ import annotations
 
-import re
-from dataclasses import dataclass
-from datetime import datetime, timezone
+import json
+import logging
+from datetime import datetime
 from pathlib import Path
-from typing import Any
+from typing import Any, Sequence
 
-import numpy as np
-import pystac
-import rasterio
-import shapely.geometry
-import shapely.ops
 import torch
+from lightning import LightningModule, Trainer
 from lightning.pytorch.callbacks import BasePredictionWriter
-from pyproj import Transformer
-from rasterio.windows import Window, from_bounds
 
-from geosave_engine.utils.geodata.tiff import parse_tiff_datetime
+from geosave_engine.geodata.tile import GEOSTACK_SUFFIX, GeoAnchor, GeoStack, GeoTile
 
+log = logging.getLogger(__name__)
 
-_SCENE_NAME_RE = re.compile(
-    r"^(?P<prefix>[A-Za-z0-9_]+?)_(?P<lon>-?\d+(?:\.\d+)?)_(?P<lat>-?\d+(?:\.\d+)?)-(?P<date>\d{8})\.tif$"
-)
-
-
-@dataclass
-class _SceneContext:
-    """Per-scene state held for the duration of a predict run."""
-
-    scene_id: str
-    source_path: Path
-    output_path: Path
-    datetime: datetime
-    crs: str
-    bounds: tuple[float, float, float, float]          # native CRS (left, bottom, right, top)
-    geometry_wgs84: Any                                # shapely Polygon in EPSG:4326
-    writer: rasterio.io.DatasetWriter
-    transform: rasterio.Affine
+_TIMESTAMP_FORMAT = "%Y%m%dT%H%M%S"
+_METADATA_ATTRS = ("class_map", "color_map", "band_map", "ignore_index")
 
 
 class PredictionWriter(BasePredictionWriter):
-    """Write prediction patches into stitched per-scene GeoTIFFs + STAC metadata.
+    """Write per-anchor predictions as GeoStacks, one layer per `predict_step` output key.
+
+    `predict_step` (any task) must return `dict[str, Tensor]` plus one
+    `"anchors"` key (`list[GeoAnchor]`, one per sample) — every other key's
+    tensor `[B, H, W]` or `[B, C, H, W]`, keyed by whatever layer names that
+    task wants saved (e.g. `pred_label`/`pred_proba` for segmentation, a
+    single `prediction` for regression). Spatial identity comes from
+    `prediction["anchors"]`, not `batch` — same reasoning as
+    `ThresholdCalibrator` reading `outputs['logits']`/`['label']` instead of
+    reaching into `batch`: this callback has no business knowing a task's
+    `image_key`/which batch layer counts as the anchor source. That's the
+    task's own call (usually `batch["anchors"][self.image_key]`) — it
+    already knows both; this callback just requires the result show up in
+    its output, fails fast with a clear message if it doesn't.
+
+    One predicted anchor becomes one `<stem>.geostack/` folder holding
+    every returned layer as zarr, plus a `.tif` COG per layer (one COG per
+    timestep, for any layer with a time dimension — a COG can't hold one
+    itself). Building a combined tiled layer (mosaic, MosaicJSON, whatever
+    a map client wants) is a serving-side concern that reads this output —
+    not this callback's job.
+
+    Re-running predict against the same run directory skips anchors whose
+    `.geostack` folder already exists — the folder itself is the only
+    state, no separate tracking file.
+
+    Output layout::
+
+        <output_dir>/
+          <model_name>/
+            <predict_id>/             # one directory per predict invocation
+              tiles/
+                <stem>.geostack/
+                  <layer_name>.zarr   # every key predict_step returned
+                  <layer_name>/
+                    <timestamp>.tif   # one COG per timestep (usually just one)
+              metadata.json
+
+    This callback is never auto-attached — deployment-specific args
+    (`output_dir` especially) have no sensible universal default, so it's
+    opt-in via `trainer.callbacks:` in config, same as any other callback.
+    `model_name` is the one exception worth knowing about: leave it out of
+    your config entirely and `GeosaveCLI` back-fills it from the top-level
+    `model_name:` key (see `GeosaveCLI._fill_prediction_writer_model_name`)
+    — one source of truth, not a second value to keep in sync by hand. It's
+    still a required constructor arg (fails fast, no silent default) for
+    anyone wiring this callback outside `GeosaveCLI` (a plain script, a
+    different CLI) where that back-fill never runs.
 
     Args:
-        output_dir: Root directory for predictions. Written under
-            ``<output_dir>/outputs/...`` and ``<output_dir>/stac/...``.
-        input_dir: Directory holding the source scenes (``*.tif``). Defaults to
-            the predict dataset's ``paths`` when left as ``None``.
-        model_name: Prefix used in output filenames and STAC IDs.
-        collection_id: STAC Collection ID registered into pgstac.
-        collection_description: Human description for the collection.
-        asset_key: Key under which each GeoTIFF is registered on its STAC Item.
-        dtype: numpy dtype string for the output raster (e.g. ``"uint8"``).
-        nodata: Value written into pixels not covered by any patch.
+        output_dir: Base directory. `<model_name>/<predict_id>` created
+            inside — tenancy prefixes above that (user/project id, if any)
+            are the caller's own responsibility to build into this path,
+            not something this callback knows about.
+        model_name: The caller's own name for this model — matches the
+            same `model_name:` top-level key training uses (this library
+            provides the framework/pipeline, not model identity — never
+            guessed from a checkpoint path). Required; `GeosaveCLI`
+            back-fills it automatically when this callback is declared in
+            config without one, so in practice you rarely type it here.
+        input_keys: Batch layer names to also persist alongside the
+            predictions (e.g. the source imagery, for QA/traceability).
+            Off by default — imagery is usually the bulk of the bytes, and
+            it already exists wherever the predict-root `GeoDataset` reads
+            it from, so duplicating it is opt-in, not automatic.
+        predict_id: Override — identifies this predict invocation, distinct
+            from `model_name` itself (this is one *inference run* against
+            an already-trained model, not the model's own identity). The
+            caller's own job/request id if it has one (opaque string, no
+            format imposed — ownership of that id belongs to the caller,
+            not this library). Otherwise a timestamp — deliberately not
+            derived from whatever logger happens to be attached (fragile:
+            depends on logging config that has nothing to do with where
+            predictions get written, and silently changes behavior if a
+            user swaps loggers or disables logging).
     """
 
     def __init__(
         self,
-        output_dir: str,
-        input_dir: str | None = None,
-        model_name: str = "model",
-        collection_id: str = "predictions",
-        collection_description: str = "Model predictions generated by geosave-engine.",
-        asset_key: str = "prediction",
-        dtype: str = "uint8",
-        nodata: int = 255,
+        output_dir: str | Path,
+        model_name: str,
+        input_keys: Sequence[str] | None = None,
+        # override
+        predict_id: str | None = None,
     ) -> None:
         super().__init__(write_interval="batch")
         self.output_dir = Path(output_dir)
-        self.input_dir = Path(input_dir) if input_dir is not None else None
         self.model_name = model_name
-        self.collection_id = collection_id
-        self.collection_description = collection_description
-        self.asset_key = asset_key
-        self.dtype = dtype
-        self.nodata = nodata
+        self.input_keys = input_keys
+        self._predict_id_override = predict_id
+        self.predict_id: str
+        self._tiles_dir: Path
+        self._run_dir: Path
 
-        self._scenes: dict[str, _SceneContext] = {}
+    def setup(self, trainer: Trainer, pl_module: LightningModule, stage: str) -> None:
+        """Resolve predict_id, create `<output_dir>/<model_name>/<predict_id>/tiles/`."""
+        super().setup(trainer, pl_module, stage)
 
-    # ------------------------------------------------------------------
-    # Lifecycle
-    # ------------------------------------------------------------------
+        self.predict_id = self._predict_id_override or datetime.now().strftime(_TIMESTAMP_FORMAT)
+        self._run_dir = self.output_dir / self.model_name / self.predict_id
+        self._tiles_dir = self._run_dir / "tiles"
+        self._tiles_dir.mkdir(parents=True, exist_ok=True)
 
-    def on_predict_start(self, trainer, pl_module) -> None:
-        input_dir = self._resolve_input_dir(trainer)
-        if not input_dir.is_dir():
-            raise FileNotFoundError(f"prediction input directory does not exist: {input_dir}")
+    @staticmethod
+    def _to_tile(anchor: GeoAnchor, array: torch.Tensor) -> GeoTile:
+        """Build one GeoTile from one sample's `[H, W]` or `[C, H, W]` tensor.
 
-        outputs_root = self.output_dir / "outputs"
-        outputs_root.mkdir(parents=True, exist_ok=True)
-        (self.output_dir / "stac" / "items").mkdir(parents=True, exist_ok=True)
-
-        for src in sorted(input_dir.glob("*.tif")):
-            scene = self._prepare_scene(src, outputs_root)
-            self._scenes[scene.scene_id] = scene
-
-        if not self._scenes:
-            raise FileNotFoundError(f"no scenes (*.tif) discovered in {input_dir}")
+        Band names aren't knowable here (`PredictionWriter` doesn't have
+        task-level band semantics) — `band_{i}` for a multi-band array,
+        `with_np`'s own single-band default otherwise.
+        """
+        np_array = array.detach().cpu().numpy()
+        if np_array.ndim == 2:
+            return anchor.with_np(np_array)
+        return anchor.with_np(np_array, [f"band_{i}" for i in range(np_array.shape[0])])
 
     def write_on_batch_end(
         self,
-        trainer,
-        pl_module,
-        prediction: torch.Tensor,
-        batch_indices,
-        batch: dict[str, torch.Tensor],
+        trainer: Trainer,
+        pl_module: LightningModule,
+        prediction: Any,
+        batch_indices: Sequence[int] | None,
+        batch: Any,
         batch_idx: int,
         dataloader_idx: int,
     ) -> None:
-        preds = prediction.detach().cpu().numpy()
-        bounds = batch["bounds"].detach().cpu().numpy()
+        """Validate `prediction`, pull anchors from it, write one GeoStack per sample.
 
-        for i in range(preds.shape[0]):
-            xmin, xmax = float(bounds[i][0]), float(bounds[i][1])
-            ymin, ymax = float(bounds[i][3]), float(bounds[i][4])
-            scene = self._find_scene_for_bounds((xmin, ymin, xmax, ymax))
-            if scene is None:
+        Raises:
+            KeyError: `prediction` isn't a dict, or has no `"anchors"` key.
+            TypeError: `prediction`'s other keys aren't all `Tensor`.
+        """
+        if not isinstance(prediction, dict) or "anchors" not in prediction:
+            raise KeyError(
+                "PredictionWriter requires predict_step to return a dict with an "
+                "'anchors' key (list[GeoAnchor], one per sample) — add it to your "
+                "task's predict_step output, e.g. output['anchors'] = batch['anchors'][self.image_key]"
+            )
+        anchors = prediction["anchors"]
+        layers_out = {key: value for key, value in prediction.items() if key != "anchors"}
+        if not all(isinstance(value, torch.Tensor) for value in layers_out.values()):
+            raise TypeError(
+                f"PredictionWriter expects predict_step to return dict[str, Tensor] plus "
+                f"'anchors', got value types {[type(v).__name__ for v in layers_out.values()]}"
+            )
+
+        for i, anchor in enumerate(anchors):
+            stem = anchor.stem
+            stack_path = self._tiles_dir / f"{stem}{GEOSTACK_SUFFIX}"
+            if stack_path.exists():
+                log.info("Skipping %s — already predicted", stem)
                 continue
-            self._write_patch(scene, preds[i], (xmin, ymin, xmax, ymax))
 
-    def write_on_epoch_end(self, trainer, pl_module, predictions, batch_indices) -> None:
-        # All writes happen per-batch; nothing to do here.
-        pass
+            layers = {key: self._to_tile(anchor, tensor[i]) for key, tensor in layers_out.items()}
+            for key in self.input_keys or []:
+                value = batch.get(key)
+                if isinstance(value, torch.Tensor):
+                    layers[key] = self._to_tile(anchor, value[i])
 
-    def on_predict_end(self, trainer, pl_module) -> None:
-        for scene in self._scenes.values():
-            scene.writer.close()
+            GeoStack(**layers).save(stack_path)
 
-        collection = self._build_collection()
-        items_dir = self.output_dir / "stac" / "items"
-        for scene in self._scenes.values():
-            item = self._build_item(scene, collection)
-            item.set_self_href(str(items_dir / f"{item.id}.json"))
-            item.save_object(include_self_link=False)
+            timestamp = anchor.start.strftime(_TIMESTAMP_FORMAT)
+            for key, tile in layers.items():
+                tile.to_cog(stack_path / key / f"{timestamp}.tif")
 
-        collection_path = self.output_dir / "stac" / "collection.json"
-        collection.set_self_href(str(collection_path))
-        collection.save_object(include_self_link=False)
+    def on_predict_end(self, trainer: Trainer, pl_module: LightningModule) -> None:
+        """Write `metadata.json`: model_name, predict_id, checkpoint, created_at,
+        plus class_map/color_map/band_map/ignore_index read off `pl_module`
+        when present (duck-typed — absent for tasks that don't have them,
+        e.g. regression)."""
+        metadata: dict[str, Any] = {
+            "model_name": self.model_name,
+            "predict_id": self.predict_id,
+            "checkpoint": str(trainer.ckpt_path) if trainer.ckpt_path else None,
+            "created_at": datetime.now().isoformat(),
+        }
+        for attr in _METADATA_ATTRS:
+            value = getattr(pl_module, attr, None)
+            if value is not None:
+                metadata[attr] = value
 
-        self._scenes.clear()
-
-    # ------------------------------------------------------------------
-    # Scene setup
-    # ------------------------------------------------------------------
-
-    def _resolve_input_dir(self, trainer) -> Path:
-        if self.input_dir is not None:
-            return self.input_dir
-        dm = getattr(trainer, "datamodule", None)
-        ds = getattr(dm, "predict_dataset", None) if dm is not None else None
-        paths = getattr(ds, "paths", None)
-        if isinstance(paths, (str, Path)):
-            return Path(paths)
-        if isinstance(paths, (list, tuple)) and paths:
-            return Path(paths[0])
-        raise ValueError(
-            "PredictionWriter requires input_dir or a datamodule.predict_dataset with a resolvable `paths`."
-        )
-
-    def _prepare_scene(self, source_path: Path, outputs_root: Path) -> _SceneContext:
-        match = _SCENE_NAME_RE.match(source_path.name)
-        if not match:
-            raise ValueError(
-                f"cannot parse scene id from filename {source_path.name!r} "
-                "(expected <prefix>_<lon>_<lat>-<YYYYMMDD>.tif)"
-            )
-        scene_id = (
-            f"{match.group('prefix')}_{match.group('lon')}_{match.group('lat')}-{match.group('date')}"
-        )
-        scene_dir = outputs_root / f"{self.model_name}_{scene_id}"
-        scene_dir.mkdir(parents=True, exist_ok=True)
-        output_path = scene_dir / f"{self.model_name}_{scene_id}.tif"
-
-        acquisition_dt = parse_tiff_datetime(source_path)
-        with rasterio.open(source_path) as src:
-            profile = src.profile.copy()
-            crs = src.crs.to_string()
-            bounds = (src.bounds.left, src.bounds.bottom, src.bounds.right, src.bounds.top)
-            transform = src.transform
-            transformer = Transformer.from_crs(src.crs, "EPSG:4326", always_xy=True)
-            geometry_wgs84 = shapely.ops.transform(
-                transformer.transform,
-                shapely.geometry.box(*bounds),
-            )
-
-        profile.update(
-            count=1,
-            dtype=self.dtype,
-            nodata=self.nodata,
-            compress="lzw",
-            tiled=True,
-            predictor=2,
-        )
-        writer = rasterio.open(output_path, "w", **profile)
-        writer.write(
-            np.full((profile["height"], profile["width"]), self.nodata, dtype=self.dtype),
-            1,
-        )
-
-        return _SceneContext(
-            scene_id=scene_id,
-            source_path=source_path,
-            output_path=output_path,
-            datetime=acquisition_dt,
-            crs=crs,
-            bounds=bounds,
-            geometry_wgs84=geometry_wgs84,
-            writer=writer,
-            transform=transform,
-        )
-
-    # ------------------------------------------------------------------
-    # Per-patch write
-    # ------------------------------------------------------------------
-
-    def _find_scene_for_bounds(self, bbox: tuple[float, float, float, float]) -> _SceneContext | None:
-        pxmin, pymin, pxmax, pymax = bbox
-        cx = 0.5 * (pxmin + pxmax)
-        cy = 0.5 * (pymin + pymax)
-        for scene in self._scenes.values():
-            sxmin, symin, sxmax, symax = scene.bounds
-            if sxmin <= cx <= sxmax and symin <= cy <= symax:
-                return scene
-        return None
-
-    def _write_patch(
-        self,
-        scene: _SceneContext,
-        patch: Any,
-        bbox: tuple[float, float, float, float],
-    ) -> None:
-        pxmin, pymin, pxmax, pymax = bbox
-        window: Window = from_bounds(pxmin, pymin, pxmax, pymax, transform=scene.transform).round_offsets().round_lengths()
-        data = patch.astype(self.dtype, copy=False)
-        if data.ndim == 3 and data.shape[0] == 1:
-            data = data[0]
-        scene.writer.write(data, 1, window=window)
-
-    # ------------------------------------------------------------------
-    # STAC
-    # ------------------------------------------------------------------
-
-    def _build_collection(self) -> pystac.Collection:
-        geoms = [scene.geometry_wgs84 for scene in self._scenes.values()]
-        datetimes = [scene.datetime for scene in self._scenes.values()]
-        union = shapely.ops.unary_union(geoms)
-        spatial_extent = pystac.SpatialExtent([list(union.bounds)])
-        temporal_extent = pystac.TemporalExtent([[min(datetimes), max(datetimes)]])
-
-        return pystac.Collection(
-            id=self.collection_id,
-            description=self.collection_description,
-            extent=pystac.Extent(spatial=spatial_extent, temporal=temporal_extent),
-            license="proprietary",
-        )
-
-    def _build_item(self, scene: _SceneContext, collection: pystac.Collection) -> pystac.Item:
-        dt_utc = scene.datetime.astimezone(timezone.utc) if scene.datetime.tzinfo else scene.datetime.replace(tzinfo=timezone.utc)
-        item = pystac.Item(
-            id=f"{self.model_name}_{scene.scene_id}",
-            geometry=shapely.geometry.mapping(scene.geometry_wgs84),
-            bbox=list(scene.geometry_wgs84.bounds),
-            datetime=dt_utc,
-            properties={
-                "proj:epsg": _epsg_from_crs(scene.crs),
-                "model:name": self.model_name,
-                "source:scene_id": scene.scene_id,
-                "source:path": str(scene.source_path),
-            },
-            collection=collection.id,
-        )
-        rel_href = Path("..") / ".." / scene.output_path.relative_to(self.output_dir)
-        item.add_asset(
-            self.asset_key,
-            pystac.Asset(
-                href=str(rel_href),
-                media_type=pystac.MediaType.COG,
-                roles=["data"],
-                title=f"{self.model_name} prediction for {scene.scene_id}",
-            ),
-        )
-        return item
-
-
-def _epsg_from_crs(crs_str: str) -> int | None:
-    if crs_str.upper().startswith("EPSG:"):
-        try:
-            return int(crs_str.split(":", 1)[1])
-        except ValueError:
-            return None
-    return None
+        (self._run_dir / "metadata.json").write_text(json.dumps(metadata, indent=2))

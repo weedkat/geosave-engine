@@ -1,0 +1,7 @@
+model:
+  init_args:
+    augmentations:
+      - name: RandomHorizontalFlip
+        init_args: {p: 0.5}
+      - name: RandomVerticalFlip
+        init_args: {p: 0.5}

@@ -6,115 +6,55 @@ GeoSave Engine is a local-first product for building geospatial AI workflows end
 
 It generates a ready-to-use boilerplate and applies proven best practices out of the box, including access to state-of-the-art models and multiple training methods with minimal coding. Instead of building model pipelines from scratch, users can focus on dataset creation and preprocessing, then run the resulting pipeline on fresh satellite data directly from their own machine.
 
+## Philosophy
+
+The library does two things, deliberately, and nothing more: gives you a
+pipeline abstraction for turning raw geospatial data into a trainable
+dataset, and wires that up to an established training framework (PyTorch
+Lightning) instead of making you glue one together yourself. It isn't
+trying to be its own ML framework or its own geospatial format — it
+composes existing best-practice tools (STAC, zarr, Lightning, MLflow) around
+three consistent objects, and gets out of your way past that point:
+
+- `GeoAnchor` — where + when, no pixel data yet. A location (`GeoBox`) and
+  datetime; what ingest sources produce and what `GeoPipeline.ingest()`
+  takes in.
+- `GeoTile` — a `GeoAnchor` plus its fetched raster data.
+- `GeoStack` — multiple named `GeoTile` layers for one anchor, saved
+  together as one `<anchor>.geostack/` folder.
+
+Templates are scaffolding, not a contract. `geosave create` hands you real,
+editable files — no required base class your code has to obey to keep
+working.
+
 ## Who It Is For
 
 GeoSave Engine is built for geospatial practitioners who want to implement AI in real workflows, and for users entering geospatial processing who need a structured path to get started.
 
 It is especially useful for teams and individuals who want to move fast from raw geospatial data to deployable predictions without spending most of their time designing project architecture, wiring training stacks, or maintaining custom pipeline glue code.
 
-## Main Workflow
-
-This is a usage overview. For setup, follow the installation guide first.
-
-### Build a New Workspace
-
-Start by generating a new project scaffold.
-
-```bash
-geosave build my-project
-```
-
-Outcome: A ready workspace is created with project structure, config entry points, and runnable scripts.
-
-Model selection is config-driven after scaffold generation. Edit `configs/default.yaml`
-to choose the model class path and per-model settings for each run.
-
-### Create and Run Dataset Scripts
-
-Dataset ingestion and preprocessing are project-specific. Edit scripts based on your data design, then use the CLI UI to discover and execute scripts.
-
-```bash
-geosave run my-project
-```
-
-Outcome: Your dataset creation and preprocessing flow is integrated into the project pipeline.
-
-### Train the Model
-
-Start training from your workspace. If no config is passed, GeoSave prompts you to select a config file interactively.
-
-```bash
-geosave fit my-project
-```
-
-Outcome: Training runs with your selected config and produces model artifacts for later evaluation and prediction.
-
-### Benchmark with Test
-
-Run evaluation to benchmark model performance. If no artifact path is passed, GeoSave prompts you to select model artifacts interactively.
-
-```bash
-geosave test my-project
-```
-
-Outcome: You get evaluation metrics to validate quality and decide whether to iterate.
-
-### Inspect Logs and Iterate Configs
-
-Review training logs and compare runs, then create a new config if you want to train a different model variant.
-
-```bash
-tensorboard --logdir my-project/artifacts
-geosave fit my-project -c configs/another-model.yaml
-```
-
-Outcome: You can compare experiments and retrain with new model choices without rebuilding the workflow.
-
-### Predict on Fresh Data
-
-Prepare fresh-data scripts, run them through CLI UI, then run prediction. If no artifacts path is passed, GeoSave prompts artifact selection interactively.
-
-```bash
-geosave run my-project
-geosave predict my-project
-```
-
-Outcome: You produce predictions on fresh satellite data using trained model artifacts.
-
 ## CLI UI
 
-Placeholder: add a screenshot of the GeoSave CLI interactive UI here.
-
-![GeoSave CLI UI Placeholder](images/cli-ui-placeholder.png)
+TODO: screenshot of the GeoSave CLI interactive UI.
 
 ## Tech Stack
 
-GeoSave Engine combines PyTorch Lightning and TorchGeo for model training and geospatial sampling, STAC tooling (pystac, pystac-client, odc-stac, odc-geo) for data ingestion, and geospatial IO libraries (geopandas, rasterio, rioxarray) for dataset preparation and processing. The workflow is exposed through a script-first CLI built with Typer.
-
-## Workspace Boilerplate
-
-A generated workspace gives you a ready structure to start quickly:
-
-```text
-workspace/
-├── artifacts
-├── configs
-│   └── default.yaml
-├── data
-├── datasets
-├── notebooks
-├── predictions
-├── scripts
-├── src
-│   ├── data_module.py
-│   ├── dataset.py
-│   └── lightning_module.py
-├── geosave.toml
-└── main.py
-```
-
-In short: config, data staging, runnable scripts, source code, and output artifacts are prepared in one place.
+GeoSave Engine combines PyTorch Lightning for training, STAC tooling
+(pystac, pystac-client, odc-stac, odc-geo) for data ingestion, and
+geospatial IO libraries (zarr, rasterio, rioxarray, geopandas) for dataset
+preparation and processing. The CLI is built with Typer + questionary.
 
 ## Next Steps
 
-Start by building a workspace, then adapt ingestion for your dataset. A Dynamic World example can be added later as a concrete dataset structure reference.
+**[workflow.md](guide/workflow.md)** is the full step-by-step: `geosave
+create` through exploring data, building a dataset, training, and
+registering a model — workspace layout and every command, in one ordered
+read. Deep reference material lives in **[docs/concept/](concept/)**:
+[geotile.md](concept/geotile.md) (`GeoAnchor`/`GeoTile`/`GeoStack`),
+[pipeline.md](concept/pipeline.md) (`GeoPipeline`, sources, STAC),
+[model.md](concept/model.md) (`GeoDataset`,
+`SemanticSegmentationTask`/`DataModule`, config.yaml).
+
+The `workspace/` directory in this repo (Sentinel-2 + DynamicWorld land
+cover segmentation, Path A) is a concrete, real example to read alongside
+it — not a placeholder to wait for.

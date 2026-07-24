@@ -31,3 +31,6 @@ toggle.name = "Switch to dark mode"
 scheme = "slate"
 toggle.icon = "lucide/moon"
 toggle.name = "Switch to light mode"
+
+[plugins.mkdocstrings.handlers.python]
+paths = ["src"]

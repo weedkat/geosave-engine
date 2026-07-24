@@ -1,3 +1,3 @@
-from geosave_engine.ml.cli.cli import GeosaveCLI
+from .cli import GeosaveCLI
 
 __all__ = ["GeosaveCLI"]
