@@ -1,0 +1,134 @@
+name: Release
+
+on:
+  push:
+    branches: [main]
+    tags: ["v*"]
+
+jobs:
+  # --- every push to main: dev build -> TestPyPI + rolling GitHub pre-release ---
+  build-dev:
+    if: github.ref == 'refs/heads/main'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: astral-sh/setup-uv@v5
+        with:
+          enable-cache: true
+
+      - name: Set dev version (build-only, not committed)
+        run: |
+          python - <<'PY'
+          import pathlib
+          import os
+          import re
+
+          path = pathlib.Path("src/geosave_engine/__about__.py")
+          text = path.read_text()
+          base = re.search(r'__version__\s*=\s*"([^"]+)"', text).group(1)
+          dev_version = f"{base}.dev{os.environ['GITHUB_RUN_NUMBER']}"
+          path.write_text(re.sub(r'__version__\s*=\s*"[^"]+"', f'__version__ = "{dev_version}"', text))
+          print(f"dev version: {dev_version}")
+          PY
+
+      - name: Build wheel
+        run: uv build --wheel
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: dev-wheel
+          path: dist/*.whl
+
+  publish-testpypi:
+    needs: build-dev
+    runs-on: ubuntu-latest
+    environment:
+      name: testpypi
+      url: https://test.pypi.org/p/geosave-engine
+    permissions:
+      id-token: write
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          name: dev-wheel
+          path: dist
+
+      - uses: pypa/gh-action-pypi-publish@release/v1
+        with:
+          repository-url: https://test.pypi.org/legacy/
+          packages-dir: dist
+          skip-existing: true
+
+  github-release-dev:
+    needs: build-dev
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          name: dev-wheel
+          path: dist
+
+      - uses: softprops/action-gh-release@v2
+        with:
+          tag_name: dev
+          name: Latest dev build
+          prerelease: true
+          make_latest: false
+          body: Rolling dev build from ${{ github.sha }}. Overwritten on every push to main.
+          files: dist/*.whl
+
+  # --- push of a version tag (vX.Y.Z): real release -> PyPI + tagged GitHub release ---
+  build-release:
+    if: startsWith(github.ref, 'refs/tags/v')
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: astral-sh/setup-uv@v5
+        with:
+          enable-cache: true
+
+      - name: Build wheel
+        run: uv build --wheel
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: release-wheel
+          path: dist/*.whl
+
+  publish-pypi:
+    needs: build-release
+    runs-on: ubuntu-latest
+    environment:
+      name: pypi
+      url: https://pypi.org/p/geosave-engine
+    permissions:
+      id-token: write
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          name: release-wheel
+          path: dist
+
+      - uses: pypa/gh-action-pypi-publish@release/v1
+        with:
+          packages-dir: dist
+
+  github-release-tag:
+    needs: build-release
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          name: release-wheel
+          path: dist
+
+      - uses: softprops/action-gh-release@v2
+        with:
+          generate_release_notes: true
+          files: dist/*.whl
