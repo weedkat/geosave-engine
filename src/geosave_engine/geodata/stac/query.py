@@ -3,8 +3,8 @@ from dataclasses import dataclass
 from datetime import datetime
 from typing import TypeVar
 
-from geosave_engine.utils.stac_query import CQL2
-from geosave_engine.utils.crs import validate_bbox
+from geosave_engine.geodata.utils.stac_query import CQL2
+from geosave_engine.geodata.utils.crs import validate_bbox
 
 T = TypeVar("T", bound="StacQuery")
 SortBy = list[dict[str, str]] | dict[str, str] | str
@@ -72,6 +72,7 @@ class StacQuery:
 
         Args:
             expr: CQL2-JSON filter dict; use ``CQL2`` helpers to build.
+                Example: ``{"op": "<=", "args": [{"property": "eo:cloud_cover"}, 0.1]}``.
         """
         if self.filter is None:
             self.filter = expr

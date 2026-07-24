@@ -2,148 +2,138 @@ from __future__ import annotations
 
 import json
 import logging
-from datetime import datetime as dt
+from datetime import datetime
 from pathlib import Path
 from typing import Any, Sequence
 
-import numpy as np
 import torch
 from lightning import LightningModule, Trainer
 from lightning.pytorch.callbacks import BasePredictionWriter
-from odc.geo.geobox import GeoBox
 
-from geosave_engine.geodata.tile import GeoAnchor, GeoTile, mosaic
+from geosave_engine.geodata.tile import GEOSTACK_SUFFIX, GeoAnchor, GeoStack, GeoTile
 
 log = logging.getLogger(__name__)
 
-
-def _tile_from_context(context: dict[str, Any], i: int, shape: tuple[int, int]) -> GeoAnchor:
-    """Reconstruct an anchor for sample i from stacked batch context.
-
-    Args:
-        context: ``batch["context"]`` dict; non-tensor values are lists of length B.
-        i: Sample index within the batch.
-        shape: ``(H, W)`` spatial shape of the prediction tensor.
-
-    Raises:
-        KeyError: If ``crs``, ``transform``, or ``datetime`` are missing from context.
-    """
-    geobox = GeoBox(shape=shape, affine=context["transform"][i], crs=context["crs"][i])
-    return GeoAnchor(geobox=geobox, datetime=dt.fromisoformat(context["datetime"][i]))
-
-
-class MosaicBuilder:
-    """Merge per-tile prediction COGs into a single mosaic COG.
-
-    Loads all ``pred_label.tif`` and ``pred_proba.tif`` under ``tiles_dir``,
-    merges via :func:`geosave_engine.geodata.tile.geotile.mosaic`, then writes
-    the result to ``mosaic_dir``.
-
-    Args:
-        tiles_dir: Directory containing per-tile subdirectories.
-        mosaic_dir: Output directory for mosaic files.
-    """
-
-    def __init__(self, tiles_dir: Path, mosaic_dir: Path) -> None:
-        self.tiles_dir = tiles_dir
-        self.mosaic_dir = mosaic_dir
-
-    def build(self) -> None:
-        """Merge all prediction tiles into mosaic COGs.
-
-        Raises:
-            KeyError: If a tile's ``context.json`` sidecar is missing its ``datetime``.
-        """
-        for layer in ("pred_label.tif", "pred_proba.tif"):
-            paths = sorted(self.tiles_dir.rglob(layer))
-            if not paths:
-                log.warning("No tiles found for mosaic layer %s", layer)
-                continue
-            tiles = [
-                GeoTile.from_geotiff(
-                    p, datetime=json.loads((p.parent / "context.json").read_text())["datetime"],
-                    load_data=True,
-                )
-                for p in paths
-            ]
-            out_path = self.mosaic_dir / layer
-            mosaic(tiles).to_cog(out_path)
-            log.info("Mosaic written: %s", out_path)
+_TIMESTAMP_FORMAT = "%Y%m%dT%H%M%S"
+_METADATA_ATTRS = ("class_map", "color_map", "band_map", "ignore_index")
 
 
 class PredictionWriter(BasePredictionWriter):
-    """Write per-tile predictions and input layers to a structured output directory.
+    """Write per-anchor predictions as GeoStacks, one layer per `predict_step` output key.
 
-    Writes ``pred_label.tif``, ``pred_proba.tif``, optional input layer COGs,
-    and a ``context.json`` sidecar per tile. Writes ``manifest.json`` at the
-    end of predict. Optionally merges all tiles into a spatial mosaic.
+    `predict_step` (any task) must return `dict[str, Tensor]` plus one
+    `"anchors"` key (`list[GeoAnchor]`, one per sample) — every other key's
+    tensor `[B, H, W]` or `[B, C, H, W]`, keyed by whatever layer names that
+    task wants saved (e.g. `pred_label`/`pred_proba` for segmentation, a
+    single `prediction` for regression). Spatial identity comes from
+    `prediction["anchors"]`, not `batch` — same reasoning as
+    `ThresholdCalibrator` reading `outputs['logits']`/`['label']` instead of
+    reaching into `batch`: this callback has no business knowing a task's
+    `image_key`/which batch layer counts as the anchor source. That's the
+    task's own call (usually `batch["anchors"][self.image_key]`) — it
+    already knows both; this callback just requires the result show up in
+    its output, fails fast with a clear message if it doesn't.
 
-    Requires ``batch["context"]`` to contain: ``crs``, ``transform``, ``datetime``.
-    Optional provenance keys: ``bbox_wgs84``, ``stac_item_ids``.
+    One predicted anchor becomes one `<stem>.geostack/` folder holding
+    every returned layer as zarr, plus a `.tif` COG per layer (one COG per
+    timestep, for any layer with a time dimension — a COG can't hold one
+    itself). Building a combined tiled layer (mosaic, MosaicJSON, whatever
+    a map client wants) is a serving-side concern that reads this output —
+    not this callback's job.
+
+    Re-running predict against the same run directory skips anchors whose
+    `.geostack` folder already exists — the folder itself is the only
+    state, no separate tracking file.
 
     Output layout::
 
         <output_dir>/
           <model_name>/
-            tiles/
-              pred_<lon>_<lat>_<date>_<res>/
-                pred_label.tif
-                pred_proba.tif
-                inputs/
-                  image.tif       # one file per key in input_keys
-                context.json
-            mosaic/               # only when mosaic=True
-              pred_label.tif
-              pred_proba.tif
-            manifest.json
+            <predict_id>/             # one directory per predict invocation
+              tiles/
+                <stem>.geostack/
+                  <layer_name>.zarr   # every key predict_step returned
+                  <layer_name>/
+                    <timestamp>.tif   # one COG per timestep (usually just one)
+              metadata.json
+
+    This callback is never auto-attached — deployment-specific args
+    (`output_dir` especially) have no sensible universal default, so it's
+    opt-in via `trainer.callbacks:` in config, same as any other callback.
+    `model_name` is the one exception worth knowing about: leave it out of
+    your config entirely and `GeosaveCLI` back-fills it from the top-level
+    `model_name:` key (see `GeosaveCLI._fill_prediction_writer_model_name`)
+    — one source of truth, not a second value to keep in sync by hand. It's
+    still a required constructor arg (fails fast, no silent default) for
+    anyone wiring this callback outside `GeosaveCLI` (a plain script, a
+    different CLI) where that back-fill never runs.
 
     Args:
-        output_dir: Base directory. Model-named subdirectory created inside.
-        input_keys: Batch tensor keys to copy as input layer COGs.
-        mosaic: Merge all prediction tiles into mosaic COGs after predict.
-        model_name: Model name for the output directory and manifest.
-            Falls back to checkpoint stem, then a timestamp.
-
-    Examples:
-        # LightningCLI YAML:
-        callbacks:
-          - class_path: geosave_engine.ml.callbacks.PredictionWriter
-            init_args:
-              output_dir: predictions/
-              input_keys: [image]
-              mosaic: true
+        output_dir: Base directory. `<model_name>/<predict_id>` created
+            inside — tenancy prefixes above that (user/project id, if any)
+            are the caller's own responsibility to build into this path,
+            not something this callback knows about.
+        model_name: The caller's own name for this model — matches the
+            same `model_name:` top-level key training uses (this library
+            provides the framework/pipeline, not model identity — never
+            guessed from a checkpoint path). Required; `GeosaveCLI`
+            back-fills it automatically when this callback is declared in
+            config without one, so in practice you rarely type it here.
+        input_keys: Batch layer names to also persist alongside the
+            predictions (e.g. the source imagery, for QA/traceability).
+            Off by default — imagery is usually the bulk of the bytes, and
+            it already exists wherever the predict-root `GeoDataset` reads
+            it from, so duplicating it is opt-in, not automatic.
+        predict_id: Override — identifies this predict invocation, distinct
+            from `model_name` itself (this is one *inference run* against
+            an already-trained model, not the model's own identity). The
+            caller's own job/request id if it has one (opaque string, no
+            format imposed — ownership of that id belongs to the caller,
+            not this library). Otherwise a timestamp — deliberately not
+            derived from whatever logger happens to be attached (fragile:
+            depends on logging config that has nothing to do with where
+            predictions get written, and silently changes behavior if a
+            user swaps loggers or disables logging).
     """
 
     def __init__(
         self,
         output_dir: str | Path,
-        input_keys: list[str] | None = None,
-        mosaic: bool = False,
-        model_name: str | None = None,
+        model_name: str,
+        input_keys: Sequence[str] | None = None,
+        # override
+        predict_id: str | None = None,
     ) -> None:
         super().__init__(write_interval="batch")
         self.output_dir = Path(output_dir)
-        self.input_keys: list[str] = input_keys or ["image"]
-        self.mosaic = mosaic
-        self._model_name_override = model_name
-        self._tiles_dir: Path | None = None
-        self._model_name: str = ""
-        self._written_stems: list[str] = []
-
-    def _resolve_model_name(self, trainer: Trainer) -> str:
-        if self._model_name_override:
-            return self._model_name_override
-        if trainer.ckpt_path:
-            return Path(trainer.ckpt_path).stem
-        return f"predict_{dt.now().strftime('%Y%m%dT%H%M%S')}"
+        self.model_name = model_name
+        self.input_keys = input_keys
+        self._predict_id_override = predict_id
+        self.predict_id: str
+        self._tiles_dir: Path
+        self._run_dir: Path
 
     def setup(self, trainer: Trainer, pl_module: LightningModule, stage: str) -> None:
-        if stage != "predict":
-            return
-        self._model_name = self._resolve_model_name(trainer)
-        self._tiles_dir = self.output_dir / self._model_name / "tiles"
+        """Resolve predict_id, create `<output_dir>/<model_name>/<predict_id>/tiles/`."""
+        super().setup(trainer, pl_module, stage)
+
+        self.predict_id = self._predict_id_override or datetime.now().strftime(_TIMESTAMP_FORMAT)
+        self._run_dir = self.output_dir / self.model_name / self.predict_id
+        self._tiles_dir = self._run_dir / "tiles"
         self._tiles_dir.mkdir(parents=True, exist_ok=True)
-        self._written_stems = []
+
+    @staticmethod
+    def _to_tile(anchor: GeoAnchor, array: torch.Tensor) -> GeoTile:
+        """Build one GeoTile from one sample's `[H, W]` or `[C, H, W]` tensor.
+
+        Band names aren't knowable here (`PredictionWriter` doesn't have
+        task-level band semantics) — `band_{i}` for a multi-band array,
+        `with_np`'s own single-band default otherwise.
+        """
+        np_array = array.detach().cpu().numpy()
+        if np_array.ndim == 2:
+            return anchor.with_np(np_array)
+        return anchor.with_np(np_array, [f"band_{i}" for i in range(np_array.shape[0])])
 
     def write_on_batch_end(
         self,
@@ -155,93 +145,59 @@ class PredictionWriter(BasePredictionWriter):
         batch_idx: int,
         dataloader_idx: int,
     ) -> None:
-        if self._tiles_dir is None:
-            raise RuntimeError("PredictionWriter.setup() was not called before write_on_batch_end")
-        preds, max_probs = prediction  # both [B, H, W]
-        context: dict[str, Any] = batch.get("context", {})
-        h, w = preds.shape[-2:]
-        for i in range(preds.shape[0]):
-            stem = self._write_tile(i, preds[i], max_probs[i], batch, context, (h, w), trainer, self._tiles_dir)
-            self._written_stems.append(stem)
+        """Validate `prediction`, pull anchors from it, write one GeoStack per sample.
 
-    def _write_tile(
-        self,
-        i: int,
-        pred: torch.Tensor,
-        max_prob: torch.Tensor,
-        batch: dict[str, Any],
-        context: dict[str, Any],
-        shape: tuple[int, int],
-        trainer: Trainer,
-        tiles_dir: Path,
-    ) -> str:
-        base = _tile_from_context(context, i, shape)
+        Raises:
+            KeyError: `prediction` isn't a dict, or has no `"anchors"` key.
+            TypeError: `prediction`'s other keys aren't all `Tensor`.
+        """
+        if not isinstance(prediction, dict) or "anchors" not in prediction:
+            raise KeyError(
+                "PredictionWriter requires predict_step to return a dict with an "
+                "'anchors' key (list[GeoAnchor], one per sample) — add it to your "
+                "task's predict_step output, e.g. output['anchors'] = batch['anchors'][self.image_key]"
+            )
+        anchors = prediction["anchors"]
+        layers_out = {key: value for key, value in prediction.items() if key != "anchors"}
+        if not all(isinstance(value, torch.Tensor) for value in layers_out.values()):
+            raise TypeError(
+                f"PredictionWriter expects predict_step to return dict[str, Tensor] plus "
+                f"'anchors', got value types {[type(v).__name__ for v in layers_out.values()]}"
+            )
 
-        lon, lat = base.centroid
-        res = int(base.resolution)
-        date_part = context["datetime"][i][:10].replace("-", "")
-        stem = f"pred_{lon:.6f}_{lat:.6f}_{date_part}_{res}m"
-
-        tile_dir = tiles_dir / stem
-        tile_dir.mkdir(parents=True, exist_ok=True)
-
-        base.with_np(pred.cpu().numpy().astype(np.uint8), ["pred_label"]).to_cog(
-            tile_dir / "pred_label.tif"
-        )
-        base.with_np(max_prob.cpu().numpy().astype(np.float32), ["pred_proba"]).to_cog(
-            tile_dir / "pred_proba.tif"
-        )
-
-        saved_inputs: dict[str, str] = {}
-        inputs_dir = tile_dir / "inputs"
-        for key in self.input_keys:
-            if key not in batch or not isinstance(batch[key], torch.Tensor):
+        for i, anchor in enumerate(anchors):
+            stem = anchor.stem
+            stack_path = self._tiles_dir / f"{stem}{GEOSTACK_SUFFIX}"
+            if stack_path.exists():
+                log.info("Skipping %s — already predicted", stem)
                 continue
-            arr = batch[key][i].cpu().numpy().astype(np.float32)
-            if arr.ndim == 2:
-                arr = arr[np.newaxis]
-            bands = [f"{key}_{j}" for j in range(arr.shape[0])]
-            base.with_np(arr, bands).to_cog(inputs_dir / f"{key}.tif")
-            saved_inputs[key] = f"inputs/{key}.tif"
 
-        stac_ids: list[str] = list(context.get("stac_item_ids", [None] * (i + 1))[i] or [])
-        bbox: list[float] = list(context["bbox_wgs84"][i]) if "bbox_wgs84" in context else list(base.wgs84_bbox)
+            layers = {key: self._to_tile(anchor, tensor[i]) for key, tensor in layers_out.items()}
+            for key in self.input_keys or []:
+                value = batch.get(key)
+                if isinstance(value, torch.Tensor):
+                    layers[key] = self._to_tile(anchor, value[i])
 
-        ctx: dict[str, Any] = {
-            "tile_stem": stem,
-            "crs": base.crs,
-            "datetime": context["datetime"][i],
-            "bbox_wgs84": bbox,
-            "stac_item_ids": stac_ids,
-            "model_name": self._model_name,
-            "model_checkpoint": str(trainer.ckpt_path) if trainer.ckpt_path else None,
-            "layers": {
-                "pred_label": "pred_label.tif",
-                "pred_proba": "pred_proba.tif",
-                **saved_inputs,
-            },
-        }
-        with open(tile_dir / "context.json", "w") as f:
-            json.dump(ctx, f, indent=2)
+            GeoStack(**layers).save(stack_path)
 
-        log.debug("Tile written: %s", tile_dir)
-        return stem
+            timestamp = anchor.start.strftime(_TIMESTAMP_FORMAT)
+            for key, tile in layers.items():
+                tile.to_cog(stack_path / key / f"{timestamp}.tif")
 
     def on_predict_end(self, trainer: Trainer, pl_module: LightningModule) -> None:
-        if self._tiles_dir is None:
-            return
-
-        manifest: dict[str, Any] = {
-            "model_name": self._model_name,
-            "model_checkpoint": str(trainer.ckpt_path) if trainer.ckpt_path else None,
-            "tiles": self._written_stems,
-            "mosaic": self.mosaic,
+        """Write `metadata.json`: model_name, predict_id, checkpoint, created_at,
+        plus class_map/color_map/band_map/ignore_index read off `pl_module`
+        when present (duck-typed — absent for tasks that don't have them,
+        e.g. regression)."""
+        metadata: dict[str, Any] = {
+            "model_name": self.model_name,
+            "predict_id": self.predict_id,
+            "checkpoint": str(trainer.ckpt_path) if trainer.ckpt_path else None,
+            "created_at": datetime.now().isoformat(),
         }
-        manifest_path = self._tiles_dir.parent / "manifest.json"
-        with open(manifest_path, "w") as f:
-            json.dump(manifest, f, indent=2)
-        log.info("Manifest: %s (%d tiles)", manifest_path, len(self._written_stems))
+        for attr in _METADATA_ATTRS:
+            value = getattr(pl_module, attr, None)
+            if value is not None:
+                metadata[attr] = value
 
-        if self.mosaic:
-            mosaic_dir = self._tiles_dir.parent / "mosaic"
-            MosaicBuilder(self._tiles_dir, mosaic_dir).build()
+        (self._run_dir / "metadata.json").write_text(json.dumps(metadata, indent=2))

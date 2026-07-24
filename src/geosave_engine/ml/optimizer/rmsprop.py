@@ -3,7 +3,7 @@ from __future__ import annotations
 import torch
 import torch.nn as nn
 
-from geosave_engine.utils.torch_params import freeze_backbone, split_encoder_decoder
+from geosave_engine.ml.utils.torch_params import freeze_backbone, split_encoder_decoder
 
 
 def default(

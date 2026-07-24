@@ -34,18 +34,18 @@ flowchart TD
     end
 
     subgraph build ["3 · Build the dataset"]
-        AS["AnchorSource\n(Coordinate/GeoJSON/Polygon/Geotiff/Zarr)"] -->|to_anchors| A["GeoAnchor"]
+        AS["AnchorSource\n(Coordinate/GeoJSON/Polygon)"] -->|to_anchors| A["GeoAnchor"]
         A --> GP["GeoPipeline.ingest(anchor)"]
-        GP --> GT["dict[layer_name, GeoTile]"]
-        GT -->|save_dataset| GS["GeoStack.save()\n<anchor>.geostack/*.zarr + manifest.json"]
-        GT -->|stream_ingest| ST["tensor dict\n(no disk)"]
+        GP --> GT["GeoStack"]
+        GT -->|.save()| GS["<anchor>.geostack/*.zarr"]
+        GP2["GeoPipeline.ingest_to_tensor(anchors)"] --> ST["tensor dict\n(no disk)"]
     end
 
     subgraph train ["5-6 · Define + Train"]
         GS -->|GeoDataset rglob *.geostack| DS["GeoDataset"]
         DS -->|stack_samples| DL["DataLoader batch"]
         DL --> LM["LightningModule\nSemanticSegmentationTask (Path A)\nor your own module (Path B)"]
-        LM --> CKPT["checkpoint\nartifacts/<run_name>/version_N/"]
+        LM --> CKPT["checkpoint\nartifacts/<model_name>/version_N/"]
     end
 
     subgraph register ["7 · Register — geosave upload"]
@@ -110,34 +110,58 @@ if you never touch MLflow code directly.
 
 ## 2. Explore and validate a pipeline 🟢
 
-Write your `GeoPipeline` subclass — one `ingest(anchor) -> dict[layer_name,
-GeoTile]` method, everything else optional. Full anatomy, the two kinds of
-"source," pulling from a live STAC catalog vs. local GeoTIFF, building a
-derived layer, handling labels: [concept/pipeline.md](../concept/pipeline.md).
-
-Try it against a few real anchors before scaling up — `ingest(anchor)` is
-pure, no I/O, no manifest, so this costs nothing:
+Before writing any class, poke at the catalog directly — see what's there
+before committing to bands/collection choices:
 
 ```python
-layers = MyPipeline().ingest(anchor)
-layers["sentinel_2_l1c"].data.shape, layers["sentinel_2_l1c"].num_bands, layers["sentinel_2_l1c"].resolution
+from geosave_engine.geodata.stac import StacClient
+from geosave_engine.geodata.tile import GeoAnchor
+
+client = StacClient.cdse()
+client.get_collections()                     # what collections exist
+
+source = client.source("sentinel-2-l1c")
+source.get_bands_metadata().keys()            # what bands this collection has
+source.set_bands(["B04", "B03", "B02"])       # RGB, for a quick look
+
+anchor = GeoAnchor.from_coordinate(lat, lon, size_m=5000, resolution=10, datetime="2026-06-02")
+tile = source.load(anchor)
+tile.plot(title="Visualization")
 ```
 
-Then look at it, don't just inspect shapes. `geosave_engine.utils.geovis.plot`
+Once the bands/collection look right, write your `GeoPipeline` subclass —
+override `sources` (named `StacSource`s to fetch) and, if needed,
+`preprocess` (derive final layers from the fetched ones); `ingest(anchor)`
+itself is inherited, nothing to override there. Full anatomy, the two kinds
+of "source," pulling from a live STAC catalog vs. local GeoTIFF, building a
+derived layer, handling labels: [concept/pipeline.md](../concept/pipeline.md).
+
+Try it against a few real anchors before scaling up. `ingest(anchor)` does
+real fetch I/O — whatever `sources` declares (a live STAC search, an S3
+download) — but nothing else: no disk write, no manifest, so re-running it
+while you iterate costs nothing beyond the fetch itself:
+
+```python
+for stack in MyPipeline().ingest(anchor):
+    tile = stack.tiles["sentinel_2_l1c"]
+    tile.data.shape, tile.num_bands, tile.resolution
+```
+
+Then look at it, don't just inspect shapes. `geosave_engine.geodata.utils.geovis.plot`
 (also reachable as `tile.plot(...)`) renders any `GeoTile` or list of them,
 auto-picking RGB/continuous/categorical per tile from its own band count and
 dtype — no layer-type wrapper class to pick by hand:
 
 ```python
-from geosave_engine.utils.geovis import plot
+from geosave_engine.geodata.utils.geovis import plot
 
-layers = pipeline.ingest(anchor)
-plot(
-    list(layers.values()),
-    rgb_bands=("B04", "B03", "B02"),  # sentinel_2_l1c has 9 bands — which 3 are R/G/B is ambiguous, must say
-    class_map={0: "water", 1: "trees"},
-    color_map={0: "#419bdf", 1: "#397d49"},
-)
+for stack in pipeline.ingest(anchor):
+    plot(
+        list(stack.tiles.values()),
+        rgb_bands=("B04", "B03", "B02"),  # sentinel_2_l1c has 9 bands — which 3 are R/G/B is ambiguous, must say
+        class_map={0: "water", 1: "trees"},
+        color_map={0: "#419bdf", 1: "#397d49"},
+    )
 ```
 
 `rgb_bands` only matters for a layer with more than 3 bands — `plot()`
@@ -161,16 +185,19 @@ in this repo, a full generated workspace, not a trimmed-down snippet.
 Once the pipeline looks right, ingest for real:
 
 ```python
-from geosave_engine.geodata.pipeline import save_dataset
+from pathlib import Path
 
-save_dataset(pipeline, anchors, root="data/train")
+root = Path("data/train")
+for anchor in anchors:
+    for stack in pipeline.ingest(anchor):
+        stack.save(root / f"{anchor.stem}.geostack")
 ```
 
-Writes one `<anchor>.geostack/` folder per anchor plus a resumable
-`manifest.json` per root — re-running after adding anchors skips what's
-already done. Full mechanics (`save_stac`, `limit`, manifest format,
-resumability, streaming without saving via `stream_ingest`):
-[concept/pipeline.md#saving-to-disk](../concept/pipeline.md#saving-to-disk).
+Writes one `<anchor>.geostack/` folder per anchor. No manifest or built-in
+resumability — if re-running matters, skip anchors whose folder already
+exists yourself (`if not (root / f"{anchor.stem}.geostack").exists(): ...`).
+Full save mechanics (`save_stac`), streaming without saving to disk
+(`ingest_to_tensor`, for live predict): [concept/pipeline.md#saving-to-disk](../concept/pipeline.md#saving-to-disk).
 
 ## 4. Version the ingested data with DVC 🟡
 
@@ -189,9 +216,9 @@ git commit -m "Track ingested layers"
 dvc push
 ```
 
-Because ingestion is resumable and manifest-tracked, re-running `dvc add`
-after adding more anchors only hashes what changed — an incremental data
-version, not a full re-upload every time.
+DVC only hashes files that changed, so re-running `dvc add` after adding
+more anchors to `data/train` is still incremental on DVC's side — an
+incremental data version, not a full re-upload every time.
 
 ## 5. Define the model 🟢
 
@@ -199,16 +226,18 @@ Two paths — pick per project, not per library rule:
 
 **Path A — standardized task.** `SemanticSegmentationTask` and
 `SemanticSegmentationDataModule` straight from a LightningCLI YAML config,
-no Python to write. Fixed batch shape (`image`, `label`, optional
-`mask`/`context`); pick an encoder/decoder/head by registry key, and go.
-Full arg reference, `GeoDataset`, config.yaml composition:
+no Python to write. Fixed batch shape (`image`, `label`, optional `mask`);
+pick an encoder/decoder/head by registry key, and go. A model that needs
+extra per-sample context (e.g. Prithvi's `temporal_coords`/`location_coords`)
+gets it via `data.init_args.pipeline` — your `Pipeline`'s own `context()`,
+same one from step 2, wired straight into every split. Full arg reference,
+`GeoDataset`, `model_context`/`ContextChain`, config.yaml composition:
 [concept/model.md](../concept/model.md).
 
 **Path B — your own module.** Write `modules/lightning_module.py` yourself
 — your own batch shape keyed by your pipeline's actual layer names, your
-own `training_step`, one self-contained file. See
-`templates/pixelwise_regression/inference/ibm_granite_biomass/modules/` for
-a real example.
+own `training_step`, one self-contained file. No bundled example currently
+ships with the library; write it against a plain `LightningModule`.
 
 Decision rule: start with Path A for plain supervised segmentation. Switch
 to Path B — don't subclass `SemanticSegmentationTask`, write a fresh module
@@ -219,7 +248,7 @@ so: "This class does not expect to be subclassed."
 
 ```bash
 cd my-project
-python main.py fit -c configs/model.yaml --run_name run1
+python main.py fit -c configs/model.yaml --model_name run1
 ```
 
 `GeosaveCLI` (the `LightningCLI` subclass `main.py` wires up) fills in
@@ -228,10 +257,11 @@ defaults you don't have to declare per config: `ModelCheckpoint` +
 `trainer.callbacks`; `TensorBoardLogger` always, `MLFlowLogger` too if
 `MLFLOW_TRACKING_URI` is set, unless your config sets `trainer.logger`.
 
-`--run_name` is the one identifier every default sink shares — the
+`--model_name` is the one identifier every default sink shares — the
 checkpoint dir, the TensorBoard name, both the MLflow experiment and run
-name — so a run is findable by the same string everywhere, not MLflow's
-own random-generated name.
+name, and the default registered model name at `geosave upload` time — so
+a run is findable by the same string everywhere, not MLflow's own
+random-generated name.
 
 ```bash
 python main.py test -c configs/model.yaml -c configs/metadata.yaml
@@ -249,8 +279,7 @@ instead of hand-assembling `-c` flags, point at its saved copy directly:
 python main.py test -c artifacts/run1/version_0/config.yaml
 ```
 
-`config.yaml`'s top-level run key is `run_name:` — `GeosaveCLI` doesn't
-declare `model_name:`.
+`config.yaml`'s top-level run key is `model_name:`.
 
 Predicting on fresh data reuses the exact same `GeoPipeline` from step 2 —
 ingest the new anchors (step 3) to their own root, point `predict_root`

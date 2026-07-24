@@ -1,0 +1,30 @@
+model_name: my_model
+
+trainer:
+  max_epochs: 100
+  log_every_n_steps: 10
+  callbacks:                  # left blank on purpose — GeosaveCLI fills in
+                               # ModelCheckpoint/LearningRateMonitor/RichProgressBar.
+
+model:
+  class_path: geosave_engine.ml.tasks.SemanticSegmentationTask
+  init_args:
+    stages:
+      encoder: dinov3
+      decoder: dpt
+      head: dense
+    optimizer: AdamW.split
+    scheduler: CosineAnnealingLR
+    loss: CELoss
+    config:
+      optimizer: {weight_decay: 0.01, encoder_lr: 0.0001, decoder_lr: 0.001}
+      scheduler: {T_max: 100}
+
+data:
+  class_path: geosave_engine.ml.tasks.SemanticSegmentationDataModule
+  init_args:
+    train_root: data/train
+    val_root: data/val
+    test_root: data/test
+    batch_size: 16
+    num_workers: 4

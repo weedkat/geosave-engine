@@ -31,13 +31,15 @@ Guides: `docs/guide/workflow.md` (full step-by-step, ingestion through registrat
 
 - `geosave infra`: local dev sandbox (Postgres + S3 + MLflow via docker compose). Real projects point env vars at their own MLflow/S3 directly.
 - `geosave create` scaffolds a workspace: pipeline, configs, and a data/lightning module for Path B — all editable.
-- `config.yaml` top-level run key: `run_name:`.
-- `GeoPipeline` builds one anchor's layers (`ingest(anchor) -> dict[layer_name, GeoTile]`), no disk I/O. `save_dataset(pipeline, anchors, root)` bulk-ingests to disk (`data/<split>/<anchor_stem>.geostack/<layer_name>.zarr` + `manifest.json`, resumable via `ManifestWriter`). `stream_ingest(pipeline, anchors)` is the no-disk equivalent. Anchors come from `AnchorSource` specs (`CoordinateSource`/`GeoJSONSource`/`PolygonSource`/`GeotiffSource`/`ZarrSource`) or a hand-built list.
-- `GeoDataset` discovers anchors via `root.rglob("*.geostack")`, any nesting depth.
+- `config.yaml` top-level run key: `model_name:`.
+- `GeoPipeline.ingest(anchor) -> Iterator[GeoStack]` builds one anchor's samples, no disk I/O. Bulk-to-disk: loop anchors, `for stack in pipeline.ingest(anchor): stack.save(root / f"{anchor.stem}.geostack")` (`data/<split>/<anchor_stem>.geostack/<layer_name>.zarr`). `GeoPipeline.ingest_to_tensor(anchors)` is the no-disk, tensor-yielding equivalent — for streaming/predicting straight from a live source. Anchors come from `AnchorSource` specs (`CoordinateSource`/`GeoJSONSource`/`PolygonSource`) or a hand-built list.
+- `GeoDataset` discovers anchors via `root.rglob("*.geostack")`, any nesting depth. Every rendered sample carries `"anchors"` (`dict[LayerName, GeoAnchor]`), plus whatever a pipeline's `context()` override adds (e.g. Prithvi's `temporal_coords`/`location_coords`) — see `docs/concept/pipeline.md#supplying-model-specific-context`.
 - Data versioning: plain `dvc` on `data/` — directory layout only, no DVC code/deps in this repo.
 - Model definition, two paths:
-  - Path A — prebuilt: `SemanticSegmentationTask` + `SemanticSegmentationDataModule`, config-only. `image_key`/`label_key`/`mask_key` map to your GeoDataset layer names; `class_map`/`band_map` derive `num_classes`/`in_channels`.
+  - Path A — prebuilt: `SemanticSegmentationTask` + `SemanticSegmentationDataModule`, config-only. `image_key`/`label_key`/`mask_key` map to your GeoDataset layer names; `class_map`/`band_map` derive `num_classes`/`in_channels`. `SemanticSegmentationDataModule`'s `pipeline` arg (`class_path` to your `GeoPipeline` subclass) wires its `context()` into every split automatically.
   - Path B — custom: write your own `modules/lightning_module.py`. Never subclass `SemanticSegmentationTask` — write a fresh module.
+  - Stage registry (`encoder`/`decoder`/`head`/`monolith`) + `@model_context`/`ContextChain` (`src/geosave_engine/ml/models/contract`) is what `stages: {...}` in config actually builds — see `docs/concept/model.md#model-construction-registry-model_context-contextchain`.
+- Sensor/band metadata (wavelength, gsd, mean/std) lives in `src/geosave_engine/geodata/sensors` — geodata concern, not ml; models like `Clay` take plain resolved numbers (`in_channels`/`waves`/`gsd`), no sensor-catalog lookup inside `ml/`.
 - Train/test/predict: `python main.py fit -c configs/model.yaml` from the workspace root. `GeosaveCLI` auto-injects `ModelCheckpoint` + TensorBoard/MLflow/CSV loggers unless the config sets its own; MLflow logger reads `MLFLOW_TRACKING_URI`.
 - `geosave upload -a <run>/<version>` rebuilds the model from checkpoint + config, registers it to MLflow's model registry.
 
@@ -63,6 +65,7 @@ Guides: `docs/guide/workflow.md` (full step-by-step, ingestion through registrat
 - For torch module, comment the data flow and dimension changes
 - Reuse existing helpers before adding abstractions.
 - Inline simple one-off logic; extract helpers only when reused or truly complex.
+- Write concise doctring/comments like talking to code reader, not to chat user.
 
 ## Docstring Writing Guide
 

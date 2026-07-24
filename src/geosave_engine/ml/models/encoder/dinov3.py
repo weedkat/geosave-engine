@@ -6,7 +6,7 @@ import torch.nn as nn
 from typing import cast
 from timm.models.eva import Eva
 
-from geosave_engine.ml.core.factory import register_model
+from geosave_engine.ml.registry import register_model
 from geosave_engine.ml.models.contract import model_context
 
 # out_indices are even quarters of each model's block depth:
@@ -35,33 +35,41 @@ TIMM_MODELS: dict[str, dict] = {
 @register_model('encoder', 'dinov3')
 class DINOv3(nn.Module):
     """A DINOv3 model with ImageNet normalization stats attached."""
+    MODEL_NAMES = TIMM_MODELS
 
     def __init__(
         self,
         model_name: str = 'vit_base_patch16_dinov3.lvd1689m',
         pretrained: bool = True,
         in_channels: int = 3,
-        img_size: int | tuple[int, int] = 224,
+        input_size: int | tuple[int, int] = 224,
+        out_indices: list[int] | None = None,
         drop_path_rate: float = 0.0,
         proj_drop_rate: float = 0.0,
         attn_drop_rate: float = 0.0,
         init_values: float | None = 1e-5,
-        num_reg_tokens: int = 4,
         dynamic_img_size: bool = True,
         dynamic_img_pad: bool = False,
     ):
         """Build a timm DINOv3 backbone with ImageNet normalization stats attached.
 
+        `num_reg_tokens` not exposed on purpose — it's a real shape-affecting param
+        (register-token embeddings are `(1, num_reg_tokens, embed_dim)`), and every
+        released DINOv3 checkpoint uses 4; overriding it with `pretrained=True` would
+        silently break weight loading, same reasoning as not exposing `embed_dim`/
+        `depth` on `prithvi.py`'s `Prithvi`.
+
         Args:
             model_name: timm model name. Must be a key of `TIMM_MODELS`.
             pretrained: load pretrained weights from timm hub.
             in_channels: input image channel count.
-            img_size: input spatial size; tuple for non-square.
+            input_size: input spatial size; tuple for non-square.
             drop_path_rate: stochastic depth rate.
             proj_drop_rate: dropout on attention output projection.
             attn_drop_rate: dropout on attention weights.
             init_values: initial layer-scale value; DINOv3 pretraining uses 1e-5.
-            num_reg_tokens: register tokens; DINOv3 pretraining uses 4.
+                Only the init — a real checkpoint's trained values override this at
+                load time, so it never affects `pretrained=True` weight compatibility.
             dynamic_img_size: interpolate positional embeddings for variable input sizes.
             dynamic_img_pad: pad input to nearest patch multiple when dynamic sizing.
 
@@ -79,18 +87,18 @@ class DINOv3(nn.Module):
             pretrained=pretrained,
             in_chans=in_channels,
             num_classes=0,
-            img_size=img_size,
+            img_size=input_size,
             drop_path_rate=drop_path_rate,
             proj_drop_rate=proj_drop_rate,
             attn_drop_rate=attn_drop_rate,
             init_values=init_values,
-            num_reg_tokens=num_reg_tokens,
+            num_reg_tokens=4,  # every released DINOv3 checkpoint uses 4, not user-overridable -- see docstring
             dynamic_img_size=dynamic_img_size,
             dynamic_img_pad=dynamic_img_pad,
         )
         self.model = cast(Eva, model)
 
-        self.out_indices: list[int] = list(TIMM_MODELS[model_name]['out_indices'])
+        self.out_indices: list[int] = out_indices or list(TIMM_MODELS[model_name]['out_indices'])
 
         # Extract channel dimensions and spatial strides dynamically from the timm model
         feature_info: list = self.model.feature_info
@@ -101,7 +109,7 @@ class DINOv3(nn.Module):
             int(feature_info[i]['reduction']) for i in self.out_indices
         ]
 
-        self.input_size = img_size
+        self.input_size = input_size
         self.img_mean = [0.485, 0.456, 0.406]
         self.img_std = [0.229, 0.224, 0.225]
 
@@ -125,26 +133,24 @@ class DINOv3(nn.Module):
         """
         return self.model(x, rope=rope, attn_mask=attn_mask, is_causal=is_causal)
 
-    @model_context(requires={'image': torch.Tensor}, provides={'pyramid': list, 'prefix_tokens': list})
-    def forward_pyramid(self, ctx: dict) -> dict:
+    @model_context()
+    def forward_pyramid(self, image: torch.Tensor) -> tuple[list, list]:
         """Extract multi-scale intermediate features from the ViT.
 
-        Reads ctx['image'] (B, C, H, W). Writes 'pyramid' (list of per-level
-        feature maps) and 'prefix_tokens' (list of per-level prefix tokens).
-
         Args:
-            ctx: Context dict with 'image' as (B, C, H, W).
+            image: (B, C, H, W) input tensor.
 
         Returns:
-            {'pyramid': [...], 'prefix_tokens': [...]}.
+            (pyramid, prefix_tokens) — list of per-level feature maps, list
+            of per-level prefix tokens.
         """
         pairs = self.model.forward_intermediates(
-            ctx['image'],
+            image,
             indices=self.out_indices,
             intermediates_only=True,
             return_prefix_tokens=True,
             output_fmt='NCHW',
         )
-        features, prefix_tokens = map(list, zip(*pairs))
-        return {'pyramid': features, 'prefix_tokens': prefix_tokens}
+        pyramid, prefix_tokens = map(list, zip(*pairs))
+        return pyramid, prefix_tokens
 

@@ -50,10 +50,10 @@ dependencies = [
     "toml>=0.10.2",
     "torchgeo>=0.2.1",
     "typer>=0.20.1",
-    "xformers>=0.0.28.post1",
     "tqdm>=4.67.3",
     "s2cloudless>=1.7.3",
     "odc-stac>=0.5.2",
+    "cogeo-mosaic>=9.2.0",
     "boto3>=1.42.91",
     "odc-geo>=0.5.1",
     "geopy>=2.4.0",
@@ -72,12 +72,14 @@ dependencies = [
     "pydantic>=2.0.0",
     "typing_extensions>=4.0.0",
     "ipywidgets>=8.1.8",
+    "networkx>=3.6.1",
+    "xformers>=0.0.35",
 ]
 
 [project.urls]
-Documentation = "https://github.com/Fatah Muria/geosave-engine#readme"
-Issues = "https://github.com/Fatah Muria/geosave-engine/issues"
-Source = "https://github.com/Fatah Muria/geosave-engine"
+Documentation = "https://github.com/weedkat/geosave-engine#readme"
+Issues = "https://github.com/weedkat/geosave-engine/issues"
+Source = "https://github.com/weedkat/geosave-engine"
 
 [project.scripts]
 geosave = "geosave_engine.cli.main:app"
@@ -87,9 +89,6 @@ path = "src/geosave_engine/__about__.py"
 
 [tool.hatch.build.targets.wheel]
 packages = ["src/geosave_engine"]
-
-[tool.hatch.build.targets.wheel.force-include]
-"src/geosave_engine/ml/models/encoder/configs/metadata.yaml" = "geosave_engine/ml/models/encoder/configs/metadata.yaml"
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]

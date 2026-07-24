@@ -4,7 +4,7 @@ import torch
 import torch.nn as nn
 import torch.nn.functional as F
 
-from geosave_engine.ml.core.factory import register_model
+from geosave_engine.ml.registry import register_model
 from geosave_engine.ml.models.contract import model_context
 
 
@@ -209,18 +209,16 @@ class UnetDecoder(nn.Module):
 
         return x
 
-    @model_context(requires={'pyramid': list}, provides={'feature_map': torch.Tensor})
-    def forward_feature_map(self, ctx: dict) -> dict:
+    @model_context()
+    def forward_feature_map(self, pyramid: list) -> tuple[torch.Tensor]:
         """Fuse multi-scale pyramid into a single dense feature map.
 
-        Reads ctx['pyramid'] (list of per-level tensors).
-        Writes 'feature_map' as (B, out_channels, H, W).
-
         Args:
-            ctx: Context dict with 'pyramid'.
+            pyramid: List of per-level feature tensors.
 
         Returns:
-            {'feature_map': tensor}.
+            (feature_map,) — (B, out_channels, H, W).
         """
-        return {'feature_map': self.forward(ctx['pyramid'])}
+        feature_map = self.forward(pyramid)
+        return feature_map,
 

@@ -1,48 +1,189 @@
 from __future__ import annotations
 
+import ast
+import inspect
+import textwrap
+import typing
 from functools import wraps
 from typing import Any
 
 import torch
 
+_SCOPE_NODES = (ast.FunctionDef, ast.AsyncFunctionDef, ast.Lambda, ast.ClassDef)
 
-def model_context(requires: dict[str, type] | None = None, provides: dict[str, type] | None = None):
-    """Mark a module method as a context-chain step; validate keys and types.
 
-    The decorated method receives a ``dict[str, Any]`` context shared across
-    the entire chain. Return a ``dict[str, Any]`` of new/updated keys for
-    intermediate steps; ``ContextChain`` merges these into the context
-    immutably before passing it to the next module.
-
-    Terminal modules (heads) may return a ``torch.Tensor`` directly —
-    ``ContextChain`` stops the chain and returns the tensor. Terminal steps
-    add nothing to ctx, so leave ``provides`` unset.
+def _direct_returns(node: ast.AST) -> list[ast.Return]:
+    """`Return` nodes belonging to `node`'s own body -- not any nested def/lambda/class.
 
     Args:
-        requires: Key to expected type map. Every key must be present,
-            non-None, and an instance of its declared type before the
-            method body runs.
-        provides: Key to expected type map this method adds to ctx on
-            return. Checked against the actual returned dict on every call —
-            every declared key must come back with a matching type.
-            ``ContextChain`` also reads this (and ``requires``) at
-            construction time to statically verify the whole chain's keys
-            line up before any data ever flows through it.
+        node: an `ast` node (typically a `FunctionDef`) to search inside.
+
+    Returns:
+        Every `ast.Return` reachable without crossing into a nested scope.
+    """
+    returns: list[ast.Return] = []
+    for child in ast.iter_child_nodes(node):
+        if isinstance(child, ast.Return):
+            returns.append(child)
+        elif isinstance(child, _SCOPE_NODES):
+            continue
+        else:
+            returns.extend(_direct_returns(child))
+    return returns
+
+
+def _return_names(fn) -> tuple[str, ...]:
+    """Variable names in `fn`'s own `return name1, name2, ...` statement.
+
+    Requires exactly one `return` in `fn`'s own body (not a nested closure's),
+    whose value is a tuple of bare local-variable names -- not an arbitrary
+    expression, not a single value, not zero/multiple return points. Any
+    other shape is a decoration-time `TypeError`, not a silently-skipped case.
+
+    Args:
+        fn: the undecorated method.
+
+    Returns:
+        Variable names, in return order, e.g. `('pyramid', 'prefix_tokens')`.
+
+    Raises:
+        TypeError: not exactly one `return`, or its value isn't a tuple of
+            bare names.
+    """
+    source = textwrap.dedent(inspect.getsource(fn))
+    func_def = ast.parse(source).body[0]
+    returns = _direct_returns(func_def)
+    if len(returns) != 1:
+        raise TypeError(
+            f"{fn.__qualname__}: must have exactly one return statement, found {len(returns)}"
+        )
+
+    value = returns[0].value
+    if not isinstance(value, ast.Tuple):
+        raise TypeError(
+            f"{fn.__qualname__}: return statement must be `return name1, name2, ...` "
+            "of bare local variables"
+        )
+    names: list[str] = []
+    for elt in value.elts:
+        if not isinstance(elt, ast.Name):
+            raise TypeError(
+                f"{fn.__qualname__}: return statement must be `return name1, name2, ...` "
+                "of bare local variables"
+            )
+        names.append(elt.id)
+    return tuple(names)
+
+
+def _provides_from_return_type(fn) -> dict[str, type]:
+    """Derive `provides` from `fn`'s `-> tuple[T1, T2, ...]` annotation + its return statement.
+
+    Strict on purpose, one code path for every rejection -- no fallback for a
+    bare unparametrized `tuple`, no variadic `tuple[T, ...]`, no arity
+    mismatch between the return statement and the annotation. All of these
+    are the same defect (the annotation doesn't give one concrete type per
+    returned value) and raise the same way.
+
+    Args:
+        fn: the undecorated method; must have a `-> tuple[T1, T2, ...]` hint.
+
+    Returns:
+        `{name: type}`, insertion-ordered to match the return statement's own
+        value order -- the wrapper zips a real call's returned tuple against
+        this dict's keys, no separate ordered-names value needed.
+
+    Raises:
+        TypeError: return annotation isn't a fixed-arity `tuple[T1, T2, ...]`
+            of concrete types, or its arity doesn't match the return
+            statement's own value count.
+    """
+    hints = typing.get_type_hints(fn)
+    return_hint = hints.get('return')
+    arg_types = typing.get_args(return_hint) if typing.get_origin(return_hint) is tuple else ()
+    if not arg_types or Ellipsis in arg_types:
+        raise TypeError(
+            f"{fn.__qualname__}: must return `-> tuple[T1, T2, ...]` of concrete, "
+            f"fixed-arity types, got {return_hint!r}"
+        )
+
+    names = _return_names(fn)
+    if len(names) != len(arg_types):
+        raise TypeError(
+            f"{fn.__qualname__}: return statement has {len(names)} value(s) but "
+            f"return type {return_hint!r} has {len(arg_types)} -- must match"
+        )
+    return dict(zip(names, arg_types))
+
+
+def model_context(head: bool = False):
+    """Mark a module method as a context-chain step; validate keys and types.
+
+    The decorated method takes typed tensor/list params (its real inputs),
+    not a raw ``ctx`` dict — ``requires`` is derived from the method's own
+    signature (param name -> resolved type hint), so there's one source of
+    truth for what a step needs instead of a hand-typed dict that can drift
+    from the body. ``provides`` is derived the same way, from the *output*
+    side: the method's own ``-> tuple[T1, T2, ...]`` return annotation gives
+    the types, its own ``return name1, name2, ...`` statement gives the
+    names — one source of truth there too, no separately hand-typed dict to
+    drift from either the signature or the body. ``ContextChain`` still
+    passes a shared ``dict[str, Any]`` between steps; the wrapper this
+    decorator builds unpacks it into the typed call, re-packs the method's
+    plain tuple return into that dict for ``ContextChain`` to merge in.
+
+    ``head=True`` methods are terminal — the chain stops and returns the
+    value directly instead of merging it into ctx. Must return
+    ``-> torch.Tensor`` (checked both at decoration time against the
+    annotation, and at call time against the actual returned value).
+
+    Whether a module is the chain's entry point is a separate concern, not
+    this decorator's — see ``ContextChain`` in ``chain.py``. Entry is decided
+    by whoever wires up a specific pipeline, not declared by the class author
+    here.
+
+    Args:
+        head: True for a terminal method (a task head) — returns
+            ``torch.Tensor`` directly, ends the chain, adds nothing to ctx.
+
+    Raises:
+        TypeError: A required param has no type hint; ``head=False`` and the
+            return annotation isn't a fixed-arity ``tuple[T1, T2, ...]`` of
+            concrete types, or its arity doesn't match the return statement's
+            own value count, or the return statement isn't exactly one
+            ``return name1, name2, ...`` of bare local variables; ``head=True``
+            and the return annotation isn't ``torch.Tensor``; (at call time)
+            a declared key is missing/mismatched in ctx, or the actual
+            returned value doesn't match what was declared.
 
     Examples:
-        >>> @model_context(requires={'image': torch.Tensor}, provides={'pyramid': list})
-        ... def forward_pyramid(self, ctx: dict) -> dict:
-        ...     features = self.backbone(ctx['image'])
-        ...     return {'pyramid': features}
+        >>> @model_context()
+        ... def forward_pyramid(self, image: torch.Tensor) -> tuple[list, list]:
+        ...     features, prefix_tokens = self.backbone(image)
+        ...     return features, prefix_tokens
 
-        >>> @model_context(requires={'feature_map': torch.Tensor})
-        ... def forward_logits(self, ctx: dict) -> torch.Tensor:
-        ...     return self.head(ctx['feature_map'])
+        >>> @model_context(head=True)
+        ... def forward_logits(self, feature_map: torch.Tensor) -> torch.Tensor:
+        ...     return self.head(feature_map)
     """
-    _requires: dict[str, type] = requires or {}
-    _provides: dict[str, type] = provides or {}
 
     def decorator(fn):
+        hints = typing.get_type_hints(fn)
+        param_names = [name for name in inspect.signature(fn).parameters if name != 'self']
+        missing_hints = [name for name in param_names if name not in hints]
+        if missing_hints:
+            raise TypeError(f"{fn.__qualname__}: missing type hint(s) for {missing_hints}")
+        _requires: dict[str, type] = {name: hints[name] for name in param_names}
+
+        if head:
+            if hints.get('return') is not torch.Tensor:
+                raise TypeError(
+                    f"{fn.__qualname__}: head=True must return `-> torch.Tensor`, "
+                    f"got {hints.get('return')!r}"
+                )
+            _provides: dict[str, type] = {}
+        else:
+            _provides = _provides_from_return_type(fn)
+
         @wraps(fn)
         def wrapper(self, ctx: dict[str, Any]) -> dict[str, Any] | torch.Tensor:
             for key, expected in _requires.items():
@@ -56,21 +197,29 @@ def model_context(requires: dict[str, type] | None = None, provides: dict[str, t
                         f"{expected.__name__}, got {type(ctx[key]).__name__}"
                     )
 
-            result = fn(self, ctx)
+            result = fn(self, *(ctx[name] for name in param_names))
 
-            if isinstance(result, dict):
-                for key, expected in _provides.items():
-                    if key not in result:
-                        raise TypeError(
-                            f"{type(self).__name__}.{fn.__name__}: declared provides['{key}'] "
-                            "but didn't return it"
-                        )
-                    if not isinstance(result[key], expected):
-                        raise TypeError(
-                            f"{type(self).__name__}.{fn.__name__}: provides['{key}'] expected "
-                            f"{expected.__name__}, got {type(result[key]).__name__}"
-                        )
-            return result
+            if head:
+                if not isinstance(result, torch.Tensor):
+                    raise TypeError(
+                        f"{type(self).__name__}.{fn.__name__}: head=True must return "
+                        f"torch.Tensor, got {type(result).__name__}"
+                    )
+                return result
+
+            if not isinstance(result, tuple) or len(result) != len(_provides):
+                raise TypeError(
+                    f"{type(self).__name__}.{fn.__name__}: expected a {len(_provides)}"
+                    f"-tuple ({', '.join(_provides)}), got {result!r}"
+                )
+            result_dict = dict(zip(_provides, result))
+            for key, expected in _provides.items():
+                if not isinstance(result_dict[key], expected):
+                    raise TypeError(
+                        f"{type(self).__name__}.{fn.__name__}: provides['{key}'] expected "
+                        f"{expected.__name__}, got {type(result_dict[key]).__name__}"
+                    )
+            return result_dict
 
         setattr(wrapper, '_is_model_context', True)
         setattr(wrapper, '_requires', _requires)

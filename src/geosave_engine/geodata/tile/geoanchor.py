@@ -15,9 +15,9 @@ from odc.geo.geom import Geometry
 from odc.geo.xr import xr_coords
 from pyproj import CRS, Transformer
 
-from geosave_engine.utils.crs import calculate_crs, validate_coordinate
-from geosave_engine.utils.datetime import DateRange, parse_datetime_range
-from geosave_engine.utils.geolocator import Place
+from geosave_engine.geodata.utils.crs import calculate_crs, validate_coordinate
+from geosave_engine.geodata.utils.datetime import DateRange, parse_datetime_range
+from geosave_engine.geodata.utils.geolocator import Place
 
 if TYPE_CHECKING:
     from .geotile import GeoTile
@@ -27,15 +27,17 @@ AnchorDatetime = dt | str | tuple[str, str] | DateRange
 
 @dataclass(frozen=True, kw_only=True)
 class GeoAnchor:
-    """Where + when, no pixel data.
+    """Where + when, no pixel data. A `GeoTile` always has data — a
+    data-less reference is a `GeoAnchor`, never a `GeoTile` with `data=None`.
 
-    What ingest sources produce (`to_anchors()`), what `GeoPipeline.fetch`
-    takes in. A `GeoTile` always has data — a data-less reference is a
-    `GeoAnchor`, never a `GeoTile` with `data=None`.
+    Datetime always normalizes to an inclusive (start, end) range.
+    Reduced-precision strings cover their whole stated period; datetime
+    objects are exact instants.
 
-    Datetime always normalizes to an inclusive (start, end) range. Reduced-
-    precision strings cover their whole stated period; datetime objects are
-    exact instants.
+    Examples:
+        >>> anchor = GeoAnchor.from_coordinate(52.0, 13.0, datetime="2024-01-01", size_m=5000)
+        >>> anchor.stem
+        '13.000000_52.000000_20240101T000000_20240101T235959.999999_10m'
     """
 
     geobox: GeoBox
@@ -179,6 +181,18 @@ class GeoAnchor:
         """
         return dataclasses.replace(self, geobox=geobox)
 
+    def with_datetime(self, datetime: AnchorDatetime) -> Self:
+        """Return new instance rebased onto datetime, sharing any data reference.
+
+        Pure — no re-fetch, no re-search. Normalizes same as __post_init__
+        (a single instant or reduced-precision string still expands to its
+        own full period).
+
+        Args:
+            datetime: Single instant, ISO string, or (start, end) pair.
+        """
+        return dataclasses.replace(self, datetime=parse_datetime_range(datetime))
+
     def with_metadata(self, extra: Mapping[str, Any], replace: bool = False) -> Self:
         """Merge key-value pairs into metadata field.
 
@@ -218,21 +232,54 @@ class GeoAnchor:
     def with_np(
         self,
         array: np.ndarray,
-        names: list[str],
+        names: str | list[str] | None = None,
         times: list[dt] | None = None,
     ) -> "GeoTile":
         """Build DataArray from numpy array on this anchor's geobox and attach it.
 
-        Accepts (y, x), (band, y, x), or (time, band, y, x). Spatial coords from geobox.
+        Accepts (y, x) for one band, (band, y, x) for several, or (time,
+        band, y, x) for an explicit multi-step stack (pass `times`). If
+        `times` is omitted and this object already carries its own time
+        axis (i.e. a GeoTile that already has data, not a bare GeoAnchor),
+        a (y, x)/(band, y, x) array inherits that same time coordinate
+        automatically — a derived band naturally lines up with its own
+        source tile's time step(s), no separate bookkeeping needed at the
+        call site.
 
         Args:
             array: Pixel array; last two axes are (y, x).
-            names: Band names in order.
-            times: Observation datetimes; required for 4D array.
+            names: Band name(s) — a single string for one band, or one
+                name per row for several. Omit for a single-band array;
+                defaults to "value" (nothing outside GeoTile reads a
+                single-band tile's internal band name — only the layer
+                name it ends up stored under matters).
+            times: Observation datetimes for an explicit multi-step
+                array — only needed building fresh from a bare GeoAnchor
+                with no existing time axis to inherit from.
+
+        Raises:
+            ValueError: If band/time counts don't match the array's shape.
         """
         arr = np.asarray(array)
         if arr.ndim == 2:
             arr = arr[np.newaxis]
+
+        existing_data: xr.DataArray | None = getattr(self, "data", None)
+        inherit_time = (
+            times is None and arr.ndim == 3
+            and existing_data is not None and "time" in existing_data.dims
+        )
+        if inherit_time:
+            arr = arr[np.newaxis]
+
+        if names is None:
+            band_count = arr.shape[1] if arr.ndim == 4 else arr.shape[0]
+            if band_count != 1:
+                raise ValueError(f"names is required for a {band_count}-band array")
+            names = ["value"]
+        elif isinstance(names, str):
+            names = [names]
+
         base_coords: dict[Any, Any] = dict(xr_coords(self.geobox))
         if arr.ndim == 3:
             if len(names) != arr.shape[0]:
@@ -241,10 +288,14 @@ class GeoAnchor:
         elif arr.ndim == 4:
             if len(names) != arr.shape[1]:
                 raise ValueError(f"Expected {arr.shape[1]} names, got {len(names)}")
-            if times is None or len(times) != arr.shape[0]:
-                got = 0 if times is None else len(times)
-                raise ValueError(f"Expected {arr.shape[0]} times, got {got}")
-            time_coord = [np.datetime64(t, "ns") for t in times]
+            if inherit_time:
+                assert existing_data is not None
+                time_coord = existing_data.coords["time"].values
+            else:
+                if times is None or len(times) != arr.shape[0]:
+                    got = 0 if times is None else len(times)
+                    raise ValueError(f"Expected {arr.shape[0]} times, got {got}")
+                time_coord = [np.datetime64(t, "ns") for t in times]
             da = xr.DataArray(
                 arr, dims=("time", "band", "y", "x"),
                 coords={**base_coords, "band": names, "time": time_coord},

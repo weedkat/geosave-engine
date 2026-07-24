@@ -32,7 +32,7 @@ class RunArtifact:
     checkpoint_paths: list[Path]
 
     @property
-    def run_name(self) -> str:
+    def model_name(self) -> str:
         """Return the run's parent directory name (for example, "DynamicWorld")."""
         return self.run_dir.parent.name
 
@@ -44,7 +44,7 @@ def discover_artifacts(artifacts_dir: Path) -> list[Path]:
         artifacts_dir: Workspace artifacts directory.
 
     Returns:
-        Sorted version directories (artifacts/<run_name>/version_N) that
+        Sorted version directories (artifacts/<model_name>/version_N) that
         hold a config.yaml.
     """
     if not artifacts_dir.is_dir():

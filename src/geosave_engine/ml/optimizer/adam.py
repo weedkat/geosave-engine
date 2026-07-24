@@ -3,7 +3,7 @@ from __future__ import annotations
 import torch
 import torch.nn as nn
 
-from geosave_engine.utils.torch_params import freeze_backbone, layerwise_param_groups, split_encoder_decoder, split_no_wd
+from geosave_engine.ml.utils.torch_params import freeze_backbone, layerwise_param_groups, split_encoder_decoder, split_no_wd
 
 
 def default(model: nn.Module, **kwargs) -> torch.optim.Adam:

@@ -25,10 +25,15 @@ Design summary (converged across discussion, not just this file):
       written into the same folder in the same `save()` call, so grouping
       is correct by construction, not reassembled after the fact from
       separate top-level layer directories.
-    - Context extraction is NOT a GeoStack concern (no subclass to
-      override it on) — GeoPipeline optionally overrides `context(self,
-      tiles) -> dict`, and callers pass that bound method in as
-      `context_fn` to `to_tensor()`.
+    - `to_tensor()` always attaches one bare `GeoAnchor` per layer (via
+      `GeoTile.to_anchor()`, pixel data/STAC stripped) under
+      `sample["anchors"]` (`dict[LayerName, GeoAnchor]`) — not a single
+      collapsed "the stack's anchor": `align()` guarantees identical
+      `geobox` across tiles but not `datetime`/`metadata`/`polygon`, so
+      picking one representative tile would silently lose the others'
+      real values. A consumer that needs exactly one (e.g. rebuilding
+      output georeferencing) picks whichever layer's anchor it actually
+      means, instead of getting an arbitrary "first tile" stand-in.
     - The folder itself carries a `.geostack` suffix (`save`/`load` both
       require and enforce it) — same convention as `.zarr`/`.tif`, or
       Sentinel-2's own `.SAFE` product directories. Lets discovery over a
@@ -54,7 +59,7 @@ if TYPE_CHECKING:
     import matplotlib.pyplot as plt
     import numpy as np
 
-    from geosave_engine.utils.geovis import PlotKwargs
+    from geosave_engine.geodata.utils.geovis import PlotKwargs
 
 LayerName = str
 GEOSTACK_SUFFIX = ".geostack"
@@ -89,8 +94,25 @@ class GeoStack:
         layers = ", ".join(f"{name}={tile!r}" for name, tile in self.tiles.items())
         return f"{type(self).__name__}({layers})"
 
+    def add(self, name: LayerName, tile: GeoTile) -> "GeoStack":
+        """Return new GeoStack with one more layer, realigned.
+
+        Pure — same shape as GeoTile.with_data: self is untouched, a new
+        instance comes back. Runs every tile (existing + new) through
+        align() again, same as construction. A name already present is
+        overwritten by tile.
+
+        Args:
+            name: Layer name.
+            tile: Tile to add under name.
+
+        Returns:
+            New GeoStack with name -> tile merged in.
+        """
+        return GeoStack(**{**self.tiles, name: tile})
+
     def plot(self, **kwargs: Unpack[PlotKwargs]) -> tuple[plt.Figure, np.ndarray]:
-        """Plot every layer — thin wrapper, see `geosave_engine.utils.geovis.plot`.
+        """Plot every layer — thin wrapper, see `geosave_engine.geodata.utils.geovis.plot`.
 
         All layers share one anchor (same location, same date by
         construction), so this always facets one panel per layer — never a
@@ -103,7 +125,7 @@ class GeoStack:
         Returns:
             `(Figure, ndarray of Axes)`.
         """
-        from geosave_engine.utils.geovis import plot
+        from geosave_engine.geodata.utils.geovis import plot
 
         return plot(list(self.tiles.values()), **kwargs)
 
@@ -180,13 +202,21 @@ class GeoStack:
                 bands the tile carries.
             dtype_override: Layer name to torch dtype to cast that layer's
                 tensor to. Default keeps the tensor's saved dtype.
-            context_fn: Called with this instance's tiles dict, if given —
-                typically a GeoPipeline's own `context` method. None means
-                no context key in the output.
+            context_fn: Optional, takes `self.tiles` and returns extra keys
+                to merge into the sample — e.g. a model-specific derivation
+                of `temporal_coords`/`location_coords` from the tiles'
+                anchors. Applied *after* `"anchors"` is set, so a returned
+                `"anchors"` key would override it; every other key is purely
+                additive. `None` skips this entirely — no keys beyond
+                layers + `"anchors"` are added. Kept generic on purpose: this
+                function has no idea what a caller's `context_fn` computes
+                or why, it just merges the result.
 
         Returns:
-            Tensor dict keyed by each layer's raw name. Includes "context"
-            when context_fn is given and returns non-empty.
+            Tensor dict keyed by each layer's raw name, plus `"anchors"` —
+            `dict[LayerName, GeoAnchor]`, one bare anchor (no pixel data)
+            per layer, always present regardless of layer content — plus
+            whatever `context_fn` returned, if given.
         """
         sel_bands = sel_bands or {}
         dtype_override = dtype_override or {}
@@ -199,8 +229,7 @@ class GeoStack:
                 tensor = tensor.to(dtype)
             sample[layer_name] = tensor
 
+        sample["anchors"] = {name: tile.to_anchor() for name, tile in self.tiles.items()}
         if context_fn is not None:
-            context = context_fn(self.tiles)
-            if context:
-                sample["context"] = context
+            sample.update(context_fn(self.tiles))
         return sample

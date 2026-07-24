@@ -7,8 +7,8 @@ the ordered how-to (pick a path, train, evaluate), see
 
 ## From ingested data to tensors: GeoDataset
 
-`geosave_engine.geodata.datasets.GeoDataset` reads a directory
-[save_dataset](pipeline.md#saving-to-disk) produced:
+`geosave_engine.geodata.datasets.GeoDataset` reads a directory of
+`.geostack` folders built via `GeoStack.save()` (see [pipeline.md](pipeline.md)):
 
 ```python
 from geosave_engine.geodata.datasets import GeoDataset
@@ -26,7 +26,7 @@ delegates straight to `GeoStack.to_tensor`:
 {
     "sentinel_2_l1c": torch.Tensor,   # [C, H, W]
     "dynamicworld": torch.Tensor,     # [1, H, W]
-    "context": {...},                 # see below
+    "anchors": dict[str, GeoAnchor],  # one bare anchor per layer, see below
 }
 ```
 
@@ -36,38 +36,34 @@ delegates straight to `GeoStack.to_tensor`:
 | `required_layers` | `None` (all layers) | Only include anchors whose `.geostack` folder has every one of these layer names — a folder missing one is silently excluded. |
 | `sel_bands` | `None` (all bands) | `{layer: [band, ...]}` — subset bands per layer. |
 | `dtype_override` | `None` (saved dtype) | `{layer: torch.dtype}` — cast a layer's tensor, e.g. a saved `uint8` mask to `bool`. |
-| `context_fn` | `None` (no `"context"` key) | `Callable[[dict[str, GeoTile]], dict[str, Any]]` — per-sample metadata, see below. |
+| `context_fn` | `None` (no extra keys) | `dict[LayerName, GeoTile] -> dict[str, Any]` — merged into every sample, same function a `GeoPipeline.context` override supplies (see [pipeline.md](pipeline.md#supplying-model-specific-context)). |
 
 **`layers` property** — the layer names present in the first sample
 (`list[str]`), useful for sanity-checking a dataset without indexing into
 it.
 
 **Building your own Dataset:** subclass `GeoDataset` when you need
-per-sample logic beyond what it gives you — override `context_fn` behavior
-or wrap it, for instance. For streaming inference over fresh data without
-ingesting to disk first, there's [stream_ingest()](pipeline.md#streaming-without-saving).
+per-sample logic beyond what it gives you. For streaming inference over
+fresh data without ingesting to disk first, there's
+[ingest_to_tensor()](pipeline.md).
 
-## What is context
+## What is the anchors key
 
-Pass a `context_fn` to attach per-sample geo metadata, pulled from one
-reference tile per sample (whichever layer happens to be first — they share
-geobox/datetime by construction, so it doesn't matter which). The workspace
-`Pipeline.context` (see
-[Anatomy of a GeoPipeline](pipeline.md#anatomy-of-a-geopipeline)) is a
-ready-made one:
+Every sample always carries an `"anchors"` key — `dict[LayerName, GeoAnchor]`,
+one bare anchor (no pixel data) per layer, not configurable, always present
+regardless of layer content. It's a dict, not one collapsed anchor: `align()`
+guarantees every layer shares the same `geobox`, but not `datetime`/
+`metadata`/`polygon` — picking one representative layer would silently lose
+the others' real values, so a consumer that needs exactly one picks whichever
+layer's anchor it actually means (usually the model's own input layer, e.g.
+`anchors[image_key]`).
 
-| Field | From |
-| --- | --- |
-| `crs` | `tile.crs` |
-| `transform` | `tile.affine` |
-| `coordinate` | `tile.centroid` |
-| `time` | `tile.start.timetuple().tm_yday` (day of year) |
-| `datetime` | `tile.start.isoformat()` |
-| `bbox_wgs84` | `tile.wgs84_bbox` |
-| `stac_item_ids` | `[i.id for i in tile.stac]` |
-
-Leave `context_fn` unset (the default) and every sample's `"context"` key is
-just `{}` — no cost, nothing extracted.
+`"anchors"` is not per-sample metadata extraction on its own — a model that
+needs derived context (day-of-year, lat/lon as a `temporal_coords` tensor,
+etc.) gets it from a `GeoPipeline.context()` override instead, merged into
+the sample alongside `"anchors"` at render time. See
+[pipeline.md](pipeline.md#supplying-model-specific-context) for the full
+mechanism and a real example.
 
 ## The zarr format
 
@@ -93,20 +89,26 @@ batched dict, recursively, by value type:
 ```python
 def stack_samples(samples: Iterable[Mapping[str, Any]]) -> dict[str, Any]:
     # tensor values  -> torch.stack(values)      (one stacked Tensor)
-    # dict values     -> stack_samples(values)     (recurse — this is what batches "context")
+    # dict values     -> stack_samples(values)     (recurse — this is what batches "anchors")
     # anything else  -> list(values)               (gathered as-is)
 ```
 
 Because `GeoDataset.__getitem__` keys samples by raw layer name, the batch
-you get back has one tensor key per ingested layer, unchanged:
+you get back has one tensor key per ingested layer, unchanged, plus
+`"anchors"` recursed one level (dict values -> `stack_samples` again) into
+one `list[GeoAnchor]` per layer:
 
 ```python
-{"sentinel_2_l1c": Tensor[B, C, H, W], "dynamicworld": Tensor[B, 1, H, W], "context": {...}}
+{
+    "sentinel_2_l1c": Tensor[B, C, H, W],
+    "dynamicworld": Tensor[B, 1, H, W],
+    "anchors": {"sentinel_2_l1c": [GeoAnchor, ...], "dynamicworld": [GeoAnchor, ...]},  # each list length B
+}
 ```
 
-`"context"` is a dict per sample, so it recurses — you get
-`{"crs": [B values], "coordinate": [B values], ...}`, list-collated per
-field since none of those are tensors.
+No new collation code needed for `"anchors"` — `stack_samples`'s existing
+dict-recursion handles it for free, same as it always has for any nested
+dict value.
 
 ## SemanticSegmentationTask
 
@@ -144,12 +146,13 @@ class or channel indices.
 | `image_key` / `label_key` / `mask_key` | No (`image`/`label`/`mask`) | Batch keys — point these at your `GeoDataset`'s raw layer names instead of requiring a renaming step. |
 | `ignore_index` | No (`255`) | Class index excluded from loss and metrics. |
 | `input_size` | No (`224`) | Spatial patch size for sliding-window inference. |
-| `loss` / `optimizer` / `scheduler` | No | Registry keys — see `ml/core/factory.py` for what's registered (`CELoss`/`OHEMLoss`; `AdamW`/`Adam`/`SGD`/`RMSprop`/`Adagrad`; `CosineAnnealingLR`/`LRScheduler`). |
+| `loss` / `optimizer` / `scheduler` | No | Registry keys — see `ml/registry/{loss,optimizer,scheduler}.py` for what's registered (`CELoss`/`OHEMLoss`; `AdamW`/`Adam`/`SGD`/`RMSprop`/`Adagrad`; `CosineAnnealingLR`/`LRScheduler`). |
 | `config` | No | Stage name → that stage's own constructor kwargs, plus `optimizer`/`scheduler` sub-keys for their kwargs. |
 | `augmentations` | No | Kornia augmentation config list — `name`/`init_args`, nested `augmentations` for `AugmentationSequential`. |
 | `mean_norm` / `std_norm` | No (from model) | Per-channel normalization override. |
 | `metrics` | No | Metric names in dot notation, e.g. `["iou.macro", "f1.macro"]`. |
-| `threshold_calibration_config` | No | Forwarded to `DenseCalibrationCallback`. |
+| `threshold_calibration_config` | No | Sweep-tuning kwargs forwarded to `ThresholdCalibrator` (`threshold_begin`/`threshold_end`/`threshold_steps`/`metric`). |
+| `log_image_every_n_epochs` | No (`2`) | Epoch frequency for prediction visualization logging (`DensePredictionLogger`). |
 
 **Why `class_map`/`band_map` are required, not optional counts:** a
 hand-maintained `num_classes: 8` and a separately hand-maintained
@@ -181,6 +184,98 @@ force awkward symlinks/copies to satisfy it. Calling `setup("fit")` without
 `train_root` set raises a clear `ValueError` naming the missing arg, rather
 than failing deeper inside dataset construction.
 
+`pipeline` resolves via LightningCLI's normal `class_path`/`init_args`
+mechanism — same as `model.class_path`/`data.class_path` themselves, one
+level deeper, no extra wiring:
+
+```yaml
+data:
+  class_path: geosave_engine.ml.tasks.SemanticSegmentationDataModule
+  init_args:
+    train_root: data/train
+    pipeline:
+      class_path: modules.data_pipeline.Pipeline
+```
+
+## Model construction: registry, model_context, ContextChain
+
+What `stages: {encoder: dinov3, decoder: dpt, head: dense}` actually builds
+— `geosave_engine.ml.models.contract`/`geosave_engine.ml.registry`. Path A
+(`SemanticSegmentationTask`) and Path B (your own `LightningModule`) both go
+through this; Path B just calls `build_model` directly instead of a task
+doing it for you.
+
+**Registry** (`ml/registry/model.py`) — `@register_model(stage, name)`
+registers an `nn.Module` class under `MODEL_REGISTRY[stage][name.upper()]`.
+`build_model(stages, config)` resolves each stage's class (registry key or
+the class itself), auto-wires `{stage}_{attr}` params from already-built
+earlier stages (e.g. a decoder's `encoder_out_channels` pulled straight off
+the built encoder instance, no hand-typed duplicate), merges in
+`config[stage]`, and constructs it — the first stage gets `is_entry = True`.
+Currently registered:
+
+| Stage | Keys |
+| --- | --- |
+| `encoder` | `prithvi`, `prithvi_tl`, `dinov3`, `clay` |
+| `decoder` | `dpt`, `unet` |
+| `head` | `dense` |
+| `monolith` (single-stage chain) | `granite_geospatial_biomass` (IBM's Prithvi-based biomass model) |
+
+**`@model_context`** (`ml/models/contract/context.py`) — marks one method
+per chain stage as its real forward step. `requires` comes from the
+method's own parameter names/types (its real signature, not a hand-typed
+dict); `provides` comes from its `-> tuple[T1, T2, ...]` return annotation
+zipped against its own `return name1, name2, ...` statement (via `ast`, not
+executed) — one source of truth for both directions, nothing to keep in
+sync by hand. Strict on purpose: exactly one `return` statement, a
+fixed-arity `tuple[...]` of concrete types, arity matching the return
+statement — anything looser is a `TypeError` at decoration time, not a
+silently-accepted edge case.
+
+```python
+@model_context()
+def forward_pyramid(self, image: torch.Tensor) -> tuple[list, list]:
+    ...
+    return pyramid, prefix_tokens
+```
+
+`head=True` marks a terminal method — returns a raw `torch.Tensor`, ends
+the chain, instead of a dict merged into the shared context.
+
+**`ContextChain`** (`ml/models/contract/chain.py`) — the `nn.Module`
+`build_model` hands back. Builds a bipartite key/method graph from every
+submodule's `@model_context` method(s), walks it by topological generation
+to pick one method per module and a valid call order, then `forward` runs
+each in order, merging `{**ctx, **result}` after each step (immutable —
+prior keys survive, branching/merging both fall out of the same graph walk,
+no special-casing). A module offering several candidate methods (alternate
+accepted input shapes) is fine — whichever one's `requires` the graph can
+satisfy first gets picked; two candidates surfacing in the same generation
+is a genuine ambiguity, raised as `TypeError`, not guessed at. Verified
+`torch.compile`/`torch.export`/ONNX-export compatible — Dynamo-based tracing
+tolerates the dynamic dispatch inside `ContextChain.forward` the way
+`torch.jit.script`'s static AST compiler wouldn't.
+
+**Clay's sensor-agnostic constructor** — `encoder/clay.py`'s `Clay` takes
+`in_channels`/`waves`/`gsd` as plain caller-supplied numbers, no `modality`
+string, no sensor-catalog lookup inside `ml/` at all (mirrors `Prithvi`/
+`DINOv3` taking a plain `in_channels`). Resolve those from a real sensor via
+`geosave_engine.geodata.sensors` — `sensor_bands`, `sensor_gsd`,
+`band_wavelengths`, `band_mean`, `band_std`, `band_gsd` — in your
+`config[stage]`, not inside the model class:
+
+```yaml
+config:
+  encoder:
+    in_channels: 10
+    waves: [0.493, 0.56, 0.665, 0.704, 0.74, 0.783, 0.842, 0.865, 1.61, 2.19]  # geosave_engine.geodata.sensors.band_wavelengths("sentinel-2-l2a", bands)
+    gsd: 10.0  # geosave_engine.geodata.sensors.sensor_gsd("sentinel-2-l2a")
+```
+
+Clay doesn't implement `Normalization` (no `img_mean`/`img_std` attribute)
+— set `mean_norm`/`std_norm` explicitly on `SemanticSegmentationTask`
+instead (same `geosave_engine.geodata.sensors.band_mean`/`band_std` source).
+
 ## Composition of config.yaml
 
 The workspace splits config across three files, merged via multiple `-c`
@@ -189,7 +284,7 @@ flags — one YAML per concern, not one file with everything:
 **`configs/model.yaml`** — architecture, training mechanics:
 
 ```yaml
-run_name: DynamicWorld
+model_name: DynamicWorld
 
 trainer:
   max_epochs: 100
@@ -224,8 +319,6 @@ data:
     dtype_override:
       cloud_mask: torch.bool
       dynamicworld: torch.int64
-    pipeline:
-      class_path: modules.data_pipeline.Pipeline
 ```
 
 **`configs/metadata.yaml`** — everything tied to *this dataset's* labels and
@@ -284,3 +377,35 @@ No default `model_class`/`datamodule_class` is passed — every config
 above). `model:` keys under `init_args` go straight to your
 `LightningModule.__init__`; `data:` keys under `init_args` go straight to
 your `LightningDataModule.__init__`.
+
+## Writing predictions: PredictionWriter
+
+`geosave_engine.ml.callbacks.PredictionWriter` — writes one `GeoStack` per
+predicted anchor, one layer per key `predict_step` returns. Never
+auto-attached (deployment-specific `output_dir` has no sensible default) —
+opt in via `trainer.callbacks:`:
+
+```yaml
+trainer:
+  callbacks:
+    - class_path: geosave_engine.ml.callbacks.PredictionWriter
+      init_args:
+        output_dir: predictions
+```
+
+**Contract:** `predict_step` must return a `dict[str, Tensor]` plus one
+`"anchors"` key (`list[GeoAnchor]`, one per sample) — spatial identity for
+the output comes from there, not from `batch`. This callback has no
+knowledge of batch keys/`image_key` at all (same reasoning as
+`ThresholdCalibrator` reading `outputs['logits']`/`['label']` instead of
+reaching into `batch`) — building `"anchors"` is the task's own job, since
+it's the one that knows which batch layer is the real model input:
+
+```python
+output["anchors"] = batch["anchors"][self.image_key]
+```
+
+`SemanticSegmentationTask.predict_step` already does this. A custom Path B
+module wiring `PredictionWriter` needs the same line in its own
+`predict_step`. Missing `"anchors"` in the returned dict raises a `KeyError`
+immediately, naming exactly what to add.

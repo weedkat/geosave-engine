@@ -7,7 +7,7 @@ from typing import Any, Callable
 import torch
 from torch.utils.data import Dataset
 
-from geosave_engine.geodata.tile import GEOSTACK_SUFFIX, GeoTile, GeoStack
+from geosave_engine.geodata.tile import GEOSTACK_SUFFIX, GeoStack, GeoTile
 
 log = logging.getLogger(__name__)
 
@@ -66,8 +66,8 @@ class GeoDataset(Dataset):
             dtype_override: Layer name to torch dtype to cast that layer's tensor to.
                 Only needed to deviate from the tensor's saved dtype (e.g. cast a
                 uint8 mask layer to bool).
-            context_fn: Called with each sample's tiles dict, if given —
-                typically a ``GeoPipeline``'s ``context`` method.
+            context_fn: Optional, forwarded to `GeoStack.to_tensor` on every
+                `__getitem__` call — see there for what it receives/returns.
         """
         self.root = Path(root)
         self.sel_bands = sel_bands
@@ -80,6 +80,7 @@ class GeoDataset(Dataset):
             available = {p.stem for p in anchor_dir.glob("*.zarr")}
             if required_layers is not None and not set(required_layers).issubset(available):
                 continue
+            # lazy load each geostack, memory friendly
             samples.append(GeoStack.load(anchor_dir, required_layers=required_layers))
         self.samples = samples
 
@@ -105,7 +106,7 @@ class GeoDataset(Dataset):
             index: Row index into the sample index.
 
         Returns:
-            Tensor dict keyed by each layer's raw name, plus ``"context"``
-            if ``context_fn`` was given and non-empty.
+            Tensor dict keyed by each layer's raw name, plus ``"anchor"``
+            (and whatever `self.context_fn` returns, if set).
         """
         return self.samples[index].to_tensor(self.sel_bands, self.dtype_override, self.context_fn)

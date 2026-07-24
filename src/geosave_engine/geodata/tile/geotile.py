@@ -19,25 +19,27 @@ from odc.geo.geobox import GeoBox
 from odc.geo.geom import Geometry
 from typing_extensions import Unpack
 
-from geosave_engine.utils.datetime import date_range_from_path
+from geosave_engine.geodata.utils.datetime import date_range_from_path
 
 from .geoanchor import AnchorDatetime, GeoAnchor
 
 if TYPE_CHECKING:
     import matplotlib.pyplot as plt
+    from geosave_engine.geodata.utils.geovis import PlotKwargs
 
-    from geosave_engine.utils.geovis import PlotKwargs
-
-__all__ = ["AnchorDatetime", "GeoAnchor", "GeoTile", "align", "mosaic", "remap"]
 
 
 @dataclass(frozen=True, kw_only=True)
 class GeoTile(GeoAnchor):
     """Geospatial tile with a geobox, anchor datetime, and pixel data.
 
-    data is an xr.DataArray with dims (band, y, x) or (time, band, y, x).
-    May be lazy or fully in memory, but always present — a data-less
-    reference is a GeoAnchor, not a GeoTile.
+    `data` is an `xr.DataArray` with dims `(band, y, x)` or
+    `(time, band, y, x)`. May be lazy or fully in memory, but always
+    present — a data-less reference is a `GeoAnchor`, not a `GeoTile`.
+
+    Examples:
+        >>> tile = GeoTile.from_geotiff("sentinel_2_l1c-20240101.tif")
+        >>> tile.to_zarr("data/train/13.0_52.0_20240101.geostack/sentinel_2_l1c.zarr")
     """
 
     data: xr.DataArray
@@ -109,8 +111,20 @@ class GeoTile(GeoAnchor):
         merged = [*self.stac, *(i for i in items if i.id not in seen)]
         return dataclasses.replace(self, stac=merged)
 
+    def to_anchor(self) -> GeoAnchor:
+        """Strip pixel data (and STAC provenance), keeping only the anchor identity.
+
+        The reverse of `GeoAnchor.with_data`/`with_np` — for carrying this
+        tile's location/datetime through somewhere that shouldn't also drag
+        the raster array along (e.g. a batch's `"anchor"` key).
+
+        Returns:
+            A bare `GeoAnchor` with this tile's `geobox`/`datetime`/`metadata`/`polygon`.
+        """
+        return GeoAnchor(geobox=self.geobox, datetime=self.datetime, metadata=self.metadata, polygon=self.polygon)
+
     def plot(self, **kwargs: Unpack[PlotKwargs]) -> tuple[plt.Figure, np.ndarray]:
-        """Plot this tile — thin wrapper, see `geosave_engine.utils.geovis.plot`.
+        """Plot this tile — thin wrapper, see `geosave_engine.geodata.utils.geovis.plot`.
 
         Matplotlib is imported lazily here, not at module load, so GeoTile
         itself stays free of a hard plotting dependency.
@@ -122,7 +136,7 @@ class GeoTile(GeoAnchor):
         Returns:
             `(Figure, ndarray of Axes)`.
         """
-        from geosave_engine.utils.geovis import plot
+        from geosave_engine.geodata.utils.geovis import plot
 
         return plot(self, **kwargs)
 
@@ -416,16 +430,28 @@ def remap(tile: GeoTile, mapping: dict[int, int]) -> GeoTile:
 def align(*tiles: GeoTile) -> tuple[GeoTile, ...]:
     """Narrow each tile's geobox to their common intersection.
 
-    Pure geometry — data is shared untouched. Tiles must share CRS, resolution, and pixel grid.
+    Pure geometry — data is shared untouched. Tiles must share CRS,
+    resolution, and pixel grid; that shared CRS must also be projected
+    (metric) — `resolution` (`geobox.affine.a`) only means meters under a
+    projected CRS, degrees under a geographic one (e.g. EPSG:4326), and
+    nothing downstream (GSD-conditioned models, area_m2, ...) means to
+    handle the degrees case.
 
     Raises:
-        ValueError: If fewer than 2 tiles, CRS/resolution mismatch, no overlap, or misaligned grid.
+        ValueError: If fewer than 2 tiles, CRS/resolution mismatch, that CRS
+            isn't projected, no overlap, or misaligned grid.
     """
     if len(tiles) < 2:
         raise ValueError("align() requires at least 2 tiles")
     crss = {t.crs for t in tiles}
     if len(crss) > 1:
         raise ValueError(f"align() requires one CRS, got: {crss}")
+    crs = tiles[0].geobox.crs
+    if crs is None or not crs.projected:
+        raise ValueError(
+            f"align() requires a projected CRS (resolution must mean meters), got "
+            f"{tiles[0].crs} — reproject to a projected CRS (e.g. local UTM) first"
+        )
     resolutions = {round(t.resolution, 6) for t in tiles}
     if len(resolutions) > 1:
         raise ValueError(f"align() requires one resolution, got: {resolutions}")

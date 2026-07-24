@@ -4,7 +4,7 @@ import torch.nn.functional as F
 
 from typing import Literal
 
-from geosave_engine.ml.core.factory import register_model
+from geosave_engine.ml.registry import register_model
 from geosave_engine.ml.models.contract import model_context
 
 
@@ -246,18 +246,17 @@ class DPTDecoder(nn.Module):
         assert fused is not None, "Fusion blocks should produce a fused output"
         return fused
 
-    @model_context(requires={'pyramid': list, 'prefix_tokens': list}, provides={'feature_map': torch.Tensor})
-    def forward_feature_map(self, ctx: dict) -> dict:
+    @model_context()
+    def forward_feature_map(self, pyramid: list, prefix_tokens: list) -> tuple[torch.Tensor]:
         """Fuse multi-scale ViT features into a single dense map.
 
-        Reads ctx['pyramid'] and ctx['prefix_tokens'].
-        Writes 'feature_map' as (B, fusion_channels, H, W).
-
         Args:
-            ctx: Context dict with 'pyramid' and 'prefix_tokens'.
+            pyramid: List of per-level feature tensors.
+            prefix_tokens: List of per-level prefix token tensors.
 
         Returns:
-            {'feature_map': tensor}.
+            (feature_map,) — (B, fusion_channels, H, W).
         """
-        return {'feature_map': self.forward(ctx['pyramid'], ctx['prefix_tokens'])}
+        feature_map = self.forward(pyramid, prefix_tokens)
+        return feature_map,
 

@@ -35,9 +35,7 @@ It is especially useful for teams and individuals who want to move fast from raw
 
 ## CLI UI
 
-Placeholder: add a screenshot of the GeoSave CLI interactive UI here.
-
-![GeoSave CLI UI Placeholder](images/cli-ui-placeholder.png)
+TODO: screenshot of the GeoSave CLI interactive UI.
 
 ## Tech Stack
 

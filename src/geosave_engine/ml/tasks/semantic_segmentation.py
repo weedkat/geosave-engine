@@ -1,27 +1,26 @@
 from __future__ import annotations
 
 import logging
-import warnings
 from pathlib import Path
-from typing import Any, Mapping, cast
+from typing import Any
 
 import torch
 import torch.nn as nn
-import torch.nn.functional as F
 from lightning import LightningDataModule, LightningModule
-from lightning.pytorch.loggers import MLFlowLogger, TensorBoardLogger
+from lightning.pytorch.callbacks import Callback
 from torch.utils.data import DataLoader
 
 from geosave_engine.geodata.datasets import GeoDataset, stack_samples
 from geosave_engine.geodata.datasets.geo_dataset import LayerName
 from geosave_engine.geodata.pipeline import GeoPipeline
-from geosave_engine.ml.callbacks.calibration import DenseCalibrationCallback
-from geosave_engine.ml.core.factory import build_loss, build_model, build_optimizer, build_scheduler
-from geosave_engine.ml.core.transforms import ImageAugmenter, ImageProcessor
-from geosave_engine.ml.inference.sliding_window import sliding_window_inference
+from geosave_engine.ml.callbacks.prediction_logger import DensePredictionLogger
+from geosave_engine.ml.callbacks.threshold_calibrator import ThresholdCalibrator
+from geosave_engine.ml.registry import build_loss, build_model, build_optimizer, build_scheduler
+from geosave_engine.ml.inference.sliding_window import split_patches, stitch_patches
+from geosave_engine.ml.inference.thresholding import ClassThresholding
 from geosave_engine.ml.metrics.semantic_segmentation import SemanticSegmentationMetrics
 from geosave_engine.ml.models.contract import ContextChain
-from geosave_engine.utils import colorize
+from geosave_engine.ml.transforms import ImageAugmenter, ImageProcessor
 
 log = logging.getLogger(__name__)
 
@@ -42,22 +41,42 @@ def _validate_dense_map(name: str, mapping: dict[int, str]) -> None:
         raise ValueError(f"{name} keys must be dense 0..{len(mapping) - 1}, got {sorted(mapping)}")
 
 
+def _resolve_rgb_band_indices(band_map: dict[int, str], rgb_bands: list[str] | None) -> list[int] | None:
+    """Resolve `rgb_bands` names to `band_map` channel indices.
+
+    Args:
+        band_map: `{channel_idx: band_name}`, dense from 0.
+        rgb_bands: 3 band names in R/G/B order, or `None` to skip.
+
+    Returns:
+        3 channel indices in R/G/B order, or `None` if `rgb_bands` is `None`.
+
+    Raises:
+        ValueError: `rgb_bands` isn't exactly 3 names, or a name isn't in `band_map`.
+    """
+    if rgb_bands is None:
+        return None
+    if len(rgb_bands) != 3:
+        raise ValueError(f"rgb_bands must have exactly 3 names (R, G, B), got {rgb_bands}")
+    name_to_idx = {name: idx for idx, name in band_map.items()}
+    missing = [name for name in rgb_bands if name not in name_to_idx]
+    if missing:
+        raise ValueError(f"rgb_bands {missing} not in band_map {sorted(band_map.values())}")
+    return [name_to_idx[name] for name in rgb_bands]
+
+
 class SemanticSegmentationTask(LightningModule):
     """Standardized, config-only semantic segmentation task.
 
     Owns model construction, forward pass, sliding-window inference,
-    postprocessing, and a generic supervised training loop. Fully usable via
-    YAML alone — no subclassing needed for standard supervised segmentation.
+    postprocessing, and training. Fully usable via YAML, no subclassing needed.
 
     Batch keys default to ``image``/``label``/``mask``/``context`` but are
-    configurable (``image_key``/``label_key``/``mask_key``) — point them at
-    your GeoDataset's raw layer names directly (e.g. ``image_key="sentinel_2_l1c"``)
-    instead of requiring a renaming step upstream.
+    configurable (``image_key``/``label_key``/``mask_key``) to match your
+    GeoDataset's own layer names.
 
-    For custom training loops (semi-supervised, UniMatchV2, bespoke
-    architectures), write an independent LightningModule instead of
-    subclassing this — see the semantic_segmentation templates for the
-    pattern. This class does not expect to be subclassed.
+    For custom training loops, write an independent LightningModule
+    instead — this class does not expect to be subclassed.
 
     Model paths:
         - Chain: ``stages={'encoder': ..., 'decoder': ..., 'head': ...}`` — each
@@ -79,8 +98,12 @@ class SemanticSegmentationTask(LightningModule):
         image_key: Batch key holding the input image tensor.
         label_key: Batch key holding the label tensor.
         mask_key: Batch key holding the optional nodata mask.
+        rgb_bands: 3 band names from ``band_map``, in R/G/B order. When set,
+            ``predict_step`` adds an ``"rgb"`` output layer sliced from the
+            raw input image (pre-normalization, native dtype) — an extra
+            GeoStack layer via ``PredictionWriter``, nothing else changes.
+            ``None`` skips it.
         ignore_index: Class index excluded from loss and metrics.
-        upsample_output: Bilinearly upsample logits to input spatial size.
         class_map: ``{class_id: class_name}`` for every output class, dense
             from 0. Required — ``num_classes`` is ``len(class_map)``.
         band_map: ``{channel_idx: band_name}`` for every input channel, dense
@@ -96,7 +119,10 @@ class SemanticSegmentationTask(LightningModule):
         scheduler: LR scheduler registry key. ``None`` disables scheduling.
         metrics: Metric names in dot notation (e.g. ``["iou.macro", "f1.macro"]``).
         augmentations: Kornia augmentation config list.
-        threshold_calibration_config: kwargs forwarded to ``DenseCalibrationCallback``.
+        threshold_calibration_config: Sweep-tuning kwargs forwarded to
+            ``ClassThresholding`` (``threshold_begin``/``threshold_end``/
+            ``threshold_steps``/``metric``). ``num_classes``/``ignore_index``
+            come from ``class_map``/``ignore_index`` above, not this dict.
         log_image_every_n_epochs: Epoch frequency for prediction visualization logging.
 
     Examples:
@@ -120,6 +146,7 @@ class SemanticSegmentationTask(LightningModule):
     """
 
     model: ContextChain
+    class_thresholds: torch.Tensor
 
     def __init__(
         self,
@@ -131,8 +158,8 @@ class SemanticSegmentationTask(LightningModule):
         image_key: str = 'image',
         label_key: str = 'label',
         mask_key: str = 'mask',
+        rgb_bands: list[str] | None = None,
         ignore_index: int = 255,
-        upsample_output: bool = True,
         color_map: dict | None = None,
         mean_norm: list[float] | None = None,
         std_norm: list[float] | None = None,
@@ -164,8 +191,8 @@ class SemanticSegmentationTask(LightningModule):
         self.image_key = image_key
         self.label_key = label_key
         self.mask_key = mask_key
+        self.rgb_band_indices = _resolve_rgb_band_indices(band_map, rgb_bands)
         self.ignore_index = ignore_index
-        self.upsample_output = upsample_output
         self.class_map = class_map
         self.band_map = band_map
         self.color_map = color_map
@@ -181,6 +208,9 @@ class SemanticSegmentationTask(LightningModule):
         self.metrics_config = metrics
         self.augmentations = augmentations or []
         self.threshold_calibration_config = threshold_calibration_config or {}
+        self._thresholding = ClassThresholding(
+            num_classes=self.num_classes, ignore_index=ignore_index, **self.threshold_calibration_config
+        )
         self.log_image_every_n_epochs = log_image_every_n_epochs
 
         self.loss_fn = build_loss(loss, {**self.config.get('loss', {}), 'ignore_index': ignore_index})
@@ -216,11 +246,13 @@ class SemanticSegmentationTask(LightningModule):
             mean_norm=self.mean_norm,
             std_norm=self.std_norm,
         )
+
+        # 0.5 is a placeholder shape-holder, not a real default. A real value only
+        # exists after ThresholdCalibrator calibrates it, or after Lightning's own
+        # load_from_checkpoint (which calls configure_model, then load_state_dict)
+        # overwrites this buffer with the checkpoint's saved value.
         self.register_buffer('class_thresholds', torch.full((self.num_classes,), 0.5))
         self.augmenter = ImageAugmenter(augmentations=self.augmentations, size=self.input_size)
-
-    def configure_callbacks(self):
-        return [DenseCalibrationCallback(**self.threshold_calibration_config)]
 
     def configure_optimizers(self):
         optimizer = build_optimizer(self.optimizer_name, self.model, self.config.get('optimizer') or {})
@@ -239,116 +271,90 @@ class SemanticSegmentationTask(LightningModule):
         self.train_metrics = metrics.clone(prefix='train_')
         self.val_metrics = metrics.clone(prefix='val_')
         self.test_metrics = metrics.clone(prefix='test_')
+    
+    def configure_callbacks(self) -> list[Callback]:
+        callbacks: list[Callback] = [
+            ThresholdCalibrator(
+                num_classes=self.num_classes,
+                ignore_index=self.ignore_index,
+                **self.threshold_calibration_config,
+            )
+        ]
+        # No color_map means nothing to render — don't add a callback that
+        # would just warn and skip every eligible batch forever.
+        if self.color_map:
+            callbacks.append(DensePredictionLogger(
+                color_map=self.color_map,
+                class_map=self.class_map,
+                log_image_every_n_epochs=self.log_image_every_n_epochs,
+            ))
+        return callbacks
 
     # ------------------------------------------------------------------
     # Model forward
     # ------------------------------------------------------------------
 
-    def _forward_ctx(self, ctx: dict[str, Any]) -> torch.Tensor:
-        h, w = ctx['image'].shape[-2:]
-        result = self.model(ctx)
-        logits: torch.Tensor = result if isinstance(result, torch.Tensor) else result['logits']
-        if self.upsample_output and logits.shape[-2:] != (h, w):
-            logits = F.interpolate(logits, size=(h, w), mode='bilinear', align_corners=False)
-        return logits
+    def preprocess(self, image: torch.Tensor) -> torch.Tensor:
+        """Resize + normalize. ``forward()`` calls this internally too —
 
+        Exposed standalone for introspection/composition, not as a step
+        callers need to remember: ``forward()`` always applies it, so
+        there's no way to feed the model un-preprocessed data by mistake.
+
+        Args:
+            image: ``[B, C, H, W]`` raw tensor.
+
+        Returns:
+            ``[B, C, H, W]`` resized + normalized tensor.
+        """
+        return self.preprocessor(image)
+
+    def forward(self, image: torch.Tensor, **ctx: Any) -> torch.Tensor:
+        """Preprocess then run one tile through the model chain.
+
+        Always exactly one tile in, logits out — no sliding-window branching.
+        For an image larger than `input_size`, use `predict()`/`forward_sliding()`
+        instead — they handle the sliding window and call this per patch.
+
+        Args:
+            image: ``[B, C, H, W]`` float image tensor, exactly `input_size`.
+            **ctx: Extra per-model context (e.g. `temporal_coords=...`,
+                `location_coords=...` — usually built by `_extract_context`
+                from a `pipeline.context()`-supplied batch, not passed by
+                hand), forwarded to the model chain unchanged. Only consumed
+                by whichever stage's `@model_context` method actually names
+                the key — unused keys sit in the chain's ctx dict untouched.
+
+        Returns:
+            ``[B, num_classes, H, W]`` logits.
+        """
+        ctx = {'image': self.preprocess(image), **ctx}
+        result = self.model(ctx)
+        return result if isinstance(result, torch.Tensor) else result['logits']
+    
     def forward_sliding(
         self,
         image: torch.Tensor,
-        overlap_ratio: float = 0.5,
-        pad_size: int = 64,
-        context: Mapping[str, Any] | None = None,
+        context: dict[str, torch.Tensor] | None = None,
     ) -> torch.Tensor:
-        """Sliding-window inference with Hann blending over a large raster.
+        """Sliding-window inference for an image larger than `input_size`.
 
-        Expects ``image`` to be already preprocessed (``forward`` handles this).
+        Always raw logits — what ``validation_step``/``test_step`` need for
+        loss/metrics. For a finished prediction, use ``predict()`` instead.
 
         Args:
-            image: ``[B, C, H, W]`` preprocessed float tensor.
-            overlap_ratio: Patch overlap fraction in ``[0, 1)``.
-            pad_size: Reflect-padding added on each side before patching.
-            context: Context dict forwarded to each patch (geo metadata, etc.).
+            image: ``[B, C, H, W]`` raw tensor, any size.
+            context: Forwarded to every patch's ``forward()`` call unchanged.
+                Empty if not given.
 
         Returns:
             ``[B, num_classes, H, W]`` logits at full input resolution.
         """
-        base_ctx = context or {}
-
-        def model_fn(patch: torch.Tensor) -> torch.Tensor:
-            return self._forward_ctx({'image': patch, **base_ctx})
-
-        return sliding_window_inference(model_fn, image, self.input_size, overlap_ratio, pad_size)
-
-    def forward(self, image: torch.Tensor, **context: Any) -> torch.Tensor:
-        """Preprocess then run model.
-
-        Training: direct chain call on the input patch.
-        Eval/predict: sliding-window inference with Hann blending.
-
-        Args:
-            image: ``[B, C, H, W]`` float image tensor.
-            **context: Geo metadata forwarded as-is to the model chain.
-        """
-        image = self.preprocessor(image)
-        ctx = {'image': image, **context}
-
-        if self.training:
-            return self._forward_ctx(ctx)
-        return self.forward_sliding(image, self.overlap_ratio, self.pad_size, context)
-
-    # ------------------------------------------------------------------
-    # Training / validation / test / predict
-    # ------------------------------------------------------------------
-
-    def training_step(self, batch: dict[str, Any], batch_idx: int) -> torch.Tensor:
-        image, label = batch[self.image_key], batch[self.label_key]
-        image, label = self.augmenter(image, label)
-        label = label.squeeze(1)
-        logits = self(image, **batch.get('context', {}))
-        loss = self.loss_fn(logits, label)
-        self.train_metrics.update(logits, label)
-        self.log('train_loss', loss, on_step=True, on_epoch=True, prog_bar=True, batch_size=image.shape[0])
-        self.log_dict(self.train_metrics, on_step=False, on_epoch=True, prog_bar=False, batch_size=image.shape[0])
-        return loss
-
-    def validation_step(self, batch: dict[str, Any], batch_idx: int, dataloader_idx: int = 0) -> None:
-        image, label = batch[self.image_key], batch[self.label_key]
-        label = label.squeeze(1)
-        mask = batch.get(self.mask_key)
-        if mask is not None:
-            mask = mask.squeeze(1)
-        logits = self(image, **batch.get('context', {}))
-        loss = self.loss_fn(logits, label)
-        self.val_metrics.update(logits, label)
-        self.log('val_loss', loss, on_step=False, on_epoch=True, prog_bar=True, sync_dist=True)
-        self.log_dict(self.val_metrics, on_step=False, on_epoch=True, prog_bar=False, sync_dist=True)
-        if batch_idx == 0 and self.current_epoch % self.log_image_every_n_epochs == 0:
-            self._log_prediction('val', logits, label, mask)
-
-    def test_step(self, batch: dict[str, Any], batch_idx: int, dataloader_idx: int = 0) -> None:
-        image, label = batch[self.image_key], batch[self.label_key]
-        label = label.squeeze(1)
-        mask = batch.get(self.mask_key)
-        if mask is not None:
-            mask = mask.squeeze(1)
-        logits = self(image, **batch.get('context', {}))
-        self.test_metrics.update(logits, label)
-        self.log_dict(self.test_metrics, on_step=False, on_epoch=True, prog_bar=False)
-        if batch_idx == 0 and self.current_epoch % self.log_image_every_n_epochs == 0:
-            self._log_prediction('test', logits, label, mask)
-
-    def predict_step(
-        self,
-        batch: dict[str, Any],
-        batch_idx: int,
-        dataloader_idx: int = 0,
-    ) -> tuple[torch.Tensor, torch.Tensor]:
-        image = batch[self.image_key]
-        mask = batch.get(self.mask_key)
-        if mask is not None:
-            mask = mask.squeeze(1)
-        logits = self(image, **batch.get('context', {}))
-        return self.postprocess(logits, mask)
+        context = context or {}
+        patches = split_patches(image, self.input_size, self.overlap_ratio, self.pad_size)
+        predictions = [self(patch, **context) for patch in patches]
+        original_shape = (image.shape[-2], image.shape[-1])
+        return stitch_patches(predictions, original_shape, self.input_size, self.overlap_ratio, self.pad_size)
 
     def postprocess(
         self,
@@ -362,50 +368,134 @@ class SemanticSegmentationTask(LightningModule):
             mask: Optional boolean ``[B, H, W]`` nodata mask. Masked pixels → ignore_index.
 
         Returns:
-            ``(pred_label [B, H, W], pred_proba [B, H, W])``.
+            ``(pred_label [B, H, W] uint8, pred_proba [B, H, W] float32)``.
         """
-        probs = logits.softmax(dim=1)
-        max_probs, preds = probs.max(dim=1)
+        preds, max_probs = self._thresholding.apply(logits, self.class_thresholds, mask)
 
-        class_thresholds = cast(torch.Tensor, self.class_thresholds)
-        pixel_thresholds = torch.index_select(class_thresholds, 0, preds.reshape(-1)).view_as(preds)
-        preds = torch.where(max_probs >= pixel_thresholds, preds, preds.new_full((), self.ignore_index))
-
-        if mask is not None:
-            preds = torch.where(mask.bool(), preds.new_full((), self.ignore_index), preds)
+        preds = preds.to(torch.uint8)
+        max_probs = max_probs.to(torch.float32)
 
         return preds, max_probs
-
-    # ------------------------------------------------------------------
-    # Helpers
-    # ------------------------------------------------------------------
-
-    def _log_prediction(
+    
+    def predict(
         self,
-        prefix: str,
-        logits: torch.Tensor,
-        labels: torch.Tensor,
+        image: torch.Tensor,
+        context: dict[str, torch.Tensor] | None = None,
         mask: torch.Tensor | None = None,
-    ) -> None:
-        if not self.color_map:
-            warnings.warn(
-                f"{type(self).__name__}: no color_map defined; skipping prediction logging.",
-                UserWarning,
-                stacklevel=2,
-            )
-            return
-        preds, _ = self.postprocess(logits, mask)
-        label_rgb = colorize(labels[0], self.color_map)
-        pred_rgb = colorize(preds[0], self.color_map)
-        step = self.current_epoch
-        for lg in self.loggers:
-            if isinstance(lg, TensorBoardLogger):
-                writer = lg.experiment
-                writer.add_image(f'{prefix}/label', label_rgb, step, dataformats='HWC')
-                writer.add_image(f'{prefix}/prediction', pred_rgb, step, dataformats='HWC')
-            elif isinstance(lg, MLFlowLogger):
-                lg.experiment.log_image(lg.run_id, label_rgb, f'{prefix}_label_{step}.png')
-                lg.experiment.log_image(lg.run_id, pred_rgb, f'{prefix}_prediction_{step}.png')
+    ) -> tuple[torch.Tensor, torch.Tensor]:
+        """Finished prediction: sliding-window inference, always postprocessed.
+
+        The public deployment entry point — works standalone, no Trainer
+        needed (unlike ``predict_step``, which only runs through
+        ``Trainer.predict()``'s own loop).
+
+        Args:
+            image: ``[B, C, H, W]`` raw tensor, any size.
+            context: Forwarded to every patch's ``forward()`` call unchanged.
+                Empty if not given.
+            mask: Optional boolean ``[B, H, W]`` nodata mask. Masked pixels → ignore_index.
+
+        Returns:
+            ``(pred_label [B, H, W] uint8, pred_proba [B, H, W] float32)``.
+        """
+        logits = self.forward_sliding(image, context)
+        return self.postprocess(logits, mask)
+
+    # ------------------------------------------------------------------
+    # Training / validation / test / predict
+    # ------------------------------------------------------------------
+
+    def _extract_context(self, batch: dict[str, Any]) -> dict[str, Any]:
+        """Every batch key besides image/label/mask/anchors — a pipeline's own `context()` output.
+
+        `image_key`/`label_key`/`mask_key` are this task's own tensors,
+        `"anchors"` is `GeoStack.to_tensor`'s always-present identity key
+        (see `docs/concept/model.md`) — neither is model context. Everything
+        else in `batch` came from a `GeoPipeline.context()` override (e.g.
+        `temporal_coords`/`location_coords`), wired in via this task's own
+        `SemanticSegmentationDataModule(pipeline=...)`.
+
+        Args:
+            batch: One `DataLoader` batch, as `stack_samples` produces it.
+
+        Returns:
+            Extra keys to forward into `self(image, **context)` — `{}` if
+            no `pipeline` was configured (or it returns no extra keys).
+        """
+        exclude = {self.image_key, self.label_key, self.mask_key, 'anchors'}
+        return {key: value for key, value in batch.items() if key not in exclude}
+
+    def training_step(self, batch: dict[str, Any], batch_idx: int) -> torch.Tensor:
+        image, label = batch[self.image_key], batch[self.label_key]
+        context = self._extract_context(batch)
+        image, label = self.augmenter(image, label)
+        label = label.squeeze(1) # (B, 1, H, W) → (B, H, W)
+
+        logits = self(image, **context)
+        loss = self.loss_fn(logits, label)
+
+        self.train_metrics.update(logits, label)
+        self.log('train_loss', loss, on_step=True, on_epoch=True, prog_bar=True, batch_size=image.shape[0])
+        self.log_dict(self.train_metrics, on_step=False, on_epoch=True, prog_bar=False, batch_size=image.shape[0])
+
+        return loss
+
+    def validation_step(
+        self, batch: dict[str, Any], batch_idx: int, dataloader_idx: int = 0
+    ) -> dict[str, torch.Tensor]:
+        image, label = batch[self.image_key], batch[self.label_key]
+        context = self._extract_context(batch)
+        label = label.squeeze(1) # (B, 1, H, W) → (B, H, W)
+
+        logits = self.forward_sliding(image, context)
+        loss = self.loss_fn(logits, label)
+
+        self.val_metrics.update(logits, label)
+        self.log('val_loss', loss, on_step=False, on_epoch=True, prog_bar=True, sync_dist=True)
+        self.log_dict(self.val_metrics, on_step=False, on_epoch=True, prog_bar=False, sync_dist=True)
+        # DensePredictionLogger reads logits/label via on_validation_batch_end's own
+        # outputs arg — raw model output only, no postprocess (class_thresholds isn't
+        # calibrated until on_fit_end runs, so applying it mid-training adds no signal over
+        # plain argmax).
+        return {'logits': logits, 'label': label}
+
+    def test_step(
+        self, batch: dict[str, Any], batch_idx: int, dataloader_idx: int = 0
+    ) -> dict[str, torch.Tensor]:
+        image, label = batch[self.image_key], batch[self.label_key]
+        context = self._extract_context(batch)
+        label = label.squeeze(1) # (B, 1, H, W) → (B, H, W)
+
+        logits = self.forward_sliding(image, context)
+
+        self.test_metrics.update(logits, label)
+        self.log_dict(self.test_metrics, on_step=False, on_epoch=True, prog_bar=False)
+        # DensePredictionLogger reads logits/label via on_test_batch_end's own outputs arg.
+        return {'logits': logits, 'label': label}
+
+    def predict_step(
+        self,
+        batch: dict[str, Any],
+        batch_idx: int,
+        dataloader_idx: int = 0,
+    ) -> dict[str, torch.Tensor]:
+        image = batch[self.image_key]
+        context = self._extract_context(batch)
+        mask = batch.get(self.mask_key)
+        if mask is not None:
+            mask = mask.squeeze(1) # (B, 1, H, W) → (B, H, W)
+
+        preds, max_probs = self.predict(image, context, mask=mask)
+        output = {
+            "pred_label": preds,
+            "pred_proba": max_probs,
+            "anchors": batch["anchors"][self.image_key]
+        }
+
+        if self.rgb_band_indices is not None:
+            output["rgb"] = image[:, self.rgb_band_indices]
+
+        return output
 
 
 class SemanticSegmentationDataModule(LightningDataModule):
@@ -433,16 +523,17 @@ class SemanticSegmentationDataModule(LightningDataModule):
             ``test``.
         predict_root: GeoDataset directory for the predict split. Required
             for ``predict``.
+        pipeline: A ``GeoPipeline`` whose ``.context`` supplies extra
+            per-sample keys (e.g. a Prithvi/Clay encoder's `temporal_coords`/
+            `location_coords`) to every split's `GeoDataset`. `None` omits
+            context entirely — plain tensors + `"anchors"` only. Resolved by
+            LightningCLI's own `class_path`/`init_args` mechanism (same as
+            `model.class_path` above), no code to write beyond your
+            `Pipeline` subclass's own `context()` override.
         sel_bands: Layer name → band names to keep; default is all bands.
         dtype_override: Layer name to torch dtype to cast that layer's tensor
             to. Only needed to deviate from the tensor's saved dtype (e.g.
             cast a uint8 label layer to int64 for cross-entropy loss).
-        pipeline: GeoPipeline whose ``context()`` supplies per-sample context
-            (e.g. crs/transform/datetime for PredictionWriter, or derived
-            values like day-of-year for a model that needs it). None omits
-            context entirely — instantiating a pipeline just for this must
-            not require live ingestion resources (network/credentials); it's
-            the pipeline author's job to keep construction cheap.
         batch_size: Samples per batch.
         num_workers: DataLoader worker processes.
         pin_memory: Pin memory for faster GPU transfer.
@@ -474,9 +565,9 @@ class SemanticSegmentationDataModule(LightningDataModule):
         val_root: str | Path | None = None,
         test_root: str | Path | None = None,
         predict_root: str | Path | None = None,
+        pipeline: GeoPipeline | None = None,
         sel_bands: dict[LayerName, list[str]] | None = None,
         dtype_override: dict[LayerName, torch.dtype] | None = None,
-        pipeline: GeoPipeline | None = None,
         batch_size: int = 16,
         num_workers: int = 0,
         pin_memory: bool = False,
@@ -488,9 +579,9 @@ class SemanticSegmentationDataModule(LightningDataModule):
         self.val_root = Path(val_root) if val_root is not None else None
         self.test_root = Path(test_root) if test_root is not None else None
         self.predict_root = Path(predict_root) if predict_root is not None else None
+        self.pipeline = pipeline
         self.sel_bands = sel_bands
         self.dtype_override = dtype_override
-        self.pipeline = pipeline
         self.batch_size = batch_size
         self.num_workers = num_workers
         self.pin_memory = pin_memory

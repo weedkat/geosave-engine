@@ -66,7 +66,7 @@ def upload(
         checkpoint: Checkpoint filename. Prompt if omitted and multiple
             checkpoints exist.
         registered_model_name: MLflow registered model name. Defaults to
-            the resolved RunArtifact.run_name.
+            the resolved RunArtifact.model_name.
 
     Raises:
         WorkspaceError: If artifact/config is missing or invalid.
@@ -89,7 +89,7 @@ def upload(
     checkpoint_path = select_checkpoint(artifact, checkpoint)
     model = _load_model_from_checkpoint(artifact.config_path, checkpoint_path)
 
-    resolved_registered_name = registered_model_name or artifact.run_name
+    resolved_registered_name = registered_model_name or artifact.model_name
     tracking_uri = _require_tracking_uri()
     experiment_name = _require_experiment_name(resolved_registered_name)
 
@@ -147,6 +147,8 @@ def _load_model_from_checkpoint(config_path: Path, checkpoint_path: Path) -> Lig
         WorkspaceError: If config.yaml lacks a "model.class_path" entry, or
             the checkpoint file is unreadable or corrupted.
     """
+    from geosave_engine.ml.inference.protocol import Predictable
+
     config = yaml.safe_load(config_path.read_text())
     class_path = config.get("model", {}).get("class_path")
     if not class_path:
@@ -154,9 +156,16 @@ def _load_model_from_checkpoint(config_path: Path, checkpoint_path: Path) -> Lig
 
     model_cls = _import_model_class(class_path)
     try:
-        return model_cls.load_from_checkpoint(str(checkpoint_path), map_location="cpu")
+        model = model_cls.load_from_checkpoint(str(checkpoint_path), map_location="cpu")
     except (RuntimeError, OSError, EOFError, pickle.UnpicklingError) as error:
         raise WorkspaceError(f"Could not load checkpoint '{checkpoint_path.name}': {error}") from error
+
+    if not isinstance(model, Predictable):
+        raise WorkspaceError(
+            f"{class_path} doesn't implement Predictable (no usable predict() method) — "
+            "can't register a model that can't be served."
+        )
+    return model
 
 
 def _require_tracking_uri() -> str:
@@ -186,11 +195,11 @@ def _require_tracking_uri() -> str:
 def _require_experiment_name(default: str) -> str:
     """Read MLFLOW_EXPERIMENT_NAME from the environment, prompting when unset.
 
-    Mirrors GeosaveCLI's own training-time default (falls back to run_name
-    when MLFLOW_EXPERIMENT_NAME isn't set — see ml/core/cli.py).
+    Mirrors GeosaveCLI's own training-time default (falls back to
+    model_name when MLFLOW_EXPERIMENT_NAME isn't set — see ml/cli/cli.py).
 
     Args:
-        default: Prefilled answer, typically the resolved run name.
+        default: Prefilled answer, typically the resolved model name.
 
     Returns:
         Experiment name value.
@@ -221,7 +230,7 @@ def log_model(
 ) -> ModelInfo:
     """Log one model run to MLflow, resolving tracking uri/experiment/run itself.
 
-    MLflow acts as registry only here — no pyfunc wrapper. modules_dir is
+    MLflow acts as registry using pytorch log_model. modules_dir is
     bundled as code_paths so registry-side consumers (litserve) can import
     workspace-local preprocessing (for example, modules.data_pipeline) after
     pulling the model; litserve owns preprocessing + inference wiring, not

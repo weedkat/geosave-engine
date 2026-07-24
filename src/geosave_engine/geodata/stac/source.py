@@ -1,11 +1,15 @@
 from __future__ import annotations
 
 import logging
+import threading
 import warnings
+from calendar import monthrange
 from dataclasses import replace
 from datetime import datetime as dt
-from typing import Any, Literal, Protocol, TypedDict
+from datetime import timedelta
+from typing import Any, Iterator, Literal, Protocol, TypedDict
 
+import numpy as np
 import pystac
 import xarray as xr
 from dask.diagnostics import ProgressBar
@@ -14,12 +18,43 @@ from tenacity import retry, retry_if_exception_type, stop_after_attempt, wait_ex
 
 from geosave_engine.geodata.errors import AnchorFetchError
 from geosave_engine.geodata.tile import GeoAnchor, GeoTile
+from geosave_engine.geodata.utils.datetime import DateRange, TemporalGranularity, TemporalReduce
 
 from .query import StacQuery
 
 logger = logging.getLogger(__name__)
 
 Bands = list[str] | tuple[str, ...]
+
+# rasterio only raises Python exceptions for GDAL CE_Failure. JP2OpenJPEG's
+# "opj_decode() failed" (a truncated/corrupt tile, usually a flaky network
+# read) is emitted as CE_Warning — it never raises, GDAL just fills the tile
+# with partial/zero data and moves on. Only path to see it is the
+# "rasterio._err" logger.
+_GDAL_DECODE_FAILURE_MARKER = "opj_decode"
+
+
+class _GdalWarningCapture(logging.Handler):
+    """Capture GDAL warning-level log records matching a substring.
+
+    Attach to `logging.getLogger("rasterio._err")` around a read to catch
+    GDAL warnings rasterio itself won't turn into an exception.
+
+    Args:
+        needle: Substring to match against each warning's message.
+    """
+
+    def __init__(self, needle: str) -> None:
+        super().__init__(level=logging.WARNING)
+        self.needle = needle
+        self.matches: list[str] = []
+        self._lock = threading.Lock()
+
+    def emit(self, record: logging.LogRecord) -> None:
+        message = record.getMessage()
+        if self.needle in message:
+            with self._lock:
+                self.matches.append(message)
 
 
 class SearchClient(Protocol):
@@ -37,26 +72,55 @@ class StacSourceArgs(TypedDict, total=False):
     groupby: Literal["solar_day", "id", "time"]
     chunks: dict[str, int | Any] | None
     dtype: str
+    temporal_granularity: TemporalGranularity
+    temporal_reduce: TemporalReduce
+    temporal_slots: int
+    temporal_strides: int | None
+    temporal_fallback: bool
 
 
 class StacSource:
-    """Generic satellite data source. Loads every scene in an anchor's window, exactly as published.
+    """Generic satellite data source. Owns its own temporal bucketing end to end.
 
-    No radiometric preprocessing, no compositing — always returns raw values
-    per real STAC item. A range window comes back as one GeoTile with a time
-    axis (one step per matching scene); a resolved single instant comes back
-    with no time axis. Apply scale/offset or temporal compositing as explicit
-    downstream pipeline steps.
+    `load()` yields one already-shaped, still-lazy GeoTile per final sample
+    this source's own anchor window produces — search happens once, then
+    the tile is split into `temporal_granularity` windows, each reduced to
+    one time step (`temporal_reduce`, `temporal_fallback`), then grouped
+    `temporal_slots` at a time, `temporal_strides` apart. Caller downloads
+    (`download`, module-level below) when it actually needs pixels. No
+    cross-source coordination: two sources in the same `GeoPipeline` each
+    run this independently, off their own real data and their own config.
 
     Args:
         client: STAC client used to search for items.
         collection: STAC collection identifier (as returned by `client.get_collections()`).
         bands: Band names to load for every anchor.
-        max_nodata_fraction: Reject tiles where nodata fraction exceeds this value.
+        max_nodata_fraction: Reject a bucket where nodata fraction exceeds this value.
         resampling: Resampling method passed to odc-stac.
         groupby: How odc-stac groups scenes along the time axis.
         chunks: Dask chunk sizes for spatial dimensions.
         dtype: Output dtype passed to odc-stac.
+        temporal_granularity: What one yielded sample's time axis is
+            bucketed by. `"scene"`: one bucket per real matched
+            acquisition — this source's own timestamps, no calendar math.
+            `"day"`/`"month"`/`"year"`: calendar buckets instead, which can
+            span more than one real scene each.
+        temporal_reduce: How to collapse a bucket with more than one real
+            scene down to exactly one time step.
+        temporal_slots: How many consecutive buckets stack into one
+            yielded sample's time dimension. `1` (default): each bucket is
+            its own sample.
+        temporal_strides: How many buckets apart consecutive yielded samples
+            start — the window's stride. `None` (default): equals
+            `temporal_slots`, i.e. non-overlapping samples. Set lower than
+            `temporal_slots` for overlapping/sliding-window samples (e.g.
+            `temporal_slots=4, temporal_strides=1` for a dense sliding
+            4-step sequence). A trailing window shorter than
+            `temporal_slots` is dropped, not padded.
+        temporal_fallback: Allow substituting the nearest real scene (by
+            absolute time distance, ignoring the bucket window entirely)
+            when a bucket has none of its own. Default False — an empty
+            bucket is skipped rather than silently using stale data.
     """
 
     def __init__(
@@ -70,6 +134,11 @@ class StacSource:
         groupby: Literal["solar_day", "id", "time"] = "solar_day",
         chunks: dict[str, int | Any] | None = None,
         dtype: str = "uint16",
+        temporal_granularity: TemporalGranularity = "scene",
+        temporal_reduce: TemporalReduce = "median",
+        temporal_slots: int = 1,
+        temporal_strides: int | None = None,
+        temporal_fallback: bool = False,
     ) -> None:
         self.client = client
         self.collection = collection
@@ -79,6 +148,11 @@ class StacSource:
         self.groupby = groupby
         self.chunks: dict[str, int | Any] = chunks if chunks is not None else {"x": 1024, "y": 1024}
         self.dtype = dtype
+        self.temporal_granularity = temporal_granularity
+        self.temporal_reduce = temporal_reduce
+        self.temporal_slots = temporal_slots
+        self.temporal_strides = temporal_strides if temporal_strides is not None else temporal_slots
+        self.temporal_fallback = temporal_fallback
         self.query: StacQuery = StacQuery(collections=[collection])
 
     def get_bands_metadata(self) -> dict[str, Any]:
@@ -103,33 +177,36 @@ class StacSource:
         """
         self.bands = bands
 
-    def load(self, anchor: GeoAnchor) -> GeoTile:
-        """Load every scene within anchor's own datetime window, for this source's bands.
+    def load(self, anchor: GeoAnchor, lazy_load: bool = False) -> Iterator[GeoTile]:
+        """Every final sample this source's own anchor window produces.
 
-        A degenerate window (a resolved single instant) naturally finds at
-        most whatever's on that exact day. A real window finds every
-        matching scene. No lookback — the window searched is exactly
-        anchor's own, nothing wider.
+        Searches once, builds one lazy multi-scene GeoTile, then patches it
+        (`_patch_time_window`), reduces each patch (`_reduce_tile`), and
+        groups `temporal_slots` reduced patches — `temporal_strides` apart
+        — into each final sample (`_stack_steps`). All three stay lazy, no
+        compute.
 
         Args:
             anchor: Reference bbox, geobox, and datetime window.
+            lazy_load: Default False — downloads (`download`, module-level
+                below) each sample before yielding it. True: yields still-
+                lazy tiles instead, caller downloads itself once a sample
+                is actually going to be used (e.g. `GeoPipeline.fetch`,
+                which discards samples that fail to align across sources —
+                lazy avoids paying for a download that gets thrown away).
 
-        Returns:
-            One GeoTile. `(band, y, x)`, no time axis, if exactly one scene
-            matched. `(time, band, y, x)` if several did — each time step
-            stamped with its own real acquisition instant; the tile's own
-            `datetime` stays anchor's requested window.
+        Yields:
+            GeoTile, `(time=temporal_slots, band, y, x)` — computed, or
+            still lazy if `lazy_load`.
 
         Raises:
-            AnchorFetchError: Nothing matched anchor's bbox/datetime window,
-                or everything found was rejected as nodata.
+            AnchorFetchError: Nothing matched anchor's bbox/datetime window.
         """
         start, end = anchor.start, anchor.end
         query = replace(
             self.query,
             bbox=anchor.wgs84_bbox,
             datetime=(start, end),
-            sortby=[{"field": "datetime", "direction": "asc"}],
         )
         items = self.client.search(query)
         if not items:
@@ -147,45 +224,167 @@ class StacSource:
             dtype=self.dtype,
             groupby=self.groupby,
         )
-        ds = self.download(ds)
+        da = ds.to_array(dim="band").transpose("time", "band", "y", "x")
+        tile = GeoTile(geobox=anchor.geobox, datetime=anchor.datetime, data=da).with_stac(items)
 
-        kept_times = []
-        kept_slices: list[xr.DataArray] = []
-        for t in ds.time.values:
-            slice_ds = ds.sel(time=t)
-            nodata_fraction = slice_ds.to_array().isnull().mean().item()
-            if nodata_fraction > self.max_nodata_fraction:
+        buckets: list[GeoTile] = []
+        for window_start, window_end in self._patch_time_window(tile):
+            try:
+                buckets.append(self._reduce_tile(tile, window_start, window_end))
+            except AnchorFetchError as e:
+                logger.debug("No usable scene for a time patch, skipping: %s", e)
                 continue
-            kept_times.append(t)
-            kept_slices.append(slice_ds.to_array(dim="band").transpose("band", "y", "x"))
 
-        if not kept_slices:
-            raise AnchorFetchError(
-                f"{self.collection!r}: {len(items)} scene(s) matched but all exceeded "
-                f"nodata threshold (anchor at {anchor.centroid}, window {start}–{end})"
-            )
+        slots = self.temporal_slots
+        for i in range(0, len(buckets) - slots + 1, self.temporal_strides):
+            stacked = self._stack_steps(buckets[i : i + slots])
+            if lazy_load:
+                yield stacked
+            else:
+                yield download(stacked, max_nodata_fraction=self.max_nodata_fraction)
 
-        if len(kept_slices) == 1:
-            item_dt = dt.fromisoformat(str(kept_times[0].astype("datetime64[s]")))
-            return GeoTile(geobox=anchor.geobox, datetime=item_dt, data=kept_slices[0]).with_stac(items)
+    def _patch_time_window(self, tile: GeoTile) -> list[DateRange]:
+        """Split tile's own datetime window into temporal_granularity patches.
 
-        da = xr.concat(kept_slices, dim="time").assign_coords(time=kept_times)
-        return GeoTile(geobox=anchor.geobox, datetime=anchor.datetime, data=da).with_stac(items)
-
-    @retry(
-        stop=stop_after_attempt(3),
-        wait=wait_exponential(min=1, max=10),
-        retry=retry_if_exception_type((IOError, OSError, ValueError)),
-    )
-    def download(self, data: xr.Dataset) -> xr.Dataset:
-        """Compute a lazy odc-stac dataset.
+        `"scene"`: one patch per tile's own real timestamp, no calendar
+        math. `"day"`/`"month"`/`"year"`: consecutive calendar patches
+        spanning tile's own start..end.
 
         Args:
-            data: Lazy (dask-backed) dataset from `odc_load`.
+            tile: This source's own lazily fetched tile.
 
         Returns:
-            Computed (in-memory) dataset.
+            One `(start, end)` per patch, chronological.
         """
-        logger.info("Downloading '%s'", self.collection)
+        if self.temporal_granularity == "scene":
+            # Not tile.times — that truncates to whole seconds, and a point
+            # window needs to exact-match tile.data.time.values (full
+            # precision) in _reduce_tile's mask, or real sub-second
+            # acquisition timestamps never match their own window.
+            times = [v.astype("datetime64[us]").item() for v in tile.data.time.values]
+            return [(t, t) for t in times]
+
+        unit = self.temporal_granularity
+        patches: list[DateRange] = []
+        patch_start = tile.start
+        while patch_start <= tile.end:
+            if unit == "day":
+                patch_end = patch_start + timedelta(days=1) - timedelta(microseconds=1)
+            elif unit == "month":
+                last_day = monthrange(patch_start.year, patch_start.month)[1]
+                patch_end = patch_start.replace(
+                    day=last_day, hour=23, minute=59, second=59, microsecond=999999
+                )
+            else:  # "year"
+                patch_end = patch_start.replace(
+                    month=12, day=31, hour=23, minute=59, second=59, microsecond=999999
+                )
+            patches.append((patch_start, min(patch_end, tile.end)))
+            patch_start = patch_end + timedelta(microseconds=1)
+        return patches
+
+    def _reduce_tile(self, tile: GeoTile, start: dt, end: dt) -> GeoTile:
+        """Collapse tile's data to exactly one time step within [start, end]. Still lazy.
+
+        Pure — no compute, no I/O. Result stays lazy through `load()` too —
+        whoever calls `load()` downloads it, once it's actually needed.
+
+        Args:
+            tile: This source's own lazily fetched tile, still lazy.
+            start: Patch window start (inclusive).
+            end: Patch window end (inclusive).
+
+        Returns:
+            New GeoTile rebased onto `(start, end)`, data always `(time=1,
+            band, y, x)` — standardized shape, never squeezed away. Still
+            dask-backed.
+
+        Raises:
+            AnchorFetchError: No scene in window, and `temporal_fallback` is off.
+        """
+        time_values = tile.data.time.values
+        mask = (time_values >= np.datetime64(start)) & (time_values <= np.datetime64(end))
+
+        if mask.any():
+            matched = tile.data.isel(time=mask)
+        elif self.temporal_fallback:
+            window_mid = np.datetime64(start) + (np.datetime64(end) - np.datetime64(start)) / 2
+            nearest_idx = np.abs(time_values - window_mid).argmin()
+            matched = tile.data.isel(time=[nearest_idx])
+        else:
+            raise AnchorFetchError(f"{self.collection!r}: no scene in window {start}–{end}")
+
+        if matched.sizes["time"] == 1:
+            reduced = matched
+        elif self.temporal_reduce == "first":
+            reduced = matched.isel(time=[0])
+        elif self.temporal_reduce == "last":
+            reduced = matched.isel(time=[-1])
+        elif self.temporal_reduce == "median":
+            reduced = matched.median(dim="time").expand_dims("time")
+        else:  # "mean"
+            reduced = matched.mean(dim="time").expand_dims("time")
+        reduced = reduced.assign_coords(time=[np.datetime64(start)])
+
+        return tile.with_datetime((start, end)).with_data(reduced)
+
+    def _stack_steps(self, chunk: list[GeoTile]) -> GeoTile:
+        """Concatenate temporal_slots resolved tiles into one final sample.
+
+        Args:
+            chunk: `temporal_slots` resolved tiles (each already `(time=1,
+                band, y, x)`), consecutive in time.
+
+        Returns:
+            GeoTile, `(time=len(chunk), band, y, x)`.
+        """
+        span_start, span_end = chunk[0].start, chunk[-1].end
+        stacked_data = xr.concat([bucket.data for bucket in chunk], dim="time")
+        return chunk[0].with_datetime((span_start, span_end)).with_data(stacked_data)
+
+
+@retry(
+    stop=stop_after_attempt(3),
+    wait=wait_exponential(min=1, max=10),
+    retry=retry_if_exception_type((IOError, OSError, ValueError)),
+)
+def download(tile: GeoTile, *, max_nodata_fraction: float = 0.0) -> GeoTile:
+    """Compute a lazy GeoTile's data. Retries on GDAL decode failure or excess nodata.
+
+    Doesn't care how many time steps tile carries — pure compute step, no
+    STAC/collection knowledge. A GDAL tile-decode warning and an
+    over-threshold nodata fraction are both treated as possibly-transient
+    bad reads, so both retried up to 3 times before giving up as genuinely
+    unusable.
+
+    Args:
+        tile: Lazy (dask-backed) GeoTile, any time length.
+        max_nodata_fraction: Give up (after retries) if computed nodata
+            fraction exceeds this.
+
+    Returns:
+        New GeoTile, same shape, computed (in-memory) data.
+
+    Raises:
+        IOError: GDAL logged a tile decode failure, or nodata fraction
+            exceeded max_nodata_fraction — after 3 retries.
+    """
+    logger.info("Downloading tile")
+    capture = _GdalWarningCapture(_GDAL_DECODE_FAILURE_MARKER)
+    gdal_log = logging.getLogger("rasterio._err")
+    gdal_log.addHandler(capture)
+    try:
         with ProgressBar():
-            return data.compute()
+            computed = tile.data.compute()
+    finally:
+        gdal_log.removeHandler(capture)
+    if capture.matches:
+        raise IOError(
+            f"GDAL tile decode failed ({len(capture.matches)} occurrence(s)) — {capture.matches[0]}"
+        )
+
+    nodata_fraction = computed.isnull().mean().item()
+    if nodata_fraction > max_nodata_fraction:
+        raise IOError(f"nodata fraction {nodata_fraction:.3f} exceeds max {max_nodata_fraction}")
+
+    return tile.with_data(computed)

@@ -1,4 +1,5 @@
-from .calibration import DenseCalibrationCallback
-from .prediction_writer import MosaicBuilder, PredictionWriter
+from .prediction_logger import DensePredictionLogger
+from .prediction_writer import PredictionWriter
+from .threshold_calibrator import ThresholdCalibrator
 
-__all__ = ["DenseCalibrationCallback", "MosaicBuilder", "PredictionWriter"]
+__all__ = ["DensePredictionLogger", "PredictionWriter", "ThresholdCalibrator"]
