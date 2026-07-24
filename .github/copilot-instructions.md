@@ -1,64 +1,61 @@
-# Geosave Engine Agent Guidelines
+# GeoSave Engine
 
-## Project Goal
+## 1. Think Before Coding
 
-Generate ready-to-use geospatial ML workspaces by reliably copying curated templates through the GeoSave CLI.
+**Don't assume. Don't hide confusion. Surface tradeoffs.**
 
-## Agent Defaults
+Before implementing:
+- State your assumptions explicitly. If uncertain, ask.
+- If multiple interpretations exist, present them - don't pick silently.
+- If a simpler approach exists, say so. Push back when warranted.
+- If something is unclear, stop. Name what's confusing. Ask.
 
-- Keep replies short.
-- Edit code first, then explain briefly.
-- Use real APIs, files, deps, and params from repo or docs.
-- Match existing project structure and style.
-- Ask questions when blocked or risk is high.
-- Keep durable rules here; task flow goes elsewhere.
+## 2. Simplicity First
 
-## Coding Rules
+**Minimum code that solves the problem. Nothing speculative.**
 
-- Prefer typed params and returns; avoid Any unless justified.
-- Add docstrings for public classes and functions.
-- Use named constants for repeated literals.
-- Comment only for non-obvious intent or edge cases.
-- Validate inputs early and raise clear errors.
-- Keep functions and classes focused on one job.
-- Keep diffs scoped to the task.
-- Preserve public APIs unless a change is requested.
-- Use clear, descriptive names.
-- Choose the simplest correct solution and reuse repo patterns.
+- No features beyond what was asked.
+- No abstractions for single-use code.
+- No "flexibility" or "configurability" that wasn't requested.
+- No error handling for impossible scenarios.
+- If you write 200 lines and it could be 50, rewrite it.
 
-## Exception Policy
+Ask yourself: "Would a senior engineer say this is overcomplicated?" If yes, simplify.
 
-- If you break a rule, leave a brief reason.
-- If an exception repeats, update the guideline.
+## 3. Surgical Changes
 
-## Repository Map
+**Touch only what you must. Clean up only your own mess.**
 
-```text
-src
-├── geosave_engine
-│   ├── cli
-│   ├── geodata
-│   ├── ml
-│   └── utils
-└── templates
-    ├── plugins
-    │   ├── notebook
-    │   └── scripts
-    └── workspace
-        ├── common
-        ├── object_detection
-        ├── pixelwise_regression
-        └── semantic_segmentation
+When editing existing code:
+- Don't "improve" adjacent code, comments, or formatting.
+- Don't refactor things that aren't broken.
+- Match existing style, even if you'd do it differently.
+- If you notice unrelated dead code, mention it - don't delete it.
+
+When your changes create orphans:
+- Remove imports/variables/functions that YOUR changes made unused.
+- Don't remove pre-existing dead code unless asked.
+
+The test: Every changed line should trace directly to the user's request.
+
+## 4. Goal-Driven Execution
+
+**Define success criteria. Loop until verified.**
+
+Transform tasks into verifiable goals:
+- "Add validation" → "Write tests for invalid inputs, then make them pass"
+- "Fix the bug" → "Write a test that reproduces it, then make it pass"
+- "Refactor X" → "Ensure tests pass before and after"
+
+For multi-step tasks, state a brief plan:
+```
+1. [Step] → verify: [check]
+2. [Step] → verify: [check]
+3. [Step] → verify: [check]
 ```
 
-## Required Stack
+Strong success criteria let you loop independently. Weak criteria ("make it work") require constant clarification.
 
-- Machine Learning: PyTorch Lightning.
-- Dataset Management: TorchGeo-compatible geospatial datasets and aligned sampling.
-- Data Ingestion: odc-stac with xarray-based preprocessing.
-- Raster IO: rioxarray and rasterio for GeoTIFF read/write and CRS-aware raster operations.
-- Dataset Manifests: GeoPackage (GPKG) for dataset manifest handling.
+---
 
-## Testing
-
-use workspace/ folder, a generated workspace from geosave build cli to test geosave functionalities (example: geosave run workspace)
+**These guidelines are working if:** fewer unnecessary changes in diffs, fewer rewrites due to overcomplication, and clarifying questions come before implementation rather than after mistakes.

@@ -15,6 +15,12 @@ repos:
         args: [--fix]
       - id: ruff-format
 
+  - repo: https://github.com/kynan/nbstripout
+    rev: 0.7.1
+    hooks:
+      - id: nbstripout
+        files: ^src/templates/plugins/notebooks/.*\.ipynb$
+
   # - repo: local
   #   hooks:
   #     - id: geosave-mypy
