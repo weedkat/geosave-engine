@@ -14,6 +14,7 @@ from typing import Any, Iterator, Literal, Protocol, Self, TypedDict
 
 import numpy as np
 import pystac
+import rasterio
 import xarray as xr
 from dask.diagnostics import ProgressBar
 from odc.stac import load as odc_load
@@ -45,6 +46,13 @@ Bands = list[str] | tuple[str, ...]
 # even single-threaded). Only reliable way to see it is the OS-level stderr
 # stream itself.
 _GDAL_DECODE_FAILURE_MARKERS = ("opj_get_decoded_tile", "Stream too short")
+
+# GDAL's own retry for a dropped/truncated remote byte-range read (the usual
+# cause of the decode failures above) — fixes most occurrences at the source,
+# inside GDAL's /vsicurl//vsis3/ layer, before a truncated read ever reaches
+# the JP2 decoder. _GDAL_DECODE_FAILURE_MARKERS + download()'s own check
+# below is just the fallback for whatever still slips through.
+_GDAL_HTTP_RETRY_OPTIONS = {"GDAL_HTTP_MAX_RETRY": "3", "GDAL_HTTP_RETRY_DELAY": "1"}
 
 
 class _StderrCapture:
@@ -443,7 +451,7 @@ def download(tile: GeoTile, *, max_nodata_fraction: float = 0.0) -> GeoTile:
     """
     logger.info("Downloading tile")
     stderr_capture = _StderrCapture()
-    with stderr_capture:
+    with rasterio.Env(**_GDAL_HTTP_RETRY_OPTIONS), stderr_capture:
         with ProgressBar():
             computed = tile.data.compute()
     matched = next((m for m in _GDAL_DECODE_FAILURE_MARKERS if m in stderr_capture.text), None)
