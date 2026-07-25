@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import logging
 from abc import ABC
-from typing import Any, Iterable, Iterator
+from typing import Any, Iterator
 
 import torch
 
@@ -63,15 +63,18 @@ class GeoPipeline(ABC):
         """
         return raw
 
-    def context(self, tiles: dict[LayerName, GeoTile]) -> dict[str, Any]:
-        """Extra per-sample keys to merge into a rendered tensor sample.
+    def context(self, tiles: dict[LayerName, GeoTile]) -> dict[str, torch.Tensor]:
+        """Extra per-sample tensor keys to merge into a rendered sample.
 
         Override — derive whatever a specific model chain needs from these
         tiles' anchors (e.g. `temporal_coords`/`location_coords` for a
-        Prithvi-family encoder). Forwarded straight into `GeoStack.to_tensor`
-        as its `context_fn` by `ingest_to_tensor` below — pass this same
-        bound method as a `GeoDataset`'s own `context_fn` to get identical
-        derivation for offline training reading this pipeline's saved output.
+        Prithvi-family encoder). Must return tensors, no batch dim —
+        `stack_samples` only stacks `torch.Tensor` values into a batch;
+        anything else passes through unbatched. Forwarded straight into
+        `GeoStack.to_tensor` as its `context_fn` by `ingest_to_tensor`
+        below — pass this same bound method as a `GeoDataset`'s own
+        `context_fn` to get identical derivation for offline training
+        reading this pipeline's saved output.
 
         Args:
             tiles: Layer name to GeoTile map for one aligned, preprocessed
@@ -165,25 +168,27 @@ class GeoPipeline(ABC):
 
     def ingest_to_tensor(
         self,
-        anchors: Iterable[GeoAnchor],
+        anchor: GeoAnchor,
         *,
         sel_bands: dict[str, list[str]] | None = None,
         dtype_override: dict[str, torch.dtype] | None = None,
     ) -> Iterator[dict[str, Any]]:
-        """Ingest anchors, yielding rendered tensor samples without saving.
+        """Ingest one anchor, yielding rendered tensor samples without saving.
 
         For predicting/streaming straight from a live source — no disk
-        round trip. Plain generator, not a Dataset: wrap it in a one-off
-        IterableDataset at the call site if a DataLoader needs one (and
-        shard by `torch.utils.data.get_worker_info()` there if using
-        `num_workers>1`, since this generator itself has no
+        round trip. Same one-anchor contract as `ingest` — looping over many
+        anchors is the caller's own plain loop around this, not this
+        method's job (see class docstring). Plain generator, not a Dataset:
+        wrap the caller's loop in a one-off IterableDataset if a DataLoader
+        needs one (and shard by `torch.utils.data.get_worker_info()` there
+        if using `num_workers>1`, since this generator itself has no
         worker-awareness). Built on `ingest` — same
         bucketing/reducing/stacking, same skip-on-empty-bucket behavior.
         Every yielded sample is run through `self.context` (override to add
         keys — see there), same as `preprocess`, not a call-time override.
 
         Args:
-            anchors: Anchors to ingest — typically `source.to_anchors(limit=...)`.
+            anchor: Raw anchor, e.g. straight off an `AnchorSource`.
             sel_bands: Layer name to band names to keep. Default keeps all
                 bands each tile carries.
             dtype_override: Layer name to torch dtype to cast that layer's
@@ -192,6 +197,5 @@ class GeoPipeline(ABC):
         Yields:
             Tensor dict per sample, rendered via `GeoStack.to_tensor`.
         """
-        for anchor in anchors:
-            for stack in self.ingest(anchor):
-                yield stack.to_tensor(sel_bands, dtype_override, self.context)
+        for stack in self.ingest(anchor):
+            yield stack.to_tensor(sel_bands, dtype_override, self.context)

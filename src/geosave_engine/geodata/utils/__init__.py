@@ -10,10 +10,8 @@ from .datetime import (
 )
 from .geodata import chunk_geotile, extract_raster_scale_offset, extract_stac_attrs
 from .geolocator import Place
-from .stac_query import CQL2
 
 __all__ = [
-    "CQL2",
     "DateRange",
     "Place",
     "TemporalGranularity",

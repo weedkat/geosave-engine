@@ -59,19 +59,6 @@ class StacClient:
         """Connect to Element84 Earth Search (AWS) STAC API."""
         return cls(Client.open("https://earth-search.aws.element84.com/v1/"))
 
-    @classmethod
-    def local(cls, url: str) -> StacClient:
-        """Connect to a self-hosted STAC API (e.g. stac-fastapi-pgstac).
-
-        A local pgstac instance is just another STAC endpoint — same
-        `.search()`/`.source()` interface as `cdse()`/`planetary_computer()`/
-        `element84()`, no separate caching mechanism needed.
-
-        Args:
-            url: Base URL of the STAC API (e.g. "http://localhost:8080").
-        """
-        return cls(Client.open(url))
-
     # ---------------------------------------------------------------- search
 
     def search(self, query: StacQuery | dict[str, Any]) -> list[pystac.Item]:

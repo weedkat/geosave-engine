@@ -1,9 +1,11 @@
 from typing import Any
+import dataclasses
 from dataclasses import dataclass
 from datetime import datetime
 from typing import TypeVar
 
-from geosave_engine.geodata.utils.stac_query import CQL2
+from cql2 import Expr
+
 from geosave_engine.geodata.utils.crs import validate_bbox
 
 T = TypeVar("T", bound="StacQuery")
@@ -22,7 +24,7 @@ class StacQuery:
         max_items: Client-side max items to return.
         limit: Server-side page size hint.
         query: Legacy STAC query extension filters.
-        filter: CQL2-JSON filter expression; build with ``CQL2`` helpers.
+        filter: CQL2-JSON filter expression; build with ``with_filter`` from CQL2 text.
         fields: Item fields to include or exclude.
         sortby: Sort order — string, dict, or list of ``{"field": ..., "direction": ...}``.
     """
@@ -65,38 +67,50 @@ class StacQuery:
         }
         return {k: v for k, v in params.items() if v is not None}
 
-    def with_filter(self: T, expr: dict[str, Any]) -> None:
-        """Merge CQL2 filter expression into existing filter.
+    def with_filter(self: T, expr: str, inplace: bool = False) -> T:
+        """Merge CQL2 text filter expression into existing filter.
 
         Wraps both expressions in ``and`` if filter already exists.
 
         Args:
-            expr: CQL2-JSON filter dict; use ``CQL2`` helpers to build.
-                Example: ``{"op": "<=", "args": [{"property": "eo:cloud_cover"}, 0.1]}``.
+            expr: CQL2 text filter expression.
+            inplace: Mutate self and return it. Default leaves self untouched,
+                returns a copy with the merged filter instead.
+        
+        Example:
+            >>> query = StacQuery(collections=["sentinel-2-l2a"])
+            >>> query = query.with_filter("eo:cloud_cover <= 10")
         """
-        if self.filter is None:
-            self.filter = expr
-        else:
-            self.filter = CQL2.and_(self.filter, expr)
+        parsed = Expr(expr).to_json()
 
-    def with_sortby(self: T, field: str, direction: str = "asc") -> None:
+        if inplace:
+            self.filter = parsed
+            return self
+        return dataclasses.replace(self, filter=parsed)
+
+    def with_sortby(self: T, field: str, direction: str = "asc", inplace: bool = False) -> T:
         """Append a sort field to existing sort order.
 
         Args:
             field: STAC item property name to sort by.
             direction: ``'asc'`` or ``'desc'``.
+            inplace: Mutate self and return it. Default leaves self untouched,
+                returns a copy with the appended sort field instead.
         """
         new_sort = {"field": field, "direction": direction}
         if self.sortby is None:
-            self.sortby = [new_sort]
+            new_sortby = [new_sort]
         elif isinstance(self.sortby, list):
-            self.sortby.append(new_sort)
+            new_sortby = [*self.sortby, new_sort]
         elif isinstance(self.sortby, dict):
-            self.sortby = [self.sortby, new_sort]
-        elif isinstance(self.sortby, str):
-            parsed_sort = parse_sortby(self.sortby)
-            self.sortby = [parsed_sort, new_sort]
+            new_sortby = [self.sortby, new_sort]
+        else:
+            new_sortby = [parse_sortby(self.sortby), new_sort]
 
+        if inplace:
+            self.sortby = new_sortby
+            return self
+        return dataclasses.replace(self, sortby=new_sortby)
 
 def parse_sortby(sortby: str) -> dict[str, str]:
     """Convert pystac-client sort string to STAC sort dict."""

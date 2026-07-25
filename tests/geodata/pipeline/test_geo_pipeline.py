@@ -55,7 +55,7 @@ class TestIngestToTensor:
         anchor = _toy_anchor()
         samples = list(
             _ToyPipeline().ingest_to_tensor(
-                [anchor],
+                anchor,
                 sel_bands={"image": ["B02"]},
                 dtype_override={"image": torch.float32},
             )
@@ -68,5 +68,5 @@ class TestIngestToTensor:
 
     def test_no_files_written(self, tmp_path):
         """ingest_to_tensor never touches disk — nothing to assert against tmp_path except that it stays empty."""
-        list(_ToyPipeline().ingest_to_tensor([_toy_anchor()]))
+        list(_ToyPipeline().ingest_to_tensor(_toy_anchor()))
         assert list(tmp_path.iterdir()) == []

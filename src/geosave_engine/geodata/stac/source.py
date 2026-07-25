@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import copy
 import logging
 import threading
 import warnings
@@ -7,7 +8,7 @@ from calendar import monthrange
 from dataclasses import replace
 from datetime import datetime as dt
 from datetime import timedelta
-from typing import Any, Iterator, Literal, Protocol, TypedDict
+from typing import Any, Iterator, Literal, Protocol, Self, TypedDict
 
 import numpy as np
 import pystac
@@ -67,6 +68,7 @@ class StacSourceArgs(TypedDict, total=False):
     """Constructor kwargs for StacSource, used with Unpack in client.source() overloads."""
 
     bands: Bands
+    filter: str | None
     max_nodata_fraction: float
     resampling: str
     groupby: Literal["solar_day", "id", "time"]
@@ -95,6 +97,9 @@ class StacSource:
         client: STAC client used to search for items.
         collection: STAC collection identifier (as returned by `client.get_collections()`).
         bands: Band names to load for every anchor.
+        filter: CQL2 text filter applied to every anchor's search (e.g.
+            `"eo:cloud_cover <= 10"`) — anchor-independent, so it survives
+            unchanged through every per-anchor `load()` search.
         max_nodata_fraction: Reject a bucket where nodata fraction exceeds this value.
         resampling: Resampling method passed to odc-stac.
         groupby: How odc-stac groups scenes along the time axis.
@@ -129,6 +134,7 @@ class StacSource:
         *,
         collection: str,
         bands: Bands | None = None,
+        filter: str | None = None,
         max_nodata_fraction: float = 0.0,
         resampling: str = "bilinear",
         groupby: Literal["solar_day", "id", "time"] = "solar_day",
@@ -154,6 +160,8 @@ class StacSource:
         self.temporal_strides = temporal_strides if temporal_strides is not None else temporal_slots
         self.temporal_fallback = temporal_fallback
         self.query: StacQuery = StacQuery(collections=[collection])
+        if filter is not None:
+            self.query = self.query.with_filter(filter, inplace=True)
 
     def get_bands_metadata(self) -> dict[str, Any]:
         """Fetch asset metadata for this source's collection.
@@ -169,13 +177,38 @@ class StacSource:
             return {}
         return {name: asset.extra_fields for name, asset in items[0].assets.items()}
     
-    def set_bands(self, bands: Bands) -> None:
+    def set_bands(self, bands: Bands, inplace: bool = False) -> Self:
         """Set the bands to load for this source.
 
         Args:
             bands: List of band names to load.
+            inplace: Mutate self and return it. Default leaves self untouched,
+                returns a copy with the new bands instead.
+
+        Returns:
+            Self (mutated) if `inplace`, otherwise a new `StacSource`.
         """
-        self.bands = bands
+        target = self if inplace else copy.copy(self)
+        target.bands = bands
+        return target
+
+    def set_filter(self, filter: str, inplace: bool = False) -> Self:
+        """Merge a CQL2 text filter into this source's own query.
+
+        Applies to every anchor this source loads from here on — see
+        `StacQuery.with_filter` for how it merges with any filter already set.
+
+        Args:
+            filter: CQL2 text filter expression, e.g. `"eo:cloud_cover <= 10"`.
+            inplace: Mutate self and return it. Default leaves self untouched,
+                returns a copy with the merged filter instead.
+
+        Returns:
+            Self (mutated) if `inplace`, otherwise a new `StacSource`.
+        """
+        target = self if inplace else copy.copy(self)
+        target.query = target.query.with_filter(filter, inplace=inplace)
+        return target
 
     def load(self, anchor: GeoAnchor, lazy_load: bool = False) -> Iterator[GeoTile]:
         """Every final sample this source's own anchor window produces.
@@ -200,7 +233,9 @@ class StacSource:
             still lazy if `lazy_load`.
 
         Raises:
-            AnchorFetchError: Nothing matched anchor's bbox/datetime window.
+            AnchorFetchError: Nothing matched anchor's bbox/datetime window,
+                or fewer usable time buckets turned up than `temporal_slots`
+                needs — raised rather than silently yielding zero samples.
         """
         start, end = anchor.start, anchor.end
         query = replace(
@@ -225,7 +260,9 @@ class StacSource:
             groupby=self.groupby,
         )
         da = ds.to_array(dim="band").transpose("time", "band", "y", "x")
-        tile = GeoTile(geobox=anchor.geobox, datetime=anchor.datetime, data=da).with_stac(items)
+        tile = GeoTile(
+            geobox=anchor.geobox, datetime=anchor.datetime, data=da, polygon=anchor.polygon
+        ).with_stac(items)
 
         buckets: list[GeoTile] = []
         for window_start, window_end in self._patch_time_window(tile):
@@ -236,6 +273,12 @@ class StacSource:
                 continue
 
         slots = self.temporal_slots
+        if len(buckets) < slots:
+            raise AnchorFetchError(
+                f"{self.collection!r}: only {len(buckets)} usable time bucket(s) in anchor "
+                f"window {start}–{end}, need temporal_slots={slots} "
+                f"(anchor at {anchor.centroid})"
+            )
         for i in range(0, len(buckets) - slots + 1, self.temporal_strides):
             stacked = self._stack_steps(buckets[i : i + slots])
             if lazy_load:
@@ -297,7 +340,13 @@ class StacSource:
         Returns:
             New GeoTile rebased onto `(start, end)`, data always `(time=1,
             band, y, x)` — standardized shape, never squeezed away. Still
-            dask-backed.
+            dask-backed. The one remaining time coordinate is the matched
+            scene's real acquisition timestamp when exactly one scene
+            survives reduction (`temporal_reduce="first"`/`"last"`, or only
+            one scene fell in the window to begin with) — `median`/`mean`
+            fold several real scenes into one, so those get labeled with
+            the bucket's own `start` instead, there being no single real
+            timestamp left to attribute the pixels to.
 
         Raises:
             AnchorFetchError: No scene in window, and `temporal_fallback` is off.
@@ -321,10 +370,11 @@ class StacSource:
         elif self.temporal_reduce == "last":
             reduced = matched.isel(time=[-1])
         elif self.temporal_reduce == "median":
-            reduced = matched.median(dim="time").expand_dims("time")
+            # No single real scene left to attribute a timestamp to — label
+            # with the bucket's own start, same synthetic marker "mean" uses.
+            reduced = matched.median(dim="time").expand_dims("time").assign_coords(time=[np.datetime64(start)])
         else:  # "mean"
-            reduced = matched.mean(dim="time").expand_dims("time")
-        reduced = reduced.assign_coords(time=[np.datetime64(start)])
+            reduced = matched.mean(dim="time").expand_dims("time").assign_coords(time=[np.datetime64(start)])
 
         return tile.with_datetime((start, end)).with_data(reduced)
 

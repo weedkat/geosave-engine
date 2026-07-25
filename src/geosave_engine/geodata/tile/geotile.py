@@ -20,6 +20,7 @@ from odc.geo.geom import Geometry
 from typing_extensions import Unpack
 
 from geosave_engine.geodata.utils.datetime import date_range_from_path
+from geosave_engine.utils.colorize import Palette
 
 from .geoanchor import AnchorDatetime, GeoAnchor
 
@@ -27,6 +28,52 @@ if TYPE_CHECKING:
     import matplotlib.pyplot as plt
     from geosave_engine.geodata.utils.geovis import PlotKwargs
 
+
+@dataclass(frozen=True)
+class PlotMeta:
+    """Rendering hints a GeoTile carries about itself.
+
+    Otherwise ambiguous from the tile's shape/dtype alone (e.g. which 3 of
+    more than 3 bands count as RGB), or would have to be repeated at every
+    `plot()` call site. `None` on any field means "not set" — `plot()`
+    falls back to auto-detection or its own call-level kwarg.
+
+    Args:
+        rgb_bands: Which 3 band names count as R/G/B.
+        class_map: `{pixel value: class name}` for a categorical tile.
+        color_map: `{pixel value: hex or RGB}` for a categorical tile.
+    """
+
+    rgb_bands: tuple[str, str, str] | None = None
+    class_map: dict[int, str] | None = None
+    color_map: Palette | None = None
+
+
+def _plot_meta_to_dict(meta: PlotMeta) -> dict[str, Any]:
+    """JSON-safe dict for a store attr/tag — reversed by _plot_meta_from_dict."""
+    return {
+        "rgb_bands": list(meta.rgb_bands) if meta.rgb_bands is not None else None,
+        "class_map": meta.class_map,
+        "color_map": meta.color_map,
+    }
+
+
+def _plot_meta_from_dict(data: dict[str, Any] | None) -> PlotMeta:
+    """Inverse of _plot_meta_to_dict — JSON object keys are always strings, cast back to int."""
+    if not data:
+        return PlotMeta()
+    rgb_bands = data.get("rgb_bands")
+    class_map = data.get("class_map")
+    color_map = data.get("color_map")
+    return PlotMeta(
+        rgb_bands=tuple(rgb_bands) if rgb_bands is not None else None,
+        class_map={int(k): v for k, v in class_map.items()} if class_map is not None else None,
+        color_map=(
+            {int(k): (tuple(v) if isinstance(v, list) else v) for k, v in color_map.items()}
+            if color_map is not None
+            else None
+        ),
+    )
 
 
 @dataclass(frozen=True, kw_only=True)
@@ -44,6 +91,7 @@ class GeoTile(GeoAnchor):
 
     data: xr.DataArray
     stac: list[Item] = field(default_factory=list, compare=False)
+    plot_meta: PlotMeta = field(default_factory=PlotMeta, compare=False)
 
     # ------------------------------------------------------------------
     # Derived properties
@@ -110,6 +158,29 @@ class GeoTile(GeoAnchor):
         seen = {i.id for i in self.stac}
         merged = [*self.stac, *(i for i in items if i.id not in seen)]
         return dataclasses.replace(self, stac=merged)
+
+    def with_plot_meta(
+        self,
+        rgb_bands: tuple[str, str, str] | None = None,
+        class_map: dict[int, str] | None = None,
+        color_map: Palette | None = None,
+    ) -> "GeoTile":
+        """Return new GeoTile with given rendering hints merged into plot_meta.
+
+        Only given (non-None) args overwrite; omitted ones keep whatever
+        plot_meta already had — same merge shape as with_metadata.
+
+        Args:
+            rgb_bands: Which 3 band names count as R/G/B.
+            class_map: `{pixel value: class name}` for a categorical tile.
+            color_map: `{pixel value: hex or RGB}` for a categorical tile.
+        """
+        updates = {
+            k: v
+            for k, v in {"rgb_bands": rgb_bands, "class_map": class_map, "color_map": color_map}.items()
+            if v is not None
+        }
+        return dataclasses.replace(self, plot_meta=dataclasses.replace(self.plot_meta, **updates))
 
     def to_anchor(self) -> GeoAnchor:
         """Strip pixel data (and STAC provenance), keeping only the anchor identity.
@@ -226,6 +297,8 @@ class GeoTile(GeoAnchor):
             geojson_dict = poly_geojson if isinstance(poly_geojson, dict) else json.loads(poly_geojson)
             stored_polygon = Geometry(geojson_dict, crs=poly_crs)
 
+        plot_meta = _plot_meta_from_dict(tag.pop("plot_meta", None))
+
         if bands:
             data = cast(xr.Dataset, data[list(bands)])
         if load_data:
@@ -245,6 +318,7 @@ class GeoTile(GeoAnchor):
             stac=_read_stac(p),
             metadata=tag,
             polygon=stored_polygon,
+            plot_meta=plot_meta,
         )
 
     @classmethod
@@ -291,6 +365,8 @@ class GeoTile(GeoAnchor):
         if poly_geojson_raw and poly_crs:
             geojson_dict = json.loads(poly_geojson_raw) if isinstance(poly_geojson_raw, str) else poly_geojson_raw
             stored_polygon = Geometry(geojson_dict, crs=poly_crs)
+        plot_meta_raw = ds.attrs.get("plot_meta")
+        plot_meta = _plot_meta_from_dict(json.loads(plot_meta_raw) if plot_meta_raw else None)
         # to_array() stacks per-variable DataArrays into one — rio.nodata lives on each
         # variable individually and doesn't survive the stack, so re-attach it explicitly.
         nodata = next(iter(ds.data_vars.values())).rio.nodata
@@ -325,6 +401,7 @@ class GeoTile(GeoAnchor):
             stac=_read_stac(path),
             metadata=metadata,
             polygon=stored_polygon,
+            plot_meta=plot_meta,
         )
 
     # ------------------------------------------------------------------
@@ -385,6 +462,8 @@ class GeoTile(GeoAnchor):
         if self.polygon is not None:
             attrs["polygon_geojson"] = json.dumps(self.polygon.geojson())
             attrs["polygon_crs"] = str(self.polygon.crs)
+        if self.plot_meta != PlotMeta():
+            attrs["plot_meta"] = json.dumps(_plot_meta_to_dict(self.plot_meta))
         ds = self.data.to_dataset(dim="band").assign_attrs(**attrs)
         ds.to_zarr(path, mode="w")
         if save_stac:
@@ -404,6 +483,8 @@ class GeoTile(GeoAnchor):
         if self.polygon is not None:
             tag["polygon_geojson"] = self.polygon.geojson()
             tag["polygon_crs"] = str(self.polygon.crs)
+        if self.plot_meta != PlotMeta():
+            tag["plot_meta"] = _plot_meta_to_dict(self.plot_meta)
         dt_str = f"{self.start.isoformat(timespec='microseconds')}/{self.end.isoformat(timespec='microseconds')}"
         self.data.rio.to_raster(
             path,
@@ -569,6 +650,7 @@ def mosaic(
         data=merged,
         metadata={k: v for t in tiles for k, v in t.metadata.items()},
         polygon=mosaic_polygon,
+        plot_meta=tiles[0].plot_meta,
     ).with_stac([item for t in tiles for item in t.stac])
     return base
 

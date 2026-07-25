@@ -74,20 +74,48 @@ class GeoStack:
     no schema of its own — each tile already describes itself.
 
     Args:
+        *args: Positional `GeoTile`s, auto-named `layer_0`, `layer_1`, ...
+            A `GeoStack` is flattened instead — its own layers merge in
+            under their real names, not auto-named. Mix freely with
+            `**tiles` as long as names don't collide.
         **tiles: Layer name to GeoTile, e.g. `GeoStack(**pipeline.ingest(anchor))`.
             Auto-aligned to their common spatial intersection via `align()`
             when there's more than one.
+
+    Raises:
+        ValueError: Two positional args (including a flattened `GeoStack`'s
+            own layers) produce the same name, or a positional arg's name
+            collides with an explicit keyword name.
 
     Examples:
         >>> stack = GeoStack(sentinel_2_l1c=s2_tile, cloud_mask=mask_tile)
         >>> stack.save("data/train/13.000000_52.000000_20240115_10m.geostack")
         >>> sample = stack.to_tensor()
+        >>> combined = GeoStack(stack, ndvi=ndvi_tile)  # flattens stack's own layers in
     """
 
     tiles: dict[LayerName, GeoTile]
 
-    def __init__(self, **tiles: GeoTile) -> None:
-        aligned = dict(zip(tiles.keys(), align(*tiles.values()))) if len(tiles) > 1 else tiles
+    def __init__(self, *args: GeoTile | GeoStack, **tiles: GeoTile) -> None:
+        positional: dict[LayerName, GeoTile] = {}
+        layer_index = 0
+        for arg in args:
+            new_layers = arg.tiles if isinstance(arg, GeoStack) else {f"layer_{layer_index}": arg}
+            if not isinstance(arg, GeoStack):
+                layer_index += 1
+            collision = set(positional) & set(new_layers)
+            if collision:
+                raise ValueError(f"layer name(s) {collision} collide across positional args — rename or don't mix")
+            positional.update(new_layers)
+
+        collision = set(positional) & set(tiles)
+        if collision:
+            raise ValueError(
+                f"positional arg name(s) {collision} collide with explicit "
+                "keyword name(s) — rename the keyword or don't mix"
+            )
+        named = {**positional, **tiles}
+        aligned = dict(zip(named.keys(), align(*named.values()))) if len(named) > 1 else named
         object.__setattr__(self, "tiles", aligned)
 
     def __repr__(self) -> str:
@@ -114,20 +142,21 @@ class GeoStack:
     def plot(self, **kwargs: Unpack[PlotKwargs]) -> tuple[plt.Figure, np.ndarray]:
         """Plot every layer — thin wrapper, see `geosave_engine.geodata.utils.geovis.plot`.
 
-        All layers share one anchor (same location, same date by
-        construction), so this always facets one panel per layer — never a
-        mosaic, since there's nothing else in the group to mosaic with.
+        Passes `self.tiles` through by name (not flattened to a bare list),
+        so each panel titles as its own layer name — dict keys are unique,
+        so two different layers can never mosaic into each other even if
+        they happen to share bands/date/footprint.
 
         Args:
             **kwargs: Forwarded to `geovis.plot` (`cmap`, `class_map`,
-                `color_map`, `rgb_bands`, `cols`, `title`).
+                `color_map`, `rgb_bands`, `cols`, `title`, `show_metadata`).
 
         Returns:
             `(Figure, ndarray of Axes)`.
         """
         from geosave_engine.geodata.utils.geovis import plot
 
-        return plot(list(self.tiles.values()), **kwargs)
+        return plot(self.tiles, **kwargs)
 
     def save(self, path: str | Path, save_stac: bool | Sequence[LayerName] = False) -> Path:
         """Write every tile as its own zarr store inside a `.geostack` folder.
@@ -193,7 +222,7 @@ class GeoStack:
         self,
         sel_bands: dict[LayerName, list[str]] | None = None,
         dtype_override: dict[LayerName, torch.dtype] | None = None,
-        context_fn: Callable[[dict[LayerName, GeoTile]], dict[str, Any]] | None = None,
+        context_fn: Callable[[dict[LayerName, GeoTile]], dict[str, torch.Tensor]] | None = None,
     ) -> dict[str, Any]:
         """Render carried tiles as one model sample.
 

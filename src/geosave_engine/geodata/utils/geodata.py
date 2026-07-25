@@ -7,6 +7,7 @@ import numpy as np
 import pystac
 import xarray as xr
 from odc.geo.geobox import GeoBox, GeoboxTiles
+from odc.geo.geom import Geometry
 
 if TYPE_CHECKING:
     from geosave_engine.geodata.tile.geoanchor import GeoAnchor
@@ -116,11 +117,31 @@ def chunk_geotile(full: T, tile_size_px: int) -> list[T]:
 
     Returns:
         One instance (same type as ``full``) per grid cell intersecting
-        ``full``'s extent. ``full.polygon``, if set, is dropped on each
-        sub-tile — it describes the whole area, not one cell.
+        ``full``'s extent. ``full.polygon``, if set, is clipped to each
+        cell's own bbox — not dropped — so mosaicking the same cells back
+        together reconstructs the original footprint (``mosaic()`` already
+        unions per-tile polygons when every tile carries one). A cell whose
+        bbox falls inside ``full``'s bbox but outside the actual (non-
+        rectangular) polygon clips down to an empty geometry, same as any
+        other real gap.
     """
     grid = GeoboxTiles(full.geobox, (tile_size_px, tile_size_px))
     # GeoboxTiles.__getitem__ is typed to return the wider GeoBoxBase, but
     # full.geobox (and so grid, built from it) is always concretely GeoBox.
     sub_tiles = [full.with_geobox(cast(GeoBox, grid[idx])) for idx in grid.tiles(full.geobox.extent)]
-    return [dataclasses.replace(t, polygon=None) if t.polygon is not None else t for t in sub_tiles]
+    polygon = full.polygon
+    if polygon is None:
+        return sub_tiles
+
+    def _clip_to_cell(t: T) -> T:
+        minx, miny, maxx, maxy = t.bbox
+        clip_box = Geometry(
+            {
+                "type": "Polygon",
+                "coordinates": [[(minx, miny), (minx, maxy), (maxx, maxy), (maxx, miny), (minx, miny)]],
+            },
+            crs=polygon.crs,
+        )
+        return cast(T, dataclasses.replace(t, polygon=t.polygon & clip_box))
+
+    return [_clip_to_cell(t) for t in sub_tiles]

@@ -55,7 +55,7 @@ class GeoDataset(Dataset):
         required_layers: list[LayerName] | None = None,
         sel_bands: dict[LayerName, list[str]] | None = None,
         dtype_override: dict[LayerName, torch.dtype] | None = None,
-        context_fn: Callable[[dict[LayerName, GeoTile]], dict[str, Any]] | None = None,
+        context_fn: Callable[[dict[LayerName, GeoTile]], dict[str, torch.Tensor]] | None = None,
     ) -> None:
         """
         Args:

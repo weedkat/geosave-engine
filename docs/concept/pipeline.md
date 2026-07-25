@@ -261,7 +261,7 @@ supplies exactly those extra keys — overridable, same pattern as
 
 ```python
 class Pipeline(GeoPipeline):
-    def context(self, tiles: dict[str, GeoTile]) -> dict[str, Any]:
+    def context(self, tiles: dict[str, GeoTile]) -> dict[str, torch.Tensor]:
         tile = tiles["sentinel_2_l1c"]          # picked by name, not first-in-dict
         lon, lat = tile.centroid
         acquired = tile.times[0]                # real per-scene timestamp off the loaded
@@ -358,13 +358,17 @@ call, or a hand-built list for anchors that don't fit an existing source
 ## Streaming without saving
 
 ```python
-for sample in pipeline.ingest_to_tensor(anchors, sel_bands={"sentinel_2_l1c": ["B04", "B03", "B02"]}):
-    ...  # tensor dict + "anchors", same shape GeoDataset.__getitem__ returns,
-         # plus this pipeline's own context() keys if it overrides one
+for anchor in anchors:
+    for sample in pipeline.ingest_to_tensor(anchor, sel_bands={"sentinel_2_l1c": ["B04", "B03", "B02"]}):
+        ...  # tensor dict + "anchors", same shape GeoDataset.__getitem__ returns,
+             # plus this pipeline's own context() keys if it overrides one
 ```
 
-A plain generator method, not a Dataset class — for predicting straight
-from a live source with no disk round trip. Always applies `self.context`
+Same one-anchor contract as `ingest()` — looping over many anchors is the
+caller's own plain loop around it, not this method's job (see
+[Philosophy](#philosophy) above). A plain generator method, not a Dataset
+class — for predicting straight from a live source with no disk round
+trip. Always applies `self.context`
 (see [Supplying model-specific context](#supplying-model-specific-context)
 above) — the live-predict path and the disk-training path
 (`GeoDataset(context_fn=...)`) both end up calling the same

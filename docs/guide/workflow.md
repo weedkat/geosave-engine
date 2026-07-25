@@ -38,7 +38,7 @@ flowchart TD
         A --> GP["GeoPipeline.ingest(anchor)"]
         GP --> GT["GeoStack"]
         GT -->|.save()| GS["<anchor>.geostack/*.zarr"]
-        GP2["GeoPipeline.ingest_to_tensor(anchors)"] --> ST["tensor dict\n(no disk)"]
+        GP2["GeoPipeline.ingest_to_tensor(anchor)"] --> ST["tensor dict\n(no disk)"]
     end
 
     subgraph train ["5-6 · Define + Train"]

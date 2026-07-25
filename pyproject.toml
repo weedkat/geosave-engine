@@ -54,6 +54,7 @@ dependencies = [
     "s2cloudless>=1.7.3",
     "odc-stac>=0.5.2",
     "cogeo-mosaic>=9.2.0",
+    "cql2>=0.5.6",
     "boto3>=1.42.91",
     "odc-geo>=0.5.1",
     "geopy>=2.4.0",

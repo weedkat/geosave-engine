@@ -36,7 +36,7 @@ delegates straight to `GeoStack.to_tensor`:
 | `required_layers` | `None` (all layers) | Only include anchors whose `.geostack` folder has every one of these layer names — a folder missing one is silently excluded. |
 | `sel_bands` | `None` (all bands) | `{layer: [band, ...]}` — subset bands per layer. |
 | `dtype_override` | `None` (saved dtype) | `{layer: torch.dtype}` — cast a layer's tensor, e.g. a saved `uint8` mask to `bool`. |
-| `context_fn` | `None` (no extra keys) | `dict[LayerName, GeoTile] -> dict[str, Any]` — merged into every sample, same function a `GeoPipeline.context` override supplies (see [pipeline.md](pipeline.md#supplying-model-specific-context)). |
+| `context_fn` | `None` (no extra keys) | `dict[LayerName, GeoTile] -> dict[str, torch.Tensor]` — merged into every sample, same function a `GeoPipeline.context` override supplies (see [pipeline.md](pipeline.md#supplying-model-specific-context)). |
 
 **`layers` property** — the layer names present in the first sample
 (`list[str]`), useful for sanity-checking a dataset without indexing into
