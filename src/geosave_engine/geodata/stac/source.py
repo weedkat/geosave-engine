@@ -27,33 +27,36 @@ logger = logging.getLogger(__name__)
 
 Bands = list[str] | tuple[str, ...]
 
-# rasterio only raises Python exceptions for GDAL CE_Failure. JP2OpenJPEG's
-# "opj_decode() failed" (a truncated/corrupt tile, usually a flaky network
-# read) is emitted as CE_Warning — it never raises, GDAL just fills the tile
-# with partial/zero data and moves on. Only path to see it is the
+# rasterio only raises Python exceptions for GDAL CE_Failure. JP2OpenJPEG
+# truncated/corrupt tile reads (usually a flaky network read) are emitted as
+# CE_Warning instead — never raise, GDAL just fills the tile with
+# partial/zero data and moves on. Two message variants seen in practice for
+# the same underlying truncated-stream failure: "opj_get_decoded_tile()
+# failed" and "Stream too short". Only path to see either is the
 # "rasterio._err" logger.
-_GDAL_DECODE_FAILURE_MARKER = "opj_decode"
+_GDAL_DECODE_FAILURE_MARKERS = ("opj_get_decoded_tile", "Stream too short")
 
 
 class _GdalWarningCapture(logging.Handler):
-    """Capture GDAL warning-level log records matching a substring.
+    """Capture GDAL warning-level log records matching any of a set of substrings.
 
     Attach to `logging.getLogger("rasterio._err")` around a read to catch
     GDAL warnings rasterio itself won't turn into an exception.
 
     Args:
-        needle: Substring to match against each warning's message.
+        needles: Substrings to match against each warning's message — a
+            match on any one counts.
     """
 
-    def __init__(self, needle: str) -> None:
+    def __init__(self, needles: tuple[str, ...]) -> None:
         super().__init__(level=logging.WARNING)
-        self.needle = needle
+        self.needles = needles
         self.matches: list[str] = []
         self._lock = threading.Lock()
 
     def emit(self, record: logging.LogRecord) -> None:
         message = record.getMessage()
-        if self.needle in message:
+        if any(needle in message for needle in self.needles):
             with self._lock:
                 self.matches.append(message)
 
@@ -420,7 +423,7 @@ def download(tile: GeoTile, *, max_nodata_fraction: float = 0.0) -> GeoTile:
             exceeded max_nodata_fraction — after 3 retries.
     """
     logger.info("Downloading tile")
-    capture = _GdalWarningCapture(_GDAL_DECODE_FAILURE_MARKER)
+    capture = _GdalWarningCapture(_GDAL_DECODE_FAILURE_MARKERS)
     gdal_log = logging.getLogger("rasterio._err")
     gdal_log.addHandler(capture)
     try:
