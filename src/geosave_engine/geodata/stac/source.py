@@ -2,7 +2,9 @@ from __future__ import annotations
 
 import copy
 import logging
-import threading
+import os
+import sys
+import tempfile
 import warnings
 from calendar import monthrange
 from dataclasses import replace
@@ -32,33 +34,50 @@ Bands = list[str] | tuple[str, ...]
 # CE_Warning instead — never raise, GDAL just fills the tile with
 # partial/zero data and moves on. Two message variants seen in practice for
 # the same underlying truncated-stream failure: "opj_get_decoded_tile()
-# failed" and "Stream too short". Only path to see either is the
-# "rasterio._err" logger.
+# failed" and "Stream too short". Neither reaches Python's "rasterio._err"
+# logger — rasterio only bridges GDAL errors to that logger for a narrow set
+# of operations it explicitly wraps (dataset open, etc); this particular
+# warning comes from deep inside GDAL's block-cache/driver machinery during a
+# windowed read, a path rasterio never wraps, so it falls through to GDAL's
+# own default handler — a raw write to the process's real stderr file
+# descriptor, never through Python logging at all (confirmed empirically:
+# a logging.Handler on "rasterio._err" sees nothing for this exact failure,
+# even single-threaded). Only reliable way to see it is the OS-level stderr
+# stream itself.
 _GDAL_DECODE_FAILURE_MARKERS = ("opj_get_decoded_tile", "Stream too short")
 
 
-class _GdalWarningCapture(logging.Handler):
-    """Capture GDAL warning-level log records matching any of a set of substrings.
+class _StderrCapture:
+    """Redirect the process's real stderr (fd 2) into a buffer for the block's duration.
 
-    Attach to `logging.getLogger("rasterio._err")` around a read to catch
-    GDAL warnings rasterio itself won't turn into an exception.
-
-    Args:
-        needles: Substrings to match against each warning's message — a
-            match on any one counts.
+    Replays the captured bytes to the real stderr afterward, so anything
+    that wrote there (e.g. dask's own `ProgressBar`) still ends up visible —
+    just as one lump when the block ends, instead of scrolling live. Needed
+    because GDAL's default error handler writes some driver-level warnings
+    (see `_GDAL_DECODE_FAILURE_MARKERS` above) straight to the OS stderr file
+    descriptor, bypassing Python's `logging` entirely — no `logging.Handler`
+    can see them, regardless of thread or logger name.
     """
 
-    def __init__(self, needles: tuple[str, ...]) -> None:
-        super().__init__(level=logging.WARNING)
-        self.needles = needles
-        self.matches: list[str] = []
-        self._lock = threading.Lock()
+    def __init__(self) -> None:
+        self.text = ""
 
-    def emit(self, record: logging.LogRecord) -> None:
-        message = record.getMessage()
-        if any(needle in message for needle in self.needles):
-            with self._lock:
-                self.matches.append(message)
+    def __enter__(self) -> "_StderrCapture":
+        sys.stderr.flush()
+        self._saved_fd = os.dup(2)
+        self._tmp = tempfile.TemporaryFile(mode="w+b")
+        os.dup2(self._tmp.fileno(), 2)
+        return self
+
+    def __exit__(self, *exc_info: object) -> None:
+        sys.stderr.flush()
+        os.dup2(self._saved_fd, 2)
+        os.close(self._saved_fd)
+        self._tmp.seek(0)
+        captured = self._tmp.read()
+        self._tmp.close()
+        os.write(2, captured)
+        self.text = captured.decode("utf-8", errors="replace")
 
 
 class SearchClient(Protocol):
@@ -423,18 +442,13 @@ def download(tile: GeoTile, *, max_nodata_fraction: float = 0.0) -> GeoTile:
             exceeded max_nodata_fraction — after 3 retries.
     """
     logger.info("Downloading tile")
-    capture = _GdalWarningCapture(_GDAL_DECODE_FAILURE_MARKERS)
-    gdal_log = logging.getLogger("rasterio._err")
-    gdal_log.addHandler(capture)
-    try:
+    stderr_capture = _StderrCapture()
+    with stderr_capture:
         with ProgressBar():
             computed = tile.data.compute()
-    finally:
-        gdal_log.removeHandler(capture)
-    if capture.matches:
-        raise IOError(
-            f"GDAL tile decode failed ({len(capture.matches)} occurrence(s)) — {capture.matches[0]}"
-        )
+    matched = next((m for m in _GDAL_DECODE_FAILURE_MARKERS if m in stderr_capture.text), None)
+    if matched is not None:
+        raise IOError(f"GDAL tile decode failed — stderr matched {matched!r}")
 
     nodata_fraction = computed.isnull().mean().item()
     if nodata_fraction > max_nodata_fraction:
