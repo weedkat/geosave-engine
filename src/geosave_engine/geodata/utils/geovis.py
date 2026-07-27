@@ -47,6 +47,7 @@ panel's raw ``tile.metadata`` there.
 from __future__ import annotations
 
 import dataclasses
+import textwrap
 import warnings
 from dataclasses import dataclass
 from datetime import datetime
@@ -54,8 +55,12 @@ from typing import Callable, Literal, Mapping, Sequence, TypedDict, cast
 
 import matplotlib.pyplot as plt
 import numpy as np
+from matplotlib.axes import Axes
+from matplotlib.legend import Legend
 from matplotlib.backends.backend_agg import FigureCanvasAgg
+from matplotlib.figure import Figure
 from matplotlib.patches import Patch
+from odc.geo.math import apply_affine
 from typing_extensions import Unpack
 
 from geosave_engine.geodata.tile import GeoTile, mosaic
@@ -142,11 +147,17 @@ def _detect_panel(
 def _as_mpl_color(color: tuple[int, int, int] | str) -> tuple[float, float, float] | str:
     if isinstance(color, str):
         return color
-    return tuple(c / 255 for c in color)
+    r, g, b = color
+    return (r / 255, g / 255, b / 255)
 
 
 def _default_palette(classes: list[int]) -> dict[int, tuple[int, int, int]]:
-    return {c: tuple(int(x * 255) for x in plt.cm.tab20(i % 20)[:3]) for i, c in enumerate(classes)}
+    tab20 = plt.get_cmap("tab20")
+    palette: dict[int, tuple[int, int, int]] = {}
+    for i, c in enumerate(classes):
+        r, g, b = tab20(i % 20)[:3]
+        palette[c] = (int(r * 255), int(g * 255), int(b * 255))
+    return palette
 
 
 def _stretch(channel: np.ndarray) -> np.ma.MaskedArray:
@@ -169,15 +180,18 @@ def _time_str(ts: datetime) -> str:
     return ts.strftime("%Y-%m-%d %H:%M:%S")
 
 
+_CAPTION_WRAP_WIDTH = 50
+
+
 def _panel_caption(tile: GeoTile) -> str:
     """Per-panel time + place caption — each panel may genuinely differ on both."""
     time_str = _time_str(tile.start) if tile.start == tile.end else f"{_time_str(tile.start)} → {_time_str(tile.end)}"
     address = tile.location.get("address")
     geo_str = f"{address}  ·  {tile.coordinate_str}" if address else tile.coordinate_str
-    return f"{time_str}\n{geo_str}"
+    return f"{time_str}\n{textwrap.fill(geo_str, width=_CAPTION_WRAP_WIDTH)}"
 
 
-def _draw_polygon(ax: plt.Axes, tile: GeoTile, alpha: float) -> None:
+def _draw_polygon(ax: Axes, tile: GeoTile, alpha: float) -> None:
     """Outline `tile.polygon` (exact AOI footprint) on top of the plotted image, if set.
 
     Converts to pixel space via the tile's own affine transform (inverted),
@@ -191,12 +205,17 @@ def _draw_polygon(ax: plt.Axes, tile: GeoTile, alpha: float) -> None:
     if tile.polygon is None or alpha <= 0:
         return
     poly = tile.polygon.to_crs(tile.crs) if tile.crs else tile.polygon
-    inv = ~tile.affine
-    px, py = zip(*(inv * (x, y) for x, y in poly.exterior.points))
+    xs, ys = zip(*poly.exterior.points)
+    # affine.Affine subclasses namedtuple("Affine", ...) — same name as the outer
+    # class — a known pyright false positive: __invert__'s untyped
+    # tuple.__new__(self.__class__, ...) return doesn't collapse back to the
+    # same Affine identity apply_affine's param expects, though it's the same
+    # runtime class (verified numerically identical to the old per-point loop).
+    px, py = apply_affine(~tile.affine, np.asarray(xs), np.asarray(ys))  # pyright: ignore[reportArgumentType]
     ax.plot(px, py, color="red", linewidth=1.5, alpha=alpha)
 
 
-def _render_rgb(ax: plt.Axes, panel: _Panel) -> list[Patch] | None:
+def _render_rgb(ax: Axes, panel: _Panel) -> list[Patch] | None:
     """Stretch each requested band 2-98 percentile and stack as an RGBA image.
 
     ``to_numpy(bands=...)`` returns exactly one array per name in
@@ -219,7 +238,7 @@ def _render_rgb(ax: plt.Axes, panel: _Panel) -> list[Patch] | None:
     return None
 
 
-def _render_single_band(ax: plt.Axes, panel: _Panel) -> list[Patch] | None:
+def _render_single_band(ax: Axes, panel: _Panel) -> list[Patch] | None:
     """Continuous colormap for one band — also the fallback for an unclassifiable one."""
     arr = np.ma.masked_invalid(panel.tile.to_numpy()[0])
     im = ax.imshow(arr, cmap=panel.cmap)
@@ -227,7 +246,7 @@ def _render_single_band(ax: plt.Axes, panel: _Panel) -> list[Patch] | None:
     return None
 
 
-def _render_categorical(ax: plt.Axes, panel: _Panel) -> list[Patch] | None:
+def _render_categorical(ax: Axes, panel: _Panel) -> list[Patch] | None:
     """Palette-colorized label map. Returns legend handles — plot() draws them
     stacked in one figure-level column instead of per-panel, so a panel's
     own legend doesn't shrink that panel's image."""
@@ -239,7 +258,7 @@ def _render_categorical(ax: plt.Axes, panel: _Panel) -> list[Patch] | None:
     return [Patch(color=_as_mpl_color(palette[c]), label=labels.get(c, str(c))) for c in classes]
 
 
-_PANEL_RENDERERS: dict[PanelKind, Callable[[plt.Axes, _Panel], list[Patch] | None]] = {
+_PANEL_RENDERERS: dict[PanelKind, Callable[[Axes, _Panel], list[Patch] | None]] = {
     "rgb": _render_rgb,
     "continuous": _render_single_band,
     "fallback": _render_single_band,
@@ -257,7 +276,7 @@ def _panel_caption_text(panel: _Panel, show_metadata: bool) -> str:
     return caption
 
 
-def _render(ax: plt.Axes, panel: _Panel, show_metadata: bool) -> list[Patch] | None:
+def _render(ax: Axes, panel: _Panel, show_metadata: bool) -> list[Patch] | None:
     ax.set_facecolor(_NODATA_FACECOLOR)
     handles = _PANEL_RENDERERS[panel.kind](ax, panel)
     # imshow sets a tight view limit; ax.plot() below defaults to a 5% autoscale
@@ -349,7 +368,7 @@ class PlotKwargs(TypedDict, total=False):
 
 def plot(
     tiles: GeoTile | Sequence[GeoTile] | Mapping[str, GeoTile], cols: int | None = None, **kwargs: Unpack[PlotKwargs]
-) -> tuple[plt.Figure, np.ndarray]:
+) -> tuple[Figure, np.ndarray]:
     """Plot one or more GeoTiles, auto-picking a renderer per tile.
 
     Grouping, one tile pair at a time — same rule regardless of how many
@@ -425,27 +444,41 @@ def plot(
     class_map = kwargs.get("class_map")
     color_map = kwargs.get("color_map")
     rgb_bands = kwargs.get("rgb_bands")
-    cols = kwargs.get("cols")
     polygon_alpha = kwargs.get("polygon_alpha", 0.8)
     title = kwargs.get("title", "")
     show_metadata = kwargs.get("show_metadata", False)
 
+    entries: list[tuple[str, GeoTile]] = []
     if isinstance(tiles, GeoTile):
-        named: list[tuple[str, GeoTile]] = [("", tiles)]
+        entries.append(("", tiles))
     elif isinstance(tiles, Mapping):
-        named = list(tiles.items())
+        for name, tile in tiles.items():
+            if not isinstance(name, str) or not isinstance(tile, GeoTile):
+                raise TypeError(
+                    f"plot() Mapping input must be dict[str, GeoTile], got key {name!r} "
+                    f"({type(name).__name__}) -> value {tile!r} ({type(tile).__name__})"
+                )
+            entries.append((name, tile))
     else:
-        named = [("", t) for t in tiles]
-    if not named:
+        for tile in tiles:
+            if not isinstance(tile, GeoTile):
+                raise TypeError(f"plot() sequence input must contain only GeoTile, got {tile!r} ({type(tile).__name__})")
+            entries.append(("", tile))
+    if not entries:
         raise ValueError("plot() needs at least one GeoTile")
 
-    named = [(name, split) for name, tile in named for split in _split_time(tile)]
+    named: list[tuple[str, GeoTile]] = []
+    for name, tile in entries:
+        for split in _split_time(tile):
+            named.append((name, split))
 
     groups: dict[tuple[str, tuple[str, ...], str], list[tuple[str, GeoTile]]] = {}
     for name, t in named:
         groups.setdefault(_group_key(name, t), []).append((name, t))
 
-    components = [component for group in groups.values() for component in _adjacent_components(group)]
+    components: list[list[tuple[str, GeoTile]]] = []
+    for group in groups.values():
+        components.extend(_adjacent_components(group))
 
     panels = [
         _detect_panel(
@@ -482,7 +515,7 @@ def plot(
     # after a draw) — position doesn't matter yet, only the measurement.
     _LEGEND_GAP = 0.02
     legend_x = right + 0.02
-    legends: list[tuple[plt.Legend, float]] = []
+    legends: list[tuple[Legend, float]] = []
     for legend_title, handles in legend_groups:
         leg = fig.legend(
             handles=handles,
@@ -493,7 +526,8 @@ def plot(
             title_fontsize=9,
         )
         fig.canvas.draw()
-        bbox_fig = leg.get_window_extent(fig.canvas.get_renderer()).transformed(fig.transFigure.inverted())
+        renderer = cast(FigureCanvasAgg, fig.canvas).get_renderer()
+        bbox_fig = leg.get_window_extent(renderer).transformed(fig.transFigure.inverted())
         legends.append((leg, bbox_fig.height))
 
     # Pass 2: reposition as one block, vertically centered in the column —
@@ -510,7 +544,7 @@ def plot(
     return fig, axes
 
 
-def fig_to_array(fig: plt.Figure) -> np.ndarray:
+def fig_to_array(fig: Figure) -> np.ndarray:
     """Render a matplotlib figure to an ``(H, W, 3)`` uint8 RGB array.
 
     For handing a rendered figure to something that wants a plain array —

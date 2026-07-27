@@ -15,8 +15,6 @@ class ImageProcessor(nn.Module):
     Normalization source priority: explicit ``mean_norm``/``std_norm`` > ``model.img_mean``/``img_std`` > skip.
 
     Args:
-        in_channels: Expected input channel count (from ``band_map``). Used to
-            validate ``mean_norm``/``std_norm`` line up with the configured bands.
         model: Optional nn.Module. If it implements ``Normalization`` and no explicit
             mean/std are given, normalization stats are pulled from it.
         mean_norm: Per-channel mean override. Takes precedence over ``model``.
@@ -24,15 +22,16 @@ class ImageProcessor(nn.Module):
         size: Output spatial size ``(H, W)`` or single int.
 
     Raises:
-        ValueError: If resolved ``mean_norm``/``std_norm`` length doesn't match
-            ``in_channels`` — a hardcoded model default (e.g. 3-channel ImageNet
-            stats) silently mismatched against a multispectral ``band_map`` would
-            otherwise fail deep inside kornia with a confusing broadcast error.
+        ValueError: If resolved ``mean_norm``/``std_norm`` have mismatched lengths
+            (init), or a `forward()` input's channel count doesn't match resolved
+            ``mean_norm``/``std_norm`` (a hardcoded model default, e.g. 3-channel
+            ImageNet stats, silently mismatched against a multispectral
+            ``band_map`` would otherwise fail deep inside kornia with a confusing
+            broadcast error).
     """
 
     def __init__(
         self,
-        in_channels: int,
         model: nn.Module | None = None,
         mean_norm: list[float] | None = None,
         std_norm: list[float] | None = None,
@@ -50,24 +49,29 @@ class ImageProcessor(nn.Module):
                     UserWarning,
                     stacklevel=2,
                 )
-        if mean_norm is not None and std_norm is not None:
-            if len(mean_norm) != in_channels or len(std_norm) != in_channels:
-                raise ValueError(
-                    f"mean_norm (len {len(mean_norm)}) / std_norm (len {len(std_norm)}) "
-                    f"do not match in_channels ({in_channels}) from band_map. "
-                    "Set model.init_args.mean_norm and model.init_args.std_norm to "
-                    f"lists of length {in_channels}, one value per band in band_map."
-                )
+        if mean_norm is not None and std_norm is not None and len(mean_norm) != len(std_norm):
+            raise ValueError(f"mean_norm (len {len(mean_norm)}) and std_norm (len {len(std_norm)}) must match.")
         self.resize = K.Resize(size) if size is not None else nn.Identity()
         self.normalize: K.Normalize | None = (
             K.Normalize(mean=torch.tensor(mean_norm), std=torch.tensor(std_norm))
             if mean_norm is not None and std_norm is not None
             else None
         )
+        self._expected_channels = len(mean_norm) if mean_norm is not None else None
 
     def forward(self, img: torch.Tensor) -> torch.Tensor:
-        """resize → normalize (if configured). Input ``[B, C, H, W]``."""
+        """resize → normalize (if configured). Input ``[B, C, H, W]``.
+
+        Casts to float first — kornia's resize/normalize both require
+        float16/32/64, regardless of the input's real (e.g. int) dtype.
+        """
+        img = img.float()
         img = self.resize(img)
         if self.normalize is not None:
+            if img.shape[1] != self._expected_channels:
+                raise ValueError(
+                    f"input has {img.shape[1]} channel(s), but configured mean_norm/std_norm "
+                    f"expect {self._expected_channels} — check band_map against model/mean_norm/std_norm."
+                )
             img = self.normalize(img)
         return img

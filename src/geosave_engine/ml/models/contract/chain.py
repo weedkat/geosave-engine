@@ -184,8 +184,10 @@ class ContextChain(nn.Module):
     (``ctx = {**ctx, **result}``) before the next module runs — prior keys are
     preserved without mutation, so branching and intermediate inspection are safe.
 
-    A terminal module (typically a head) may return a ``torch.Tensor`` directly
-    to end the chain early.
+    A terminal module (typically a head) returns a ``torch.Tensor`` directly
+    instead of a dict — its result isn't merged into ctx. More than one
+    terminal module is fine (e.g. two task heads sharing one encoder); see
+    ``forward`` for the return shape in that case.
 
     Args:
         *args: Positional modules, auto-named ``stage_0``, ``stage_1``, ...
@@ -206,7 +208,8 @@ class ContextChain(nn.Module):
     Examples:
         >>> chain = ContextChain(encoder=enc, decoder=dec, head=hd)
         >>> chain.required_keys  # {'image': torch.Tensor} -- what forward() needs
-        >>> logits = chain({'image': x})  # enc → dec → hd; head returns Tensor
+        >>> logits = chain(x)          # positional, in required_keys order, or...
+        >>> logits = chain(image=x)    # ...keyword -- enc → dec → hd; head returns Tensor
     """
 
     def __init__(self, *args: nn.Module, **modules: nn.Module) -> None:
@@ -225,22 +228,31 @@ class ContextChain(nn.Module):
 
         graph = _build_graph(list(named.values()))
         self._dag = _solve_dag(graph)
-        self._chain = _graph_to_chain(self._dag)
+
+        # Precomputed once here, not re-derived per forward() call (forward() runs every
+        # step, every batch): stage_name (for naming a head's slot in a multi-head result)
+        # and is_head (empty `provides` — see _build_graph's docstring on terminal methods)
+        # both come straight off the resolved graph, so forward() never has to inspect a
+        # step's actual returned value's type to know whether it just ran a head.
+        module_to_name = {module: name for name, module in named.items()}
+        self._chain: list[tuple[nn.Module, str, str, bool]] = [
+            (module, method_name, module_to_name[module], not self._dag.nodes[(module, method_name)]['provides'])
+            for module, method_name in _graph_to_chain(self._dag)
+        ]
 
     def __repr__(self) -> str:
+        """Required keys + resolved data flow, combined with nn.Module's own child-module tree."""
         def sig(types: dict[str, type]) -> str:
             return ", ".join(f"{key}: {getattr(t, '__name__', t)}" for key, t in types.items())
 
-        name_by_module = {module: name for name, module in self.named_children()}
-        lines = [f"{type(self).__name__}("]
-        for module, method_name in self._chain:
+        lines = [f"required_keys: {sig(self.required_keys)}", "", "data flow:"]
+        for module, method_name, stage_name, is_head in self._chain:
             method = getattr(module, method_name)
             requires = sig(getattr(method, '_requires', {}))
-            provides = getattr(method, '_provides', {})
-            out = f"{{{sig(provides)}}}" if provides else "Tensor"
-            lines.append(f"  {name_by_module[module]}: {type(module).__name__}.{method_name}({requires}) -> {out}")
-        lines.append(")")
-        return "\n".join(lines)
+            out = "Tensor" if is_head else f"{{{sig(getattr(method, '_provides', {}))}}}"
+            lines.append(f"  {stage_name}: {type(module).__name__}.{method_name}({requires}) -> {out}")
+        flow = "\n".join(lines)
+        return f"{flow}\n\n{super().__repr__()}"
 
     @property
     def required_keys(self) -> dict[str, type]:
@@ -262,10 +274,73 @@ class ContextChain(nn.Module):
             if self._dag.nodes[node]['kind'] == 'key'
         }
 
-    def forward(self, ctx: dict[str, Any]) -> dict[str, Any] | torch.Tensor:
-        for module, method_name in self._chain:
+    def _resolve_ctx(self, args: tuple[Any, ...], kwargs: dict[str, Any]) -> dict[str, Any]:
+        """Turn forward()/summary()'s positional+keyword args into one ctx dict.
+
+        Args:
+            args: Required context values, in `required_keys` order.
+            kwargs: Required context values by name.
+
+        Returns:
+            Merged ctx dict.
+
+        Raises:
+            TypeError: More positional args than `required_keys` has entries,
+                or a key given both positionally and by keyword.
+        """
+        required = list(self.required_keys)
+        if len(args) > len(required):
+            raise TypeError(
+                f"{type(self).__name__} takes at most {len(required)} positional "
+                f"argument(s) ({', '.join(required)}), got {len(args)}"
+            )
+        positional = dict(zip(required, args))
+        collision = set(positional) & set(kwargs)
+        if collision:
+            raise TypeError(
+                f"{type(self).__name__}: got both a positional and keyword value for {sorted(collision)}"
+            )
+        return {**positional, **kwargs}
+
+    def forward(self, *args: Any, **kwargs: Any) -> dict[str, Any] | dict[str, torch.Tensor] | torch.Tensor:
+        """Run the resolved chain. Required keys can be positional, keyword, or both.
+
+        Positional args map onto `required_keys` in that fixed order (the
+        same order `required_keys` itself reports — see there) — real named
+        parameters by position, not an opaque blob, so `chain(image)` works
+        as well as `chain(image=image)`.
+
+        Runs every step, including every head — a chain can have more than
+        one independent terminal module (e.g. two task heads off a shared
+        encoder), and each one's own result is collected, not just the first.
+
+        Args:
+            *args: Required context values, in `required_keys` order.
+            **kwargs: Required context values by name — a key given both
+                positionally and by keyword raises, rather than picking one
+                silently.
+
+        Returns:
+            One head ran: that head's bare ``torch.Tensor``. More than one
+            head ran: ``{stage_name: Tensor}`` for each. No head at all:
+            the merged context dict.
+
+        Raises:
+            TypeError: More positional args than `required_keys` has
+                entries, or a key given both positionally and by keyword.
+        """
+        ctx = self._resolve_ctx(args, kwargs)
+
+        head_results: dict[str, torch.Tensor] = {}
+        for module, method_name, stage_name, is_head in self._chain:
             result = getattr(module, method_name)(ctx)
-            if isinstance(result, torch.Tensor):
-                return result
-            ctx = {**ctx, **result}
+            if is_head:
+                head_results[stage_name] = result
+            else:
+                ctx = {**ctx, **result}
+
+        if len(head_results) == 1:
+            return next(iter(head_results.values()))
+        if head_results:
+            return head_results
         return ctx

@@ -7,6 +7,7 @@ from terratorch.datasets.utils import HLSBands
 from terratorch.tasks import PixelwiseRegressionTask
 
 from geosave_engine.ml.models.contract import model_context
+from geosave_engine.ml.registry import register_model
 
 _REPO_ID = "ibm-granite/granite-geospatial-biomass"
 _CKPT_FILENAME = "biomass_model.ckpt"
@@ -25,7 +26,7 @@ _BANDS = [
 _MEANS = [547.36707, 898.5121, 1020.9082, 2665.5352, 2340.584, 1610.1407]
 _STDS = [411.4701, 558.54065, 815.94025, 812.4403, 1113.7145, 1067.641]
 
-
+@register_model('model', 'ibm_granite_biomass')
 class GraniteGeospatialBiomass(nn.Module):
     """IBM Granite Geospatial Biomass monolith: Prithvi Swin-B + UperNet + regression head.
 
@@ -67,14 +68,14 @@ class GraniteGeospatialBiomass(nn.Module):
                 'bands': _BANDS,
                 'num_frames': 1,
                 'head_dropout': 0.16194593880230534,
-                'head_final_act': torch.nn.ReLU,
+                'head_final_act': "torch.nn.ReLU",
                 'head_learned_upscale_layers': 2,
             },
             model_factory='PrithviModelFactory',
             loss='mse',
             ignore_index=-1,
         )
-        self._model = task.model
+        self.model = task.model
 
         if pretrained:
             ckpt_path = hf_hub_download(repo_id=_REPO_ID, filename=_CKPT_FILENAME)
@@ -85,10 +86,9 @@ class GraniteGeospatialBiomass(nn.Module):
                 for k, v in ckpt['state_dict'].items()
                 if k.startswith('model.')
             }
-            self._model.load_state_dict(state)
+            self.model.load_state_dict(state)
 
-    @model_context(head=True)
-    def forward_logits(self, image: torch.Tensor) -> torch.Tensor:
+    def forward(self, image: torch.Tensor) -> torch.Tensor:
         """Run biomass regression on a pre-normalized 6-band HLS S30 image.
 
         Args:
@@ -97,4 +97,8 @@ class GraniteGeospatialBiomass(nn.Module):
         Returns:
             (B, 1, H, W) biomass prediction tensor.
         """
-        return self._model(image).output
+        return self.model(image).output
+
+    @model_context(head=True)
+    def forward_logits(self, image: torch.Tensor) -> torch.Tensor:
+        return self.forward(image)

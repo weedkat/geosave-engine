@@ -21,6 +21,11 @@ A raster can also carry more than one **band** (Sentinel-2 imagery has 13:
 red, green, blue, near-infrared, ...), and more than one **timestamp**, if
 you're tracking the same area across a season.
 
+A raster can consist of many stac items mgrs grid, and sometimes there are
+a portions of the raster that does not have stac items covered, no data.
+
+![Stac Items](../assets/stac_items.png)
+
 ## GeoAnchor — an area and a time, no pixels yet
 
 Before any pixel exists, you need a way to say "I want this area, at this

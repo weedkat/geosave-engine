@@ -162,7 +162,7 @@ class _FusionBlock(nn.Module):
 
 
 @register_model('decoder', 'dpt')
-class DPTDecoder(nn.Module):
+class DPT(nn.Module):
     """
     Dense Prediction Transformer (DPT) Decoder.
     Takes multi-scale features from a Vision Transformer (ViT) and fuses them into a dense spatial representation.

@@ -8,6 +8,7 @@ import torch
 import torch.nn as nn
 from lightning import LightningDataModule, LightningModule
 from lightning.pytorch.callbacks import Callback
+from lightning.pytorch.utilities.types import OptimizerLRScheduler
 from torch.utils.data import DataLoader
 
 from geosave_engine.geodata.datasets import GeoDataset, stack_samples
@@ -241,7 +242,6 @@ class SemanticSegmentationTask(LightningModule):
         norm_source: nn.Module = getattr(self.model, first)
 
         self.preprocessor = ImageProcessor(
-            in_channels=self.in_channels,
             model=norm_source,
             mean_norm=self.mean_norm,
             std_norm=self.std_norm,
@@ -254,10 +254,12 @@ class SemanticSegmentationTask(LightningModule):
         self.register_buffer('class_thresholds', torch.full((self.num_classes,), 0.5))
         self.augmenter = ImageAugmenter(augmentations=self.augmentations, size=self.input_size)
 
-    def configure_optimizers(self):
+    def configure_optimizers(self) -> OptimizerLRScheduler:
         optimizer = build_optimizer(self.optimizer_name, self.model, self.config.get('optimizer') or {})
+
         if self.scheduler_name is None:
             return optimizer
+
         scheduler = build_scheduler(self.scheduler_name, optimizer, self.config.get('scheduler') or {})
         return {'optimizer': optimizer, 'lr_scheduler': scheduler}
 

@@ -56,7 +56,7 @@ from typing_extensions import Unpack
 from geosave_engine.geodata.tile.geotile import GeoTile, align
 
 if TYPE_CHECKING:
-    import matplotlib.pyplot as plt
+    from matplotlib.figure import Figure
     import numpy as np
 
     from geosave_engine.geodata.utils.geovis import PlotKwargs
@@ -139,7 +139,7 @@ class GeoStack:
         """
         return GeoStack(**{**self.tiles, name: tile})
 
-    def plot(self, **kwargs: Unpack[PlotKwargs]) -> tuple[plt.Figure, np.ndarray]:
+    def plot(self, cols: int = 4, **kwargs: Unpack[PlotKwargs]) -> tuple[Figure, np.ndarray]:
         """Plot every layer — thin wrapper, see `geosave_engine.geodata.utils.geovis.plot`.
 
         Passes `self.tiles` through by name (not flattened to a bare list),
@@ -156,7 +156,7 @@ class GeoStack:
         """
         from geosave_engine.geodata.utils.geovis import plot
 
-        return plot(self.tiles, **kwargs)
+        return plot(self.tiles, cols=cols, **kwargs)
 
     def save(self, path: str | Path, save_stac: bool | Sequence[LayerName] = False) -> Path:
         """Write every tile as its own zarr store inside a `.geostack` folder.

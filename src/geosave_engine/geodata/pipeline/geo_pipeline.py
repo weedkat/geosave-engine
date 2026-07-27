@@ -18,28 +18,32 @@ log = logging.getLogger(__name__)
 class GeoPipeline(ABC):
     """Build one or more GeoStacks for one anchor.
 
-    Override `sources` (named `StacSource`s to fetch) and, if needed,
+    Override `sources()` (named `StacSource`s to fetch) and, if needed,
     `preprocess` (derive final layers from the fetched ones). See `fetch`
     for how sources compose into aligned samples.
 
     Examples:
         >>> class ToyPipeline(GeoPipeline):
-        ...     @cached_property
+        ...     def __init__(self) -> None:
+        ...         self.client = my_stac_client
+        ...
         ...     def sources(self) -> dict[str, StacSource]:
-        ...         return {"image": my_stac_client.source("collection-id")}
+        ...         return {"image": self.client.source("collection-id")}
         ...
         >>> pipeline = ToyPipeline()
         >>> for stack in pipeline.ingest(anchor):
         ...     stack.plot()
     """
 
-    @property
     def sources(self) -> dict[str, StacSource]:
         """Named sources `ingest` composes for one anchor.
 
-        Override — use `cached_property` if building a source needs a live
-        client (STAC auth etc), so constructing the pipeline itself never
-        eagerly touches the network.
+        Override — build the STAC client once in `__init__` (e.g.
+        `self.client = StacClient.planetary_computer()`) and store it as an
+        attribute, so this method only ever builds cheap `StacSource`
+        objects from it. `StacClient.collections()` (used by `.source()`'s
+        own collection-existence check) memoizes after its first call, so
+        calling this on every access stays cheap too — no need to cache it.
 
         Default: none.
         """
@@ -111,7 +115,7 @@ class GeoPipeline(ABC):
         Yields:
             Layer name to GeoTile map, one per aligned sample, computed.
         """
-        sources = self.sources
+        sources = self.sources()
         if not sources:
             return
 

@@ -134,7 +134,7 @@ class _UpBlock(nn.Module):
 
 
 @register_model('decoder', 'unet')
-class UnetDecoder(nn.Module):
+class Unet(nn.Module):
     """
     U-Net Decoder with a toggleable `vit_adapter` parameter.
     """

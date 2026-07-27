@@ -33,22 +33,23 @@ def _direct_returns(node: ast.AST) -> list[ast.Return]:
 
 
 def _return_names(fn) -> tuple[str, ...]:
-    """Variable names in `fn`'s own `return name1, name2, ...` statement.
+    """Variable name(s) in `fn`'s own `return name` or `return name1, name2, ...` statement.
 
     Requires exactly one `return` in `fn`'s own body (not a nested closure's),
-    whose value is a tuple of bare local-variable names -- not an arbitrary
-    expression, not a single value, not zero/multiple return points. Any
-    other shape is a decoration-time `TypeError`, not a silently-skipped case.
+    whose value is either a single bare local variable or a tuple of them --
+    not an arbitrary expression, not zero/multiple return points. Any other
+    shape is a decoration-time `TypeError`, not a silently-skipped case.
 
     Args:
         fn: the undecorated method.
 
     Returns:
-        Variable names, in return order, e.g. `('pyramid', 'prefix_tokens')`.
+        Variable name(s), in return order, e.g. `('feature_map',)` for a
+        single return, or `('pyramid', 'prefix_tokens')` for a tuple one.
 
     Raises:
-        TypeError: not exactly one `return`, or its value isn't a tuple of
-            bare names.
+        TypeError: not exactly one `return`, or its value isn't a bare name
+            or tuple of bare names.
     """
     source = textwrap.dedent(inspect.getsource(fn))
     func_def = ast.parse(source).body[0]
@@ -59,24 +60,26 @@ def _return_names(fn) -> tuple[str, ...]:
         )
 
     value = returns[0].value
-    if not isinstance(value, ast.Tuple):
-        raise TypeError(
-            f"{fn.__qualname__}: return statement must be `return name1, name2, ...` "
-            "of bare local variables"
-        )
-    names: list[str] = []
-    for elt in value.elts:
-        if not isinstance(elt, ast.Name):
-            raise TypeError(
-                f"{fn.__qualname__}: return statement must be `return name1, name2, ...` "
-                "of bare local variables"
-            )
-        names.append(elt.id)
-    return tuple(names)
+    if isinstance(value, ast.Name):
+        return (value.id,)
+    if isinstance(value, ast.Tuple):
+        names: list[str] = []
+        for elt in value.elts:
+            if not isinstance(elt, ast.Name):
+                raise TypeError(
+                    f"{fn.__qualname__}: return statement must be `return name` or "
+                    "`return name1, name2, ...` of bare local variables"
+                )
+            names.append(elt.id)
+        return tuple(names)
+    raise TypeError(
+        f"{fn.__qualname__}: return statement must be `return name` or "
+        "`return name1, name2, ...` of bare local variables"
+    )
 
 
-def _provides_from_return_type(fn) -> dict[str, type]:
-    """Derive `provides` from `fn`'s `-> tuple[T1, T2, ...]` annotation + its return statement.
+def _provides_from_return_type(fn) -> tuple[dict[str, type], bool]:
+    """Derive `provides` from `fn`'s `-> T` or `-> tuple[T1, T2, ...]` annotation + its return statement.
 
     Strict on purpose, one code path for every rejection -- no fallback for a
     bare unparametrized `tuple`, no variadic `tuple[T, ...]`, no arity
@@ -85,26 +88,37 @@ def _provides_from_return_type(fn) -> dict[str, type]:
     returned value) and raise the same way.
 
     Args:
-        fn: the undecorated method; must have a `-> tuple[T1, T2, ...]` hint.
+        fn: the undecorated method; must have a `-> T` or `-> tuple[T1, T2, ...]` hint.
 
     Returns:
-        `{name: type}`, insertion-ordered to match the return statement's own
-        value order -- the wrapper zips a real call's returned tuple against
-        this dict's keys, no separate ordered-names value needed.
+        (`{name: type}`, is_single) -- the dict is insertion-ordered to match
+        the return statement's own value order (the wrapper zips a real
+        call's returned tuple against its keys, no separate ordered-names
+        value needed); `is_single` tells the wrapper whether to expect a bare
+        value at call time instead of a tuple.
 
     Raises:
-        TypeError: return annotation isn't a fixed-arity `tuple[T1, T2, ...]`
-            of concrete types, or its arity doesn't match the return
-            statement's own value count.
+        TypeError: return annotation isn't a concrete type or a fixed-arity
+            `tuple[T1, T2, ...]` of concrete types, or its arity doesn't
+            match the return statement's own value count.
     """
     hints = typing.get_type_hints(fn)
     return_hint = hints.get('return')
-    arg_types = typing.get_args(return_hint) if typing.get_origin(return_hint) is tuple else ()
-    if not arg_types or Ellipsis in arg_types:
-        raise TypeError(
-            f"{fn.__qualname__}: must return `-> tuple[T1, T2, ...]` of concrete, "
-            f"fixed-arity types, got {return_hint!r}"
-        )
+    is_single = typing.get_origin(return_hint) is not tuple
+    if is_single:
+        if return_hint is None or return_hint is type(None):
+            raise TypeError(
+                f"{fn.__qualname__}: must return `-> T` or `-> tuple[T1, T2, ...]` of "
+                f"concrete, fixed-arity types, got {return_hint!r}"
+            )
+        arg_types: tuple[type, ...] = (return_hint,)
+    else:
+        arg_types = typing.get_args(return_hint)
+        if not arg_types or Ellipsis in arg_types:
+            raise TypeError(
+                f"{fn.__qualname__}: must return `-> T` or `-> tuple[T1, T2, ...]` of "
+                f"concrete, fixed-arity types, got {return_hint!r}"
+            )
 
     names = _return_names(fn)
     if len(names) != len(arg_types):
@@ -112,7 +126,7 @@ def _provides_from_return_type(fn) -> dict[str, type]:
             f"{fn.__qualname__}: return statement has {len(names)} value(s) but "
             f"return type {return_hint!r} has {len(arg_types)} -- must match"
         )
-    return dict(zip(names, arg_types))
+    return dict(zip(names, arg_types)), is_single
 
 
 def model_context(head: bool = False):
@@ -123,13 +137,14 @@ def model_context(head: bool = False):
     signature (param name -> resolved type hint), so there's one source of
     truth for what a step needs instead of a hand-typed dict that can drift
     from the body. ``provides`` is derived the same way, from the *output*
-    side: the method's own ``-> tuple[T1, T2, ...]`` return annotation gives
-    the types, its own ``return name1, name2, ...`` statement gives the
-    names — one source of truth there too, no separately hand-typed dict to
-    drift from either the signature or the body. ``ContextChain`` still
-    passes a shared ``dict[str, Any]`` between steps; the wrapper this
-    decorator builds unpacks it into the typed call, re-packs the method's
-    plain tuple return into that dict for ``ContextChain`` to merge in.
+    side: the method's own ``-> T`` or ``-> tuple[T1, T2, ...]`` return
+    annotation gives the type(s), its own ``return name`` or
+    ``return name1, name2, ...`` statement gives the name(s) — one source of
+    truth there too, no separately hand-typed dict to drift from either the
+    signature or the body. ``ContextChain`` still passes a shared
+    ``dict[str, Any]`` between steps; the wrapper this decorator builds
+    unpacks it into the typed call, re-packs the method's plain (or
+    single-value) return into that dict for ``ContextChain`` to merge in.
 
     ``head=True`` methods are terminal — the chain stops and returns the
     value directly instead of merging it into ctx. Must return
@@ -147,15 +162,24 @@ def model_context(head: bool = False):
 
     Raises:
         TypeError: A required param has no type hint; ``head=False`` and the
-            return annotation isn't a fixed-arity ``tuple[T1, T2, ...]`` of
-            concrete types, or its arity doesn't match the return statement's
-            own value count, or the return statement isn't exactly one
-            ``return name1, name2, ...`` of bare local variables; ``head=True``
-            and the return annotation isn't ``torch.Tensor``; (at call time)
-            a declared key is missing/mismatched in ctx, or the actual
+            return annotation isn't a concrete type or a fixed-arity
+            ``tuple[T1, T2, ...]`` of concrete types, or its arity doesn't
+            match the return statement's own value count, or the return
+            statement isn't exactly one ``return name`` or
+            ``return name1, name2, ...`` of bare local variables, or a
+            ``requires``/``provides`` pair shares the same ``(name, type)``
+            key (reads as a self-cycle in ``ContextChain``'s key graph —
+            return a differently-named local instead); ``head=True`` and the
+            return annotation isn't ``torch.Tensor``; (at call time) a
+            declared key is missing/mismatched in ctx, or the actual
             returned value doesn't match what was declared.
 
     Examples:
+        >>> @model_context()
+        ... def encode(self, image: torch.Tensor) -> torch.Tensor:
+        ...     feature_map = self.encoder(image)
+        ...     return feature_map
+
         >>> @model_context()
         ... def forward_pyramid(self, image: torch.Tensor) -> tuple[list, list]:
         ...     features, prefix_tokens = self.backbone(image)
@@ -181,8 +205,22 @@ def model_context(head: bool = False):
                     f"got {hints.get('return')!r}"
                 )
             _provides: dict[str, type] = {}
+            _is_single = False
         else:
-            _provides = _provides_from_return_type(fn)
+            _provides, _is_single = _provides_from_return_type(fn)
+            self_referencing = {
+                name for name, expected in _requires.items() if _provides.get(name) is expected
+            }
+            if self_referencing:
+                raise TypeError(
+                    f"{fn.__qualname__}: param(s) {sorted(self_referencing)} are both required "
+                    "and provided under the same name and type — ContextChain's key graph "
+                    "can't tell 'value in' from 'value out' for the same key, so this reads as "
+                    "a self-cycle, not a real transform step. Return a differently-named local "
+                    "instead, e.g. `decoded = self.decoder(feature_map); return decoded` — the "
+                    "parameter can keep its name, only the return statement's variable needs "
+                    "to differ."
+                )
 
         @wraps(fn)
         def wrapper(self, ctx: dict[str, Any]) -> dict[str, Any] | torch.Tensor:
@@ -207,7 +245,9 @@ def model_context(head: bool = False):
                     )
                 return result
 
-            if not isinstance(result, tuple) or len(result) != len(_provides):
+            if _is_single:
+                result = (result,)
+            elif not isinstance(result, tuple) or len(result) != len(_provides):
                 raise TypeError(
                     f"{type(self).__name__}.{fn.__name__}: expected a {len(_provides)}"
                     f"-tuple ({', '.join(_provides)}), got {result!r}"

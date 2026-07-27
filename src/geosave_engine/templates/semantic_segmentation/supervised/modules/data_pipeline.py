@@ -1,7 +1,5 @@
 from __future__ import annotations
 
-from functools import cached_property
-
 from geosave_engine.geodata.tile import GeoTile
 from geosave_engine.geodata.pipeline import GeoPipeline
 from geosave_engine.geodata.stac import StacClient
@@ -23,15 +21,15 @@ class Pipeline(GeoPipeline):
     this class's concern: label remapping doesn't generalize across
     projects the way STAC-driven imagery ingest does.
     """
-    @cached_property
+
+    def __init__(self) -> None:
+        self.client = StacClient.cdse()
+
     def sources(self) -> dict[str, StacSource]:
-        """Built lazily on first real fetch — importing/instantiating Pipeline
-        alone must not cost a live STAC network call."""
-        stac_client = StacClient.cdse()
         # temporal_slots=1 (scene granularity, StacSource default) — preprocess()
         # below assumes exactly one time step per raw sample, no loop.
         return {
-            "sentinel_2_l1c": stac_client.source(
+            "sentinel_2_l1c": self.client.source(
                 "sentinel-2-l1c", bands=L1C_BANDS, max_nodata_fraction=0.1, temporal_slots=1
             )
         }

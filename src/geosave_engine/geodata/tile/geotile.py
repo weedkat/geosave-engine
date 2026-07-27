@@ -2,6 +2,8 @@ from __future__ import annotations
 
 import dataclasses
 import json
+import warnings
+import zarr.errors
 import rioxarray  # noqa: F401 — registers .rio accessor on xr.DataArray/Dataset
 import odc.geo.xr  # noqa: F401 — registers .odc accessor on xr.DataArray/Dataset
 import numpy as np
@@ -24,8 +26,17 @@ from geosave_engine.utils.colorize import Palette
 
 from .geoanchor import AnchorDatetime, GeoAnchor
 
+# consolidated=True on to_zarr is load-bearing (see to_zarr below), not a guess xarray
+# made — zarr itself warns on every consolidated write/read under the v3 format
+# regardless, since the format spec doesn't officially cover it yet. Informational,
+# not actionable: nothing here reads/writes through a different, spec-strict
+# implementation that this would actually bite.
+warnings.filterwarnings(
+    "ignore", message=r"Consolidated metadata is currently not part .* Zarr format 3", category=zarr.errors.ZarrUserWarning
+)
+
 if TYPE_CHECKING:
-    import matplotlib.pyplot as plt
+    from matplotlib.figure import Figure
     from geosave_engine.geodata.utils.geovis import PlotKwargs
 
 
@@ -194,7 +205,7 @@ class GeoTile(GeoAnchor):
         """
         return GeoAnchor(geobox=self.geobox, datetime=self.datetime, metadata=self.metadata, polygon=self.polygon)
 
-    def plot(self, **kwargs: Unpack[PlotKwargs]) -> tuple[plt.Figure, np.ndarray]:
+    def plot(self, **kwargs: Unpack[PlotKwargs]) -> tuple[Figure, np.ndarray]:
         """Plot this tile — thin wrapper, see `geosave_engine.geodata.utils.geovis.plot`.
 
         Matplotlib is imported lazily here, not at module load, so GeoTile
@@ -465,7 +476,11 @@ class GeoTile(GeoAnchor):
         if self.plot_meta != PlotMeta():
             attrs["plot_meta"] = json.dumps(_plot_meta_to_dict(self.plot_meta))
         ds = self.data.to_dataset(dim="band").assign_attrs(**attrs)
-        ds.to_zarr(path, mode="w")
+        # consolidated=True (was implicit): band/variable order through the round-trip
+        # (from_zarr's to_array(dim="band")) depends on consolidated metadata preserving
+        # insertion order — without it, zarr falls back to a listing that doesn't
+        # guarantee order at all. Explicit since this is load-bearing, not a convenience.
+        ds.to_zarr(path, mode="w", consolidated=True)
         if save_stac:
             _write_stac(self.stac, path)
         return path

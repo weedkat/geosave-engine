@@ -7,6 +7,7 @@ import torch.nn as nn
 
 from geosave_engine.utils import filter_kwargs
 
+
 if TYPE_CHECKING:
     from geosave_engine.ml.models.contract import ContextChain
 
@@ -72,6 +73,29 @@ def _resolve_stage_cls(stage: str, spec: str | type[nn.Module]) -> type[nn.Modul
     return available[key]
 
 
+def list_models(stage: str | None = None) -> dict[str, list[str]]:
+    """List every registered model name, by stage — for discovery before calling build_model.
+
+    Args:
+        stage: Only list this stage's names. None lists every stage.
+
+    Returns:
+        {stage: [name, ...]}, e.g.:
+        {
+            "encoder": ["CLAY", "DINOV3", "PRITHVI", "PRITHVI_TL"],
+            "decoder": ["DPT", "UNET"],
+            "head": ["DENSE"],
+        }
+        A stage with no registered models (or an unknown stage name, when
+        `stage` is given) comes back as an empty list, not a missing key.
+    """
+    import geosave_engine.ml.models  # noqa: F401 -- populates MODEL_REGISTRY via @register_model side effects
+
+    if stage is not None:
+        return {stage: list(MODEL_REGISTRY.get(stage, {}))}
+    return {s: list(names) for s, names in MODEL_REGISTRY.items()}
+
+
 def _stage_kwargs(cls: type[nn.Module], built: dict[str, nn.Module]) -> dict[str, Any]:
     """Look for ``'{stage}_{attr}'`` pattern on cls.__init__ parameters, 
         and if ``built[stage]`` exists, pull that attribute's value.
@@ -102,7 +126,7 @@ def _stage_kwargs(cls: type[nn.Module], built: dict[str, nn.Module]) -> dict[str
 
 
 def build_model(
-    stages: dict[str, str | type[nn.Module]],
+    stages: dict[str, str] | dict[str, type[nn.Module]],
     config: dict[str, dict[str, Any]] | None = None,
 ) -> ContextChain:
     """Build a ContextChain by resolving, wiring, and constructing each stage in order.

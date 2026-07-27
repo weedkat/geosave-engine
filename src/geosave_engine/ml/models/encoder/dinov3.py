@@ -3,7 +3,7 @@ import timm
 import torch
 import torch.nn as nn
 
-from typing import cast
+from typing import cast, Literal
 from timm.models.eva import Eva
 
 from geosave_engine.ml.registry import register_model
@@ -31,6 +31,23 @@ TIMM_MODELS: dict[str, dict] = {
     'vit_7b_patch16_dinov3.sat493m':                {'out_indices': (9, 19, 29, 39)},
 }
 
+TimmModelName = Literal[
+    'vit_small_patch16_dinov3.lvd1689m',
+    'vit_small_patch16_dinov3_qkvb.lvd1689m',
+    'vit_small_plus_patch16_dinov3.lvd1689m',
+    'vit_small_plus_patch16_dinov3_qkvb.lvd1689m',
+    'vit_base_patch16_dinov3.lvd1689m',
+    'vit_base_patch16_dinov3_qkvb.lvd1689m',
+    'vit_large_patch16_dinov3.lvd1689m',
+    'vit_large_patch16_dinov3_qkvb.lvd1689m',
+    'vit_large_patch16_dinov3.sat493m',
+    'vit_large_patch16_dinov3_qkvb.sat493m',
+    'vit_huge_plus_patch16_dinov3.lvd1689m',
+    'vit_huge_plus_patch16_dinov3_qkvb.lvd1689m',
+    'vit_7b_patch16_dinov3.lvd1689m',
+    'vit_7b_patch16_dinov3.sat493m',
+]
+
 
 @register_model('encoder', 'dinov3')
 class DINOv3(nn.Module):
@@ -39,7 +56,7 @@ class DINOv3(nn.Module):
 
     def __init__(
         self,
-        model_name: str = 'vit_base_patch16_dinov3.lvd1689m',
+        model_name: TimmModelName = 'vit_base_patch16_dinov3.lvd1689m',
         pretrained: bool = True,
         in_channels: int = 3,
         input_size: int | tuple[int, int] = 224,
