@@ -73,6 +73,14 @@ Write in simple caveman language using google style docstrings:
 - `Raises`: expected errors.
 - `Examples`: only for public class or not obvious usage.
 
+**No essays.** A docstring says what the thing does and its input/output —
+not why it was designed that way, what alternative was rejected, or how a
+past discussion converged on it. That reasoning belongs in the PR
+description or commit message, not the code — it rots the moment the
+design changes again, and nobody reads a paragraph to find the one line
+that mattered. If the body runs past 2-3 lines, cut it down. Design
+tradeoffs get flagged in chat/PR, not embedded in a class docstring.
+
 Example:
 
 ```python
