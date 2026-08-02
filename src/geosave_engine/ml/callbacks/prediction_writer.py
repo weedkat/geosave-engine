@@ -82,7 +82,7 @@ class PredictionWriter(BasePredictionWriter):
         input_keys: Batch layer names to also persist alongside the
             predictions (e.g. the source imagery, for QA/traceability).
             Off by default — imagery is usually the bulk of the bytes, and
-            it already exists wherever the predict-root `GeoDataset` reads
+            it already exists wherever the predict-root `GeoStackDataset` reads
             it from, so duplicating it is opt-in, not automatic.
         predict_id: Override — identifies this predict invocation, distinct
             from `model_name` itself (this is one *inference run* against
@@ -127,13 +127,13 @@ class PredictionWriter(BasePredictionWriter):
         """Build one GeoTile from one sample's `[H, W]` or `[C, H, W]` tensor.
 
         Band names aren't knowable here (`PredictionWriter` doesn't have
-        task-level band semantics) — `band_{i}` for a multi-band array,
-        `with_np`'s own single-band default otherwise.
+        task-level band semantics) — `band_{i}` for a multi-band array;
+        a `[H, W]` array needs no band name at all (no 'band' dim).
         """
         np_array = array.detach().cpu().numpy()
         if np_array.ndim == 2:
-            return anchor.with_np(np_array)
-        return anchor.with_np(np_array, [f"band_{i}" for i in range(np_array.shape[0])])
+            return anchor.to_geotile(np_array)
+        return anchor.to_geotile(np_array, [f"band_{i}" for i in range(np_array.shape[0])])
 
     def write_on_batch_end(
         self,

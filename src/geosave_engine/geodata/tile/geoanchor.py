@@ -12,17 +12,78 @@ import xarray as xr
 from affine import Affine
 from odc.geo.geobox import GeoBox
 from odc.geo.geom import Geometry
-from odc.geo.xr import xr_coords
+from pydantic import BaseModel, ConfigDict, Field, field_serializer, field_validator
 from pyproj import CRS, Transformer
 
 from geosave_engine.geodata.utils.crs import calculate_crs, validate_coordinate
-from geosave_engine.geodata.utils.datetime import DateRange, parse_datetime_range
+from geosave_engine.geodata.utils.datetime import AnchorDatetime, DateRange, format_stem_dates, parse_daterange
+from geosave_engine.geodata.utils.geodata import np_to_da, validate_da
 from geosave_engine.geodata.utils.geolocator import Place
+from geosave_engine.utils.colorize import Palette
 
 if TYPE_CHECKING:
     from .geotile import GeoTile
 
-AnchorDatetime = dt | str | tuple[str, str] | DateRange
+
+class PlotMeta(BaseModel):
+    """Rendering hints a tile/anchor carries about itself.
+
+    Otherwise ambiguous from the tile's shape/dtype alone (e.g. which 3 of
+    more than 3 bands count as RGB), or would have to be repeated at every
+    `plot()` call site. A None field means "not set" — `plot()` falls back
+    to auto-detection or its own call-level kwarg.
+
+    Args:
+        rgb_bands: Which 3 band names count as R/G/B.
+        class_map: `{pixel value: class name}` for a categorical tile.
+        color_map: `{pixel value: hex or RGB}` for a categorical tile.
+    """
+
+    rgb_bands: tuple[str, str, str] | None = None
+    class_map: dict[int, str] | None = None
+    color_map: Palette | None = None
+
+
+class GeoTag(BaseModel):
+    """Everything a GeoAnchor/GeoTile carries besides geobox/pixels.
+
+    One validated unit instead of separate `datetime`/`metadata`/`polygon`/
+    `plot_meta` fields — round-trips through GeoTIFF tags/Zarr attrs as one
+    JSON blob.
+
+    Args:
+        datetime: Anchor datetime, normalized to an inclusive (start, end)
+            range same as `parse_daterange`.
+        metadata: User metadata, arbitrary keys.
+        polygon: Exact AOI footprint, if narrower than the geobox's bbox.
+        plot_meta: Rendering hints.
+    """
+
+    model_config = ConfigDict(arbitrary_types_allowed=True)
+
+    datetime: AnchorDatetime
+    metadata: dict[str, Any] = Field(default_factory=dict)
+    polygon: Geometry | None = None
+    plot_meta: PlotMeta = Field(default_factory=PlotMeta)
+
+    @field_validator("datetime", mode="before")
+    @classmethod
+    def _parse_datetime(cls, v: Any) -> Any:
+        return parse_daterange(v)
+
+    @field_serializer("datetime")
+    def _dump_datetime(self, v: DateRange) -> tuple[str, str]:
+        start, end = v
+        return start.isoformat(timespec="microseconds"), end.isoformat(timespec="microseconds")
+
+    @field_serializer("polygon")
+    def _dump_polygon(self, v: Geometry | None) -> dict[str, Any] | None:
+        return {"geojson": dict(v.__geo_interface__), "polygon_crs": str(v.crs)} if v is not None else None
+
+    @field_validator("polygon", mode="before")
+    @classmethod
+    def _load_polygon(cls, v: Any) -> Any:
+        return Geometry(v["geojson"], crs=v["polygon_crs"]) if isinstance(v, dict) else v
 
 
 @dataclass(frozen=True, kw_only=True)
@@ -30,31 +91,45 @@ class GeoAnchor:
     """Where + when, no pixel data. A `GeoTile` always has data — a
     data-less reference is a `GeoAnchor`, never a `GeoTile` with `data=None`.
 
-    Datetime always normalizes to an inclusive (start, end) range.
-    Reduced-precision strings cover their whole stated period; datetime
-    objects are exact instants.
+    Datetime always normalizes to an inclusive (start, end) range via
+    `parse_daterange` — a reduced-precision string covers its whole stated
+    period; an exact instant is a (dt, dt) pair of the same value.
 
     Examples:
-        >>> anchor = GeoAnchor.from_coordinate(52.0, 13.0, datetime="2024-01-01", size_m=5000)
+        >>> anchor = GeoAnchor.from_coordinate(52.0, 13.0, datetime="2024-01-15", size_m=5000)
         >>> anchor.stem
-        '13.000000_52.000000_20240101T000000_20240101T235959.999999_10m'
+        '13.000000_52.000000_20240115_10m'
     """
 
     geobox: GeoBox
-    datetime: AnchorDatetime
-    metadata: dict[str, Any] = field(default_factory=dict, compare=False)
-    polygon: Geometry | None = field(default=None, compare=False)
-
-    def __post_init__(self) -> None:
-        object.__setattr__(self, "datetime", parse_datetime_range(self.datetime))
-
-    def _repr_fields(self) -> str:
-        """Shared field list for `__repr__` — subclasses append their own (e.g. bands, shape)."""
-        when = str(self.start) if self.start == self.end else f"{self.start}–{self.end}"
-        return f"bbox={self.bbox}, crs={self.crs!r}, datetime={when}, metadata={self.metadata}"
+    geotag: GeoTag = field(compare=False)
 
     def __repr__(self) -> str:
-        return f"{type(self).__name__}({self._repr_fields()})"
+        when = str(self.start) if self.start == self.end else f"{self.start}–{self.end}"
+        return f"{type(self).__name__}(bbox={self.bbox}, crs={self.crs!r}, datetime={when}, metadata={self.metadata})"
+
+    # ------------------------------------------------------------------
+    # Tag passthroughs
+    # ------------------------------------------------------------------
+
+    @property
+    def datetime(self) -> DateRange:
+        # GeoTag.datetime is typed AnchorDatetime (constructor accepts a raw
+        # string too) but its own validator always resolves it to a (dt, dt)
+        # pair before storage — this cast asserts that once, here.
+        return cast(DateRange, self.geotag.datetime)
+
+    @property
+    def metadata(self) -> dict[str, Any]:
+        return self.geotag.metadata
+
+    @property
+    def polygon(self) -> Geometry | None:
+        return self.geotag.polygon
+
+    @property
+    def plot_meta(self) -> PlotMeta:
+        return self.geotag.plot_meta
 
     # ------------------------------------------------------------------
     # Derived properties
@@ -116,12 +191,12 @@ class GeoAnchor:
     @property
     def start(self) -> dt:
         """Range start. For a resolved (non-range) anchor this equals `end`."""
-        return cast(DateRange, self.datetime)[0]
+        return self.datetime[0]
 
     @property
     def end(self) -> dt:
         """Range end. For a resolved (non-range) anchor this equals `start`."""
-        return cast(DateRange, self.datetime)[1]
+        return self.datetime[1]
 
     @property
     def stem(self) -> str:
@@ -134,23 +209,13 @@ class GeoAnchor:
 
         Examples:
             >>> anchor.stem
-            '13.000000_52.000000_20240101T000000_20240101T235959.999999_10m'
+            '13.000000_52.000000_20240115_10m'
         """
         lon, lat = self.centroid
         res = self.resolution
         res_str = f"{int(res * 100)}cm" if res < 1 else f"{int(res)}m"
-
-        def format_datetime(value: dt) -> str:
-            result = value.strftime("%Y%m%dT%H%M%S")
-            if value.microsecond:
-                result += f".{value.microsecond:06d}"
-            if value.utcoffset() is not None:
-                result += value.strftime("%z")
-            return result
-
-        start = format_datetime(self.start)
-        end = format_datetime(self.end)
-        return f"{lon:.6f}_{lat:.6f}_{start}_{end}_{res_str}"
+        date_token = format_stem_dates((self.start, self.end))
+        return f"{lon:.6f}_{lat:.6f}_{date_token}_{res_str}"
 
     @property
     def bbox_polygon(self) -> Geometry:
@@ -174,135 +239,76 @@ class GeoAnchor:
     # Builders
     # ------------------------------------------------------------------
 
-    def with_geobox(self, geobox: GeoBox) -> Self:
-        """Return new instance rebased onto geobox, sharing any data reference.
-
-        Pure geometry — no pixels are read or copied.
-        """
-        return dataclasses.replace(self, geobox=geobox)
-
-    def with_datetime(self, datetime: AnchorDatetime) -> Self:
-        """Return new instance rebased onto datetime, sharing any data reference.
-
-        Pure — no re-fetch, no re-search. Normalizes same as __post_init__
-        (a single instant or reduced-precision string still expands to its
-        own full period).
-
-        Args:
-            datetime: Single instant, ISO string, or (start, end) pair.
-        """
-        return dataclasses.replace(self, datetime=parse_datetime_range(datetime))
-
-    def with_metadata(self, extra: Mapping[str, Any], replace: bool = False) -> Self:
-        """Merge key-value pairs into metadata field.
-
-        Args:
-            extra: Key-value pairs to merge.
-            replace: If True, overwrite existing keys instead of raising.
-
-        Raises:
-            ValueError: If any key in extra already exists and replace is False.
-        """
-        if not replace:
-            clash = set(extra) & set(self.metadata)
-            if clash:
-                raise ValueError(
-                    f"metadata keys already present: {sorted(clash)}; pass replace=True to overwrite"
-                )
-        return dataclasses.replace(self, metadata={**self.metadata, **extra})
-
-    def with_data(self, data: xr.DataArray) -> "GeoTile":
-        """Attach pixel data, turning this anchor into a GeoTile.
-
-        Args:
-            data: Band values shaped (band, y, x) or (time, band, y, x) with a "band" coordinate.
-
-        Raises:
-            TypeError: If data is not an xr.DataArray.
-        """
-        if not isinstance(data, xr.DataArray):
-            raise TypeError(f"with_data expects an xr.DataArray, got {type(data).__name__}")
-        from .geotile import GeoTile
-
-        return GeoTile(
-            geobox=self.geobox, datetime=self.datetime, data=data,
-            metadata=self.metadata, polygon=self.polygon,
-        )
-
-    def with_np(
+    def rebase(
         self,
-        array: np.ndarray,
+        *,
+        geobox: GeoBox | None = None,
+        datetime: AnchorDatetime | None = None,
+        metadata: Mapping[str, Any] | None = None,
+        polygon: Geometry | None = None,
+        plot_meta: Mapping[str, Any] | None = None,
+    ) -> Self:
+        """Return new instance rebased onto given geobox/geotag, sharing any data reference.
+
+        Pure — no pixels read/copied, no re-fetch, no re-search. Omitted args keep
+        their current value. `datetime` normalizes same as construction (a
+        reduced-precision string still expands to its own full period).
+        `metadata` merges into the existing dict, overwriting clashing keys.
+        `polygon` replaces outright. `plot_meta` merges — only given fields overwrite.
+
+        Args:
+            geobox: New geobox.
+            datetime: ISO/compact string, or (start, end) pair of either.
+            metadata: Key-value pairs merged into metadata, overwriting clashing keys.
+            polygon: New footprint polygon.
+            plot_meta: `{field: value}` merged into plot_meta — only given fields overwrite.
+        """
+        changes: dict[str, Any] = {}
+        if geobox is not None:
+            changes["geobox"] = geobox
+        if datetime is not None or metadata is not None or polygon is not None or plot_meta is not None:
+            # Rebuilt via GeoTag's own constructor, not model_copy — model_copy
+            # skips validation, and `datetime` needs its string/tuple coercion.
+            changes["geotag"] = GeoTag(
+                datetime=datetime if datetime is not None else self.geotag.datetime,
+                metadata={**self.metadata, **metadata} if metadata is not None else self.geotag.metadata,
+                polygon=polygon if polygon is not None else self.geotag.polygon,
+                plot_meta=(
+                    self.geotag.plot_meta.model_copy(update=dict(plot_meta))
+                    if plot_meta is not None else self.geotag.plot_meta
+                ),
+            )
+        return dataclasses.replace(self, **changes)
+
+    def to_geotile(
+        self,
+        data: xr.DataArray | np.ndarray,
         names: str | list[str] | None = None,
         times: list[dt] | None = None,
     ) -> "GeoTile":
-        """Build DataArray from numpy array on this anchor's geobox and attach it.
+        """Attach pixel data, turning this anchor into a GeoTile.
 
-        Accepts (y, x) for one band, (band, y, x) for several, or (time,
-        band, y, x) for an explicit multi-step stack (pass `times`). If
-        `times` is omitted and this object already carries its own time
-        axis (i.e. a GeoTile that already has data, not a bare GeoAnchor),
-        a (y, x)/(band, y, x) array inherits that same time coordinate
-        automatically — a derived band naturally lines up with its own
-        source tile's time step(s), no separate bookkeeping needed at the
-        call site.
+        An `xr.DataArray` already carries its own dims/coords and is
+        attached as-is (after `validate_da`). A plain array is shaped from
+        this anchor's own geobox instead: 2D `(y, x)` is a single unnamed
+        band, 3D `(band, y, x)` requires `names`, 4D `(time, band, y, x)`
+        requires both `names` and `times`.
 
         Args:
-            array: Pixel array; last two axes are (y, x).
-            names: Band name(s) — a single string for one band, or one
-                name per row for several. Omit for a single-band array;
-                defaults to "value" (nothing outside GeoTile reads a
-                single-band tile's internal band name — only the layer
-                name it ends up stored under matters).
-            times: Observation datetimes for an explicit multi-step
-                array — only needed building fresh from a bare GeoAnchor
-                with no existing time axis to inherit from.
+            data: Pixel data — a DataArray, or a 2-4D array to shape from this anchor's geobox.
+            names: Band name(s) for a 3D/4D array — a single string for one
+                band, or one name per row for several. Ignored for a DataArray.
+            times: Observation datetimes for a 4D array. Ignored otherwise.
 
         Raises:
-            ValueError: If band/time counts don't match the array's shape.
+            ValueError: `names`/`times` missing or mismatched for the
+                array's dimensionality (see `validate_da` for DataArray-specific errors).
         """
-        arr = np.asarray(array)
-        if arr.ndim == 2:
-            arr = arr[np.newaxis]
+        from .geotile import GeoTile
 
-        existing_data: xr.DataArray | None = getattr(self, "data", None)
-        inherit_time = (
-            times is None and arr.ndim == 3
-            and existing_data is not None and "time" in existing_data.dims
-        )
-        if inherit_time:
-            arr = arr[np.newaxis]
-
-        if names is None:
-            band_count = arr.shape[1] if arr.ndim == 4 else arr.shape[0]
-            if band_count != 1:
-                raise ValueError(f"names is required for a {band_count}-band array")
-            names = ["value"]
-        elif isinstance(names, str):
-            names = [names]
-
-        base_coords: dict[Any, Any] = dict(xr_coords(self.geobox))
-        if arr.ndim == 3:
-            if len(names) != arr.shape[0]:
-                raise ValueError(f"Expected {arr.shape[0]} names, got {len(names)}")
-            da = xr.DataArray(arr, dims=("band", "y", "x"), coords={**base_coords, "band": names})
-        elif arr.ndim == 4:
-            if len(names) != arr.shape[1]:
-                raise ValueError(f"Expected {arr.shape[1]} names, got {len(names)}")
-            if inherit_time:
-                assert existing_data is not None
-                time_coord = existing_data.coords["time"].values
-            else:
-                if times is None or len(times) != arr.shape[0]:
-                    got = 0 if times is None else len(times)
-                    raise ValueError(f"Expected {arr.shape[0]} times, got {got}")
-                time_coord = [np.datetime64(t, "ns") for t in times]
-            da = xr.DataArray(
-                arr, dims=("time", "band", "y", "x"),
-                coords={**base_coords, "band": names, "time": time_coord},
-            )
-        else:
-            raise ValueError(f"with_np expects a 2-4D array, got {arr.ndim}D")
-        return self.with_data(da)
+        da = data if isinstance(data, xr.DataArray) else np_to_da(self.geobox, data, names, times)
+        da = validate_da(da)
+        return GeoTile(geobox=self.geobox, data=da, geotag=self.geotag)
 
     # ------------------------------------------------------------------
     # Constructors
@@ -326,7 +332,7 @@ class GeoAnchor:
         """
         return cls(
             geobox=GeoBox.from_bbox(bbox, crs=crs, resolution=resolution, anchor="edge"),
-            datetime=datetime,
+            geotag=GeoTag(datetime=datetime),
         )
 
     @classmethod
@@ -350,7 +356,7 @@ class GeoAnchor:
             datetime: Anchor datetime or (start, end) date range for this anchor.
             crs: Target projected CRS. Defaults to the local UTM/UPS zone.
         """
-        validate_coordinate(latitude, longitude)
+        latitude, longitude = validate_coordinate(latitude, longitude)
         if resolution <= 0:
             raise ValueError(f"Resolution must be positive, got {resolution}")
         width_m, height_m = (
@@ -372,7 +378,7 @@ class GeoAnchor:
             geobox=GeoBox.from_bbox(
                 bbox, crs=target_crs.to_string(), resolution=resolution, tight=True
             ),
-            datetime=datetime,
+            geotag=GeoTag(datetime=datetime),
         )
 
     @classmethod
@@ -409,8 +415,7 @@ class GeoAnchor:
         projected_geom = geom.to_crs(target_crs)
         return cls(
             geobox=GeoBox.from_geopolygon(projected_geom, resolution=resolution, anchor="edge"),
-            datetime=datetime,
-            polygon=projected_geom,
+            geotag=GeoTag(datetime=datetime, polygon=projected_geom),
         )
 
     @classmethod

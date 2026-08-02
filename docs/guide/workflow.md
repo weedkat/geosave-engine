@@ -6,7 +6,7 @@ Reference material (what things *are*, full API/arg tables) lives in
 [docs/concept/](../concept/): [geotile.md](../concept/geotile.md)
 (`GeoAnchor`/`GeoTile`/`GeoStack`), [pipeline.md](../concept/pipeline.md)
 (`GeoPipeline`, sources, STAC), [model.md](../concept/model.md)
-(`GeoDataset`, `SemanticSegmentationTask`/`DataModule`, config.yaml). This
+(`GeoStackDataset`, `SemanticSegmentationTask`/`DataModule`, config.yaml). This
 doc links out to them where the mechanics get deep; read this one first.
 
 ## Status legend
@@ -42,7 +42,7 @@ flowchart TD
     end
 
     subgraph train ["5-6 · Define + Train"]
-        GS -->|GeoDataset rglob *.geostack| DS["GeoDataset"]
+        GS -->|GeoStackDataset rglob *.geostack| DS["GeoStackDataset"]
         DS -->|stack_samples| DL["DataLoader batch"]
         DL --> LM["LightningModule\nSemanticSegmentationTask (Path A)\nor your own module (Path B)"]
         LM --> CKPT["checkpoint\nartifacts/<model_name>/version_N/"]
@@ -174,11 +174,12 @@ instead of a stack trace.
 
 Iterate the `ingest()` body against one anchor until the plot looks right,
 try a second anchor somewhere else to make sure it wasn't luck, *then* copy
-the class into `modules/data_pipeline.py` and move up to step 3 with a real
-source. For a complete, real ingest script — imagery, label remapping,
-grouping to mirror raw data folder structure, provenance file copying —
-see `workspace/scripts/ingest.py` and `workspace/modules/data_pipeline.py`
-in this repo, a full generated workspace, not a trimmed-down snippet.
+the class into `modules/data_pipeline_l1c.py` (or `_l2a.py`) and move up to
+step 3 with a real source. For a complete, real ingest script — imagery,
+label remapping, grouping to mirror raw data folder structure, provenance
+file copying — see `workspace/scripts/ingest.py` and
+`workspace/modules/data_pipeline_l1c.py`/`data_pipeline_l2a.py` in this
+repo, a full generated workspace, not a trimmed-down snippet.
 
 ## 3. Build the dataset 🟢
 
@@ -196,7 +197,7 @@ for anchor in anchors:
 Writes one `<anchor>.geostack/` folder per anchor. No manifest or built-in
 resumability — if re-running matters, skip anchors whose folder already
 exists yourself (`if not (root / f"{anchor.stem}.geostack").exists(): ...`).
-Full save mechanics (`save_stac`), streaming without saving to disk
+Full save mechanics (STAC sidecars), streaming without saving to disk
 (`ingest_to_tensor`, for live predict): [concept/pipeline.md#saving-to-disk](../concept/pipeline.md#saving-to-disk).
 
 ## 4. Version the ingested data with DVC 🟡
@@ -231,7 +232,7 @@ pick an encoder/decoder/head by registry key, and go. A model that needs
 extra per-sample context (e.g. Prithvi's `temporal_coords`/`location_coords`)
 gets it via `data.init_args.pipeline` — your `Pipeline`'s own `context()`,
 same one from step 2, wired straight into every split. Full arg reference,
-`GeoDataset`, `model_context`/`ContextChain`, config.yaml composition:
+`GeoStackDataset`, `model_context`/`ContextChain`, config.yaml composition:
 [concept/model.md](../concept/model.md).
 
 **Path B — your own module.** Write `modules/lightning_module.py` yourself

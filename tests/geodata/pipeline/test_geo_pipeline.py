@@ -11,8 +11,8 @@ import numpy as np
 import torch
 from odc.geo.geobox import GeoBox
 
-from geosave_engine.geodata.tile import GEOSTACK_SUFFIX, GeoAnchor, GeoTile, GeoStack
-from geosave_engine.geodata.datasets import GeoDataset
+from geosave_engine.geodata.tile import GEOSTACK_SUFFIX, GeoAnchor, GeoTag, GeoTile, GeoStack
+from geosave_engine.geodata.datasets import GeoStackDataset
 from geosave_engine.geodata.pipeline import GeoPipeline
 
 UTM = "EPSG:32633"
@@ -21,16 +21,17 @@ UTM = "EPSG:32633"
 class _ToyPipeline(GeoPipeline):
     def fetch(self, anchor: GeoAnchor) -> Iterator[dict[str, GeoTile]]:
         arr = np.ones((1, 2, anchor.height, anchor.width), dtype="uint16")
-        tile = anchor.with_np(arr, ["B02", "B03"], times=[anchor.start]).with_metadata(
-            {"description": "toy image"}
+        tile = anchor.to_geotile(arr, ["B02", "B03"], times=[anchor.start]).rebase(
+            metadata={"description": "toy image"}
         )
         yield {"image": tile}
 
 
 def _toy_anchor() -> GeoAnchor:
+    d = datetime(2023, 2, 1)
     return GeoAnchor(
         geobox=GeoBox.from_bbox((500000, 5000000, 500320, 5000320), crs=UTM, resolution=10, anchor="edge"),
-        datetime=datetime(2023, 2, 1),
+        geotag=GeoTag(datetime=(d, d)),
     )
 
 
@@ -42,11 +43,11 @@ class TestIngest:
         # standardized (time, band, y, x) — time=1 since temporal_slots defaults to 1
         assert tuple(stacks[0].tiles["image"].data.shape) == (1, 2, 32, 32)
 
-    def test_saved_stack_readable_by_geodataset(self, tmp_path):
+    def test_saved_stack_readable_by_geostackdataset(self, tmp_path):
         anchor = _toy_anchor()
         stack = next(iter(_ToyPipeline().ingest(anchor)))
         stack.save(tmp_path / f"{anchor.stem}{GEOSTACK_SUFFIX}")
-        ds = GeoDataset(tmp_path)
+        ds = GeoStackDataset(tmp_path)
         assert len(ds) == 1
 
 

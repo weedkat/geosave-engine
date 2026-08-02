@@ -14,7 +14,21 @@ import xarray as xr
 from odc.geo.geobox import GeoBox
 from odc.geo.xr import xr_zeros, xr_coords
 
-from geosave_engine.geodata.tile import GeoAnchor, GeoTile, align, mosaic, remap
+from geosave_engine.geodata.tile import (
+    GeoAnchor,
+    GeoTag,
+    GeoTile,
+    PlotMeta,
+    align,
+    from_geotiff,
+    from_zarr,
+    mosaic,
+    remap,
+    to_geotiff,
+    to_zarr,
+    validate_da,
+    validate_ds,
+)
 
 UTM = "EPSG:32633"
 BBOX = (500000, 5000000, 500320, 5000320)  # 32 x 32 px at 10 m
@@ -42,6 +56,7 @@ def _tile(
 ) -> GeoTile:
     """Synthetic tile: one band per name, optional time axis."""
     gb = GeoBox.from_bbox(bbox, crs=UTM, resolution=10, anchor="edge")
+    dt_range = (dt, dt)
     base_coords = dict(xr_coords(gb))
     n = len(names)
     if times is None:
@@ -58,9 +73,8 @@ def _tile(
                           coords={**base_coords, "band": list(names), "time": time_coord})
     return GeoTile(
         geobox=gb,
-        datetime=dt,
         data=da,
-        metadata=meta or {"foo": "bar"},
+        geotag=GeoTag(datetime=dt_range, metadata=meta or {"foo": "bar"}),
         stac=[_item(s) for s in stac],
     )
 
@@ -71,16 +85,16 @@ class TestHeader:
         assert isinstance(a, GeoAnchor)
         assert not isinstance(a, GeoTile)
 
-    def test_with_data_rejects_non_dataarray(self):
+    def test_to_geotile_rejects_non_dataarray(self):
         a = GeoAnchor.from_bbox(BBOX, crs=UTM, resolution=10, datetime="2023-02-01")
         gb = GeoBox.from_bbox(BBOX, crs=UTM, resolution=10, anchor="edge")
         with pytest.raises(TypeError):
-            a.with_data(xr.Dataset({"a": xr_zeros(gb)}))  # Dataset, not DataArray
+            a.to_geotile(xr.Dataset({"a": xr_zeros(gb)}))  # Dataset, not DataArray
 
-    def test_with_data_returns_tile(self):
+    def test_to_geotile_returns_tile(self):
         a = GeoAnchor.from_bbox(BBOX, crs=UTM, resolution=10, datetime="2023-02-01")
         gb = GeoBox.from_bbox(BBOX, crs=UTM, resolution=10, anchor="edge")
-        t = a.with_data(xr_zeros(gb).expand_dims(band=["b1"]))
+        t = a.to_geotile(xr_zeros(gb).expand_dims(band=["b1"]))
         assert isinstance(t, GeoTile)
         assert t.bands == ("b1",)
 
@@ -91,7 +105,7 @@ class TestHeader:
             datetime(2023, 2, 1),
             datetime(2023, 2, 1, 23, 59, 59, 999999),
         )
-        assert a.stem.endswith("_20230201T000000_20230201T235959.999999_10m")
+        assert a.stem.endswith("_20230201_10m")
 
 
 class TestFromGeojson:
@@ -134,7 +148,7 @@ class TestGeotiffRoundtrip:
 
     def test_band_selection(self, tmp_path):
         path = _tile().to_geotiff(tmp_path / "red_20230201.tif")
-        r = GeoTile.from_geotiff(path, datetime=datetime(2023, 2, 1), bands=("green",))
+        r = GeoTile.from_geotiff(path, datetime=(datetime(2023, 2, 1), datetime(2023, 2, 1)), bands=("green",))
         assert r.bands == ("green",)
 
     def test_datetime_is_caller_supplied_not_read_from_file(self, tmp_path):
@@ -142,7 +156,7 @@ class TestGeotiffRoundtrip:
         t = _tile(dt=datetime(2024, 5, 6))
         path = t.to_geotiff(tmp_path / "scene_20230201.tif")  # embeds 2024-05-06, named 2023-02-01
 
-        r = GeoTile.from_geotiff(path, datetime=datetime(2019, 1, 1))
+        r = GeoTile.from_geotiff(path, datetime=(datetime(2019, 1, 1), datetime(2019, 1, 1)))
         assert r.datetime == (datetime(2019, 1, 1), datetime(2019, 1, 1))
 
     def test_time_series_to_geotiff_raises(self, tmp_path):
@@ -151,7 +165,7 @@ class TestGeotiffRoundtrip:
             t.to_geotiff(tmp_path / "x_20230201.tif")
 
     def test_nodata_preserved(self, tmp_path):
-        t = _tile(names=("label",)).with_nodata(255)
+        t = _tile(names=("label",)).rebase(nodata=255)
         path = t.to_geotiff(tmp_path / "x_20230201.tif")
         r = GeoTile.from_geotiff(path, datetime=t.datetime)
         assert r.nodata == 255
@@ -178,79 +192,260 @@ class TestZarrRoundtrip:
         assert r.geobox == t.geobox
 
     def test_nodata_preserved(self, tmp_path):
-        t = _tile(names=("label",)).with_nodata(255)
+        t = _tile(names=("label",)).rebase(nodata=255)
         store = t.to_zarr(tmp_path / "cube.zarr")
         r = GeoTile.from_zarr(store)
         assert r.nodata == 255
 
+    def test_multi_band_order_preserved(self, tmp_path):
+        # non-alphabetical on purpose — zarr lists variables alphabetically on
+        # reopen regardless of consolidated=True, this is the regression check
+        t = _tile(names=("B04", "B03", "B02", "VV"))
+        store = t.to_zarr(tmp_path / "cube.zarr")
+        r = GeoTile.from_zarr(store)
+        assert r.bands == ("B04", "B03", "B02", "VV")
+
     def test_missing_datetime_attr_raises(self, monkeypatch, tmp_path):
         t = _tile(names=("red",))
         ds = t.data.to_dataset(dim="band")
-        ds.attrs.pop("datetime", None)
-        ds.attrs.pop("metadata", None)
+        ds.attrs.pop("tag", None)
+        ds.attrs["var_order"] = list(ds.data_vars)
+        ds.attrs["dim_order"] = {name: list(da.dims) for name, da in ds.data_vars.items()}
 
         monkeypatch.setattr("geosave_engine.geodata.tile.geotile.xr.open_zarr", lambda *args, **kwargs: ds)
 
-        with pytest.raises(ValueError, match="has no time dimension and no 'datetime' attr"):
+        with pytest.raises(ValueError, match="has no time dimension and no stored 'tag' datetime"):
             GeoTile.from_zarr(tmp_path / "cube.zarr")
+
+
+class TestZarrOps:
+    def test_var_order_restored(self, tmp_path):
+        ds = xr.Dataset(
+            {name: (("y", "x"), np.zeros((2, 2))) for name in ["z", "a", "m"]}
+        ).rio.write_crs("EPSG:32633")
+        path = to_zarr(tmp_path / "cube.zarr", ds)
+        back = from_zarr(path)
+        assert list(back.data_vars) == ["z", "a", "m"]
+
+    def test_dim_order_restored(self, tmp_path):
+        da = xr.DataArray(np.zeros((3, 2, 2)), dims=("time", "y", "x"))
+        ds = xr.Dataset({"B02": da}).rio.write_crs("EPSG:32633")
+        path = to_zarr(tmp_path / "cube.zarr", ds)
+        back = from_zarr(path)
+        assert back["B02"].dims == ("time", "y", "x")
+
+    def test_rejects_store_without_var_order(self, tmp_path):
+        ds = xr.Dataset({"x": (("y", "x"), np.zeros((2, 2)))})
+        path = tmp_path / "plain.zarr"
+        ds.to_zarr(path, mode="w")
+        with pytest.raises(ValueError, match="not written by to_zarr"):
+            from_zarr(path)
+
+    def test_rejects_var_order_mismatch(self, tmp_path):
+        ds = xr.Dataset({"x": (("y", "x"), np.zeros((2, 2)))})
+        ds = ds.assign_attrs(var_order=["x", "ghost"], dim_order={"x": ["y", "x"], "ghost": ["y", "x"]})
+        path = tmp_path / "cube.zarr"
+        ds.to_zarr(path, mode="w", consolidated=True)
+        with pytest.raises(ValueError, match="doesn't match variables"):
+            from_zarr(path)
+
+    def test_extra_attrs_preserved(self, tmp_path):
+        ds = xr.Dataset({"x": (("y", "x"), np.zeros((2, 2)))}, attrs={"custom": "value"}).rio.write_crs("EPSG:32633")
+        path = to_zarr(tmp_path / "cube.zarr", ds)
+        back = from_zarr(path)
+        assert back.attrs["custom"] == "value"
+
+    def test_groups_are_independent(self, tmp_path):
+        path = tmp_path / "cube.zarr"
+        ds_a = xr.Dataset({"B02": (("y", "x"), np.zeros((2, 2)))}, attrs={"layer": "a"}).rio.write_crs("EPSG:32633")
+        ds_b = xr.Dataset(
+            {"VV": (("time", "y", "x"), np.zeros((3, 2, 2)))}, attrs={"layer": "b"}
+        ).rio.write_crs("EPSG:32633")
+        to_zarr(path, ds_a, group="a")
+        to_zarr(path, ds_b, group="b")
+        a = from_zarr(path, group="a")
+        b = from_zarr(path, group="b")
+        assert list(a.data_vars) == ["B02"]
+        assert a.attrs["layer"] == "a"
+        assert list(b.data_vars) == ["VV"]
+        assert b.attrs["layer"] == "b"
+        assert "time" in b["VV"].dims and "time" not in a["B02"].dims
+
+    def test_group_write_does_not_disturb_sibling_group(self, tmp_path):
+        path = tmp_path / "cube.zarr"
+        ds_a = xr.Dataset({"B02": (("y", "x"), np.zeros((2, 2)))}).rio.write_crs("EPSG:32633")
+        ds_b = xr.Dataset({"VV": (("y", "x"), np.ones((2, 2)))}).rio.write_crs("EPSG:32633")
+        to_zarr(path, ds_a, group="a")
+        to_zarr(path, ds_b, group="b")
+        assert list(from_zarr(path, group="a").data_vars) == ["B02"]
+
+
+class TestGeotiffOps:
+    def test_roundtrip(self, tmp_path):
+        # GeoTIFF has no native per-band name slot — rioxarray always names
+        # them band_1, band_2, ... regardless of the source array's own band
+        # coordinate. Real-name restoration is GeoTile.from_geotiff's job
+        # (reads its own "bands" tag), not from_geotiff's.
+        da = xr.DataArray(
+            np.arange(3 * 4 * 4, dtype="uint16").reshape(3, 4, 4),
+            dims=("band", "y", "x"),
+            coords={"band": ["B04", "B03", "B02"]},
+        )
+        da = da.rio.write_crs("EPSG:32633")
+        path = to_geotiff(tmp_path / "img.tif", da, tags={"foo": "bar"})
+        back = from_geotiff(path)
+        assert list(back.data_vars) == ["band_1", "band_2", "band_3"]
+        assert back.attrs.get("foo") == "bar"
+
+    def test_bands_filter(self, tmp_path):
+        da = xr.DataArray(
+            np.zeros((3, 2, 2), dtype="uint8"), dims=("band", "y", "x"), coords={"band": ["a", "b", "c"]}
+        ).rio.write_crs("EPSG:32633")
+        path = to_geotiff(tmp_path / "img.tif", da)
+        back = from_geotiff(path, bands=("band_1", "band_3"))
+        assert list(back.data_vars) == ["band_1", "band_3"]
+
+    def test_rejects_non_tif_suffix(self, tmp_path):
+        da = xr.DataArray(np.zeros((1, 2, 2)), dims=("band", "y", "x")).rio.write_crs("EPSG:32633")
+        with pytest.raises(ValueError, match="Expected .tif path"):
+            to_geotiff(tmp_path / "img.zarr", da)
+
+
+class TestValidateDa:
+    def test_transposes_out_of_order_dims(self):
+        da = xr.DataArray(
+            np.zeros((2, 2, 3)), dims=("y", "x", "band"), coords={"band": ["a", "b", "c"]}
+        ).rio.write_crs("EPSG:32633")
+        out = validate_da(da)
+        assert out.dims == ("band", "y", "x")
+
+    def test_transposes_out_of_order_dims_with_time(self):
+        da = xr.DataArray(
+            np.zeros((2, 3, 1, 2)), dims=("y", "band", "time", "x"), coords={"band": ["a", "b", "c"]}
+        ).rio.write_crs("EPSG:32633")
+        out = validate_da(da)
+        assert out.dims == ("time", "band", "y", "x")
+
+    def test_rejects_missing_band_coord(self):
+        da = xr.DataArray(np.zeros((3, 2, 2)), dims=("band", "y", "x")).rio.write_crs("EPSG:32633")
+        with pytest.raises(ValueError, match="no 'band' coordinate"):
+            validate_da(da)
+
+    def test_rejects_wrong_dims(self):
+        da = xr.DataArray(np.zeros((2, 2, 2)), dims=("z", "y", "x")).rio.write_crs("EPSG:32633")
+        with pytest.raises(ValueError, match="Expected dims"):
+            validate_da(da)
+
+    def test_accepts_no_band_dim(self):
+        da = xr.DataArray(np.zeros((2, 2)), dims=("y", "x")).rio.write_crs("EPSG:32633")
+        out = validate_da(da)
+        assert out.dims == ("y", "x")
+
+    def test_rejects_missing_crs(self):
+        da = xr.DataArray(
+            np.zeros((3, 2, 2)), dims=("band", "y", "x"), coords={"band": ["a", "b", "c"]}
+        )
+        with pytest.raises(ValueError, match="no CRS"):
+            validate_da(da)
+
+
+class TestValidateDs:
+    def test_transposes_out_of_order_dims(self):
+        ds = xr.Dataset({"B02": (("x", "y"), np.zeros((2, 2)))}).rio.write_crs("EPSG:32633")
+        out = validate_ds(ds)
+        assert out["B02"].dims == ("y", "x")
+
+    def test_rejects_band_dim(self):
+        ds = xr.Dataset(
+            {"stack": (("band", "y", "x"), np.zeros((3, 2, 2)))}, coords={"band": ["a", "b", "c"]}
+        ).rio.write_crs("EPSG:32633")
+        with pytest.raises(ValueError, match="'band' dim"):
+            validate_ds(ds)
+
+    def test_rejects_missing_crs(self):
+        ds = xr.Dataset({"B02": (("y", "x"), np.zeros((2, 2)))})
+        with pytest.raises(ValueError, match="no CRS"):
+            validate_ds(ds)
+
+
+class TestPlotMeta:
+    def test_default_empty(self):
+        assert _tile(names=("red",)).plot_meta == PlotMeta()
+
+    def test_roundtrip_through_zarr(self, tmp_path):
+        t = _tile(names=("red",)).rebase(
+            plot_meta={"rgb_bands": ("red", "red", "red"), "class_map": {0: "water", 1: "trees"}, "color_map": {0: "#0000ff"}}
+        )
+        store = t.to_zarr(tmp_path / "cube.zarr")
+        r = GeoTile.from_zarr(store)
+        assert r.plot_meta == PlotMeta(
+            rgb_bands=("red", "red", "red"), class_map={0: "water", 1: "trees"}, color_map={0: "#0000ff"}
+        )
+
+    def test_roundtrip_through_geotiff(self, tmp_path):
+        t = _tile(names=("red",)).rebase(plot_meta={"class_map": {0: "water"}})
+        p = t.to_cog(tmp_path / "x_20230201.tif")
+        r = GeoTile.from_geotiff(p, datetime=(datetime(2023, 2, 1), datetime(2023, 2, 1)))
+        assert r.plot_meta == PlotMeta(class_map={0: "water"})
+
+    def test_rebase_plot_meta_merges_not_replaces(self):
+        t = _tile(names=("red",)).rebase(plot_meta={"class_map": {0: "water"}})
+        t = t.rebase(plot_meta={"color_map": {0: "#0000ff"}})
+        assert t.plot_meta == PlotMeta(class_map={0: "water"}, color_map={0: "#0000ff"})
 
 
 class TestNodata:
     def test_default_is_none(self):
         assert _tile(names=("red",)).nodata is None
 
-    def test_with_nodata_sets_value(self):
-        t = _tile(names=("red",)).with_nodata(255)
+    def test_rebase_nodata_sets_value(self):
+        t = _tile(names=("red",)).rebase(nodata=255)
         assert t.nodata == 255
 
-    def test_with_nodata_does_not_mutate_original(self):
+    def test_rebase_nodata_does_not_mutate_original(self):
         original = _tile(names=("red",))
-        original.with_nodata(255)
+        original.rebase(nodata=255)
         assert original.nodata is None
 
-    def test_with_nodata_none_clears(self):
-        t = _tile(names=("red",)).with_nodata(255).with_nodata(None)
+    def test_clearing_nodata_via_data(self):
+        t = _tile(names=("red",)).rebase(nodata=255)
+        t = t.rebase(data=t.data.rio.write_nodata(None))
         assert t.nodata is None
 
 
 class TestMetadata:
-    def test_append_conflict_raises(self):
+    def test_rebase_overwrites_clashing_keys(self):
         t = _tile(names=("red",), meta={"name": "s2"})
-        with pytest.raises(ValueError):
-            t.with_metadata({"name": "other"})        # append default → clash raises
-
-    def test_replace_overwrites(self):
-        t = _tile(names=("red",), meta={"name": "s2"})
-        assert t.with_metadata({"name": "other"}, replace=True).metadata["name"] == "other"
+        assert t.rebase(metadata={"name": "other"}).metadata["name"] == "other"
 
     def test_append_disjoint_merges(self):
-        t = _tile(names=("red",), meta={"a": 1}).with_metadata({"b": 2})
+        t = _tile(names=("red",), meta={"a": 1}).rebase(metadata={"b": 2})
         assert t.metadata == {"a": 1, "b": 2}
 
 
 class TestStac:
     def test_sidecar_roundtrip_zarr(self, tmp_path):
         t = _tile(names=("red",), stac=("scene_a", "scene_b"))
-        store = t.to_zarr(tmp_path / "cube.zarr", save_stac=True)
+        store = t.to_zarr(tmp_path / "cube.zarr")
         assert (tmp_path / "cube.stac.json").exists()
         r = GeoTile.from_zarr(store)
         assert [i.id for i in r.stac] == ["scene_a", "scene_b"]
 
     def test_sidecar_roundtrip_cog(self, tmp_path):
         t = _tile(names=("red",), stac=("scene_a",))
-        p = t.to_cog(tmp_path / "x_20230201.tif", save_stac=True)
+        p = t.to_cog(tmp_path / "x_20230201.tif")
         assert (tmp_path / "x_20230201.stac.json").exists()
-        r = GeoTile.from_geotiff(p, datetime=datetime(2023, 2, 1))
+        r = GeoTile.from_geotiff(p, datetime=(datetime(2023, 2, 1), datetime(2023, 2, 1)))
         assert [i.id for i in r.stac] == ["scene_a"]
 
-    def test_no_sidecar_when_opted_out(self, tmp_path):
-        t = _tile(names=("red",), stac=("scene_a",))
-        t.to_zarr(tmp_path / "cube.zarr")            # save_stac=False (default)
+    def test_no_sidecar_when_no_stac_items(self, tmp_path):
+        t = _tile(names=("red",))  # no stac items — nothing to write, no flag needed
+        t.to_zarr(tmp_path / "cube.zarr")
         assert not (tmp_path / "cube.stac.json").exists()
         assert GeoTile.from_zarr(tmp_path / "cube.zarr").stac == []
 
-    def test_with_stac_dedups_by_id(self):
-        t = _tile(names=("red",)).with_stac([_item("a"), _item("b")]).with_stac([_item("a")])
+    def test_rebase_stac_dedups_by_id(self):
+        t = _tile(names=("red",)).rebase(stac=[_item("a"), _item("b")]).rebase(stac=[_item("a")])
         assert [i.id for i in t.stac] == ["a", "b"]
 
 
@@ -306,7 +501,7 @@ class TestTensor:
 
     def test_patch_reads_only_window(self):
         t = _tile(names=("red",))
-        patch = t.with_geobox(t.geobox[0:16, 0:16])
+        patch = t.rebase(geobox=t.geobox[0:16, 0:16])
         out = patch.to_tensor()                   # (band, y, x)
         assert tuple(out.shape) == (1, 16, 16)
 
@@ -320,7 +515,7 @@ class TestRemap:
 
 class TestRealData:
     def test_from_geotiff_real_dw_tif(self, dw_tif_path):
-        t = GeoTile.from_geotiff(dw_tif_path, datetime=datetime(2019, 2, 23), load_data=True)
+        t = GeoTile.from_geotiff(dw_tif_path, datetime=(datetime(2019, 2, 23), datetime(2019, 2, 23)), load_data=True)
         assert t.num_bands >= 1
         out = t.to_tensor()                       # (band, y, x)
         assert out.shape[0] == t.num_bands

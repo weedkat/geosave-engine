@@ -1,19 +1,19 @@
-# GeoDataset and model definition
+# GeoStackDataset and model definition
 
 Reference for turning ingested `.geostack` folders into training batches,
 and for the standardized `SemanticSegmentationTask`/`DataModule` pair. For
 the ordered how-to (pick a path, train, evaluate), see
 [workflow.md](../guide/workflow.md#5-define-the-model-).
 
-## From ingested data to tensors: GeoDataset
+## From ingested data to tensors: GeoStackDataset
 
-`geosave_engine.geodata.datasets.GeoDataset` reads a directory of
+`geosave_engine.geodata.datasets.GeoStackDataset` reads a directory of
 `.geostack` folders built via `GeoStack.save()` (see [pipeline.md](pipeline.md)):
 
 ```python
-from geosave_engine.geodata.datasets import GeoDataset
+from geosave_engine.geodata.datasets import GeoStackDataset
 
-ds = GeoDataset("data/train")
+ds = GeoStackDataset("data/train")
 ```
 
 Discovery is `root.rglob("*.geostack")` — every anchor folder, at any
@@ -42,7 +42,7 @@ delegates straight to `GeoStack.to_tensor`:
 (`list[str]`), useful for sanity-checking a dataset without indexing into
 it.
 
-**Building your own Dataset:** subclass `GeoDataset` when you need
+**Building your own Dataset:** subclass `GeoStackDataset` when you need
 per-sample logic beyond what it gives you. For streaming inference over
 fresh data without ingesting to disk first, there's
 [ingest_to_tensor()](pipeline.md).
@@ -73,13 +73,33 @@ dimension (`(time, band, y, x)`) natively — a plain GeoTIFF can't.
 array plus datetime, metadata, and polygon footprint as store attributes —
 no guessing from the path.
 
-`GeoDataset`'s discovery pass opens every store with `load_data=False` —
+`GeoStackDataset`'s discovery pass opens every store with `load_data=False` —
 header-only, geobox and datetime read from attrs without touching pixels.
 Scanning a large `data/train/` directory to build the sample index is cheap
 for exactly this reason. Pixels are only materialized when `__getitem__`
 calls `tile.to_tensor()`, which clips to the tile's bbox and reads — so the
 cost of one epoch is proportional to what the `DataLoader` actually visits,
 not to how many `.zarr` stores exist on disk.
+
+## Single-file rasters: GeoDataset and NonGeoDataset
+
+For data that isn't ingested into `.geostack` anchors — an already-aligned
+external dataset, a plain image folder — `GeoDataset` and `NonGeoDataset`
+read one file per sample instead of one anchor folder per sample. Same
+shape, different treatment of geo metadata:
+
+- `GeoDataset(root, extension)` — `.tif`/`.tiff`/`.zarr` with real,
+  usable CRS/geobox. Reads via `GeoTile.from_geotiff`/`from_zarr`, so
+  `render()` returns `{layer_name: Tensor, "anchor": GeoAnchor}` — the
+  file's own georeferencing preserved.
+- `NonGeoDataset(root, extension)` — `.tif`/`.zarr`/`.jpg`/`.png`/`.jp2`
+  read literally, no CRS interpretation. Use this when the file has no
+  geo metadata, or it isn't needed.
+
+Both are one-file-per-sample, one-modality-per-instance — join several
+(e.g. image + label) with `IntersectionDataset`/`&` on their shared stem
+key, same as `GeoStackDataset`'s layers are joined inside one anchor
+folder.
 
 ## stack_samples
 
@@ -93,7 +113,7 @@ def stack_samples(samples: Iterable[Mapping[str, Any]]) -> dict[str, Any]:
     # anything else  -> list(values)               (gathered as-is)
 ```
 
-Because `GeoDataset.__getitem__` keys samples by raw layer name, the batch
+Because `GeoStackDataset.__getitem__` keys samples by raw layer name, the batch
 you get back has one tensor key per ingested layer, unchanged, plus
 `"anchors"` recursed one level (dict values -> `stack_samples` again) into
 one `list[GeoAnchor]` per layer:
@@ -143,7 +163,7 @@ class or channel indices.
 | `class_map` | **Yes** | `{class_id: class_name}`, dense from 0. `num_classes` is `len(class_map)`. |
 | `band_map` | **Yes** | `{channel_idx: band_name}`, dense from 0. `in_channels` is `len(band_map)`. |
 | `color_map` | No | `{class_id: hex_color}` — prediction visualization only; skipped with a warning if unset. |
-| `image_key` / `label_key` / `mask_key` | No (`image`/`label`/`mask`) | Batch keys — point these at your `GeoDataset`'s raw layer names instead of requiring a renaming step. |
+| `image_key` / `label_key` / `mask_key` | No (`image`/`label`/`mask`) | Batch keys — point these at your `GeoStackDataset`'s raw layer names instead of requiring a renaming step. |
 | `ignore_index` | No (`255`) | Class index excluded from loss and metrics. |
 | `input_size` | No (`224`) | Spatial patch size for sliding-window inference. |
 | `loss` / `optimizer` / `scheduler` | No | Registry keys — see `ml/registry/{loss,optimizer,scheduler}.py` for what's registered (`CELoss`/`OHEMLoss`; `AdamW`/`Adam`/`SGD`/`RMSprop`/`Adagrad`; `CosineAnnealingLR`/`LRScheduler`). |
@@ -164,15 +184,15 @@ map removes the second, redundant source of truth entirely.
 ## SemanticSegmentationDataModule
 
 `geosave_engine.ml.tasks.SemanticSegmentationDataModule` pairs with the
-task above, building one `GeoDataset` per split.
+task above, building one `GeoStackDataset` per split.
 
 | Arg | Required | Purpose |
 | --- | --- | --- |
-| `train_root` | For `fit` | `GeoDataset` root for the train split. |
-| `val_root` | For `fit`/`validate` | `GeoDataset` root for the val split. |
-| `test_root` | For `test` | `GeoDataset` root for the test split. |
-| `predict_root` | For `predict` | `GeoDataset` root for the predict split. |
-| `sel_bands` / `dtype_override` | No | Forwarded straight to each `GeoDataset`. |
+| `train_root` | For `fit` | `GeoStackDataset` root for the train split. |
+| `val_root` | For `fit`/`validate` | `GeoStackDataset` root for the val split. |
+| `test_root` | For `test` | `GeoStackDataset` root for the test split. |
+| `predict_root` | For `predict` | `GeoStackDataset` root for the predict split. |
+| `sel_bands` / `dtype_override` | No | Forwarded straight to each `GeoStackDataset`. |
 | `pipeline` | No | A `GeoPipeline` whose `.context` supplies per-sample context — `None` omits context entirely. |
 | `batch_size` / `num_workers` / `pin_memory` / `prefetch_factor` / `persistent_workers` | No | Standard `DataLoader` args. |
 

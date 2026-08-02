@@ -88,7 +88,7 @@ class Place:
     @classmethod
     def from_coordinate(cls, lat: float, lon: float) -> Place | None:
         """Convenience classmethod to reverse geocode a coordinate directly."""
-        validate_coordinate(lat, lon)
+        lat, lon = validate_coordinate(lat, lon)
         addr = reverse_geocode(lat, lon)
         if addr is None:
             return None

@@ -1,0 +1,84 @@
+{
+  "attributes": {
+    "has_band": true,
+    "tag": "{\"datetime\":[\"2018-12-26T10:34:39.024000\",\"2018-12-26T10:34:39.024000\"],\"metadata\":{\"description\":\"Sentinel-2 L2A surface reflectance (12 bands)\"},\"plot_meta\":{\"rgb_bands\":[\"B04\",\"B03\",\"B02\"]}}",
+    "var_order": [
+      "B01",
+      "B02",
+      "B03",
+      "B04",
+      "B05",
+      "B06",
+      "B07",
+      "B08",
+      "B8A",
+      "B09",
+      "B11",
+      "B12"
+    ],
+    "dim_order": {
+      "B01": [
+        "time",
+        "y",
+        "x"
+      ],
+      "B02": [
+        "time",
+        "y",
+        "x"
+      ],
+      "B03": [
+        "time",
+        "y",
+        "x"
+      ],
+      "B04": [
+        "time",
+        "y",
+        "x"
+      ],
+      "B05": [
+        "time",
+        "y",
+        "x"
+      ],
+      "B06": [
+        "time",
+        "y",
+        "x"
+      ],
+      "B07": [
+        "time",
+        "y",
+        "x"
+      ],
+      "B08": [
+        "time",
+        "y",
+        "x"
+      ],
+      "B8A": [
+        "time",
+        "y",
+        "x"
+      ],
+      "B09": [
+        "time",
+        "y",
+        "x"
+      ],
+      "B11": [
+        "time",
+        "y",
+        "x"
+      ],
+      "B12": [
+        "time",
+        "y",
+        "x"
+      ]
+    }
+  },
+  "zarr_format": 3,
+  "node_type": "group"
+}

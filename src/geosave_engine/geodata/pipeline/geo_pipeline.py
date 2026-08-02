@@ -76,7 +76,7 @@ class GeoPipeline(ABC):
         `stack_samples` only stacks `torch.Tensor` values into a batch;
         anything else passes through unbatched. Forwarded straight into
         `GeoStack.to_tensor` as its `context_fn` by `ingest_to_tensor`
-        below — pass this same bound method as a `GeoDataset`'s own
+        below — pass this same bound method as a `GeoStackDataset`'s own
         `context_fn` to get identical derivation for offline training
         reading this pipeline's saved output.
 

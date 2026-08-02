@@ -52,7 +52,7 @@ registering a model — workspace layout and every command, in one ordered
 read. Deep reference material lives in **[docs/concept/](concept/)**:
 [geotile.md](concept/geotile.md) (`GeoAnchor`/`GeoTile`/`GeoStack`),
 [pipeline.md](concept/pipeline.md) (`GeoPipeline`, sources, STAC),
-[model.md](concept/model.md) (`GeoDataset`,
+[model.md](concept/model.md) (`GeoStackDataset`,
 `SemanticSegmentationTask`/`DataModule`, config.yaml).
 
 The `workspace/` directory in this repo (Sentinel-2 + DynamicWorld land

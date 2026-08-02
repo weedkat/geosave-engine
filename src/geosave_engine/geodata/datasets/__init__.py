@@ -2,6 +2,7 @@
 from geosave_engine.geodata.datasets.base_dataset import BaseDataset
 from geosave_engine.geodata.datasets.coco_dataset import CocoDataset
 from geosave_engine.geodata.datasets.geo_dataset import GeoDataset
+from geosave_engine.geodata.datasets.geostack_dataset import GeoStackDataset
 from geosave_engine.geodata.datasets.intersection_dataset import IntersectionDataset
 from geosave_engine.geodata.datasets.non_geo_dataset import NonGeoDataset
 from geosave_engine.geodata.datasets.samplers import stack_samples
@@ -12,6 +13,7 @@ __all__ = [
     "BaseDataset",
     "CocoDataset",
     "GeoDataset",
+    "GeoStackDataset",
     "IntersectionDataset",
     "NonGeoDataset",
     "TableDataset",

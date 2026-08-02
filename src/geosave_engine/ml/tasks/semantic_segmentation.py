@@ -11,7 +11,7 @@ from lightning.pytorch.callbacks import Callback
 from lightning.pytorch.utilities.types import OptimizerLRScheduler
 from torch.utils.data import DataLoader
 
-from geosave_engine.geodata.datasets import GeoDataset, stack_samples
+from geosave_engine.geodata.datasets import GeoStackDataset, stack_samples
 from geosave_engine.geodata.datasets.geo_dataset import LayerName
 from geosave_engine.geodata.pipeline import GeoPipeline
 from geosave_engine.ml.callbacks.prediction_logger import DensePredictionLogger
@@ -74,7 +74,7 @@ class SemanticSegmentationTask(LightningModule):
 
     Batch keys default to ``image``/``label``/``mask``/``context`` but are
     configurable (``image_key``/``label_key``/``mask_key``) to match your
-    GeoDataset's own layer names.
+    GeoStackDataset's own layer names.
 
     For custom training loops, write an independent LightningModule
     instead — this class does not expect to be subclassed.
@@ -503,10 +503,10 @@ class SemanticSegmentationTask(LightningModule):
 class SemanticSegmentationDataModule(LightningDataModule):
     """Generic datamodule pairing with SemanticSegmentationTask.
 
-    Reads already-ingested GeoDataset directories, one per split — raw layer
+    Reads already-ingested GeoStackDataset directories, one per split — raw layer
     names pass through unchanged. Pair with ``SemanticSegmentationTask``'s
     ``image_key``/``label_key``/``mask_key`` to point the task at whatever
-    layer names your GeoDataset actually produces. Ingestion itself (running
+    layer names your GeoStackDataset actually produces. Ingestion itself (running
     your Pipelines) is not this class's job — point each root at a directory
     that already has ``<root>/<layer_name>/*.zarr`` written.
 
@@ -517,17 +517,17 @@ class SemanticSegmentationDataModule(LightningDataModule):
     just force awkward symlinks/copies to satisfy it.
 
     Args:
-        train_root: GeoDataset directory for the train split. Required for
+        train_root: GeoStackDataset directory for the train split. Required for
             ``fit``.
-        val_root: GeoDataset directory for the val split. Required for
+        val_root: GeoStackDataset directory for the val split. Required for
             ``fit``/``validate``.
-        test_root: GeoDataset directory for the test split. Required for
+        test_root: GeoStackDataset directory for the test split. Required for
             ``test``.
-        predict_root: GeoDataset directory for the predict split. Required
+        predict_root: GeoStackDataset directory for the predict split. Required
             for ``predict``.
         pipeline: A ``GeoPipeline`` whose ``.context`` supplies extra
             per-sample keys (e.g. a Prithvi/Clay encoder's `temporal_coords`/
-            `location_coords`) to every split's `GeoDataset`. `None` omits
+            `location_coords`) to every split's `GeoStackDataset`. `None` omits
             context entirely — plain tensors + `"anchors"` only. Resolved by
             LightningCLI's own `class_path`/`init_args` mechanism (same as
             `model.class_path` above), no code to write beyond your
@@ -590,11 +590,11 @@ class SemanticSegmentationDataModule(LightningDataModule):
         self.prefetch_factor = prefetch_factor
         self.persistent_workers = persistent_workers
 
-    def _make_dataset(self, name: str, root: Path | None) -> GeoDataset:
+    def _make_dataset(self, name: str, root: Path | None) -> GeoStackDataset:
         if root is None:
             raise ValueError(f"{name} not set — pass `{name}` to build this split's dataset.")
         context_fn = self.pipeline.context if self.pipeline is not None else None
-        return GeoDataset(root, sel_bands=self.sel_bands, dtype_override=self.dtype_override, context_fn=context_fn)
+        return GeoStackDataset(root, sel_bands=self.sel_bands, dtype_override=self.dtype_override, context_fn=context_fn)
 
     def setup(self, stage: str | None = None) -> None:
         if stage == "fit":
@@ -609,7 +609,7 @@ class SemanticSegmentationDataModule(LightningDataModule):
         else:
             raise ValueError(f"Invalid stage: {stage!r}")
 
-    def _loader(self, dataset: GeoDataset, *, drop_last: bool = False) -> DataLoader:
+    def _loader(self, dataset: GeoStackDataset, *, drop_last: bool = False) -> DataLoader:
         return DataLoader(
             dataset,
             batch_size=self.batch_size,

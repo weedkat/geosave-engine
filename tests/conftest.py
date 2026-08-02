@@ -11,7 +11,7 @@ from dotenv import load_dotenv
 from odc.geo.geobox import GeoBox
 from odc.geo.xr import xr_zeros
 
-from geosave_engine.geodata.tile import GeoTile as GeoLayer
+from geosave_engine.geodata.tile import GeoTag, GeoTile as GeoLayer
 
 
 def pytest_configure(config):
@@ -57,7 +57,7 @@ def make_geo_layer():
                     da = da.expand_dims(time=[np.datetime64(t) for t in times]).copy()
                 vars_[name] = da
             data = xr.Dataset(vars_).rio.write_crs("EPSG:4326")
-        return GeoLayer(geobox=gbox, datetime=dt, data=data)
+        return GeoLayer(geobox=gbox, geotag=GeoTag(datetime=(dt, dt)), data=data)
 
     return _make
 

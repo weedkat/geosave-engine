@@ -21,8 +21,8 @@ from odc.stac import load as odc_load
 from tenacity import retry, retry_if_exception_type, stop_after_attempt, wait_exponential
 
 from geosave_engine.geodata.errors import AnchorFetchError
-from geosave_engine.geodata.tile import GeoAnchor, GeoTile
-from geosave_engine.geodata.utils.datetime import DateRange, TemporalGranularity, TemporalReduce
+from geosave_engine.geodata.tile import GeoAnchor, GeoTag, GeoTile
+from geosave_engine.geodata.utils.datetime import DateRange
 
 from .query import StacQuery
 
@@ -85,6 +85,10 @@ class SearchClient(Protocol):
     """Structural protocol for any client that can search a STAC catalog."""
 
     def search(self, query: StacQuery | dict[str, Any]) -> list[pystac.Item]: ...
+
+
+TemporalGranularity = Literal["scene", "day", "month", "year"]
+TemporalReduce = Literal["first", "last", "median", "mean"]
 
 
 class StacSourceArgs(TypedDict, total=False):
@@ -305,8 +309,8 @@ class StacSource:
         )
         da = ds.to_array(dim="band").transpose("time", "band", "y", "x")
         tile = GeoTile(
-            geobox=anchor.geobox, datetime=anchor.datetime, data=da, polygon=anchor.polygon
-        ).with_stac(items)
+            geobox=anchor.geobox, data=da, geotag=GeoTag(datetime=anchor.datetime, polygon=anchor.polygon)
+        ).rebase(stac=items)
 
         buckets: list[GeoTile] = []
         for window_start, window_end in self._patch_time_window(tile):
@@ -420,7 +424,7 @@ class StacSource:
         else:  # "mean"
             reduced = matched.mean(dim="time").expand_dims("time").assign_coords(time=[np.datetime64(start)])
 
-        return tile.with_datetime((start, end)).with_data(reduced)
+        return tile.rebase(datetime=(start, end), data=reduced)
 
     def _stack_steps(self, chunk: list[GeoTile]) -> GeoTile:
         """Concatenate temporal_slots resolved tiles into one final sample.
@@ -434,7 +438,7 @@ class StacSource:
         """
         span_start, span_end = chunk[0].start, chunk[-1].end
         stacked_data = xr.concat([bucket.data for bucket in chunk], dim="time")
-        return chunk[0].with_datetime((span_start, span_end)).with_data(stacked_data)
+        return chunk[0].rebase(datetime=(span_start, span_end), data=stacked_data)
 
 
 @retry(
@@ -481,4 +485,4 @@ def download(tile: GeoTile, *, max_nodata_fraction: float = 0.0) -> GeoTile:
     if nodata_fraction > max_nodata_fraction:
         raise IOError(f"nodata fraction {nodata_fraction:.3f} exceeds max {max_nodata_fraction}")
 
-    return tile.with_data(computed)
+    return tile.rebase(data=computed)

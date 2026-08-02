@@ -1,0 +1,17 @@
+{
+  "attributes": {
+    "has_band": false,
+    "tag": "{\"datetime\":[\"2018-12-26T10:34:39.024000\",\"2018-12-26T10:34:39.024000\"],\"metadata\":{\"description\":\"Sentinel-2 L2A Scene Classification Layer (Sen2Cor)\"},\"plot_meta\":{\"class_map\":{\"0\":\"no_data\",\"1\":\"saturated_defective\",\"2\":\"dark_area\",\"3\":\"cloud_shadow\",\"4\":\"vegetation\",\"5\":\"bare_soil\",\"6\":\"water\",\"7\":\"unclassified\",\"8\":\"cloud_medium_prob\",\"9\":\"cloud_high_prob\",\"10\":\"thin_cirrus\",\"11\":\"snow_ice\"},\"color_map\":{\"0\":\"#000000\",\"1\":\"#ff0000\",\"2\":\"#2f2f2f\",\"3\":\"#643200\",\"4\":\"#00a600\",\"5\":\"#ffe65a\",\"6\":\"#0000ff\",\"7\":\"#808080\",\"8\":\"#c0c0c0\",\"9\":\"#ffffff\",\"10\":\"#66ccff\",\"11\":\"#ff66ff\"}}}",
+    "var_order": [
+      "data"
+    ],
+    "dim_order": {
+      "data": [
+        "y",
+        "x"
+      ]
+    }
+  },
+  "zarr_format": 3,
+  "node_type": "group"
+}

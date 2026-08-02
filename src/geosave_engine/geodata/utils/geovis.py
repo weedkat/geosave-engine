@@ -46,7 +46,6 @@ panel's raw ``tile.metadata`` there.
 """
 from __future__ import annotations
 
-import dataclasses
 import textwrap
 import warnings
 from dataclasses import dataclass
@@ -75,7 +74,9 @@ warnings.filterwarnings("ignore", message=r"Glyph \d+ .*missing from font", cate
 
 _CATEGORICAL_MAX_CLASSES = 32  # beyond this, an integer band is probably not a label map
 _NODATA_FACECOLOR = "#c8c8c8"  # shows through transparent nodata pixels — distinct from white page bg
-_LEGEND_COLUMN_LEFT = 0.82  # figure-fraction x: where the shared legend column starts
+_COL_WIDTH = 4.0  # inches per panel column
+_ROW_HEIGHT = 4.6  # inches per panel row
+_LEGEND_COLUMN_WIDTH = 1.8  # inches — added to figure width, not carved out of panel columns (see plot())
 
 PanelKind = Literal["rgb", "continuous", "categorical", "fallback"]
 
@@ -99,7 +100,7 @@ def _resolve_rgb_bands(tile: GeoTile, title: str, rgb_bands: tuple[str, str, str
         raise ValueError(
             f"{title!r}: {tile.num_bands} bands {tile.bands} — which 3 are R/G/B is ambiguous. "
             f"Pass rgb_bands=(r_name, g_name, b_name) to plot(), or set it once via "
-            f"tile.with_plot_meta(rgb_bands=(r_name, g_name, b_name))."
+            f"tile.rebase(plot_meta={{'rgb_bands': (r_name, g_name, b_name)}})."
         )
     missing = [b for b in rgb_bands if b not in tile.bands]
     if missing:
@@ -133,7 +134,7 @@ def _detect_panel(
             if class_map is None and color_map is None:
                 warnings.warn(
                     f"{title!r}: categorical tile has no class_map/color_map — auto-palette used, "
-                    f"values shown as raw ints. Set via tile.with_plot_meta(class_map=..., color_map=...) "
+                    f"values shown as raw ints. Set via tile.rebase(plot_meta={{'class_map': ..., 'color_map': ...}}) "
                     f"for readable labels.",
                     stacklevel=2,
                 )
@@ -238,9 +239,15 @@ def _render_rgb(ax: Axes, panel: _Panel) -> list[Patch] | None:
     return None
 
 
+def _single_band_2d(tile: GeoTile) -> np.ndarray:
+    """This panel's one band as a plain (y, x) array, whether or not data has a 'band' dim."""
+    arr = tile.to_numpy()
+    return arr[0] if "band" in tile.data.dims else arr
+
+
 def _render_single_band(ax: Axes, panel: _Panel) -> list[Patch] | None:
     """Continuous colormap for one band — also the fallback for an unclassifiable one."""
-    arr = np.ma.masked_invalid(panel.tile.to_numpy()[0])
+    arr = np.ma.masked_invalid(_single_band_2d(panel.tile))
     im = ax.imshow(arr, cmap=panel.cmap)
     plt.colorbar(im, ax=ax, fraction=0.046, pad=0.04)
     return None
@@ -250,7 +257,7 @@ def _render_categorical(ax: Axes, panel: _Panel) -> list[Patch] | None:
     """Palette-colorized label map. Returns legend handles — plot() draws them
     stacked in one figure-level column instead of per-panel, so a panel's
     own legend doesn't shrink that panel's image."""
-    arr = panel.tile.to_numpy()[0].astype(int)
+    arr = _single_band_2d(panel.tile).astype(int)
     classes = sorted(np.unique(arr).tolist())
     palette: Palette = panel.color_map or _default_palette(classes)
     ax.imshow(colorize(arr, palette))
@@ -303,15 +310,16 @@ def _split_time(tile: GeoTile) -> list[GeoTile]:
     axis silently survives into `to_numpy()`'s output shape and throws off
     every downstream index that assumes `(band, y, x)`.
 
-    `with_data()` alone would leave `.datetime` as the original (start !=
-    end) range — every split-off tile would then collide into one bogus
-    group — so `.datetime` is rewritten to the split timestep's own real
-    time too.
+    `rebase(data=...)` alone would leave `.datetime` as the original
+    (start != end) range — every split-off tile would then collide into
+    one bogus group — so `.datetime` is rewritten to the split timestep's
+    own real time too.
     """
     if not tile.has_time:
         return [tile]
     return [
-        dataclasses.replace(tile, data=tile.data.isel(time=i), datetime=tile.times[i]) for i in range(len(tile.times))
+        tile.rebase(data=tile.data.isel(time=i), datetime=(tile.times[i], tile.times[i]))
+        for i in range(len(tile.times))
     ]
 
 
@@ -496,7 +504,14 @@ def plot(
     n = len(panels)
     cols = cols or min(4, n)
     rows = -(-n // cols)
-    fig, axes = plt.subplots(rows, cols, figsize=(4 * cols, 4.6 * rows), squeeze=False)
+    # Legend column adds to figure width instead of carving it out of panel
+    # columns — carving it out shrinks each (aspect-locked) square image, which
+    # leaves the panel row shorter than _ROW_HEIGHT was sized for, showing up
+    # as a big blank gap before the next row.
+    has_legend = any(p.kind == "categorical" for p in panels)
+    panel_width = _COL_WIDTH * cols
+    fig_width = panel_width + (_LEGEND_COLUMN_WIDTH if has_legend else 0)
+    fig, axes = plt.subplots(rows, cols, figsize=(fig_width, _ROW_HEIGHT * rows), squeeze=False)
     axes_flat = axes.flatten()
     legend_groups: list[tuple[str, list[Patch]]] = []
     for ax, panel in zip(axes_flat, panels):
@@ -506,9 +521,9 @@ def plot(
     for ax in axes_flat[n:]:
         ax.axis("off")
 
-    right = _LEGEND_COLUMN_LEFT if legend_groups else 1.0
+    right = panel_width / fig_width if legend_groups else 1.0
     top = 0.96 if title else 1.0
-    fig.tight_layout(rect=(0, 0, right, top))
+    fig.tight_layout(rect=(0, 0, right, top), h_pad=0.4, w_pad=0.4)
     if title:
         fig.suptitle(title, fontsize=11, y=0.99)
     # Pass 1: draw each legend to learn its real rendered height (only known

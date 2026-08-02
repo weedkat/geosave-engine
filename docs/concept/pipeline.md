@@ -56,7 +56,7 @@ class Sentinel2OnlyPipeline(GeoPipeline):
 
     def preprocess(self, raw: dict[str, GeoTile]) -> dict[str, GeoTile]:
         tile = raw["sentinel_2_l1c"]
-        return {"sentinel_2_l1c": tile.with_data(tile.data.astype("float32"))}
+        return {"sentinel_2_l1c": tile.rebase(data=tile.data.astype("float32"))}
 ```
 
 | Method | Override when | Default |
@@ -220,7 +220,7 @@ stays lazy, pixels read only when something actually calls `.to_tensor()`.
 
 A derived layer just reads the `.data` of a tile already fetched in the same
 call — no chaining mechanism, no intermediate directory. Trimmed from
-`workspace/modules/data_pipeline.py`'s actual `Pipeline` (full file has the
+`workspace/modules/data_pipeline_l1c.py`'s actual `Pipeline` (full file has the
 cloud/shadow mask math in `_ingest_cloud_mask`/`_ingest_ndvi`):
 
 ```python
@@ -238,11 +238,11 @@ class Pipeline(GeoPipeline):
         # select down to the model's own input bands only after they're computed.
         cloud_mask = self._ingest_cloud_mask(s2)   # reads s2.data, no re-fetch
         ndvi = self._ingest_ndvi(s2)                # reads s2.data, no re-fetch
-        s2_model = s2.with_data(s2.data.sel(band=DW_MODEL_BANDS))
+        s2_model = s2.rebase(data=s2.data.sel(band=DW_MODEL_BANDS))
         return {
-            "sentinel_2_l1c": s2_model.with_metadata({"description": "Sentinel-2 L1C imagery (DynamicWorld input bands)"}),
-            "cloud_mask": cloud_mask.with_metadata({"description": "Cloud and shadow mask, 0=clear, 1=cloud/shadow"}),
-            "ndvi": ndvi.with_metadata({"description": "Normalized Difference Vegetation Index"}),
+            "sentinel_2_l1c": s2_model.rebase(metadata={"description": "Sentinel-2 L1C imagery (DynamicWorld input bands)"}),
+            "cloud_mask": cloud_mask.rebase(metadata={"description": "Cloud and shadow mask, 0=clear, 1=cloud/shadow"}),
+            "ndvi": ndvi.rebase(metadata={"description": "Normalized Difference Vegetation Index"}),
         }
 ```
 
@@ -287,9 +287,9 @@ pipeline's `context()` can serve several different model architectures at
 once without any of them needing to know about the others' keys.
 
 Reaches every consumer that renders a sample: `GeoStack.to_tensor(context_fn=...)`,
-`GeoDataset(context_fn=...)`, and `ingest_to_tensor` all take/use the same
+`GeoStackDataset(context_fn=...)`, and `ingest_to_tensor` all take/use the same
 function. `SemanticSegmentationDataModule`'s own `pipeline` arg wires a
-`GeoPipeline` instance's `.context` into every split's `GeoDataset`
+`GeoPipeline` instance's `.context` into every split's `GeoStackDataset`
 automatically (see [model.md](model.md#semanticsegmentationdatamodule)) —
 nothing to call by hand for the standardized training path.
 
@@ -305,8 +305,8 @@ two fully independent steps, not bundled into one `ingest()` call.
 def build_label(anchor: GeoTile) -> GeoTile:
     """Remap the anchor's own raw pixel values into the target schema."""
     label = remap(anchor, LABEL_REMAP)   # {raw_value: target_value}
-    label = label.with_data(label.data.assign_coords(band=["label"]))
-    return label.with_nodata(255)
+    label = label.rebase(data=label.data.assign_coords(band=["label"]))
+    return label.rebase(nodata=255)
 
 def ingest_group(raw_dir: Path, out_root: Path) -> None:
     anchors = [GeoTile.from_geotiff(p, load_data=True) for p in raw_dir.glob("*.tif")]
@@ -333,16 +333,15 @@ imagery layers.
 root = Path("data/train")
 for anchor in anchors:
     for stack in pipeline.ingest(anchor):
-        stack.save(root / f"{anchor.stem}.geostack", save_stac=["sentinel_2_l1c"])
+        stack.save(root / f"{anchor.stem}.geostack")
 ```
 
 Writes `root/<anchor_stem>.geostack/<layer_name>.zarr` for every layer in
-each yielded `GeoStack`. `save_stac` defaults to `False` (no `.stac.json`
-sidecars written at all). Pass `True` to save every layer's, or a list of
-layer names to save it for only those — worth doing for the one layer that
-actually came from a real STAC search, and skipping derived layers (a
-cloud mask, NDVI) that just inherit the same `stac` list unchanged and
-would otherwise write a duplicate, no-new-information sidecar per layer.
+each yielded `GeoStack`, plus `<layer_name>.stac.json` for whichever layers
+actually carry STAC provenance (`tile.stac` non-empty) — no flag needed. A
+derived layer (a cloud mask, NDVI built via `to_geotile`) never carries
+`stac` at all, so only the layer that actually came from a real STAC search
+gets a sidecar.
 
 No manifest, no built-in resumability — if re-running matters, skip
 anchors whose folder already exists yourself, same check as
@@ -360,7 +359,7 @@ call, or a hand-built list for anchors that don't fit an existing source
 ```python
 for anchor in anchors:
     for sample in pipeline.ingest_to_tensor(anchor, sel_bands={"sentinel_2_l1c": ["B04", "B03", "B02"]}):
-        ...  # tensor dict + "anchors", same shape GeoDataset.__getitem__ returns,
+        ...  # tensor dict + "anchors", same shape GeoStackDataset.__getitem__ returns,
              # plus this pipeline's own context() keys if it overrides one
 ```
 
@@ -371,7 +370,7 @@ class — for predicting straight from a live source with no disk round
 trip. Always applies `self.context`
 (see [Supplying model-specific context](#supplying-model-specific-context)
 above) — the live-predict path and the disk-training path
-(`GeoDataset(context_fn=...)`) both end up calling the same
+(`GeoStackDataset(context_fn=...)`) both end up calling the same
 `GeoStack.to_tensor(context_fn=...)`, so a pipeline's `context()` behaves
 identically either way. Wrap it in a one-off `IterableDataset` at the call
 site if a `DataLoader` needs one, and shard it by

@@ -7,6 +7,7 @@ import numpy as np
 import pytest
 import rasterio
 import torch
+import xarray as xr
 
 from geosave_engine.geodata.datasets.non_geo_dataset import NonGeoDataset
 
@@ -18,6 +19,13 @@ def _write_tif(path: Path, array: np.ndarray) -> None:
         path, "w", driver="GTiff", height=height, width=width, count=count, dtype=array.dtype
     ) as dst:
         dst.write(array)
+
+
+def _write_zarr(path: Path, array: np.ndarray) -> None:
+    """Write a plain zarr store, no CRS/geobox — array shape (C, H, W)."""
+    path.parent.mkdir(parents=True, exist_ok=True)
+    ds = xr.Dataset({f"band_{i}": (("y", "x"), band) for i, band in enumerate(array)})
+    ds.to_zarr(path)
 
 
 class TestNonGeoDataset:
@@ -65,3 +73,23 @@ class TestNonGeoDataset:
         _write_tif(tmp_path / "sub" / "a.tif", np.zeros((1, 2, 2), dtype="uint8"))
         ds = NonGeoDataset(tmp_path, ".tif")
         assert ds.to_row("a") == {"path": str(Path("sub") / "a.tif")}
+
+
+class TestZarrLiteral:
+    def test_discovers_and_renders_tensor_no_crs(self, tmp_path):
+        _write_zarr(tmp_path / "img1.zarr", np.zeros((3, 8, 8), dtype="uint8"))
+        ds = NonGeoDataset(tmp_path, ".zarr")
+        sample = ds[0]
+        assert isinstance(sample["image"], torch.Tensor)
+        assert tuple(sample["image"].shape) == (3, 8, 8)
+
+    def test_dtype_override_casts_tensor(self, tmp_path):
+        _write_zarr(tmp_path / "img1.zarr", np.zeros((1, 4, 4), dtype="uint8"))
+        ds = NonGeoDataset(tmp_path, ".zarr", dtype_override=torch.float32)
+        assert ds[0]["image"].dtype == torch.float32
+
+    def test_discovers_nested_stores(self, tmp_path):
+        _write_zarr(tmp_path / "sub" / "a.zarr", np.zeros((1, 2, 2), dtype="uint8"))
+        _write_zarr(tmp_path / "sub2" / "b.zarr", np.zeros((1, 2, 2), dtype="uint8"))
+        ds = NonGeoDataset(tmp_path, ".zarr")
+        assert len(ds) == 2

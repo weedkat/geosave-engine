@@ -16,7 +16,7 @@ from odc.geo.xr import xr_coords
 
 from geosave_engine.geodata.errors import AnchorFetchError
 from geosave_engine.geodata.stac.source import StacSource
-from geosave_engine.geodata.tile import GeoAnchor
+from geosave_engine.geodata.tile import GeoAnchor, GeoTag
 
 UTM = "EPSG:32633"
 BBOX = (500000, 5000000, 500320, 5000320)  # 32 x 32 px at 10 m
@@ -62,7 +62,7 @@ def _fake_odc_load(items, *, geobox, bands, resampling, chunks, dtype, groupby):
 
 def _anchor(start: datetime, end: datetime) -> GeoAnchor:
     gb = GeoBox.from_bbox(BBOX, crs=UTM, resolution=10, anchor="edge")
-    return GeoAnchor(geobox=gb, datetime=(start, end))
+    return GeoAnchor(geobox=gb, geotag=GeoTag(datetime=(start, end)))
 
 
 @pytest.fixture(autouse=True)

@@ -1,0 +1,17 @@
+{
+  "attributes": {
+    "has_band": false,
+    "tag": "{\"datetime\":[\"2019-07-13T02:35:59.024000\",\"2019-07-13T02:35:59.024000\"],\"metadata\":{\"description\":\"Cloud/shadow/invalid mask from Scene Classification Layer (SCL)\"},\"plot_meta\":{\"class_map\":{\"0\":\"clear\",\"1\":\"cloud/shadow/invalid\"},\"color_map\":{\"0\":\"#FFFFFF\",\"1\":\"#000000\"}}}",
+    "var_order": [
+      "data"
+    ],
+    "dim_order": {
+      "data": [
+        "y",
+        "x"
+      ]
+    }
+  },
+  "zarr_format": 3,
+  "node_type": "group"
+}

@@ -5,11 +5,12 @@ from typing import Any, Literal, get_args
 
 import rasterio
 import torch
+import xarray as xr
 
 from geosave_engine.geodata.datasets.base_dataset import BaseDataset, extract_key, filter_by_split
 
 LayerName = str
-RasterExtension = Literal[".tif", ".tiff", ".jpg", ".jpeg", ".png", ".jp2"]
+RasterExtension = Literal[".tif", ".tiff", ".jpg", ".jpeg", ".png", ".jp2", ".zarr"]
 RASTER_EXTENSIONS: tuple[RasterExtension, ...] = get_args(RasterExtension)
 
 
@@ -20,6 +21,10 @@ class NonGeoDataset(BaseDataset):
     globbing in a single dataset. An image+label pair (different files) is
     two `NonGeoDataset` instances joined by `IntersectionDataset` on their
     shared stem key.
+
+    `.tif`/`.zarr` here are read literally — no CRS/geobox interpretation,
+    just the raw pixel array. A `.tif`/`.zarr` with real, usable geo
+    metadata belongs in `GeoDataset` instead, which keeps it.
 
     Args:
         root: Directory to `rglob` for files matching `extension`.
@@ -71,8 +76,11 @@ class NonGeoDataset(BaseDataset):
         Returns:
             `{layer_name: Tensor}`, shape `[C, H, W]`.
         """
-        with rasterio.open(self.paths[key]) as src:
-            array = src.read()
+        if self.extension == ".zarr":
+            array = xr.open_zarr(self.paths[key]).to_array(dim="band").values
+        else:
+            with rasterio.open(self.paths[key]) as src:
+                array = src.read()
         tensor = torch.from_numpy(array)
         if self.dtype_override is not None:
             tensor = tensor.to(self.dtype_override)

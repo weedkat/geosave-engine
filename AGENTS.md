@@ -81,6 +81,19 @@ design changes again, and nobody reads a paragraph to find the one line
 that mattered. If the body runs past 2-3 lines, cut it down. Design
 tradeoffs get flagged in chat/PR, not embedded in a class docstring.
 
+**This applies to module docstrings too, and to inline comments.** No
+"Design summary (converged across discussion)" style write-ups at the top
+of a file logging how a decision was reached, what was tried first, what
+got renamed from what. That's a changelog, not documentation — it belongs
+in the commit message. A reader opening the file needs to know what it
+does *now*, not its history. Same discipline for comments: one line
+flagging a non-obvious constraint is fine; a comment restating the
+reasoning behind a parameter choice ("confirmed empirically", "because
+X doesn't guarantee Y") is essay creep in miniature — cut it or fold it
+into the one sentence that actually matters. If a docstring or comment
+needs a diagram or bullet list to land, it is not a docstring anymore —
+stop and ask whether this belongs in `docs/` instead.
+
 Example:
 
 ```python

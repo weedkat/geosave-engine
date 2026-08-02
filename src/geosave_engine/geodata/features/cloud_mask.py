@@ -1,6 +1,6 @@
 import numpy as np
 from scipy.ndimage import gaussian_filter, uniform_filter
-from s2cloudless import S2PixelCloudDetector
+from s2cloudless.cloud_detector import S2PixelCloudDetector
 
 
 def _local_var(arr: np.ndarray, size: int = 7) -> np.ndarray:
@@ -91,3 +91,26 @@ def compute_b10_mask(b10: np.ndarray, *, b10_threshold: float = 0.01) -> np.ndar
         (H, W) bool mask — True where cirrus detected.
     """
     return b10.astype(np.float32) > b10_threshold
+
+
+SCL_CLOUD_CLASSES = (0, 1, 3, 8, 9, 10)  # no data, saturated/defective, shadow, cloud med/high, cirrus
+
+
+def compute_scl_mask(scl: np.ndarray, *, invalid_classes: tuple[int, ...] = SCL_CLOUD_CLASSES) -> np.ndarray:
+    """Cloud/shadow/invalid mask from Sentinel-2 L2A's Scene Classification Layer.
+
+    Sen2Cor's own per-pixel classification (0=no data, 1=saturated/defective,
+    2=dark area, 3=cloud shadow, 4=vegetation, 5=bare soil, 6=water,
+    7=cloud low prob/unclassified, 8=cloud med prob, 9=cloud high prob,
+    10=cirrus, 11=snow/ice) — no separate cloud-detection model needed,
+    unlike L1C's `compute_s2c_mask`/`compute_cdi_mask`/`compute_b10_mask`.
+
+    Args:
+        scl: (H, W) int SCL classification values.
+        invalid_classes: SCL values flagged as cloud/shadow/invalid. Default
+            excludes snow (11) — pass it explicitly if snow should count too.
+
+    Returns:
+        (H, W) bool mask — True where flagged.
+    """
+    return np.isin(scl, invalid_classes)

@@ -26,12 +26,21 @@ def validate_bbox(bbox: tuple[float, float, float, float] | None) -> None:
         raise ValueError(f"Latitude miny ({miny}) cannot be greater than maxy ({maxy}).")
 
 
-def validate_coordinate(latitude: float, longitude: float) -> None:
-    """Validate a WGS84 coordinate."""
+def validate_coordinate(latitude: float, longitude: float) -> tuple[float, float]:
+    """Validate a WGS84 coordinate, wrapping longitude into [-180, 180).
+
+    Latitude has no analogous wrap (no meaningful fix past a pole) — still raises.
+
+    Returns:
+        (latitude, wrapped_longitude).
+
+    Raises:
+        ValueError: If latitude is out of [-90, 90].
+    """
     if not MIN_LATITUDE <= latitude <= MAX_LATITUDE:
         raise ValueError(f"Latitude must be between -90 and 90 degrees, got {latitude}")
-    if not MIN_LONGITUDE <= longitude <= MAX_LONGITUDE:
-        raise ValueError(f"Longitude must be between -180 and 180 degrees, got {longitude}")
+    wrapped_longitude = ((longitude + 180.0) % 360.0) - 180.0
+    return latitude, wrapped_longitude
 
 
 def calculate_crs(latitude: float, longitude: float) -> CRS:

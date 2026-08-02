@@ -1,7 +1,7 @@
 from typing import Any
 import dataclasses
 from dataclasses import dataclass
-from datetime import datetime
+from datetime import datetime as dt
 from typing import TypeVar
 
 from cql2 import Expr
@@ -33,7 +33,7 @@ class StacQuery:
     ids: list[str] | None = None
     bbox: tuple[float, float, float, float] | None = None
     intersects: dict[str, Any] | None = None
-    datetime: datetime | str | tuple[datetime, datetime] | None = None
+    datetime: dt | str | tuple[dt, dt] | None = None
     max_items: int | None = None
     limit: int | None = None
     query: dict[str, Any] | None = None

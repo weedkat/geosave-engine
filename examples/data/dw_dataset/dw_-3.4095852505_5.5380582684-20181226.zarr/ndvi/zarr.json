@@ -1,0 +1,17 @@
+{
+  "attributes": {
+    "has_band": false,
+    "tag": "{\"datetime\":[\"2018-12-26T10:34:39.024000\",\"2018-12-26T10:34:39.024000\"],\"metadata\":{\"description\":\"Normalized Difference Vegetation Index\"},\"plot_meta\":{}}",
+    "var_order": [
+      "data"
+    ],
+    "dim_order": {
+      "data": [
+        "y",
+        "x"
+      ]
+    }
+  },
+  "zarr_format": 3,
+  "node_type": "group"
+}

@@ -1,71 +1,29 @@
-"""GeoStack: the collection counterpart to GeoTile.
-
-Design summary (converged across discussion, not just this file):
-    - GeoStack is a frozen dataclass, concrete, never subclassed per
-      project — same as GeoTile. No declared schema/spec of any kind —
-      every GeoTile already describes itself (geobox, dtype, bands,
-      metadata), so a stack of them needs nothing more than the tiles.
-    - Construction is one step: `GeoStack(**tiles)`, e.g.
-      `GeoStack(**pipeline.ingest(anchor))`. No header-only state, no
-      `.with_data()` — every real caller already has the full
-      `dict[str, GeoTile]` in hand before it needs a stack at all.
-    - Alignment is real geometry, not a name/stem comparison: `__init__`
-      runs multi-tile stacks through `align()` (narrows every tile's
-      geobox to their common intersection) and keeps the aligned result,
-      not the originals — auto-correcting minor discrepancies rather than
-      just rejecting them.
-    - `save`/`load` write/read a *directory* — one plain `GeoTile.to_zarr`
-      store per layer, named `{layer}.zarr`, inside one folder per anchor.
-      Not named `to_zarr`/`from_zarr`: this class doesn't write zarr
-      itself, it orchestrates `GeoTile`'s own zarr I/O per layer. Every
-      layer is written and read back with GeoTile's serialization
-      completely unchanged — no second on-disk format to reconcile with,
-      no ambiguity about what a given `.zarr` store is.
-    - No cross-directory stem-matching: every layer for one anchor is
-      written into the same folder in the same `save()` call, so grouping
-      is correct by construction, not reassembled after the fact from
-      separate top-level layer directories.
-    - `to_tensor()` always attaches one bare `GeoAnchor` per layer (via
-      `GeoTile.to_anchor()`, pixel data/STAC stripped) under
-      `sample["anchors"]` (`dict[LayerName, GeoAnchor]`) — not a single
-      collapsed "the stack's anchor": `align()` guarantees identical
-      `geobox` across tiles but not `datetime`/`metadata`/`polygon`, so
-      picking one representative tile would silently lose the others'
-      real values. A consumer that needs exactly one (e.g. rebuilding
-      output georeferencing) picks whichever layer's anchor it actually
-      means, instead of getting an arbitrary "first tile" stand-in.
-    - The folder itself carries a `.geostack` suffix (`save`/`load` both
-      require and enforce it) — same convention as `.zarr`/`.tif`, or
-      Sentinel-2's own `.SAFE` product directories. Lets discovery over a
-      (possibly deeply nested, grouped) tree of anchor folders use one
-      unambiguous name-based glob — `root.rglob("*.geostack")` — instead of
-      guessing "is this directory a real anchor folder" from the mere
-      presence of `.zarr` stores inside it, which a stray unrelated store
-      elsewhere in the tree could fool, and instead of a hidden marker file
-      that doesn't show up browsing the tree normally.
-"""
+"""GeoStack: the collection counterpart to GeoTile. See GeoStack for details."""
 from __future__ import annotations
 
-from dataclasses import dataclass
-from pathlib import Path
-from typing import TYPE_CHECKING, Any, Callable, Sequence
-
+import shutil
 import torch
-from typing_extensions import Unpack
+import zarr
+import numpy as np
 
-from geosave_engine.geodata.tile.geotile import GeoTile, align
+from pathlib import Path
+from typing import TYPE_CHECKING, Any, Callable
+from typing_extensions import Unpack
+from odc.geo.geobox import GeoBox
+
+from geosave_engine.geodata.tile.geotile import GeoTile, _write_stac
+from geosave_engine.geodata.tile.ops import align
+from geosave_engine.geodata.utils.geodata import da_to_ds
+from geosave_engine.geodata.utils.io import to_zarr
 
 if TYPE_CHECKING:
     from matplotlib.figure import Figure
-    import numpy as np
-
     from geosave_engine.geodata.utils.geovis import PlotKwargs
 
 LayerName = str
-GEOSTACK_SUFFIX = ".geostack"
+GEOSTACK_SUFFIX = ".geostack"  # retained for callers still on the old folder convention
 
 
-@dataclass(frozen=True)
 class GeoStack:
     """Named group of GeoTiles for one anchor — the collection counterpart to GeoTile.
 
@@ -89,12 +47,10 @@ class GeoStack:
 
     Examples:
         >>> stack = GeoStack(sentinel_2_l1c=s2_tile, cloud_mask=mask_tile)
-        >>> stack.save("data/train/13.000000_52.000000_20240115_10m.geostack")
+        >>> stack.save("data/train/13.000000_52.000000_20240115_10m.zarr")
         >>> sample = stack.to_tensor()
         >>> combined = GeoStack(stack, ndvi=ndvi_tile)  # flattens stack's own layers in
     """
-
-    tiles: dict[LayerName, GeoTile]
 
     def __init__(self, *args: GeoTile | GeoStack, **tiles: GeoTile) -> None:
         positional: dict[LayerName, GeoTile] = {}
@@ -116,28 +72,12 @@ class GeoStack:
             )
         named = {**positional, **tiles}
         aligned = dict(zip(named.keys(), align(*named.values()))) if len(named) > 1 else named
-        object.__setattr__(self, "tiles", aligned)
+        self.tiles: dict[LayerName, GeoTile] = aligned
+        self.geobox: "GeoBox" = next(iter(aligned.values())).geobox
 
     def __repr__(self) -> str:
         layers = ", ".join(f"{name}={tile!r}" for name, tile in self.tiles.items())
         return f"{type(self).__name__}({layers})"
-
-    def add(self, name: LayerName, tile: GeoTile) -> "GeoStack":
-        """Return new GeoStack with one more layer, realigned.
-
-        Pure — same shape as GeoTile.with_data: self is untouched, a new
-        instance comes back. Runs every tile (existing + new) through
-        align() again, same as construction. A name already present is
-        overwritten by tile.
-
-        Args:
-            name: Layer name.
-            tile: Tile to add under name.
-
-        Returns:
-            New GeoStack with name -> tile merged in.
-        """
-        return GeoStack(**{**self.tiles, name: tile})
 
     def plot(self, cols: int = 4, **kwargs: Unpack[PlotKwargs]) -> tuple[Figure, np.ndarray]:
         """Plot every layer — thin wrapper, see `geosave_engine.geodata.utils.geovis.plot`.
@@ -158,31 +98,44 @@ class GeoStack:
 
         return plot(self.tiles, cols=cols, **kwargs)
 
-    def save(self, path: str | Path, save_stac: bool | Sequence[LayerName] = False) -> Path:
-        """Write every tile as its own zarr store inside a `.geostack` folder.
+    def save(self, path: str | Path, overwrite: bool = True) -> Path:
+        """Write every layer into its own Zarr group inside one store.
+
+        Each group is independently CF-compliant (one variable per band,
+        own `time`/attrs) — same as `GeoTile.to_zarr`, just one call per
+        layer instead of a whole-store write. STAC provenance writes
+        alongside as `<path>/<layer_name>.stac.json`, one per layer that
+        actually carries any (`tile.stac` non-empty) — a layer derived from
+        another (e.g. a cloud mask built via `to_geotile`) carries none, so
+        only the layer that actually came from a real STAC search gets a
+        sidecar, with no separate flag needed.
 
         Args:
-            path: Output directory, must end in `.geostack`; created if
-                missing. Each layer writes to `path/{layer}.zarr`.
-            save_stac: `True`/`False` applies to every layer uniformly. A
-                list of layer names saves STAC provenance for only those —
-                useful when most layers are derived from (or have no) real
-                STAC search results and would just duplicate/pad out one
-                real source layer's sidecar with nothing new.
+            path: Output Zarr store path, must end in `.zarr`.
+            overwrite: Wipe and rewrite from scratch if `path` already
+                exists, so a layer removed since a previous `save()` doesn't
+                linger as a stale group. False raises instead of silently
+                deleting whatever's already there.
 
         Returns:
-            The written directory path.
+            The written store path.
 
         Raises:
-            ValueError: If path doesn't end in `.geostack`.
+            ValueError: If path doesn't end in `.zarr`.
+            FileExistsError: If `path` already exists and `overwrite` is False.
         """
         path = Path(path)
-        if path.suffix != GEOSTACK_SUFFIX:
-            raise ValueError(f"Expected a {GEOSTACK_SUFFIX} path, got: {path}")
-        wanted = save_stac if isinstance(save_stac, bool) else set(save_stac)
-        for name, tile in self.tiles.items():
-            layer_save_stac = wanted if isinstance(wanted, bool) else name in wanted
-            tile.to_zarr(path / f"{name}.zarr", save_stac=layer_save_stac)
+        if path.suffix != ".zarr":
+            raise ValueError(f"Expected a .zarr path, got: {path}")
+        if path.exists():
+            if not overwrite:
+                raise FileExistsError(f"{path} already exists — pass overwrite=True to replace it")
+            shutil.rmtree(path)
+        for layer_name, tile in self.tiles.items():
+            tag = tile.geotag.model_dump_json(exclude_none=True)
+            ds = da_to_ds(tile.data).assign_attrs(tag=tag)
+            to_zarr(path, ds, group=layer_name)
+            _write_stac(tile.stac, path, group=layer_name)
         return path
 
     @classmethod
@@ -192,31 +145,35 @@ class GeoStack:
         required_layers: list[LayerName] | None = None,
         load_data: bool = False,
     ) -> "GeoStack":
-        """Read every {layer}.zarr inside a `.geostack` folder into one GeoStack.
+        """Read a Zarr store written by save() into one GeoStack.
 
         Args:
-            path: Directory written by save(), must end in `.geostack`.
-            required_layers: Layer names to require. None loads every
-                `*.zarr` store present in path.
+            path: Store written by save(), must end in `.zarr`.
+            required_layers: Layer names to require. None loads every layer
+                (zarr group) present in the store.
             load_data: Materialise all pixels into memory; default lazy.
 
         Returns:
             GeoStack with one GeoTile per loaded layer.
 
         Raises:
-            ValueError: If path doesn't end in `.geostack`.
-            KeyError: If a name in required_layers has no matching
-                `{layer}.zarr` store in path.
+            ValueError: If path doesn't end in `.zarr`, or the store has no
+                zarr groups at all (not written by GeoStack.save).
+            KeyError: If a name in required_layers isn't present in the store.
         """
         path = Path(path)
-        if path.suffix != GEOSTACK_SUFFIX:
-            raise ValueError(f"Expected a {GEOSTACK_SUFFIX} path, got: {path}")
-        available = [p.stem for p in sorted(path.glob("*.zarr"))]
+        if path.suffix != ".zarr":
+            raise ValueError(f"Expected a .zarr path, got: {path}")
+        available = sorted(zarr.open_group(path, mode="r").group_keys())
+        if not available:
+            raise ValueError(f"{path} has no zarr groups — not written by GeoStack.save")
         names = required_layers if required_layers is not None else available
         missing = set(names) - set(available)
         if missing:
-            raise KeyError(f"Layer(s) {sorted(missing)} not found in {path} — available: {sorted(available)}")
-        return cls(**{name: GeoTile.from_zarr(path / f"{name}.zarr", load_data=load_data) for name in names})
+            raise KeyError(f"Layer(s) {sorted(missing)} not found in {path} — available: {available}")
+
+        tiles = {name: GeoTile.from_zarr(path, group=name, load_data=load_data) for name in names}
+        return cls(**tiles)
 
     def to_tensor(
         self,
@@ -252,7 +209,7 @@ class GeoStack:
 
         sample: dict[str, Any] = {}
         for layer_name, tile in self.tiles.items():
-            tensor = tile.to_tensor(sel_bands.get(layer_name), squeeze=False)
+            tensor = tile.to_tensor(sel_bands.get(layer_name))
             dtype = dtype_override.get(layer_name)
             if dtype is not None:
                 tensor = tensor.to(dtype)

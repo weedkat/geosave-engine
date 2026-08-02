@@ -2,14 +2,44 @@ from geosave_engine.geodata.features.cloud_mask import (
     compute_b10_mask,
     compute_cdi_mask,
     compute_s2c_mask,
+    compute_scl_mask,
 )
-from geosave_engine.geodata.features.ndvi import compute_ndvi
+from geosave_engine.geodata.features.spectral_indices import (
+    compute_bsi,
+    compute_evi,
+    compute_evi2,
+    compute_mndwi,
+    compute_msavi2,
+    compute_nbr,
+    compute_ndbi,
+    compute_ndci,
+    compute_ndmi,
+    compute_ndre,
+    compute_ndsi,
+    compute_ndvi,
+    compute_ndwi,
+    compute_savi,
+)
 from geosave_engine.geodata.features.shadow_mask import build_shadow_mask
 
 __all__ = [
-    "compute_ndvi",
     "compute_s2c_mask",
     "compute_cdi_mask",
     "compute_b10_mask",
+    "compute_scl_mask",
+    "compute_ndvi",
+    "compute_evi",
+    "compute_evi2",
+    "compute_savi",
+    "compute_msavi2",
+    "compute_ndre",
+    "compute_bsi",
+    "compute_ndbi",
+    "compute_ndwi",
+    "compute_mndwi",
+    "compute_ndci",
+    "compute_ndmi",
+    "compute_nbr",
+    "compute_ndsi",
     "build_shadow_mask",
 ]
