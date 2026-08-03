@@ -1231,7 +1231,6 @@ dependencies = [
     { name = "geopy" },
     { name = "huggingface" },
     { name = "huggingface-hub" },
-    { name = "ipywidgets" },
     { name = "kornia" },
     { name = "lightning" },
     { name = "mapclassify" },
@@ -1280,6 +1279,7 @@ dependencies = [
 
 [package.dev-dependencies]
 dev = [
+    { name = "ipywidgets" },
     { name = "mypy" },
     { name = "pre-commit" },
     { name = "pytest" },
@@ -1299,7 +1299,6 @@ requires-dist = [
     { name = "geopy", specifier = ">=2.4.0" },
     { name = "huggingface", specifier = ">=0.0.1" },
     { name = "huggingface-hub", specifier = ">=1.0.0" },
-    { name = "ipywidgets", specifier = ">=8.1.8" },
     { name = "kornia", specifier = ">=0.8.2" },
     { name = "lightning", specifier = ">=2.3.3" },
     { name = "mapclassify", specifier = ">=2.8.1" },
@@ -1348,6 +1347,7 @@ requires-dist = [
 
 [package.metadata.requires-dev]
 dev = [
+    { name = "ipywidgets", specifier = ">=8.1.8" },
     { name = "mypy", specifier = ">=1.0.0" },
     { name = "pre-commit", specifier = ">=3.8.0" },
     { name = "pytest", specifier = ">=8.3.5" },
