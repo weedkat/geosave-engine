@@ -106,7 +106,7 @@ stack = GeoStack(
     cloud_mask=mask_tile,       # (band=1, y, x)
     dynamicworld=label_tile,    # (band=1, y, x)
 )
-stack.save("data/train/13.000000_52.000000_20240101T000000_20240101T235959.999999_10m.geostack")
+stack.save("data/train/13.000000_52.000000_20240101T000000_20240101T235959.999999_10m.zarr")
 ```
 
 Every layer gets snapped onto one shared pixel grid when the stack is
@@ -115,16 +115,16 @@ built — same resolution, same bounds — so pixel `(0, 0)` in
 `dynamicworld`. That guaranteed overlap is what makes a stack usable as one
 training sample: model input and label, always aligned.
 
-### The `.geostack` folder convention
+### The `.zarr` store convention
 
-`save`/`load` require the path to end in `.geostack` — same convention as
-`.zarr`/`.tif`. Each layer writes as one file inside it:
+`save`/`load` require the path to end in `.zarr`. Each layer writes as its
+own Zarr *group* inside that one store — not a separate file:
 
 ```text
-13.000000_52.000000_20240101T000000_20240101T235959.999999_10m.geostack/
-├── sentinel_2_l1c.zarr
-├── cloud_mask.zarr
-└── dynamicworld.zarr
+13.000000_52.000000_20240101T000000_20240101T235959.999999_10m.zarr/
+├── sentinel_2_l1c/
+├── cloud_mask/
+└── dynamicworld/
 ```
 
 That suffix is what lets a whole ingested directory be scanned for anchors
@@ -132,11 +132,19 @@ with one glob, at any nesting depth, without mistaking a stray unrelated
 `.zarr` store elsewhere in the tree for a real anchor:
 
 ```python
-list(Path("data/train").rglob("*.geostack"))
+list(Path("data/train").rglob("*.zarr"))
 ```
 
 So ingested output can mirror a raw dataset's own folder structure — by
 biome, by split, whatever the source layout is — with no extra bookkeeping.
+
+`save` also takes a `mode` — `"overwrite"` (default) wipes and rewrites the
+whole store; `"append"` adds this stack's own layers as new groups into an
+existing store, untouched otherwise (raises on a layer-name collision); `"error"`
+raises immediately if the path already exists. `"append"` is what lets two
+different writers (e.g. `TilePredictionWriter` and `DensePredictionWriter`,
+see [model.md](model.md)) safely add different layers into the same
+`<stem>.zarr`, regardless of which one runs first.
 
 ## What's next
 

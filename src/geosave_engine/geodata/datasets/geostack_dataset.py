@@ -5,9 +5,10 @@ from pathlib import Path
 from typing import Any, Callable
 
 import torch
+import zarr
 
 from geosave_engine.geodata.datasets.base_dataset import BaseDataset, extract_key, filter_by_split
-from geosave_engine.geodata.tile import GEOSTACK_SUFFIX, GeoStack, GeoTile
+from geosave_engine.geodata.tile import GeoStack, GeoTile
 
 log = logging.getLogger(__name__)
 
@@ -17,26 +18,26 @@ LayerName = str
 class GeoStackDataset(BaseDataset):
     """Georeferenced PyTorch dataset over ``GeoStack``s under a workspace root.
 
-    Discovers every ``*.geostack`` folder anywhere under ``root`` — any
-    depth, so anchor folders can be grouped into whatever nested layout
-    makes sense (e.g. mirroring raw data provenance:
-    ``root/train/Experts/EH/1/<anchor>.geostack/``), not just flat directly
-    under ``root``::
+    Discovers every ``*.zarr`` store anywhere under ``root`` — any depth, so
+    anchor stores can be grouped into whatever nested layout makes sense
+    (e.g. mirroring raw data provenance: ``root/train/Experts/EH/1/<anchor>.zarr/``),
+    not just flat directly under ``root``. Each store holds one Zarr group
+    per layer (written by ``GeoStack.save``)::
 
         data/train/
-        ├── 13.000000_52.000000_20240115T000000_20240115T235959.999999_10m.geostack/
-        │   ├── sentinel_2_l1c.zarr
-        │   ├── cloud_mask.zarr
-        │   └── dynamicworld.zarr
-        └── Experts/EH/1/13.320000_52.000000_20240115T000000_20240115T235959.999999_10m.geostack/
-            ├── sentinel_2_l1c.zarr
-            ├── cloud_mask.zarr
-            └── dynamicworld.zarr
+        ├── 13.000000_52.000000_20240115T000000_20240115T235959.999999_10m.zarr/
+        │   ├── sentinel_2_l1c/
+        │   ├── cloud_mask/
+        │   └── dynamicworld/
+        └── Experts/EH/1/13.320000_52.000000_20240115T000000_20240115T235959.999999_10m.zarr/
+            ├── sentinel_2_l1c/
+            ├── cloud_mask/
+            └── dynamicworld/
 
-    Two anchor folders here — ``len(ds) == 2``. A layer store can be missing
+    Two anchor stores here — ``len(ds) == 2``. A layer group can be missing
     from some/all anchors (e.g. no ``dynamicworld`` on a label-less predict
-    split); an anchor folder is only included if it carries every layer in
-    ``required_layers`` (None means no requirement — every anchor folder found
+    split); an anchor store is only included if it carries every layer in
+    ``required_layers`` (None means no requirement — every anchor store found
     is included, whatever layers it happens to have).
 
     Examples:
@@ -71,10 +72,10 @@ class GeoStackDataset(BaseDataset):
             context_fn: Optional, forwarded to `GeoStack.to_tensor` on every
                 `__getitem__` call — see there for what it receives/returns.
             key_pattern: Regex to extract the sample key from each anchor
-                folder's name. None strips `.geostack` and uses the rest —
+                store's name. None strips `.zarr` and uses the rest —
                 see `extract_key`.
             split: Text file of anchor stems to keep, one per line. None
-                keeps every anchor folder found under `root`.
+                keeps every anchor store found under `root`.
         """
         self.split = split
         self.root = Path(root)
@@ -85,16 +86,16 @@ class GeoStackDataset(BaseDataset):
         self.key_pattern = key_pattern
         self._cache: dict[str, GeoStack] = {}
 
-        anchor_dirs = sorted(self.root.rglob(f"*{GEOSTACK_SUFFIX}"))
+        anchor_dirs = sorted(self.root.rglob("*.zarr"))
         paths = {extract_key(anchor_dir.name, key_pattern): anchor_dir for anchor_dir in anchor_dirs}
         paths = filter_by_split(paths, split)
 
         if required_layers is not None:
-            # cheap: just the folder's own file names, no GeoStack.load yet
+            # cheap: just the store's own group names, no GeoStack.load yet
             paths = {
                 stem: anchor_dir
                 for stem, anchor_dir in paths.items()
-                if set(required_layers).issubset({p.stem for p in anchor_dir.glob("*.zarr")})
+                if set(required_layers).issubset(zarr.open_group(anchor_dir, mode="r").group_keys())
             }
 
         self.paths = paths
@@ -104,10 +105,10 @@ class GeoStackDataset(BaseDataset):
         """Render one sample. Lazily loads and caches the `GeoStack` for `key`.
 
         Args:
-            key: Anchor folder stem — one of `self.keys`.
+            key: Anchor store stem — one of `self.keys`.
 
         Returns:
-            Tensor dict keyed by each layer's raw name, plus ``"anchor"``
+            Tensor dict keyed by each layer's raw name, plus ``"tiles"``
             (and whatever `self.context_fn` returns, if set).
         """
         if key not in self._cache:
@@ -118,7 +119,7 @@ class GeoStackDataset(BaseDataset):
         """Manifest row for `key`.
 
         Args:
-            key: Anchor folder stem — one of `self.keys`.
+            key: Anchor store stem — one of `self.keys`.
 
         Returns:
             `{"path": ...}` — `self.paths[key]` relative to `self.root`.

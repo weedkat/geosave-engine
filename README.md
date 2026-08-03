@@ -14,7 +14,7 @@ Visit official Documentation : <https://weedkat.github.io/geosave-engine/>
   location+time, fetched pixels, and multi-layer samples. Pull from a live
   STAC catalog (Copernicus, Planetary Computer, Element84, or any
   self-hosted endpoint) or local GeoTIFF, derive layers (cloud masks, NDVI,
-  labels), save to disk as `.geostack` folders or stream straight into
+  labels), save to disk as `.zarr` stores or stream straight into
   prediction with no disk round trip.
 - **Training, config-only** — `SemanticSegmentationTask` +
   `SemanticSegmentationDataModule` cover plain supervised segmentation

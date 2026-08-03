@@ -150,6 +150,18 @@ class GeoTile(GeoAnchor):
         """
         return GeoAnchor(geobox=self.geobox, geotag=self.geotag)
 
+    def rgb_subset(self) -> "GeoTile | None":
+        """Select this tile's own RGB bands via its plot_meta.rgb_bands, if usable.
+
+        Returns:
+            New 3-band GeoTile in R,G,B order, or None if plot_meta.rgb_bands is
+            unset or isn't a subset of this tile's own band names.
+        """
+        rgb_bands = self.plot_meta.rgb_bands
+        if rgb_bands is None or not set(rgb_bands).issubset(self.bands):
+            return None
+        return self.to_geotile(self.to_numpy(bands=list(rgb_bands)), list(rgb_bands))
+
     def plot(self, **kwargs: Unpack[PlotKwargs]) -> tuple[Figure, np.ndarray]:
         """Plot this tile — thin wrapper, see `geosave_engine.geodata.utils.geovis.plot`.
 

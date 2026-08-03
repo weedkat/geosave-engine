@@ -18,7 +18,7 @@ from geosave_engine.ml.callbacks.prediction_logger import DensePredictionLogger
 from geosave_engine.ml.callbacks.threshold_calibrator import ThresholdCalibrator
 from geosave_engine.ml.registry import build_loss, build_model, build_optimizer, build_scheduler
 from geosave_engine.ml.inference.sliding_window import split_patches, stitch_patches
-from geosave_engine.ml.inference.thresholding import ClassThresholding
+from geosave_engine.ml.inference.thresholding import apply_thresholds
 from geosave_engine.ml.metrics.semantic_segmentation import SemanticSegmentationMetrics
 from geosave_engine.ml.models.contract import ContextChain
 from geosave_engine.ml.transforms import ImageAugmenter, ImageProcessor
@@ -40,30 +40,6 @@ def _validate_dense_map(name: str, mapping: dict[int, str]) -> None:
     expected = set(range(len(mapping)))
     if set(mapping) != expected:
         raise ValueError(f"{name} keys must be dense 0..{len(mapping) - 1}, got {sorted(mapping)}")
-
-
-def _resolve_rgb_band_indices(band_map: dict[int, str], rgb_bands: list[str] | None) -> list[int] | None:
-    """Resolve `rgb_bands` names to `band_map` channel indices.
-
-    Args:
-        band_map: `{channel_idx: band_name}`, dense from 0.
-        rgb_bands: 3 band names in R/G/B order, or `None` to skip.
-
-    Returns:
-        3 channel indices in R/G/B order, or `None` if `rgb_bands` is `None`.
-
-    Raises:
-        ValueError: `rgb_bands` isn't exactly 3 names, or a name isn't in `band_map`.
-    """
-    if rgb_bands is None:
-        return None
-    if len(rgb_bands) != 3:
-        raise ValueError(f"rgb_bands must have exactly 3 names (R, G, B), got {rgb_bands}")
-    name_to_idx = {name: idx for idx, name in band_map.items()}
-    missing = [name for name in rgb_bands if name not in name_to_idx]
-    if missing:
-        raise ValueError(f"rgb_bands {missing} not in band_map {sorted(band_map.values())}")
-    return [name_to_idx[name] for name in rgb_bands]
 
 
 class SemanticSegmentationTask(LightningModule):
@@ -99,11 +75,6 @@ class SemanticSegmentationTask(LightningModule):
         image_key: Batch key holding the input image tensor.
         label_key: Batch key holding the label tensor.
         mask_key: Batch key holding the optional nodata mask.
-        rgb_bands: 3 band names from ``band_map``, in R/G/B order. When set,
-            ``predict_step`` adds an ``"rgb"`` output layer sliced from the
-            raw input image (pre-normalization, native dtype) — an extra
-            GeoStack layer via ``PredictionWriter``, nothing else changes.
-            ``None`` skips it.
         ignore_index: Class index excluded from loss and metrics.
         class_map: ``{class_id: class_name}`` for every output class, dense
             from 0. Required — ``num_classes`` is ``len(class_map)``.
@@ -120,10 +91,16 @@ class SemanticSegmentationTask(LightningModule):
         scheduler: LR scheduler registry key. ``None`` disables scheduling.
         metrics: Metric names in dot notation (e.g. ``["iou.macro", "f1.macro"]``).
         augmentations: Kornia augmentation config list.
-        threshold_calibration_config: Sweep-tuning kwargs forwarded to
-            ``ClassThresholding`` (``threshold_begin``/``threshold_end``/
-            ``threshold_steps``/``metric``). ``num_classes``/``ignore_index``
-            come from ``class_map``/``ignore_index`` above, not this dict.
+        threshold_calibration_config: Sweep-tuning kwargs forwarded to the
+            auto-attached ``ThresholdCalibrator`` (``threshold_begin``/
+            ``threshold_end``/``threshold_steps``/``metric``). ``num_classes``/
+            ``ignore_index`` come from ``class_map``/``ignore_index`` above,
+            not this dict.
+        class_thresholds: Initial per-class confidence threshold, one per
+            ``class_map`` entry. ``None`` starts every class at ``0.5`` — a
+            placeholder ``ThresholdCalibrator`` overwrites once it calibrates,
+            or a real deployed value if you already know good thresholds and
+            don't need calibration.
         log_image_every_n_epochs: Epoch frequency for prediction visualization logging.
 
     Examples:
@@ -159,7 +136,6 @@ class SemanticSegmentationTask(LightningModule):
         image_key: str = 'image',
         label_key: str = 'label',
         mask_key: str = 'mask',
-        rgb_bands: list[str] | None = None,
         ignore_index: int = 255,
         color_map: dict | None = None,
         mean_norm: list[float] | None = None,
@@ -173,6 +149,7 @@ class SemanticSegmentationTask(LightningModule):
         metrics: list[str] | None = None,
         augmentations: list[dict] | None = None,
         threshold_calibration_config: dict | None = None,
+        class_thresholds: list[float] | None = None,
         log_image_every_n_epochs: int = 2,
     ) -> None:
         super().__init__()
@@ -192,7 +169,6 @@ class SemanticSegmentationTask(LightningModule):
         self.image_key = image_key
         self.label_key = label_key
         self.mask_key = mask_key
-        self.rgb_band_indices = _resolve_rgb_band_indices(band_map, rgb_bands)
         self.ignore_index = ignore_index
         self.class_map = class_map
         self.band_map = band_map
@@ -209,9 +185,12 @@ class SemanticSegmentationTask(LightningModule):
         self.metrics_config = metrics
         self.augmentations = augmentations or []
         self.threshold_calibration_config = threshold_calibration_config or {}
-        self._thresholding = ClassThresholding(
-            num_classes=self.num_classes, ignore_index=ignore_index, **self.threshold_calibration_config
-        )
+        if class_thresholds is not None and len(class_thresholds) != self.num_classes:
+            raise ValueError(
+                f"class_thresholds must have {self.num_classes} entries (one per class_map "
+                f"entry), got {len(class_thresholds)}"
+            )
+        self._initial_class_thresholds = class_thresholds
         self.log_image_every_n_epochs = log_image_every_n_epochs
 
         self.loss_fn = build_loss(loss, {**self.config.get('loss', {}), 'ignore_index': ignore_index})
@@ -247,11 +226,17 @@ class SemanticSegmentationTask(LightningModule):
             std_norm=self.std_norm,
         )
 
-        # 0.5 is a placeholder shape-holder, not a real default. A real value only
-        # exists after ThresholdCalibrator calibrates it, or after Lightning's own
-        # load_from_checkpoint (which calls configure_model, then load_state_dict)
+        # 0.5 is a placeholder shape-holder when class_thresholds isn't given, not a
+        # real default. A real value only exists after ThresholdCalibrator calibrates
+        # it, after the caller passes class_thresholds explicitly, or after Lightning's
+        # own load_from_checkpoint (which calls configure_model, then load_state_dict)
         # overwrites this buffer with the checkpoint's saved value.
-        self.register_buffer('class_thresholds', torch.full((self.num_classes,), 0.5))
+        initial = (
+            torch.tensor(self._initial_class_thresholds)
+            if self._initial_class_thresholds is not None
+            else torch.full((self.num_classes,), 0.5)
+        )
+        self.register_buffer('class_thresholds', initial)
         self.augmenter = ImageAugmenter(augmentations=self.augmentations, size=self.input_size)
 
     def configure_optimizers(self) -> OptimizerLRScheduler:
@@ -372,7 +357,7 @@ class SemanticSegmentationTask(LightningModule):
         Returns:
             ``(pred_label [B, H, W] uint8, pred_proba [B, H, W] float32)``.
         """
-        preds, max_probs = self._thresholding.apply(logits, self.class_thresholds, mask)
+        preds, max_probs = apply_thresholds(logits, self.class_thresholds, self.ignore_index, mask)
 
         preds = preds.to(torch.uint8)
         max_probs = max_probs.to(torch.float32)
@@ -408,10 +393,10 @@ class SemanticSegmentationTask(LightningModule):
     # ------------------------------------------------------------------
 
     def _extract_context(self, batch: dict[str, Any]) -> dict[str, Any]:
-        """Every batch key besides image/label/mask/anchors — a pipeline's own `context()` output.
+        """Every batch key besides image/label/mask/tiles — a pipeline's own `context()` output.
 
         `image_key`/`label_key`/`mask_key` are this task's own tensors,
-        `"anchors"` is `GeoStack.to_tensor`'s always-present identity key
+        `"tiles"` is `GeoStack.to_tensor`'s always-present identity key
         (see `docs/concept/model.md`) — neither is model context. Everything
         else in `batch` came from a `GeoPipeline.context()` override (e.g.
         `temporal_coords`/`location_coords`), wired in via this task's own
@@ -424,7 +409,7 @@ class SemanticSegmentationTask(LightningModule):
             Extra keys to forward into `self(image, **context)` — `{}` if
             no `pipeline` was configured (or it returns no extra keys).
         """
-        exclude = {self.image_key, self.label_key, self.mask_key, 'anchors'}
+        exclude = {self.image_key, self.label_key, self.mask_key, 'tiles'}
         return {key: value for key, value in batch.items() if key not in exclude}
 
     def training_step(self, batch: dict[str, Any], batch_idx: int) -> torch.Tensor:
@@ -488,16 +473,7 @@ class SemanticSegmentationTask(LightningModule):
             mask = mask.squeeze(1) # (B, 1, H, W) → (B, H, W)
 
         preds, max_probs = self.predict(image, context, mask=mask)
-        output = {
-            "pred_label": preds,
-            "pred_proba": max_probs,
-            "anchors": batch["anchors"][self.image_key]
-        }
-
-        if self.rgb_band_indices is not None:
-            output["rgb"] = image[:, self.rgb_band_indices]
-
-        return output
+        return {"pred": preds, "proba": max_probs}
 
 
 class SemanticSegmentationDataModule(LightningDataModule):
@@ -528,7 +504,7 @@ class SemanticSegmentationDataModule(LightningDataModule):
         pipeline: A ``GeoPipeline`` whose ``.context`` supplies extra
             per-sample keys (e.g. a Prithvi/Clay encoder's `temporal_coords`/
             `location_coords`) to every split's `GeoStackDataset`. `None` omits
-            context entirely — plain tensors + `"anchors"` only. Resolved by
+            context entirely — plain tensors + `"tiles"` only. Resolved by
             LightningCLI's own `class_path`/`init_args` mechanism (same as
             `model.class_path` above), no code to write beyond your
             `Pipeline` subclass's own `context()` override.

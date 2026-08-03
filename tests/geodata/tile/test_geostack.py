@@ -102,6 +102,38 @@ class TestSaveLoadRoundTrip:
         GeoStack(a=_tile(("b1",))).save(path)
         assert sorted(zarr.open_group(path, mode="r").group_keys()) == ["a"]
 
+    def test_append_adds_groups_without_touching_existing_ones(self, tmp_path):
+        import zarr
+
+        path = tmp_path / "anchor.zarr"
+        GeoStack(a=_tile(("b1",))).save(path)
+        GeoStack(b=_tile(("b2",))).save(path, mode="append")
+        assert sorted(zarr.open_group(path, mode="r").group_keys()) == ["a", "b"]
+
+    def test_append_to_missing_store_just_creates_it(self, tmp_path):
+        import zarr
+
+        path = tmp_path / "anchor.zarr"
+        GeoStack(a=_tile(("b1",))).save(path, mode="append")
+        assert sorted(zarr.open_group(path, mode="r").group_keys()) == ["a"]
+
+    def test_append_raises_on_layer_name_collision(self, tmp_path):
+        path = tmp_path / "anchor.zarr"
+        GeoStack(a=_tile(("b1",))).save(path)
+        with pytest.raises(ValueError, match="already has group"):
+            GeoStack(a=_tile(("b1",))).save(path, mode="append")
+
+    def test_error_mode_raises_when_path_exists(self, tmp_path):
+        path = tmp_path / "anchor.zarr"
+        GeoStack(a=_tile(("b1",))).save(path)
+        with pytest.raises(FileExistsError):
+            GeoStack(b=_tile(("b2",))).save(path, mode="error")
+
+    def test_error_mode_writes_when_path_missing(self, tmp_path):
+        path = tmp_path / "anchor.zarr"
+        GeoStack(a=_tile(("b1",))).save(path, mode="error")
+        assert path.is_dir()
+
     def test_save_requires_zarr_suffix(self, tmp_path):
         stack = GeoStack(a=_tile(("b1",)))
         with pytest.raises(ValueError, match="Expected a .zarr path"):
@@ -245,16 +277,16 @@ class TestToTensor:
         sample = stack.to_tensor(dtype_override={"cloud_mask": torch.bool})
         assert sample["cloud_mask"].dtype == torch.bool
 
-    def test_anchor_always_present(self):
+    def test_tiles_always_present(self):
         stack = GeoStack(a=_tile(("b1",)))
         sample = stack.to_tensor()
-        assert "anchors" in sample
-        assert isinstance(sample["anchors"], dict)
-        assert isinstance(sample["anchors"]["a"], GeoAnchor)
-        assert not isinstance(sample["anchors"]["a"], GeoTile)
+        assert "tiles" in sample
+        assert isinstance(sample["tiles"], dict)
+        assert isinstance(sample["tiles"]["a"], GeoTile)
 
-    def test_anchor_matches_reference_tile_identity(self):
+    def test_tile_matches_reference_tile_identity(self):
         tile = _tile(("b1",))
         stack = GeoStack(a=tile)
         sample = stack.to_tensor()
-        assert sample["anchors"]["a"].stem == tile.stem
+        assert sample["tiles"]["a"].stem == tile.stem
+        assert sample["tiles"]["a"] is tile

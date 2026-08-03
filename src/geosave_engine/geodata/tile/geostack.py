@@ -7,7 +7,7 @@ import zarr
 import numpy as np
 
 from pathlib import Path
-from typing import TYPE_CHECKING, Any, Callable
+from typing import TYPE_CHECKING, Any, Callable, Literal
 from typing_extensions import Unpack
 from odc.geo.geobox import GeoBox
 
@@ -21,7 +21,7 @@ if TYPE_CHECKING:
     from geosave_engine.geodata.utils.geovis import PlotKwargs
 
 LayerName = str
-GEOSTACK_SUFFIX = ".geostack"  # retained for callers still on the old folder convention
+SaveMode = Literal["overwrite", "append", "error"]
 
 
 class GeoStack:
@@ -98,7 +98,7 @@ class GeoStack:
 
         return plot(self.tiles, cols=cols, **kwargs)
 
-    def save(self, path: str | Path, overwrite: bool = True) -> Path:
+    def save(self, path: str | Path, mode: SaveMode = "overwrite") -> Path:
         """Write every layer into its own Zarr group inside one store.
 
         Each group is independently CF-compliant (one variable per band,
@@ -112,25 +112,38 @@ class GeoStack:
 
         Args:
             path: Output Zarr store path, must end in `.zarr`.
-            overwrite: Wipe and rewrite from scratch if `path` already
-                exists, so a layer removed since a previous `save()` doesn't
-                linger as a stale group. False raises instead of silently
-                deleting whatever's already there.
+            mode: `"overwrite"` wipes and rewrites the whole store from
+                scratch, so a layer removed since a previous `save()`
+                doesn't linger as a stale group. `"append"` adds this
+                GeoStack's own layers as new groups into an existing store,
+                untouched otherwise — raises if a layer name collides with
+                a group already present, so two callers writing different
+                layers into the same store (e.g. two different prediction
+                writers) can't silently clobber each other. `"error"`
+                raises immediately if `path` already exists, writing nothing.
 
         Returns:
             The written store path.
 
         Raises:
-            ValueError: If path doesn't end in `.zarr`.
-            FileExistsError: If `path` already exists and `overwrite` is False.
+            ValueError: If path doesn't end in `.zarr`, or mode="append"
+                and a layer name collides with a group already present.
+            FileExistsError: If `path` already exists and mode is `"error"`.
         """
         path = Path(path)
         if path.suffix != ".zarr":
             raise ValueError(f"Expected a .zarr path, got: {path}")
         if path.exists():
-            if not overwrite:
-                raise FileExistsError(f"{path} already exists — pass overwrite=True to replace it")
-            shutil.rmtree(path)
+            if mode == "error":
+                raise FileExistsError(f"{path} already exists — pass mode='overwrite' or 'append'")
+            if mode == "overwrite":
+                shutil.rmtree(path)
+            elif mode == "append":
+                collision = set(zarr.open_group(path, mode="r").group_keys()) & set(self.tiles)
+                if collision:
+                    raise ValueError(
+                        f"{path} already has group(s) {sorted(collision)} — append won't overwrite them"
+                    )
         for layer_name, tile in self.tiles.items():
             tag = tile.geotag.model_dump_json(exclude_none=True)
             ds = da_to_ds(tile.data).assign_attrs(tag=tag)
@@ -191,18 +204,21 @@ class GeoStack:
             context_fn: Optional, takes `self.tiles` and returns extra keys
                 to merge into the sample — e.g. a model-specific derivation
                 of `temporal_coords`/`location_coords` from the tiles'
-                anchors. Applied *after* `"anchors"` is set, so a returned
-                `"anchors"` key would override it; every other key is purely
+                anchors. Applied *after* `"tiles"` is set, so a returned
+                `"tiles"` key would override it; every other key is purely
                 additive. `None` skips this entirely — no keys beyond
-                layers + `"anchors"` are added. Kept generic on purpose: this
+                layers + `"tiles"` are added. Kept generic on purpose: this
                 function has no idea what a caller's `context_fn` computes
                 or why, it just merges the result.
 
         Returns:
-            Tensor dict keyed by each layer's raw name, plus `"anchors"` —
-            `dict[LayerName, GeoAnchor]`, one bare anchor (no pixel data)
-            per layer, always present regardless of layer content — plus
-            whatever `context_fn` returned, if given.
+            Tensor dict keyed by each layer's raw name, plus `"tiles"` —
+            `dict[LayerName, GeoTile]`, the real tile (not a bare anchor)
+            per layer, always present regardless of layer content. Data
+            stays lazy when the tile itself was loaded lazily (see
+            `GeoTile.from_zarr`/`from_geotiff`), so carrying it costs
+            nothing beyond spatial identity unless a caller reads `.data`.
+            Plus whatever `context_fn` returned, if given.
         """
         sel_bands = sel_bands or {}
         dtype_override = dtype_override or {}
@@ -215,7 +231,7 @@ class GeoStack:
                 tensor = tensor.to(dtype)
             sample[layer_name] = tensor
 
-        sample["anchors"] = {name: tile.to_anchor() for name, tile in self.tiles.items()}
+        sample["tiles"] = dict(self.tiles)
         if context_fn is not None:
             sample.update(context_fn(self.tiles))
         return sample

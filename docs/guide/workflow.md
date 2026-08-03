@@ -37,12 +37,12 @@ flowchart TD
         AS["AnchorSource\n(Coordinate/GeoJSON/Polygon)"] -->|to_anchors| A["GeoAnchor"]
         A --> GP["GeoPipeline.ingest(anchor)"]
         GP --> GT["GeoStack"]
-        GT -->|.save()| GS["<anchor>.geostack/*.zarr"]
+        GT -->|.save()| GS["<anchor>.zarr\n(one Zarr group per layer)"]
         GP2["GeoPipeline.ingest_to_tensor(anchor)"] --> ST["tensor dict\n(no disk)"]
     end
 
     subgraph train ["5-6 · Define + Train"]
-        GS -->|GeoStackDataset rglob *.geostack| DS["GeoStackDataset"]
+        GS -->|GeoStackDataset rglob *.zarr| DS["GeoStackDataset"]
         DS -->|stack_samples| DL["DataLoader batch"]
         DL --> LM["LightningModule\nSemanticSegmentationTask (Path A)\nor your own module (Path B)"]
         LM --> CKPT["checkpoint\nartifacts/<model_name>/version_N/"]
@@ -191,12 +191,12 @@ from pathlib import Path
 root = Path("data/train")
 for anchor in anchors:
     for stack in pipeline.ingest(anchor):
-        stack.save(root / f"{anchor.stem}.geostack")
+        stack.save(root / f"{anchor.stem}.zarr")
 ```
 
-Writes one `<anchor>.geostack/` folder per anchor. No manifest or built-in
-resumability — if re-running matters, skip anchors whose folder already
-exists yourself (`if not (root / f"{anchor.stem}.geostack").exists(): ...`).
+Writes one `<anchor>.zarr` store per anchor (one Zarr group per layer). No
+manifest or built-in resumability — if re-running matters, skip anchors
+whose store already exists yourself (`if not (root / f"{anchor.stem}.zarr").exists(): ...`).
 Full save mechanics (STAC sidecars), streaming without saving to disk
 (`ingest_to_tensor`, for live predict): [concept/pipeline.md#saving-to-disk](../concept/pipeline.md#saving-to-disk).
 

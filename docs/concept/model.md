@@ -1,6 +1,6 @@
 # GeoStackDataset and model definition
 
-Reference for turning ingested `.geostack` folders into training batches,
+Reference for turning ingested `.zarr` stores into training batches,
 and for the standardized `SemanticSegmentationTask`/`DataModule` pair. For
 the ordered how-to (pick a path, train, evaluate), see
 [workflow.md](../guide/workflow.md#5-define-the-model-).
@@ -8,7 +8,7 @@ the ordered how-to (pick a path, train, evaluate), see
 ## From ingested data to tensors: GeoStackDataset
 
 `geosave_engine.geodata.datasets.GeoStackDataset` reads a directory of
-`.geostack` folders built via `GeoStack.save()` (see [pipeline.md](pipeline.md)):
+`.zarr` stores built via `GeoStack.save()` (see [pipeline.md](pipeline.md)):
 
 ```python
 from geosave_engine.geodata.datasets import GeoStackDataset
@@ -16,52 +16,54 @@ from geosave_engine.geodata.datasets import GeoStackDataset
 ds = GeoStackDataset("data/train")
 ```
 
-Discovery is `root.rglob("*.geostack")` — every anchor folder, at any
+Discovery is `root.rglob("*.zarr")` — every anchor store, at any
 nesting depth (see
-[geotile.md](geotile.md#the-geostack-folder-convention) for why the
-`.geostack` suffix exists and how nested grouping works). `__getitem__`
+[geotile.md](geotile.md#the-zarr-store-convention) for why the
+`.zarr` suffix exists and how nested grouping works). `__getitem__`
 delegates straight to `GeoStack.to_tensor`:
 
 ```python
 {
     "sentinel_2_l1c": torch.Tensor,   # [C, H, W]
     "dynamicworld": torch.Tensor,     # [1, H, W]
-    "anchors": dict[str, GeoAnchor],  # one bare anchor per layer, see below
+    "tiles": dict[str, GeoTile],      # the real tile per layer, see below
 }
 ```
 
 | Constructor arg | Default | Purpose |
 | --- | --- | --- |
-| `root` | — | Directory to `rglob` for `.geostack` folders. |
-| `required_layers` | `None` (all layers) | Only include anchors whose `.geostack` folder has every one of these layer names — a folder missing one is silently excluded. |
+| `root` | — | Directory to `rglob` for `.zarr` stores. |
+| `required_layers` | `None` (all layers) | Only include anchors whose `.zarr` store has every one of these layer names (as Zarr groups) — a store missing one is silently excluded. |
 | `sel_bands` | `None` (all bands) | `{layer: [band, ...]}` — subset bands per layer. |
 | `dtype_override` | `None` (saved dtype) | `{layer: torch.dtype}` — cast a layer's tensor, e.g. a saved `uint8` mask to `bool`. |
 | `context_fn` | `None` (no extra keys) | `dict[LayerName, GeoTile] -> dict[str, torch.Tensor]` — merged into every sample, same function a `GeoPipeline.context` override supplies (see [pipeline.md](pipeline.md#supplying-model-specific-context)). |
 
-**`layers` property** — the layer names present in the first sample
-(`list[str]`), useful for sanity-checking a dataset without indexing into
-it.
+**`fields` property** (inherited from `BaseDataset`) — the dict keys the
+first sample has (`list[str]`, includes `"tiles"`), useful for
+sanity-checking a dataset without indexing into it by hand.
 
 **Building your own Dataset:** subclass `GeoStackDataset` when you need
 per-sample logic beyond what it gives you. For streaming inference over
 fresh data without ingesting to disk first, there's
 [ingest_to_tensor()](pipeline.md).
 
-## What is the anchors key
+## What is the tiles key
 
-Every sample always carries an `"anchors"` key — `dict[LayerName, GeoAnchor]`,
-one bare anchor (no pixel data) per layer, not configurable, always present
-regardless of layer content. It's a dict, not one collapsed anchor: `align()`
-guarantees every layer shares the same `geobox`, but not `datetime`/
-`metadata`/`polygon` — picking one representative layer would silently lose
-the others' real values, so a consumer that needs exactly one picks whichever
-layer's anchor it actually means (usually the model's own input layer, e.g.
-`anchors[image_key]`).
+Every sample always carries a `"tiles"` key — `dict[LayerName, GeoTile]`,
+the real tile per layer (not configurable, always present regardless of
+layer content). Data stays lazy when the tile was loaded lazily (the normal
+case — `GeoStackDataset` opens with `load_data=False`), so carrying it costs
+nothing beyond spatial identity unless a consumer actually reads `.data`.
+It's a dict, not one collapsed anchor: `align()` guarantees every layer
+shares the same `geobox`, but not `datetime`/`metadata`/`polygon` — picking
+one representative layer would silently lose the others' real values, so a
+consumer that needs exactly one picks whichever layer's tile it actually
+means (usually the model's own input layer, e.g. `tiles[image_key]`).
 
-`"anchors"` is not per-sample metadata extraction on its own — a model that
+`"tiles"` is not per-sample metadata extraction on its own — a model that
 needs derived context (day-of-year, lat/lon as a `temporal_coords` tensor,
 etc.) gets it from a `GeoPipeline.context()` override instead, merged into
-the sample alongside `"anchors"` at render time. See
+the sample alongside `"tiles"` at render time. See
 [pipeline.md](pipeline.md#supplying-model-specific-context) for the full
 mechanism and a real example.
 
@@ -83,7 +85,7 @@ not to how many `.zarr` stores exist on disk.
 
 ## Single-file rasters: GeoDataset and NonGeoDataset
 
-For data that isn't ingested into `.geostack` anchors — an already-aligned
+For data that isn't ingested into `.zarr` anchors — an already-aligned
 external dataset, a plain image folder — `GeoDataset` and `NonGeoDataset`
 read one file per sample instead of one anchor folder per sample. Same
 shape, different treatment of geo metadata:
@@ -99,7 +101,7 @@ shape, different treatment of geo metadata:
 Both are one-file-per-sample, one-modality-per-instance — join several
 (e.g. image + label) with `IntersectionDataset`/`&` on their shared stem
 key, same as `GeoStackDataset`'s layers are joined inside one anchor
-folder.
+store.
 
 ## stack_samples
 
@@ -109,24 +111,24 @@ batched dict, recursively, by value type:
 ```python
 def stack_samples(samples: Iterable[Mapping[str, Any]]) -> dict[str, Any]:
     # tensor values  -> torch.stack(values)      (one stacked Tensor)
-    # dict values     -> stack_samples(values)     (recurse — this is what batches "anchors")
+    # dict values     -> stack_samples(values)     (recurse — this is what batches "tiles")
     # anything else  -> list(values)               (gathered as-is)
 ```
 
 Because `GeoStackDataset.__getitem__` keys samples by raw layer name, the batch
 you get back has one tensor key per ingested layer, unchanged, plus
-`"anchors"` recursed one level (dict values -> `stack_samples` again) into
-one `list[GeoAnchor]` per layer:
+`"tiles"` recursed one level (dict values -> `stack_samples` again) into
+one `list[GeoTile]` per layer:
 
 ```python
 {
     "sentinel_2_l1c": Tensor[B, C, H, W],
     "dynamicworld": Tensor[B, 1, H, W],
-    "anchors": {"sentinel_2_l1c": [GeoAnchor, ...], "dynamicworld": [GeoAnchor, ...]},  # each list length B
+    "tiles": {"sentinel_2_l1c": [GeoTile, ...], "dynamicworld": [GeoTile, ...]},  # each list length B
 }
 ```
 
-No new collation code needed for `"anchors"` — `stack_samples`'s existing
+No new collation code needed for `"tiles"` — `stack_samples`'s existing
 dict-recursion handles it for free, same as it always has for any nested
 dict value.
 
@@ -172,6 +174,7 @@ class or channel indices.
 | `mean_norm` / `std_norm` | No (from model) | Per-channel normalization override. |
 | `metrics` | No | Metric names in dot notation, e.g. `["iou.macro", "f1.macro"]`. |
 | `threshold_calibration_config` | No | Sweep-tuning kwargs forwarded to `ThresholdCalibrator` (`threshold_begin`/`threshold_end`/`threshold_steps`/`metric`). |
+| `class_thresholds` | No (`0.5` per class) | Initial per-class confidence threshold, one per `class_map` entry — a placeholder `ThresholdCalibrator` overwrites, or a real value if you already know good thresholds. |
 | `log_image_every_n_epochs` | No (`2`) | Epoch frequency for prediction visualization logging (`DensePredictionLogger`). |
 
 **Why `class_map`/`band_map` are required, not optional counts:** a
@@ -398,34 +401,76 @@ above). `model:` keys under `init_args` go straight to your
 `LightningModule.__init__`; `data:` keys under `init_args` go straight to
 your `LightningDataModule.__init__`.
 
-## Writing predictions: PredictionWriter
+## Writing predictions: TilePredictionWriter and DensePredictionWriter
 
-`geosave_engine.ml.callbacks.PredictionWriter` — writes one `GeoStack` per
-predicted anchor, one layer per key `predict_step` returns. Never
-auto-attached (deployment-specific `output_dir` has no sensible default) —
-opt in via `trainer.callbacks:`:
+Two independent, composable callbacks in `geosave_engine.ml.callbacks` —
+neither is auto-attached (deployment-specific `output_dir` has no sensible
+default), opt in via `trainer.callbacks:`. Both write into the same
+`<output_dir>/<model_name>/<job_id>/tiles/<stem>.zarr` layout and can safely
+target the *same* run directory at once — `GeoStack.save(mode="append")`
+(see [geotile.md](geotile.md#the-zarr-store-convention)) lets each one add
+its own layers without touching the other's, regardless of callback order.
+Neither is a general "any prediction" writer — both are scoped to
+dense/raster tasks (pixelwise regression, semantic segmentation); a task
+with vector-shaped output (e.g. object detection boxes) needs a different
+writer entirely, not a subclass of either of these.
+
+**`TilePredictionWriter`** persists real `GeoTile`s straight from
+`batch["tiles"]` — the model's *input*, not its output. Nothing to parse or
+convert: these are already real, already-band-named tiles (see
+[What is the tiles key](#what-is-the-tiles-key) above). Also adds each
+tile's own `rgb_subset()` companion layer automatically when its
+`plot_meta.rgb_bands` is set and usable.
 
 ```yaml
 trainer:
   callbacks:
-    - class_path: geosave_engine.ml.callbacks.PredictionWriter
+    - class_path: geosave_engine.ml.callbacks.TilePredictionWriter
       init_args:
         output_dir: predictions
+        layers: [sentinel_2_l1c]   # omit to persist every batch["tiles"] key
 ```
 
-**Contract:** `predict_step` must return a `dict[str, Tensor]` plus one
-`"anchors"` key (`list[GeoAnchor]`, one per sample) — spatial identity for
-the output comes from there, not from `batch`. This callback has no
-knowledge of batch keys/`image_key` at all (same reasoning as
-`ThresholdCalibrator` reading `outputs['logits']`/`['label']` instead of
-reaching into `batch`) — building `"anchors"` is the task's own job, since
-it's the one that knows which batch layer is the real model input:
+**`DensePredictionWriter`** persists `predict_step`'s own output. Recognizes
+a small fixed vocabulary of keys — `"logits"`/`"proba"`/`"pred"`, whichever
+are present — the same pattern `ThresholdCalibrator`/`DensePredictionLogger`
+already use reading `outputs['logits']`/`['label']` off validation/test
+output, rather than a task-specific parsing hook. Anything else
+`predict_step` returns is ignored, so a task can freely return extra keys
+for other callbacks. Spatial identity comes from `batch["tiles"][image_key]`
+(`image_key` is this callback's own constructor arg — it doesn't share the
+task's), not from `predict_step`'s return value.
 
-```python
-output["anchors"] = batch["anchors"][self.image_key]
+```yaml
+trainer:
+  callbacks:
+    - class_path: geosave_engine.ml.callbacks.DensePredictionWriter
+      init_args:
+        output_dir: predictions
+        image_key: sentinel_2_l1c
+        class_map: {0: water, 1: trees}
+        color_map: {0: "#0000ff", 1: "#00ff00"}
 ```
 
-`SemanticSegmentationTask.predict_step` already does this. A custom Path B
-module wiring `PredictionWriter` needs the same line in its own
-`predict_step`. Missing `"anchors"` in the returned dict raises a `KeyError`
-immediately, naming exactly what to add.
+`SemanticSegmentationTask.predict_step` returns `{"pred": ..., "proba": ...}`
+— no `"tiles"`/anchor bookkeeping needed in `predict_step` itself, since
+`DensePredictionWriter` reads `batch["tiles"]` directly. An RGB view of the
+source imagery comes from `TilePredictionWriter`'s automatic `rgb_subset()`
+(driven by ingestion-time `plot_meta.rgb_bands`), not a task-level config —
+one source of truth instead of two overlapping ones.
+
+**Provenance and visualization hints travel with the data, not a sidecar
+dict.** Each `DensePredictionWriter` output tile is `rebase()`d off its
+reference anchor before being built, so it carries this run's
+`model_name`/`job_id`/`checkpoint`/`created_at` (in `geotag.metadata`) and,
+if `class_map`/`color_map` were given, those too (in `geotag.plot_meta` —
+`tile.plot_meta.class_map` works directly on a loaded prediction tile, no
+separate lookup). `TilePredictionWriter` does *not* do this to its forwarded
+tiles — they're the model's input, tagging them "produced by model X" would
+be wrong.
+
+Both callbacks also write a small `metadata.json` at the run root
+(`model_name`/`job_id`/`checkpoint`/`created_at`) and write `write_zarr`
+(default on, ml-preferred)/`write_cog` (default off, serving-preferred)
+independently. Re-running predict against the same run directory skips
+layers already written.

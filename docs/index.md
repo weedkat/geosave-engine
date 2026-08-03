@@ -21,7 +21,7 @@ three consistent objects, and gets out of your way past that point:
   takes in.
 - `GeoTile` — a `GeoAnchor` plus its fetched raster data.
 - `GeoStack` — multiple named `GeoTile` layers for one anchor, saved
-  together as one `<anchor>.geostack/` folder.
+  together as one `<anchor>.zarr` store (one Zarr group per layer).
 
 Templates are scaffolding, not a contract. `geosave create` hands you real,
 editable files — no required base class your code has to obey to keep

@@ -10,7 +10,6 @@ from pydantic import BaseModel, Field, TypeAdapter, field_validator
 from geosave_engine.geodata.tile import AnchorDatetime, GeoAnchor
 from geosave_engine.geodata.utils import chunk_geotile
 
-DEFAULT_TILE_SIZE_PX = 500
 
 class AnchorSource(BaseModel):
     """Base for all anchor source specs.
@@ -39,7 +38,7 @@ class AnchorSource(BaseModel):
     datetime: AnchorDatetime
     resolution: float = 10.0
     crs: str | None = None
-    tile_size_px: int = DEFAULT_TILE_SIZE_PX
+    tile_size_px: int = 500
 
     @field_validator("datetime", mode="before")
     @classmethod

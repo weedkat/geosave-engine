@@ -4,7 +4,7 @@ from geosave_engine.geodata.utils.io import from_geotiff, from_zarr, to_geotiff,
 from .geoanchor import AnchorDatetime, GeoAnchor, GeoTag, PlotMeta
 from .geotile import GeoTile
 from .ops import align, chunk_geotile, mosaic, remap
-from .geostack import GEOSTACK_SUFFIX, GeoStack
+from .geostack import GeoStack
 
 __all__ = [
     "AnchorDatetime",
@@ -23,5 +23,4 @@ __all__ = [
     "validate_da",
     "validate_ds",
     "GeoStack",
-    "GEOSTACK_SUFFIX",
 ]

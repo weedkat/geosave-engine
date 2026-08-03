@@ -41,7 +41,7 @@ def extract_key(name: str, pattern: str | None) -> str:
     return match.group(1) if match.groups() else match.group(0)
 
 
-def filter_by_split(samples: dict[str, Any], split: str | Path | None) -> dict[str, Any]:
+def filter_by_split(samples: dict[str, Any], split: str | Path | list[str] | None) -> dict[str, Any]:
     """Narrow `samples` to the keys listed in `split`, one key per line.
 
     Call this on the cheapest dict you have (e.g. paths, before opening
@@ -52,7 +52,7 @@ def filter_by_split(samples: dict[str, Any], split: str | Path | None) -> dict[s
 
     Args:
         samples: Discovered samples, any subclass's own shape.
-        split: Text file of keys to keep. None returns `samples` as-is.
+        split: Text file of keys to keep or a list of keys. None returns `samples` as-is.
 
     Returns:
         `samples` filtered to keys present in `split` (missing ones logged,
@@ -61,7 +61,10 @@ def filter_by_split(samples: dict[str, Any], split: str | Path | None) -> dict[s
     """
     if split is None:
         return samples
-    wanted = {line.strip() for line in Path(split).read_text().splitlines() if line.strip()}
+    if isinstance(split, list):
+        wanted = set(split)
+    else:
+        wanted = {line.strip() for line in Path(split).read_text().splitlines() if line.strip()}
     missing = wanted - samples.keys()
     if missing:
         log.warning("split file %s lists keys not found in samples: %s", split, sorted(missing))
@@ -105,7 +108,7 @@ class BaseDataset(Dataset, abc.ABC):
         for a `render` that does real work (e.g. `GeoDataset` loading
         pixels). Override for a cheaper peek if one's available.
         """
-        if not self._index:
+        if getattr(self, "_index", None) is None or not self._index:
             return []
         return list(self.render(self._index[0]))
 
@@ -166,14 +169,14 @@ class BaseDataset(Dataset, abc.ABC):
         """
         self.to_pandas().to_parquet(path)
 
-    def __and__(self, other: object) -> IntersectionDataset:
+    def __and__(self, other: BaseDataset) -> IntersectionDataset:
         """`a & b` — shorthand for `IntersectionDataset(a, b)`.
 
         Args:
             other: Another `BaseDataset` to intersect with.
         """
         if not isinstance(other, BaseDataset):
-            return NotImplemented
+            raise TypeError(f"Expected BaseDataset, got {type(other)}")
 
         from geosave_engine.geodata.datasets.intersection_dataset import IntersectionDataset
 

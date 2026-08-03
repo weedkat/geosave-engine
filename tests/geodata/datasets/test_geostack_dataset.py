@@ -11,25 +11,25 @@ import numpy as np
 import torch
 from odc.geo.geobox import GeoBox
 
-from geosave_engine.geodata.tile import GEOSTACK_SUFFIX, GeoAnchor, GeoTag, GeoTile, GeoStack
+from geosave_engine.geodata.tile import GeoAnchor, GeoTag, GeoTile, GeoStack
 from geosave_engine.geodata.datasets import GeoStackDataset, stack_samples
 
 UTM = "EPSG:32633"
 
 
 def _write_anchor(root: Path, idx: int, bbox, layers: dict[str, tuple[str, ...]]) -> None:
-    """Write one anchor folder under root, with the given layers (name -> band names)."""
+    """Write one anchor store under root, with the given layers (name -> band names)."""
     gb = GeoBox.from_bbox(bbox, crs=UTM, resolution=10, anchor="edge")
     tiles = {}
     for name, band_names in layers.items():
         arr = np.zeros((len(band_names), gb.height, gb.width), dtype="uint16")
         d = datetime(2023, 2, 1)
         tiles[name] = GeoAnchor(geobox=gb, geotag=GeoTag(datetime=(d, d))).to_geotile(arr, list(band_names))
-    GeoStack(**tiles).save(root / f"t{idx}{GEOSTACK_SUFFIX}")
+    GeoStack(**tiles).save(root / f"t{idx}.zarr")
 
 
 def _dataset_root(root: Path, n_anchors: int = 2) -> Path:
-    """Write n_anchors anchor folders (s2 + label layers) under root."""
+    """Write n_anchors anchor stores (s2 + label layers) under root."""
     for i in range(n_anchors):
         x0 = 500000 + i * 320
         bbox = (x0, 5000000, x0 + 320, 5000320)
@@ -38,9 +38,9 @@ def _dataset_root(root: Path, n_anchors: int = 2) -> Path:
 
 
 class TestDiscovery:
-    def test_finds_every_anchor_folder(self, tmp_path):
+    def test_finds_every_anchor_store(self, tmp_path):
         ds = GeoStackDataset(_dataset_root(tmp_path, n_anchors=2))
-        assert sorted(ds.layers) == ["label", "s2"]
+        assert sorted(key for key in ds[0] if key != "tiles") == ["label", "s2"]
         assert len(ds) == 2
 
     def test_getitem_renders_tensors(self, tmp_path):
@@ -51,18 +51,17 @@ class TestDiscovery:
         assert tuple(sample["s2"].shape) == (2, 32, 32)   # 2 bands, H, W
         assert tuple(sample["label"].shape) == (1, 32, 32)
 
-    def test_anchor_always_present(self, tmp_path):
+    def test_tiles_always_present(self, tmp_path):
         ds = GeoStackDataset(_dataset_root(tmp_path))
         sample = ds[0]
-        assert isinstance(sample["anchors"], dict)
-        layer = next(iter(sample["anchors"]))
-        assert isinstance(sample["anchors"][layer], GeoAnchor)
-        assert not isinstance(sample["anchors"][layer], GeoTile)
+        assert isinstance(sample["tiles"], dict)
+        layer = next(iter(sample["tiles"]))
+        assert isinstance(sample["tiles"][layer], GeoTile)
 
     def test_single_layer(self, tmp_path):
         _write_anchor(tmp_path, 0, (500000, 5000000, 500320, 5000320), {"s2": ("B02",)})
         ds = GeoStackDataset(tmp_path)
-        assert ds.layers == ["s2"]
+        assert sorted(key for key in ds[0] if key != "tiles") == ["s2"]
         assert len(ds) == 1
 
     def test_required_layers_excludes_incomplete_anchors(self, tmp_path):
@@ -72,11 +71,11 @@ class TestDiscovery:
         assert len(ds) == 1
 
     def test_finds_anchors_nested_arbitrarily_deep(self, tmp_path):
-        """Anchor folders can be grouped in nested subdirectories (e.g. mirroring raw
+        """Anchor stores can be grouped in nested subdirectories (e.g. mirroring raw
         data provenance), not just flat directly under root — discovery is by
-        .geostack marker via rglob, any depth."""
+        .zarr marker via rglob, any depth."""
         _write_anchor(tmp_path / "Experts" / "EH" / "1", 0, (500000, 5000000, 500320, 5000320), {"s2": ("B02",)})
-        _write_anchor(tmp_path / "Non_expert" / "WorkForce" / "EH" / "1", 0,
+        _write_anchor(tmp_path / "Non_expert" / "WorkForce" / "EH" / "1", 1,
                       (500320, 5000000, 500640, 5000320), {"s2": ("B02",)})
         ds = GeoStackDataset(tmp_path)
         assert len(ds) == 2

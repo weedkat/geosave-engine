@@ -394,6 +394,24 @@ class TestPlotMeta:
         assert t.plot_meta == PlotMeta(class_map={0: "water"}, color_map={0: "#0000ff"})
 
 
+class TestRgbSubset:
+    def test_none_when_rgb_bands_unset(self):
+        assert _tile(names=("red", "green", "blue")).rgb_subset() is None
+
+    def test_none_when_rgb_bands_not_subset_of_bands(self):
+        t = _tile(names=("red", "green")).rebase(plot_meta={"rgb_bands": ("red", "green", "blue")})
+        assert t.rgb_subset() is None
+
+    def test_selects_named_bands_in_order(self):
+        t = _tile(names=("red", "green", "blue", "nir")).rebase(
+            plot_meta={"rgb_bands": ("blue", "red", "green")}
+        )
+        r = t.rgb_subset()
+        assert r is not None
+        assert r.bands == ("blue", "red", "green")
+        assert r.num_bands == 3
+
+
 class TestNodata:
     def test_default_is_none(self):
         assert _tile(names=("red",)).nodata is None

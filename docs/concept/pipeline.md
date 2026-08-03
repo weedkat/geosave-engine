@@ -64,7 +64,7 @@ class Sentinel2OnlyPipeline(GeoPipeline):
 | `sources` (property) | Your pipeline pulls from named sources (the common case) — one `.load(anchor)` call per source. Use `cached_property` if building a source needs a live client (STAC auth, etc.), so constructing the pipeline just to call `.ingest()` stays network-free until actually used. | `{}` |
 | `fetch(anchor)` | Almost never — only if your anchor already carries its own data and there's no I/O left to do (e.g. a label pipeline reading pixels an anchor built via `GeoTile.from_geotiff` already loaded). | Calls `.load(anchor)` on every entry in `sources`, aligning results across sources by real time overlap. |
 | `preprocess(raw)` | Deriving final layers from fetched raw layers — pure, no I/O. | Passthrough. |
-| `context(tiles)` | Supplying extra per-sample keys a model needs — e.g. a Prithvi/Clay encoder's `temporal_coords`/`location_coords` — beyond the tensor + `"anchors"` every sample already carries. See [Supplying model-specific context](#supplying-model-specific-context) below. | Returns `{}` — no extra keys. |
+| `context(tiles)` | Supplying extra per-sample keys a model needs — e.g. a Prithvi/Clay encoder's `temporal_coords`/`location_coords` — beyond the tensor + `"tiles"` every sample already carries. See [Supplying model-specific context](#supplying-model-specific-context) below. | Returns `{}` — no extra keys. |
 | `ingest(anchor)` | Rarely — it's just `preprocess(fetch(anchor))`, wrapped into a `GeoStack` per aligned sample. | As described. |
 
 `ingest(anchor) -> Iterator[GeoStack]` is the one method every pipeline is
@@ -251,9 +251,9 @@ Everything `_ingest_cloud_mask`/`_ingest_ndvi` need is already sitting on
 
 ## Supplying model-specific context
 
-Every rendered sample always carries its tensors plus `"anchors"`
-(`dict[LayerName, GeoAnchor]`, one bare anchor per layer — see
-[geotile.md](geotile.md)). Some models need more than that: a Prithvi
+Every rendered sample always carries its tensors plus `"tiles"`
+(`dict[LayerName, GeoTile]`, the real tile per layer, lazy when loaded from
+disk — see [geotile.md](geotile.md)). Some models need more than that: a Prithvi
 `_tl` encoder wants `temporal_coords`/`location_coords`; Clay wants
 `time`/`latlon`/`gsd`. `GeoPipeline.context(tiles)` is where a pipeline
 supplies exactly those extra keys — overridable, same pattern as
@@ -312,11 +312,11 @@ def ingest_group(raw_dir: Path, out_root: Path) -> None:
     anchors = [GeoTile.from_geotiff(p, load_data=True) for p in raw_dir.glob("*.tif")]
 
     for anchor in anchors:
-        geostack_dir = out_root / f"{anchor.stem}.geostack"
-        if geostack_dir.exists():
+        stack_path = out_root / f"{anchor.stem}.zarr"
+        if stack_path.exists():
             continue   # already ingested
         for stack in Pipeline().ingest(anchor):   # imagery, unchanged Pipeline
-            stack.add("dynamicworld", build_label(anchor)).save(geostack_dir)
+            stack.add("dynamicworld", build_label(anchor)).save(stack_path)
 ```
 
 Why not fold this into `Pipeline.ingest()`: the raw anchor here already *is*
@@ -333,19 +333,19 @@ imagery layers.
 root = Path("data/train")
 for anchor in anchors:
     for stack in pipeline.ingest(anchor):
-        stack.save(root / f"{anchor.stem}.geostack")
+        stack.save(root / f"{anchor.stem}.zarr")
 ```
 
-Writes `root/<anchor_stem>.geostack/<layer_name>.zarr` for every layer in
-each yielded `GeoStack`, plus `<layer_name>.stac.json` for whichever layers
-actually carry STAC provenance (`tile.stac` non-empty) — no flag needed. A
-derived layer (a cloud mask, NDVI built via `to_geotile`) never carries
-`stac` at all, so only the layer that actually came from a real STAC search
-gets a sidecar.
+Writes `root/<anchor_stem>.zarr` — one Zarr group per layer in each yielded
+`GeoStack` — plus `<layer_name>.stac.json` for whichever layers actually
+carry STAC provenance (`tile.stac` non-empty) — no flag needed. A derived
+layer (a cloud mask, NDVI built via `to_geotile`) never carries `stac` at
+all, so only the layer that actually came from a real STAC search gets a
+sidecar.
 
 No manifest, no built-in resumability — if re-running matters, skip
-anchors whose folder already exists yourself, same check as
-[Handling labels](#handling-labels) above (`if geostack_dir.exists(): continue`).
+anchors whose store already exists yourself, same check as
+[Handling labels](#handling-labels) above (`if stack_path.exists(): continue`).
 A failure ingesting one anchor is your own loop's problem to catch and log
 if you don't want one bad anchor to stop the whole run.
 
@@ -359,7 +359,7 @@ call, or a hand-built list for anchors that don't fit an existing source
 ```python
 for anchor in anchors:
     for sample in pipeline.ingest_to_tensor(anchor, sel_bands={"sentinel_2_l1c": ["B04", "B03", "B02"]}):
-        ...  # tensor dict + "anchors", same shape GeoStackDataset.__getitem__ returns,
+        ...  # tensor dict + "tiles", same shape GeoStackDataset.__getitem__ returns,
              # plus this pipeline's own context() keys if it overrides one
 ```
 
