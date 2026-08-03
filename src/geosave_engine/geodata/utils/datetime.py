@@ -24,9 +24,8 @@ _DATETIME_PATTERN = re.compile(
 # stem, optionally followed by "_extra" (e.g. "-20190923_consensus" — common
 # in raw data releases that tag a file's provenance after its date).
 _STEM_DATE_PATTERN = re.compile(
-    r"-(?P<start>\d{8}(?:T\d{6})?)(?:-(?P<end>\d{8}(?:T\d{6})?))?(?:_[^./]*)?$"
+    r"[-_](?P<start>\d{8}(?:T\d{6})?)(?:[-_](?P<end>\d{8}(?:T\d{6})?))?[^/]*$"
 )
-
 def _parse_timezone(raw: str | None) -> timezone | None:
     """"Z" -> UTC; "+02:00" / "+0200" -> that offset; None -> None."""
     if raw is None:
