@@ -237,7 +237,11 @@ class SemanticSegmentationTask(LightningModule):
             else torch.full((self.num_classes,), 0.5)
         )
         self.register_buffer('class_thresholds', initial)
-        self.augmenter = ImageAugmenter(augmentations=self.augmentations, size=self.input_size)
+        self.augmenter = ImageAugmenter(
+            augmentations=self.augmentations, 
+            size=self.input_size,
+            data_keys=['image', 'mask'],
+        )
 
     def configure_optimizers(self) -> OptimizerLRScheduler:
         optimizer = build_optimizer(self.optimizer_name, self.model, self.config.get('optimizer') or {})
