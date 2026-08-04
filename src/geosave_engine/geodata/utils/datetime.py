@@ -26,6 +26,7 @@ _DATETIME_PATTERN = re.compile(
 _STEM_DATE_PATTERN = re.compile(
     r"[-_](?P<start>\d{8}(?:T\d{6})?)(?:[-_](?P<end>\d{8}(?:T\d{6})?))?[^/]*$"
 )
+
 def _parse_timezone(raw: str | None) -> timezone | None:
     """"Z" -> UTC; "+02:00" / "+0200" -> that offset; None -> None."""
     if raw is None:
@@ -110,14 +111,16 @@ def extract_stem_dates(stem: str) -> str:
     Examples:
         "tile-20190507"                   -> "20190507"
         "tile-20190507-20190509"          -> "20190507/20190509"
-        "dw_..._22.14-20190923_consensus" -> "20190923"
+        "dw_..._22.14_20190923T103015_consensus" -> "20190923T103015"
 
     Raises:
         ValueError: `stem` has no such date suffix.
     """
     match = _STEM_DATE_PATTERN.search(stem)
     if match is None:
-        raise ValueError(f"Filename must end with a '-YYYYMMDD' or '-YYYYMMDDTHHMMSS' date suffix: {stem!r}")
+        raise ValueError(
+            f"Filename must end with an '_YYYYMMDD' or '_YYYYMMDDTHHMMSS' date suffix: {stem!r}"
+        )
     start, end = match.group("start"), match.group("end")
     return start if end is None else f"{start}/{end}"
 
