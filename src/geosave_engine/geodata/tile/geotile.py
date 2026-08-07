@@ -18,6 +18,7 @@ from pathlib import Path
 from typing import TYPE_CHECKING, Any, Mapping, Self
 from odc.geo.geobox import GeoBox
 from odc.geo.geom import Geometry
+from rasterio.enums import Resampling
 from typing_extensions import Unpack
 
 from geosave_engine.geodata.utils.datetime import extract_stem_dates
@@ -136,6 +137,34 @@ class GeoTile(GeoAnchor):
             seen = {i.id for i in self.stac}
             changes["stac"] = [*self.stac, *(i for i in stac if i.id not in seen)]
         return dataclasses.replace(base, **changes) if changes else base
+
+    def reproject(
+        self,
+        crs: str | None = None,
+        resolution: float | None = None,
+        resampling: Resampling = Resampling.nearest,
+    ) -> Self:
+        """Reproject and/or resample onto a new CRS/resolution.
+
+        Args:
+            crs: Destination CRS. None keeps the current CRS.
+            resolution: Destination pixel size. None lets rioxarray pick one.
+            resampling: How to resample pixels onto the new grid.
+
+        Returns:
+            New GeoTile on the requested CRS/resolution.
+
+        Raises:
+            ValueError: Both crs and resolution are None.
+        """
+        if crs is None and resolution is None:
+            raise ValueError("reproject() needs crs and/or resolution")
+
+        # warp pixel data onto the new grid
+        reprojected = self.data.rio.reproject(crs or self.crs, resolution=resolution, resampling=resampling)
+
+        # carry the new grid into a fresh tile
+        return self.rebase(geobox=reprojected.odc.geobox, data=reprojected)
 
     def to_anchor(self) -> GeoAnchor:
         """Strip pixel data (and STAC provenance), keeping only the anchor identity.

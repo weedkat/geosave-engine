@@ -85,8 +85,42 @@ def xyxy_to_yolo(boxes: torch.Tensor, height: int, width: int) -> torch.Tensor:
 class ImageAugmenter(torch.nn.Module):
     """Universal stochastic Kornia transforms for training.
     
-    Dynamically routes inputs based on `data_keys`. Supports classification, 
-    semantic segmentation, pixel-wise regression, and object detection.
+    Dynamically routes inputs based on ``data_keys``. Supports classification, 
+    semantic segmentation, pixel-wise regression, and object detection. Natively 
+    intercepts and processes YOLO-formatted bounding boxes (normalized cx, cy, w, h) 
+    by mapping them to Kornia's absolute coordinates internally.
+
+    Args:
+        augmentations: List of augmentation config dicts containing ``"name"`` and 
+            optional ``"init_args"``.
+        size: Default spatial size injected into size-aware augmentations.
+        data_keys: List indicating the types of input tensors matching the supported 
+            Kornia keys (e.g., ``"input"``, ``"mask"``, ``"bbox_xywh"``). Use 
+            ``"bbox_yolo"`` for custom YOLO normalized bounding boxes. Defaults to 
+            ``["input"]``.
+
+    Raises:
+        ValueError: If ``"bbox_yolo"`` is present in ``data_keys`` but no ``"input"`` 
+            or ``"image"`` key is provided (which is required to fetch spatial 
+            dimensions to un-normalize the bounding boxes).
+
+    Returns:
+        The augmented tensors when called. Returns a single ``torch.Tensor`` if 
+        only one argument is passed, otherwise returns a ``tuple`` of tensors in 
+        the exact order as specified in ``data_keys``.
+
+    Examples:
+        **Semantic Segmentation:**
+        >>> augmenter = ImageAugmenter(config, size=224, data_keys=["input", "mask"])
+        >>> img, mask = augmenter(img, mask)
+
+        **YOLO Object Detection:**
+        >>> augmenter = ImageAugmenter(config, size=224, data_keys=["input", "bbox_yolo"])
+        >>> img, yolo_boxes = augmenter(img, yolo_boxes)
+        
+        **Standard Classification:**
+        >>> augmenter = ImageAugmenter(config, size=224)
+        >>> img = augmenter(img)
     """
 
     def __init__(

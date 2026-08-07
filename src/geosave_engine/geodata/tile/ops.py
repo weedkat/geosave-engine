@@ -1,26 +1,44 @@
-"""Free-function geometry operations on GeoTile: remap, align, mosaic, chunk_geotile.
+"""Free-function geometry ops on GeoTile: remap, align_spatial, split_spatial, mosaic_spatial/mosaic_stack, chunk_geotile.
 
-Not GeoTile methods — keeps GeoTile's own surface to tile-specific concerns
-(its own fields, its own serialization glue) instead of growing indefinitely.
-Disk I/O (Zarr/GeoTIFF) and shape validation live in
-`geosave_engine.geodata.utils.io`/`.geodata` — those don't need GeoTile at
-all, so keeping them here would just be a needless circular-import risk.
+Not GeoTile methods — keeps GeoTile's own surface to its own fields/serialization.
+Disk I/O and shape validation live in geodata.utils.io/.geodata instead.
 """
 from __future__ import annotations
 
-from typing import Literal, TypeVar, cast
+from typing import TYPE_CHECKING, Callable, Literal, TypeVar, cast
 
+import geopandas as gpd
+import odc.geo.xr  # noqa: F401 — registers .odc accessor on xr.DataArray/Dataset
+import pandas as pd
 import rioxarray  # noqa: F401 — registers .rio accessor on xr.DataArray/Dataset
 import xarray as xr
 from odc.geo.geobox import GeoBox, GeoboxTiles
 from odc.geo.geom import Geometry
+from rasterio.enums import Resampling
 from rioxarray.merge import merge_datasets
+
+from geosave_engine.geodata.utils.geodata import da_to_ds, ds_to_da
 
 from .geoanchor import GeoAnchor, GeoTag
 from .geotile import GeoTile
 
-TimeRound = Literal["D", "H", "T", "S", "L", "U", "N"]  # Pandas offset aliases
+if TYPE_CHECKING:
+    from .geostack import GeoStack
+
+MergeMethod = Literal["first", "last", "min", "max", "sum", "count"] | Callable
+# time-coord floor precision for merging; GeoTag datetime stays exact either way
+DatePrecision = Literal["D", "W", "M", "Y"] | None
 T = TypeVar("T", bound=GeoAnchor)
+
+
+def _floor_time(da: xr.DataArray, precision: DatePrecision) -> xr.DataArray:
+    """Floor da's time coord to precision's bucket start. No-op if precision is None or da has no time dim."""
+    if precision is None or "time" not in da.dims:
+        return da
+    if precision in ("D", "W"):
+        return da.assign_coords(time=da.time.dt.floor(precision))
+    floored = pd.DatetimeIndex(da.time.values).to_period(precision).to_timestamp()
+    return da.assign_coords(time=("time", floored))
 
 
 def remap(tile: GeoTile, mapping: dict[int, int]) -> GeoTile:
@@ -31,52 +49,55 @@ def remap(tile: GeoTile, mapping: dict[int, int]) -> GeoTile:
     return tile.rebase(data=remapped)
 
 
-def align(*tiles: GeoTile) -> tuple[GeoTile, ...]:
+def align_spatial(*tiles: GeoTile, tol: float = 1e-6) -> tuple[GeoTile, ...]:
     """Narrow each tile's geobox to their common intersection.
 
-    Pure geometry — data is shared untouched. Tiles must share CRS,
-    resolution, and pixel grid; that shared CRS must also be projected
-    (metric) — `resolution` (`geobox.affine.a`) only means meters under a
-    projected CRS, degrees under a geographic one (e.g. EPSG:4326), and
-    nothing downstream (GSD-conditioned models, area_m2, ...) means to
-    handle the degrees case.
+    Pure geometry — data is shared untouched.
+
+    Args:
+        *tiles: Tiles to align, same CRS/resolution/pixel grid.
+        tol: Floating-point tolerance for resolution and pixel-grid matching.
+
+    Returns:
+        Same count as input, each narrowed to the shared intersection.
+        Fewer than 2 tiles: input returned as-is, nothing to narrow.
 
     Raises:
-        ValueError: If fewer than 2 tiles, CRS/resolution mismatch, that CRS
-            isn't projected, no overlap, or misaligned grid.
+        ValueError: CRS not projected, mixed CRS/resolution, tiles don't
+            overlap, or not on a common pixel grid.
     """
     if len(tiles) < 2:
-        raise ValueError("align() requires at least 2 tiles")
-    crss = {t.crs for t in tiles}
-    if len(crss) > 1:
-        raise ValueError(f"align() requires one CRS, got: {crss}")
+        return tiles  # nothing to align, just return the single tile
+
+    # CRS must be projected — resolution only means meters under one
     crs = tiles[0].geobox.crs
     if crs is None or not crs.projected:
-        raise ValueError(
-            f"align() requires a projected CRS (resolution must mean meters), got "
-            f"{tiles[0].crs} — reproject to a projected CRS (e.g. local UTM) first"
-        )
-    resolutions = {round(t.resolution, 6) for t in tiles}
-    if len(resolutions) > 1:
-        raise ValueError(f"align() requires one resolution, got: {resolutions}")
+        raise ValueError(f"align_spatial() needs a projected CRS, got {tiles[0].crs}")
 
-    minx = max(t.bbox[0] for t in tiles)
-    miny = max(t.bbox[1] for t in tiles)
-    maxx = min(t.bbox[2] for t in tiles)
-    maxy = min(t.bbox[3] for t in tiles)
-    if minx >= maxx or miny >= maxy:
-        raise ValueError("Tiles have no spatial overlap — cannot align")
+    # check each tile against the one before it: CRS/resolution match, bbox still overlaps
+    minx, miny, maxx, maxy = tiles[0].bbox
+    for i, t in enumerate(tiles[1:], start=1):
+        prev = tiles[i - 1]
+        if t.crs != prev.crs:
+            raise ValueError(f"align_spatial(): tile {i} has different CRS than tile {i - 1}")
+        if abs(t.resolution - prev.resolution) > tol:
+            raise ValueError(f"align_spatial(): tile {i} has different resolution than tile {i - 1}")
+        minx, miny = max(minx, t.bbox[0]), max(miny, t.bbox[1])
+        maxx, maxy = min(maxx, t.bbox[2]), min(maxy, t.bbox[3])
+        if minx >= maxx or miny >= maxy:
+            raise ValueError(f"align_spatial(): tile {i} doesn't overlap the rest")
 
+    # narrow each tile's geobox to that shared bbox, clip its polygon to match
     aligned: list[GeoTile] = []
-    for t in tiles:
+    for i, t in enumerate(tiles):
         res = t.resolution
         left, _, _, top = t.bbox
         col0 = (minx - left) / res
         row0 = (top - maxy) / res
         ncols = (maxx - minx) / res
         nrows = (maxy - miny) / res
-        if any(abs(v - round(v)) > 1e-6 for v in (col0, row0, ncols, nrows)):
-            raise ValueError("Tiles are not on a common pixel grid; reproject first")
+        if any(abs(v - round(v)) > tol for v in (col0, row0, ncols, nrows)):
+            raise ValueError(f"align_spatial(): tile {i} not on the common pixel grid")
         col0, row0, ncols, nrows = round(col0), round(row0), round(ncols), round(nrows)
         sub = t.geobox[row0:row0 + nrows, col0:col0 + ncols]
         aligned_t = t.rebase(geobox=sub)
@@ -93,98 +114,184 @@ def align(*tiles: GeoTile) -> tuple[GeoTile, ...]:
     return tuple(aligned)
 
 
-def mosaic(
-    tiles: list[GeoTile],
-    crs: str | None = None,
-    time_round_to: TimeRound = 'D',
-) -> GeoTile:
-    """Stitch spatially non-overlapping tiles into one larger tile.
+def split_spatial(*tiles: GeoTile) -> list[tuple[GeoTile, ...]]:
+    """Group tiles into spatially-connected clusters — touching/overlapping tiles end up together.
 
-    All tiles must share band names and time coordinates.
+    Pure discovery, no merging — footprints reproject to one CRS for the
+    connectivity check only; each tile's own data/CRS stays untouched.
 
     Args:
-        tiles: Tiles to merge.
-        crs: Reproject tiles to this CRS before merging. Required if tiles differ in CRS.
-        time_round_to: Pandas offset alias (e.g. "D") to floor time coords before matching.
+        *tiles: Tiles to group, any CRS.
+
+    Returns:
+        One tuple per connected cluster, original relative order kept.
+        A tile touching nothing else comes back as its own singleton group.
 
     Raises:
-        ValueError: If tiles is empty, CRS mismatch without crs=, or band/time mismatch.
+        ValueError: tiles is empty, or tile 0 has no CRS.
     """
     if not tiles:
-        raise ValueError("Cannot mosaic an empty tile list")
-    if any(t.start != t.end for t in tiles):
-        raise ValueError("Cannot mosaic range-datetime tiles; ingest first to resolve to single datetimes")
+        raise ValueError("split_spatial() requires at least one tile")
+    if len(tiles) == 1:
+        return [tiles]
 
-    tile_crss = {t.crs for t in tiles}
-    if crs is None and len(tile_crss) > 1:
-        raise ValueError(
-            f"Cannot mosaic: tiles have different CRS: {tile_crss}. Pass crs= to reproject."
-        )
+    # every footprint reprojected onto tile 0's CRS, just for the connectivity check
+    crs = tiles[0].crs
+    if crs is None:
+        raise ValueError("split_spatial() needs tile 0 to have a real CRS")
+    footprints = [t.bbox_polygon.to_crs(crs).geom for t in tiles]
 
-    das: list[xr.DataArray] = []
+    # union merges touching footprints; explode splits back into disjoint pieces
+    merged = gpd.GeoSeries(footprints, crs=crs).union_all()
+    cluster_geoms = list(gpd.GeoSeries([merged], crs=crs).explode(index_parts=False))
+
+    # group each tile into the first cluster it touches, preserving input order
+    groups: dict[int, list[int]] = {}
+    for i, fp in enumerate(footprints):
+        for cluster_id, geom in enumerate(cluster_geoms):
+            if geom.intersects(fp):
+                groups.setdefault(cluster_id, []).append(i)
+                break
+
+    return [tuple(tiles[i] for i in idxs) for idxs in groups.values()]
+
+
+def mosaic_spatial(
+    *tiles: GeoTile,
+    method: MergeMethod = "first",
+    target_crs: str | None = None,
+    target_resolution: float | None = None,
+    resampling: Resampling = Resampling.nearest,
+    date_precision: DatePrecision = 'D',
+) -> GeoTile:
+    """Merge tiles into one, gaps filled with nodata.
+
+    No time requirement — tiles don't need to agree on time, grouping by
+    time is the caller's job. GeoTag datetime stays the exact min/max
+    across inputs regardless of date_precision.
+
+    Args:
+        *tiles: Tiles to merge.
+        method: Overlap-resolution rule forwarded to merge_datasets.
+        target_crs: Reproject mismatched tiles onto this CRS before
+            merging. None requires tiles already share one CRS.
+        target_resolution: Resample mismatched tiles onto this resolution
+            before merging. None requires tiles already share one resolution.
+        resampling: Resampling used for target_crs/target_resolution reconciliation.
+        date_precision: Floor each tile's array time coord to this before
+            merging. None leaves it untouched.
+
+    Returns:
+        One GeoTile spanning every input's combined footprint.
+
+    Raises:
+        ValueError: tiles is empty, CRS mismatch with target_crs unset,
+            resolution mismatch with target_resolution unset, or bands don't match.
+    """
+    if not tiles:
+        raise ValueError("mosaic_spatial() requires at least one tile")
+
+    # CRS: target_crs given wins, else every tile must already agree on one
+    if target_crs is None:
+        by_crs: dict[str, list[int]] = {}
+        for i, t in enumerate(tiles):
+            by_crs.setdefault(str(t.crs), []).append(i)
+        if len(by_crs) > 1:
+            raise ValueError(f"mosaic_spatial(): mixed CRS — {by_crs} — pass target_crs=")
+        target_crs = tiles[0].crs
+        if target_crs is None:
+            raise ValueError("mosaic_spatial() needs tiles to have a real CRS")
+
+    # resolution: target_resolution given wins, else every tile must already agree on one
+    if target_resolution is None:
+        by_res: dict[float, list[int]] = {}
+        for i, t in enumerate(tiles):
+            by_res.setdefault(round(t.resolution, 6), []).append(i)
+        if len(by_res) > 1:
+            raise ValueError(f"mosaic_spatial(): mixed resolution — {by_res} — pass target_resolution=")
+        target_resolution = tiles[0].resolution
+
+    # reproject only the tiles that actually need it, one combined pass per tile
+    reconciled = []
     for t in tiles:
-        da = t.data
-        if time_round_to is not None and "time" in da.dims:
-            da = da.assign_coords(time=da.time.dt.floor(time_round_to))
-        if crs is not None and t.crs != crs:
-            da = da.rio.reproject(crs)
-        das.append(da)
+        need_crs = str(t.crs) != target_crs
+        need_res = round(t.resolution, 6) != round(target_resolution, 6)
+        if need_crs or need_res:
+            t = t.reproject(
+                crs=target_crs if need_crs else None,
+                resolution=target_resolution if need_res else None,
+                resampling=resampling,
+            )
+        reconciled.append(t)
+    tiles = tuple(reconciled)
 
-    band_dims = {"band" in da.dims for da in das}
-    if len(band_dims) > 1:
-        raise ValueError("Cannot mosaic: some tiles have a 'band' dim and others don't")
-    has_band = "band" in das[0].dims
-    if has_band:
-        band_sets = {tuple(str(b) for b in da.coords["band"].values) for da in das}
-        if len(band_sets) > 1:
-            raise ValueError(f"Cannot mosaic: tiles have different bands: {band_sets}")
-    time_sets = {
-        tuple(str(v) for v in da.time.values) if "time" in da.dims else ()
-        for da in das
-    }
-    if len(time_sets) > 1:
-        raise ValueError(
-            "Cannot mosaic: tiles have different time steps; pass time_round_to= for tolerance"
-        )
+    crs = tiles[0].geobox.crs
+    if crs is None or not crs.projected:
+        raise ValueError(f"mosaic_spatial() needs a projected CRS, got {tiles[0].crs}")
 
-    if has_band:
-        merged_ds = merge_datasets([da.to_dataset(dim="band") for da in das])
-        merged = merged_ds.to_array(dim="band")
-        merged = merged.transpose("time", "band", "y", "x") if "time" in merged.dims else merged.transpose("band", "y", "x")
-    else:
-        merged_ds = merge_datasets([da.to_dataset(name="value") for da in das])
-        merged = merged_ds["value"]
-        merged = merged.transpose("time", "y", "x") if "time" in merged.dims else merged.transpose("y", "x")
-    geobox = GeoBox.from_bbox(
-        merged.rio.bounds(),
-        crs=merged.rio.crs.to_string(),
-        resolution=tiles[0].resolution,
-    )
-    mosaic_polygon: Geometry | None = None
-    tile_polys = [t.polygon for t in tiles]
-    if all(p is not None for p in tile_polys):
-        target_crs_str: str | None = crs or tiles[0].crs
-        first_poly = tile_polys[0]
-        assert first_poly is not None
-        merged_poly: Geometry = first_poly
+    # every tile needs the same band structure — no reconciliation for this
+    has_band = "band" in tiles[0].data.dims
+    for i, t in enumerate(tiles[1:], start=1):
+        if ("band" in t.data.dims) != has_band:
+            raise ValueError(f"mosaic_spatial(): tile {i} band dim differs from tile 0")
+        if has_band and t.bands != tiles[0].bands:
+            raise ValueError(f"mosaic_spatial(): tile {i} bands {t.bands} != tile 0 bands {tiles[0].bands}")
+
+    # floor time coord to date_precision before merge
+    datasets = [da_to_ds(_floor_time(t.data, date_precision)) for t in tiles]
+    merged_ds = merge_datasets(datasets, method=method).assign_attrs(has_band=has_band)  # attrs don't carry through
+    merged_da = ds_to_da(merged_ds)
+
+    geobox = GeoBox.from_bbox(merged_da.rio.bounds(), crs=target_crs, resolution=target_resolution)
+
+    # union polygon, skip tiles without one
+    polygon: Geometry | None = None
+    tile_polys = [t.polygon.to_crs(target_crs) for t in tiles if t.polygon is not None]
+    if tile_polys:
+        polygon = tile_polys[0]
         for p in tile_polys[1:]:
-            if p is not None:
-                if target_crs_str is not None and str(merged_poly.crs) != target_crs_str:
-                    merged_poly = merged_poly.to_crs(target_crs_str)
-                merged_poly = merged_poly | p
-        mosaic_polygon = merged_poly
+            polygon = polygon | p
+
     tag = GeoTag(
-        datetime=max(t.datetime for t in tiles),
+        datetime=(min(t.start for t in tiles), max(t.end for t in tiles)),
         metadata={k: v for t in tiles for k, v in t.metadata.items()},
-        polygon=mosaic_polygon,
+        polygon=polygon,
         plot_meta=tiles[0].plot_meta,
     )
-    base = GeoTile(
-        geobox=geobox,
-        data=merged,
-        geotag=tag,
-    ).rebase(stac=[item for t in tiles for item in t.stac])
-    return base
+    merged_tile = GeoTile(geobox=geobox, data=merged_da, geotag=tag)
+    return merged_tile.rebase(stac=[item for t in tiles for item in t.stac])
+
+
+def mosaic_stack(*stacks: GeoStack, method: MergeMethod = "first") -> GeoStack:
+    """Merge stacks into one, layer by layer, gaps filled with nodata.
+
+    Layers don't need to match across stacks — each layer name merges
+    across whichever stacks carry it.
+
+    Args:
+        *stacks: Stacks to merge.
+        method: Forwarded to mosaic_spatial per layer.
+
+    Returns:
+        One GeoStack with every layer name found across inputs.
+
+    Raises:
+        ValueError: stacks is empty, or a layer's tiles fail mosaic_spatial's own checks.
+
+    Examples:
+        >>> region = mosaic_stack(stack_a, stack_b)  # stack_b missing a layer stack_a has is fine
+    """
+
+    from .geostack import GeoStack  # noqa: F811 — deferred to dodge the geostack.py <-> ops.py cycle
+
+    if not stacks:
+        raise ValueError("mosaic_stack() requires at least one stack")
+    layer_names = {name for s in stacks for name in s.tiles}
+    merged = {
+        name: mosaic_spatial(*(s.tiles[name] for s in stacks if name in s.tiles), method=method)
+        for name in layer_names
+    }
+    return GeoStack(**merged)
 
 
 def chunk_geotile(full: T, tile_size_px: int) -> list[T]:
@@ -195,18 +302,11 @@ def chunk_geotile(full: T, tile_size_px: int) -> list[T]:
         tile_size_px: Sub-tile side length in pixels (square).
 
     Returns:
-        One instance (same type as ``full``) per grid cell intersecting
-        ``full``'s extent. ``full.polygon``, if set, is clipped to each
-        cell's own bbox — not dropped — so mosaicking the same cells back
-        together reconstructs the original footprint (``mosaic()`` already
-        unions per-tile polygons when every tile carries one). A cell whose
-        bbox falls inside ``full``'s bbox but outside the actual (non-
-        rectangular) polygon clips down to an empty geometry, same as any
-        other real gap.
+        One instance per grid cell intersecting full's extent, same type as full.
+        full.polygon, if set, is clipped to each cell's own bbox instead of dropped.
     """
     grid = GeoboxTiles(full.geobox, (tile_size_px, tile_size_px))
-    # GeoboxTiles.__getitem__ is typed to return the wider GeoBoxBase, but
-    # full.geobox (and so grid, built from it) is always concretely GeoBox.
+    # grid[idx] types as the wider GeoBoxBase but is always concretely GeoBox here
     sub_tiles = [full.rebase(geobox=cast(GeoBox, grid[idx])) for idx in grid.tiles(full.geobox.extent)]
     polygon = full.polygon
     if polygon is None:

@@ -3,7 +3,7 @@ from geosave_engine.geodata.utils.io import from_geotiff, from_zarr, to_geotiff,
 
 from .geoanchor import AnchorDatetime, GeoAnchor, GeoTag, PlotMeta
 from .geotile import GeoTile
-from .ops import align, chunk_geotile, mosaic, remap
+from .ops import align_spatial, chunk_geotile, mosaic_spatial, mosaic_stack, remap, split_spatial
 from .geostack import GeoStack
 
 __all__ = [
@@ -12,12 +12,14 @@ __all__ = [
     "GeoTag",
     "GeoTile",
     "PlotMeta",
-    "align",
+    "align_spatial",
     "chunk_geotile",
     "from_geotiff",
     "from_zarr",
-    "mosaic",
+    "mosaic_spatial",
+    "mosaic_stack",
     "remap",
+    "split_spatial",
     "to_geotiff",
     "to_zarr",
     "validate_da",

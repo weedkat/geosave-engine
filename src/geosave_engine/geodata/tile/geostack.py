@@ -12,7 +12,7 @@ from typing_extensions import Unpack
 from odc.geo.geobox import GeoBox
 
 from geosave_engine.geodata.tile.geotile import GeoTile, _write_stac
-from geosave_engine.geodata.tile.ops import align
+from geosave_engine.geodata.tile.ops import align_spatial
 from geosave_engine.geodata.utils.geodata import da_to_ds
 from geosave_engine.geodata.utils.io import to_zarr
 
@@ -37,8 +37,8 @@ class GeoStack:
             under their real names, not auto-named. Mix freely with
             `**tiles` as long as names don't collide.
         **tiles: Layer name to GeoTile, e.g. `GeoStack(**pipeline.ingest(anchor))`.
-            Auto-aligned to their common spatial intersection via `align()`
-            when there's more than one.
+            Auto-aligned to their common spatial intersection via
+            `align_spatial()` when there's more than one.
 
     Raises:
         ValueError: Two positional args (including a flattened `GeoStack`'s
@@ -71,7 +71,7 @@ class GeoStack:
                 "keyword name(s) — rename the keyword or don't mix"
             )
         named = {**positional, **tiles}
-        aligned = dict(zip(named.keys(), align(*named.values()))) if len(named) > 1 else named
+        aligned = dict(zip(named.keys(), align_spatial(*named.values()))) if len(named) > 1 else named
         self.tiles: dict[LayerName, GeoTile] = aligned
         self.geobox: "GeoBox" = next(iter(aligned.values())).geobox
 

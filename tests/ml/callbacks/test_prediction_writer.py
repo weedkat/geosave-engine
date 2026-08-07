@@ -15,7 +15,8 @@ import zarr
 from odc.geo.geobox import GeoBox
 
 from geosave_engine.geodata.tile import GeoAnchor, GeoStack, GeoTag, GeoTile
-from geosave_engine.ml.callbacks.prediction_writer import DensePredictionWriter, TilePredictionWriter
+from geosave_engine.ml.callbacks.dense_prediction_writer import DensePredictionWriter
+from geosave_engine.ml.callbacks.tile_writer import TilePredictionWriter
 
 UTM = "EPSG:32633"
 BBOX = (500000, 5000000, 500320, 5000320)  # 32 x 32 px at 10 m

@@ -27,7 +27,7 @@ Multiple tiles are grouped by ``(name, bands, date)`` first, then split into
 connected components by actual bbox adjacency/overlap (not just centroid
 proximity — an intentional tiling grid has *different* centroids by
 design) — only tiles that are genuinely part of one contiguous area *and*
-the same named layer mosaic together (via ``geosave_engine.geodata.tile.mosaic``);
+the same named layer mosaic together (via ``geosave_engine.geodata.tile.mosaic_spatial``);
 anything else facets as its own panel, even if it happens to share bands
 and date. Name comes from the input: a ``dict[str, GeoTile]``/``GeoStack``
 gives each tile its own layer name (so two different layers, e.g. imagery
@@ -62,7 +62,7 @@ from matplotlib.patches import Patch
 from odc.geo.math import apply_affine
 from typing_extensions import Unpack
 
-from geosave_engine.geodata.tile import GeoTile, mosaic
+from geosave_engine.geodata.tile import GeoTile, mosaic_spatial
 from geosave_engine.utils.colorize import Palette, colorize
 
 # DejaVu Sans (matplotlib's default) has no CJK glyphs — a reverse-geocoded
@@ -384,7 +384,7 @@ def plot(
 
     | Same name? | Same date? | Same/adjacent location? | Result |
     | --- | --- | --- | --- |
-    | Yes | Yes | Yes (touch or overlap) | One mosaicked panel (via ``mosaic()``) |
+    | Yes | Yes | Yes (touch or overlap) | One mosaicked panel (via ``mosaic_spatial()``) |
     | No | — | — | Two separate panels — different layers never mosaic |
     | Yes | Yes | No (unrelated location) | Two separate panels — same date alone isn't enough |
     | Yes | No | Yes (same/overlapping spot, different day) | Two separate panels — a time series, not a mosaic |
@@ -446,7 +446,7 @@ def plot(
             no ``rgb_bands`` was resolved from either its own `plot_meta`
             or the call-level kwarg; ``rgb_bands`` names a band a tile
             doesn't have; or adjacent tiles can't mosaic (mismatched CRS
-            without reconciliation, etc — see ``mosaic()``).
+            without reconciliation, etc — see ``mosaic_spatial()``).
     """
     cmap = kwargs.get("cmap", "viridis")
     class_map = kwargs.get("class_map")
@@ -490,7 +490,7 @@ def plot(
 
     panels = [
         _detect_panel(
-            mosaic([t for _, t in component]) if len(component) > 1 else component[0][1],
+            mosaic_spatial(*(t for _, t in component)) if len(component) > 1 else component[0][1],
             title=component[0][0],
             cmap=cmap,
             class_map=class_map,

@@ -63,9 +63,10 @@ src/
 │   ├── ml
 │   │   ├── callbacks
 │   │   │   ├── __init__.py
+│   │   │   ├── dense_prediction_writer.py
 │   │   │   ├── prediction_logger.py
-│   │   │   ├── prediction_writer.py
-│   │   │   └── threshold_calibrator.py
+│   │   │   ├── threshold_calibrator.py
+│   │   │   └── tile_writer.py
 │   │   ├── cli
 │   │   │   ├── __init__.py
 │   │   │   └── cli.py
@@ -124,6 +125,7 @@ src/
 │   │   │   └── processor.py
 │   │   └── utils
 │   │       ├── __init__.py
+│   │       ├── prediction_io.py
 │   │       ├── torch_params.py
 │   │       └── weights.py
 │   ├── templates

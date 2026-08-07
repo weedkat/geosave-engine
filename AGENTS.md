@@ -73,26 +73,13 @@ Write in simple caveman language using google style docstrings:
 - `Raises`: expected errors.
 - `Examples`: only for public class or not obvious usage.
 
-**No essays.** A docstring says what the thing does and its input/output —
-not why it was designed that way, what alternative was rejected, or how a
-past discussion converged on it. That reasoning belongs in the PR
-description or commit message, not the code — it rots the moment the
-design changes again, and nobody reads a paragraph to find the one line
-that mattered. If the body runs past 2-3 lines, cut it down. Design
-tradeoffs get flagged in chat/PR, not embedded in a class docstring.
+**Hard limits — docstrings, module docstrings, inline comments, all of it:**
 
-**This applies to module docstrings too, and to inline comments.** No
-"Design summary (converged across discussion)" style write-ups at the top
-of a file logging how a decision was reached, what was tried first, what
-got renamed from what. That's a changelog, not documentation — it belongs
-in the commit message. A reader opening the file needs to know what it
-does *now*, not its history. Same discipline for comments: one line
-flagging a non-obvious constraint is fine; a comment restating the
-reasoning behind a parameter choice ("confirmed empirically", "because
-X doesn't guarantee Y") is essay creep in miniature — cut it or fold it
-into the one sentence that actually matters. If a docstring or comment
-needs a diagram or bullet list to land, it is not a docstring anymore —
-stop and ask whether this belongs in `docs/` instead.
+- Focus on expected input and output
+- Inline comment: 1 line. Max.
+- Docstring body: 2-3 lines. Max.
+- Say what, never why/history ("confirmed empirically", "converged on", "renamed from"). That's commit/PR content, not code.
+- Over the limit → cut it, don't wrap it. Truly needs more → belongs in `docs/`, ask first.
 
 Example:
 
