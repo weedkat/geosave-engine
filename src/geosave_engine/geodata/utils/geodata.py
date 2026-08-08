@@ -1,13 +1,15 @@
 from __future__ import annotations
 
 from datetime import datetime as dt
-from typing import Any
+from typing import Any, cast
 
 import numpy as np
 import rioxarray  # noqa: F401 — registers .rio accessor on xr.DataArray/Dataset
 import xarray as xr
 from odc.geo.geobox import GeoBox
 from odc.geo.xr import xr_coords
+
+BANDLESS_VAR_NAME = "data"  # da_to_ds's sentinel var name for a bandless da; reserved, can't be a real band name
 
 
 def np_to_da(
@@ -16,13 +18,9 @@ def np_to_da(
     names: str | list[str] | None = None,
     times: list[dt] | None = None,
 ) -> xr.DataArray:
-    """Shape a plain array into a DataArray on geobox, preserving spatial
-    metadata (y, x, spatial_ref) — use this instead of bare
-    ``xr.DataArray(arr, dims=["y","x"], coords={"y":..., "x":...})``, which
-    silently drops the ``spatial_ref`` coordinate and breaks CRS detection.
+    """Shape a plain array into a DataArray on geobox — preserves `spatial_ref`, bare `xr.DataArray(...)` doesn't.
 
-    2D `(y, x)` is a single unnamed band. 3D `(band, y, x)` requires
-    `names`. 4D `(time, band, y, x)` requires both `names` and `times`.
+    2D is one implicit band. 3D needs `names`. 4D needs `names` and `times`.
 
     Args:
         geobox: Spatial reference for the array's (y, x) axes.
@@ -64,27 +62,38 @@ def np_to_da(
     raise ValueError(f"Expected a 2-4D array, got {arr.ndim}D")
 
 
+def default_nodata(dtype: np.dtype) -> float | int:
+    """Sentinel nodata for a dtype with none declared.
+
+    NaN for float, dtype max for unsigned int, dtype min for signed int.
+
+    Raises:
+        ValueError: `dtype` isn't float or int (e.g. bool has no safe sentinel).
+    """
+    if np.issubdtype(dtype, np.floating):
+        return float("nan")
+    if np.issubdtype(dtype, np.unsignedinteger):
+        return int(np.iinfo(dtype).max)
+    if np.issubdtype(dtype, np.integer):
+        return int(np.iinfo(dtype).min)
+    raise ValueError(f"default_nodata(): no safe sentinel for dtype {dtype}")
+
+
 def validate_da(da: xr.DataArray) -> xr.DataArray:
-    """Check/coerce a DataArray into GeoTile's in-memory shape: one stacked
-    array, dims `(band, y, x)`, `(time, band, y, x)`, `(y, x)`, or
-    `(time, y, x)`, CRS set. `band` is optional — its absence means the
-    array has no named bands (a single implicit one), not an error.
+    """Coerce da into this library's array format — CF dims/CRS, plus our band-as-coordinate extension.
 
-    Fixable (coerced, no error): dims present but out of order — transposed
-    to canonical order.
-
-    Not fixable (raises): missing `x`/`y`, missing CRS — nothing to invent
-    these from.
+    No `band` dim is valid too — means one implicit band, not an error.
 
     Args:
         da: Array to check.
 
     Returns:
-        `da`, transposed to canonical dim order if needed.
+        `da`, canonical dim order, CRS set.
 
     Raises:
-        ValueError: Missing `x`/`y` dim, unexpected dims, or no CRS set
-            (`da.rio.crs is None`).
+        ValueError: Missing `x`/`y` dim, unexpected dims, missing `band`
+            coordinate, a band literally named `"data"`, or no CRS set
+            (`da.odc.crs is None`).
     """
     dims = set(da.dims)
     if dims == {"band", "y", "x"}:
@@ -99,20 +108,19 @@ def validate_da(da: xr.DataArray) -> xr.DataArray:
         raise ValueError(
             f"Expected dims (band, y, x), (time, band, y, x), (y, x), or (time, y, x), got {tuple(da.dims)}"
         )
-    if "band" in dims and "band" not in da.coords:
-        raise ValueError("DataArray has a 'band' dim but no 'band' coordinate")
-    if da.rio.crs is None:
-        raise ValueError("DataArray has no CRS set")
+    if "band" in dims:
+        if "band" not in da.coords:
+            raise ValueError("DataArray has a 'band' dim but no 'band' coordinate")
+        if BANDLESS_VAR_NAME in da.band.values:
+            raise ValueError(f"{BANDLESS_VAR_NAME!r} is reserved for a bandless array, can't be a real band name")
+    if da.odc.crs is None:
+        raise ValueError("validate_da(): da has no CRS set — call da.odc.assign_crs(crs) first")
+    da = da.odc.assign_crs(da.odc.crs)  # stamp grid_mapping — CRS-detectable alone doesn't mean it's declared
     return da.transpose(*canonical)
 
 
 def da_to_ds(da: xr.DataArray) -> xr.Dataset:
-    """Dataset shape for a Zarr write: one variable per band, or a single
-    unnamed `data` variable when `da` has no `band` dim (e.g. a mask/label
-    tile built from a plain 2D array).
-
-    `has_band` attr on the returned Dataset records which, so `ds_to_da`
-    can invert this losslessly.
+    """Split da into this library's disk format — one variable per band, or one `data` variable if bandless.
 
     Args:
         da: Array to split, dims `(band, y, x)`, `(y, x)`, `(time, band, y, x)`, or `(time, y, x)`.
@@ -121,25 +129,23 @@ def da_to_ds(da: xr.DataArray) -> xr.Dataset:
         Dataset with one variable per band, or one `data` variable.
     """
     if "band" in da.dims:
-        return da.to_dataset(dim="band").assign_attrs(has_band=True)
-    return da.to_dataset(name="data").assign_attrs(has_band=False)
+        return da.to_dataset(dim="band")
+    return da.to_dataset(name=BANDLESS_VAR_NAME)
 
 
 def ds_to_da(ds: xr.Dataset) -> xr.DataArray:
     """Reverse of `da_to_ds`.
 
     Args:
-        ds: Dataset carrying a `has_band` attr from `da_to_ds`. Missing
-            attr (data predating it) assumed banded.
+        ds: Dataset built by `da_to_ds` (var_order-restored, see `validate_ds`/`from_zarr`).
 
     Returns:
-        `da`, with nodata (read off the source variable(s) before `to_array`
-        stacking would otherwise drop it) re-attached.
+        `da`, with nodata reattached (`to_array` stacking drops it otherwise).
     """
-    has_band = ds.attrs.get("has_band", True)
+    has_band = not (next(iter(ds.data_vars)) == BANDLESS_VAR_NAME and len(ds.data_vars) == 1)
     if has_band:
         nodata = next(iter(ds.data_vars.values())).rio.nodata
-        da = ds.to_array(dim="band")
+        da = ds[list(ds.data_vars)].to_array(dim="band")  # subset first — stray coords (e.g. var_order) don't fit "band"
         da = da.transpose("time", "band", "y", "x") if "time" in da.dims else da.transpose("band", "y", "x")
     else:
         da = next(iter(ds.data_vars.values()))
@@ -151,36 +157,30 @@ def ds_to_da(ds: xr.Dataset) -> xr.DataArray:
 
 
 def validate_ds(ds: xr.Dataset) -> xr.Dataset:
-    """Check/coerce a Dataset into CF disk shape: one variable per band,
-    each dims `(y, x)` or `(time, y, x)`, CRS grid-mapping coordinate set.
-
-    Fixable (coerced, no error): a variable's dims present but out of order —
-    transposed to canonical order. `grid_mapping` missing/stale on a
-    variable — re-stamped via `write_crs` so every store gets it
-    consistently, not just ones that happened to pass through a GeoTIFF read.
-
-    Not fixable (raises): a variable still carrying a `band` dim (means it
-    was never split into one-variable-per-band — wrong shape for this
-    function), missing CRS — nothing to invent these from.
+    """Coerce ds into this library's disk format — CF's one-variable-per-band, plus our var_order extension.
 
     Args:
         ds: Dataset to check.
 
     Returns:
-        `ds`, each variable transposed to its canonical dim order if needed,
-        with CRS `grid_mapping` set on every variable.
+        `ds`, canonical variable order and per-variable dim order, CRS
+        `grid_mapping` set on every variable.
 
     Raises:
         ValueError: A variable has a `band` dim, an unexpected dim, or the
-            Dataset has no CRS set (`ds.rio.crs is None`).
+            Dataset has no CRS set (`ds.odc.crs is None`).
     """
-    if ds.rio.crs is None:
-        raise ValueError("Dataset has no CRS set")
-    ds = ds.rio.write_crs(ds.rio.crs)
+    if "var_order" in ds.coords:
+        var_order: list[str] = ds.coords["var_order"].values.tolist()
+        if set(var_order) == set(ds.data_vars):
+            ds = cast(xr.Dataset, ds[var_order])  # restore write-time order; zarr alphabetizes on reopen
+
+    if ds.odc.crs is None:
+        raise ValueError("validate_ds(): ds has no CRS set — call ds.odc.assign_crs(crs) first")
+    ds = ds.odc.assign_crs(ds.odc.crs)  # defensive backstop — validate_da should've stamped it already
+
     for name, var in ds.data_vars.items():
         dims = set(var.dims)
-        if "band" in dims:
-            raise ValueError(f"Variable {name!r} has a 'band' dim — split into one variable per band first")
         if dims == {"y", "x"}:
             canonical = ("y", "x")
         elif dims == {"time", "y", "x"}:
@@ -188,4 +188,5 @@ def validate_ds(ds: xr.Dataset) -> xr.Dataset:
         else:
             raise ValueError(f"Variable {name!r}: expected dims (y, x) or (time, y, x), got {tuple(var.dims)}")
         ds[name] = var.transpose(*canonical)
-    return ds
+
+    return ds.assign_coords(var_order=("var", list(ds.data_vars)))  # refresh for the next to_zarr write

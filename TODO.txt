@@ -1,1 +1,2 @@
-1. Create callback to save files to either local or docker instance thru API
+Cool Idea:
+1. Build parser for data_pipeline so the pipeline is preserved in config.yaml format

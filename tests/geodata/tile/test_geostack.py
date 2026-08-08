@@ -54,7 +54,7 @@ class TestConstruction:
     def test_non_overlapping_tiles_raise(self):
         a = _tile(("b1",), bbox=BBOX)
         b = _tile(("b2",), bbox=(600000, 5000000, 600320, 5000320))
-        with pytest.raises(ValueError, match="no spatial overlap"):
+        with pytest.raises(ValueError, match="doesn't overlap"):
             GeoStack(a=a, b=b)
 
 
@@ -94,44 +94,38 @@ class TestSaveLoadRoundTrip:
         assert not (path / "a.zarr").exists()  # not the old one-store-per-layer shape
         assert sorted(zarr.open_group(path, mode="r").group_keys()) == ["a", "b", "c"]
 
-    def test_save_overwrites_removed_layer_not_left_stale(self, tmp_path):
+    def test_save_leaves_other_groups_untouched(self, tmp_path):
         import zarr
 
         path = tmp_path / "anchor.zarr"
         GeoStack(a=_tile(("b1",)), b=_tile(("b2",))).save(path)
-        GeoStack(a=_tile(("b1",))).save(path)
-        assert sorted(zarr.open_group(path, mode="r").group_keys()) == ["a"]
-
-    def test_append_adds_groups_without_touching_existing_ones(self, tmp_path):
-        import zarr
-
-        path = tmp_path / "anchor.zarr"
-        GeoStack(a=_tile(("b1",))).save(path)
-        GeoStack(b=_tile(("b2",))).save(path, mode="append")
+        GeoStack(a=_tile(("b1",))).save(path)  # only re-saves 'a'
         assert sorted(zarr.open_group(path, mode="r").group_keys()) == ["a", "b"]
 
-    def test_append_to_missing_store_just_creates_it(self, tmp_path):
+    def test_save_adds_groups_without_touching_existing_ones(self, tmp_path):
         import zarr
 
         path = tmp_path / "anchor.zarr"
-        GeoStack(a=_tile(("b1",))).save(path, mode="append")
+        GeoStack(a=_tile(("b1",))).save(path)
+        GeoStack(b=_tile(("b2",))).save(path)
+        assert sorted(zarr.open_group(path, mode="r").group_keys()) == ["a", "b"]
+
+    def test_save_to_missing_store_just_creates_it(self, tmp_path):
+        import zarr
+
+        path = tmp_path / "anchor.zarr"
+        GeoStack(a=_tile(("b1",))).save(path, overwrite=False)
         assert sorted(zarr.open_group(path, mode="r").group_keys()) == ["a"]
 
-    def test_append_raises_on_layer_name_collision(self, tmp_path):
+    def test_overwrite_false_raises_on_layer_name_collision(self, tmp_path):
         path = tmp_path / "anchor.zarr"
         GeoStack(a=_tile(("b1",))).save(path)
         with pytest.raises(ValueError, match="already has group"):
-            GeoStack(a=_tile(("b1",))).save(path, mode="append")
+            GeoStack(a=_tile(("b1",))).save(path, overwrite=False)
 
-    def test_error_mode_raises_when_path_exists(self, tmp_path):
+    def test_overwrite_false_writes_when_path_missing(self, tmp_path):
         path = tmp_path / "anchor.zarr"
-        GeoStack(a=_tile(("b1",))).save(path)
-        with pytest.raises(FileExistsError):
-            GeoStack(b=_tile(("b2",))).save(path, mode="error")
-
-    def test_error_mode_writes_when_path_missing(self, tmp_path):
-        path = tmp_path / "anchor.zarr"
-        GeoStack(a=_tile(("b1",))).save(path, mode="error")
+        GeoStack(a=_tile(("b1",))).save(path, overwrite=False)
         assert path.is_dir()
 
     def test_save_requires_zarr_suffix(self, tmp_path):
@@ -146,15 +140,12 @@ class TestSaveLoadRoundTrip:
         with pytest.raises(ValueError, match="Expected a .zarr path"):
             GeoStack.load(renamed)
 
-    def test_load_rejects_store_with_no_groups(self, tmp_path):
+    def test_load_no_groups_loads_root_as_layer_0(self, tmp_path):
         # a plain root-level store (e.g. written by GeoTile.to_zarr, not GeoStack.save)
-        import xarray as xr
-
-        plain = xr.Dataset({"x": (("y", "x"), np.zeros((2, 2)))})
         path = tmp_path / "plain.zarr"
-        plain.to_zarr(path, mode="w")
-        with pytest.raises(ValueError, match="no zarr groups"):
-            GeoStack.load(path)
+        _tile(("b1",)).to_zarr(path)
+        loaded = GeoStack.load(path)
+        assert list(loaded.tiles) == ["layer_0"]
 
     def test_geobox_preserved(self, tmp_path):
         stack = GeoStack(a=_tile(("b1",)), b=_tile(("b2", "b3")))

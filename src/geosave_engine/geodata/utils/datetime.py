@@ -103,24 +103,30 @@ def parse_daterange(value: AnchorDatetime) -> DateRange:
             return _parse_daterange(value)
 
 
-def extract_stem_dates(stem: str) -> str:
-    """Trailing compact date suffix from a filename stem, normalized to a
-    single value or a "start/end" interval string — ready to hand to
-    parse_daterange, no datetime parsing done here.
+def extract_stem_dates(stem: str, pattern: re.Pattern[str] = _STEM_DATE_PATTERN) -> str:
+    """Date match from a filename stem, normalized to a single value or a
+    "start/end" interval string — ready to hand to parse_daterange, no
+    datetime parsing done here.
 
     Examples:
         "tile-20190507"                   -> "20190507"
         "tile-20190507-20190509"          -> "20190507/20190509"
         "dw_..._22.14_20190923T103015_consensus" -> "20190923T103015"
 
+    Args:
+        stem: Filename stem to search.
+        pattern: Compiled regex with `start`/`end` named groups (`end`
+            optional). Default matches this codebase's own trailing
+            `-YYYYMMDD[THHMMSS]` convention — pass a source-specific one
+            for anything else (e.g. Copernicus `.SAFE` names embed the
+            acquisition date mid-string, not as a trailing suffix).
+
     Raises:
-        ValueError: `stem` has no such date suffix.
+        ValueError: `stem` doesn't match `pattern`.
     """
-    match = _STEM_DATE_PATTERN.search(stem)
+    match = pattern.search(stem)
     if match is None:
-        raise ValueError(
-            f"Filename must end with an '_YYYYMMDD' or '_YYYYMMDDTHHMMSS' date suffix: {stem!r}"
-        )
+        raise ValueError(f"Filename doesn't match date pattern {pattern.pattern!r}: {stem!r}")
     start, end = match.group("start"), match.group("end")
     return start if end is None else f"{start}/{end}"
 

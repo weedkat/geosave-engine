@@ -21,9 +21,10 @@ from odc.geo.geom import Geometry
 from rasterio.enums import Resampling
 from typing_extensions import Unpack
 
-from geosave_engine.geodata.utils.datetime import extract_stem_dates
+from geosave_engine.geodata.utils.datetime import extract_stem_dates, format_stem_dates
 from geosave_engine.geodata.utils.geodata import da_to_ds, ds_to_da, validate_da
-from geosave_engine.geodata.utils.io import from_geotiff, from_zarr, to_geotiff, to_zarr
+from geosave_engine.geodata.utils.geotiff import from_geotiff, to_geotiff
+from geosave_engine.geodata.utils.zarr import from_zarr, to_zarr
 
 from .geoanchor import AnchorDatetime, GeoAnchor, GeoTag, PlotMeta
 
@@ -39,6 +40,7 @@ warnings.filterwarnings(
 if TYPE_CHECKING:
     from matplotlib.figure import Figure
     from geosave_engine.geodata.utils.geovis import PlotKwargs
+    from .ops import MergeMethod
 
 
 @dataclass(frozen=True, kw_only=True)
@@ -96,6 +98,10 @@ class GeoTile(GeoAnchor):
     def __repr__(self) -> str:
         base = super().__repr__()[:-1]  # strip trailing ")"
         return f"{base}, bands={self.bands}, shape={self.data.shape})"
+
+    def __and__(self, other: "GeoTile") -> "GeoTile":
+        """Sugar for `GeoTile.merge(self, other)` — `&` matches align_spatial/mosaic's own intersect/union use elsewhere in this codebase."""
+        return GeoTile.merge(self, other)
 
     # ------------------------------------------------------------------
     # Data manipulation
@@ -253,6 +259,29 @@ class GeoTile(GeoAnchor):
     # ------------------------------------------------------------------
 
     @classmethod
+    def merge(cls, *tiles: "GeoTile", method: "MergeMethod" = "first") -> "GeoTile":
+        """Narrow tiles to their common footprint, then composite one value per pixel.
+
+        `align_spatial` first (strict — same CRS/resolution, tiles must
+        overlap), then `mosaic_spatial` picks each pixel per `method`
+        across the overlap. Output is one tile, same shape as any input —
+        nothing grows in time.
+
+        Args:
+            *tiles: Tiles to merge, same CRS/resolution, must overlap.
+            method: Overlap-resolution rule forwarded to mosaic_spatial.
+
+        Returns:
+            One composited GeoTile.
+
+        Raises:
+            ValueError: Tiles don't overlap or disagree on CRS/resolution (see align_spatial).
+        """
+        from .ops import align_spatial, mosaic_spatial
+
+        return mosaic_spatial(*align_spatial(*tiles), method=method)
+
+    @classmethod
     def from_geotiff(
         cls,
         path: str | Path,
@@ -381,39 +410,41 @@ class GeoTile(GeoAnchor):
     # Serialisation
     # ------------------------------------------------------------------
 
-    def to_geotiff(self, path: str | Path) -> Path:
-        """Write single-step tile to GeoTIFF (one band per variable).
+    def to_geotiff(self, path: str | Path) -> list[Path]:
+        """Write tile to GeoTIFF (one band per variable).
+
+        A time-series tile writes one file per step instead of one — each
+        step's compact date appended to `path`'s stem (`format_stem_dates`),
+        each carrying just that step's own `geotag`/STAC sidecar.
 
         STAC provenance writes alongside as a `<stem>.stac.json` sidecar
-        whenever this tile actually carries any (`self.stac` non-empty) —
+        whenever a step actually carries any (`self.stac` non-empty) —
         no separate flag needed.
 
         Args:
             path: Output .tif path.
 
         Returns:
-            The written path.
-
-        Raises:
-            ValueError: If tile has a time dimension.
+            Written path(s) — one entry for a single-step tile.
         """
         return self._write(path, driver="GTiff")
 
-    def to_cog(self, path: str | Path) -> Path:
-        """Write single-step tile to Cloud-Optimized GeoTIFF.
+    def to_cog(self, path: str | Path) -> list[Path]:
+        """Write tile to Cloud-Optimized GeoTIFF.
+
+        A time-series tile writes one file per step instead of one — each
+        step's compact date appended to `path`'s stem (`format_stem_dates`),
+        each carrying just that step's own `geotag`/STAC sidecar.
 
         STAC provenance writes alongside as a `<stem>.stac.json` sidecar
-        whenever this tile actually carries any (`self.stac` non-empty) —
+        whenever a step actually carries any (`self.stac` non-empty) —
         no separate flag needed.
 
         Args:
             path: Output .tif path.
 
         Returns:
-            The written path.
-
-        Raises:
-            ValueError: If tile has a time dimension.
+            Written path(s) — one entry for a single-step tile.
         """
         return self._write(path, driver="COG")
 
@@ -440,17 +471,23 @@ class GeoTile(GeoAnchor):
         _write_stac(self.stac, path)
         return path
 
-    def _write(self, path: str | Path, driver: str) -> Path:
+    def _write(self, path: str | Path, driver: str) -> list[Path]:
+        path = Path(path)
         if self.has_time:
-            raise ValueError(
-                "Cannot write a time-series tile to GeoTIFF; use to_zarr() instead"
-            )
+            written: list[Path] = []
+            for t in self.data.time.values:
+                t_dt = dt.fromisoformat(str(t.astype("datetime64[s]")))
+                step_path = path.with_stem(f"{path.stem}_{format_stem_dates((t_dt, t_dt))}")
+                step_tile = self.rebase(data=self.data.sel(time=t), datetime=(t_dt, t_dt))
+                written.extend(step_tile._write(step_path, driver))
+            return written
+
         tags = {"tag": self.geotag.model_dump_json(exclude_none=True)}
         if "band" in self.data.dims:
             tags["bands"] = json.dumps(list(self.bands))
-        path = to_geotiff(path, self.data, driver=driver, tags=tags)
-        _write_stac(self.stac, path)
-        return path
+        written_path = to_geotiff(path, self.data, driver=driver, tags=tags)
+        _write_stac(self.stac, written_path)
+        return [written_path]
 
 
 # ----------------------------------------------------------------------

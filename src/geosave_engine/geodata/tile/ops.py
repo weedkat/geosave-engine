@@ -1,7 +1,7 @@
 """Free-function geometry ops on GeoTile: remap, align_spatial, split_spatial, mosaic_spatial/mosaic_stack, chunk_geotile.
 
 Not GeoTile methods — keeps GeoTile's own surface to its own fields/serialization.
-Disk I/O and shape validation live in geodata.utils.io/.geodata instead.
+Disk I/O and shape validation live in geodata.utils.zarr/.geotiff/.geodata instead.
 """
 from __future__ import annotations
 
@@ -100,7 +100,8 @@ def align_spatial(*tiles: GeoTile, tol: float = 1e-6) -> tuple[GeoTile, ...]:
             raise ValueError(f"align_spatial(): tile {i} not on the common pixel grid")
         col0, row0, ncols, nrows = round(col0), round(row0), round(ncols), round(nrows)
         sub = t.geobox[row0:row0 + nrows, col0:col0 + ncols]
-        aligned_t = t.rebase(geobox=sub)
+        cropped = t.data.isel(y=slice(row0, row0 + nrows), x=slice(col0, col0 + ncols))
+        aligned_t = t.rebase(geobox=sub, data=cropped)
         if t.polygon is not None:
             clip_box = Geometry(
                 {

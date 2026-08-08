@@ -76,6 +76,7 @@ dependencies = [
     "networkx>=3.6.1",
     "xformers>=0.0.35",
     "torchsummary>=1.5.1",
+    "xcube-core>=1.6.0",
 ]
 
 [project.urls]
