@@ -1,5 +1,7 @@
 {
-  "attributes": {},
+  "attributes": {
+    "context": "{\"temporal_coords\": {\"__tensor__\": true, \"dtype\": \"float32\", \"data\": [[2018.0, 359.0]]}, \"location_coords\": {\"__tensor__\": true, \"dtype\": \"float32\", \"data\": [5.654962539672852, -2.741459608078003]}, \"time\": {\"__tensor__\": true, \"dtype\": \"float32\", \"data\": [52.0, 10.0]}, \"latlon\": {\"__tensor__\": true, \"dtype\": \"float32\", \"data\": [5.654962539672852, -2.741459608078003]}}"
+  },
   "zarr_format": 3,
   "consolidated_metadata": {
     "kind": "inline",
@@ -7,17 +9,8 @@
     "metadata": {
       "cloud_mask": {
         "attributes": {
-          "has_band": false,
-          "tag": "{\"datetime\":[\"2018-12-26T10:34:39.024000\",\"2018-12-26T10:34:39.024000\"],\"metadata\":{\"description\":\"Cloud/shadow/invalid mask from Scene Classification Layer (SCL)\"},\"plot_meta\":{\"class_map\":{\"0\":\"clear\",\"1\":\"cloud/shadow/invalid\"},\"color_map\":{\"0\":\"#FFFFFF\",\"1\":\"#000000\"}}}",
-          "var_order": [
-            "data"
-          ],
-          "dim_order": {
-            "data": [
-              "y",
-              "x"
-            ]
-          }
+          "tag": "{\"datetime\":[\"2018-12-26T10:34:39.024000\",\"2018-12-26T10:34:39.024000\"],\"class_map\":{\"0\":\"clear\",\"1\":\"cloud/shadow/invalid\"},\"color_map\":{\"0\":\"#FFFFFF\",\"1\":\"#000000\"},\"stac\":[{\"type\":\"Feature\",\"stac_version\":\"1.1.0\",\"stac_extensions\":[\"https://stac-extensions.github.io/eo/v1.1.0/schema.json\",\"https://stac-extensions.github.io/sat/v1.0.0/schema.json\",\"https://stac-extensions.github.io/projection/v2.0.0/schema.json\"],\"id\":\"S2B_MSIL2A_20181226T103439_R108_T30NWM_20201008T131549\",\"geometry\":{\"type\":\"Polygon\",\"coordinates\":[[[-2.5195312,6.3325828],[-2.5367432,6.2556941],[-2.5700073,6.1071494],[-2.6035461,5.95870013],[-2.6365051,5.81009742],[-2.6696167,5.6615693],[-2.7026672,5.5130452],[-2.7359924,5.36454565],[-2.7415771,5.33954199],[-3.000183,5.33975051],[-3.000183,6.33304217],[-2.5195312,6.3325828]]]},\"bbox\":[-3.000183,5.33954198577784,-2.5195312,6.33304216622498],\"properties\":{\"datetime\":\"2018-12-26T10:34:39.024000Z\",\"platform\":\"Sentinel-2B\",\"instruments\":[\"msi\"],\"s2:mgrs_tile\":\"30NWM\",\"constellation\":\"Sentinel 2\",\"s2:granule_id\":\"S2B_OPER_MSI_L2A_TL_ESRI_20201008T131551_A009429_T30NWM_N02.12\",\"eo:cloud_cover\":0.010984,\"s2:datatake_id\":\"GS2B_20181226T103439_009429_N02.12\",\"s2:product_uri\":\"S2B_MSIL2A_20181226T103439_N0212_R108_T30NWM_20201008T131549.SAFE\",\"s2:datastrip_id\":\"S2B_OPER_MSI_L2A_DS_ESRI_20201008T131551_S20181226T103914_N02.12\",\"s2:product_type\":\"S2MSI2A\",\"sat:orbit_state\":\"descending\",\"s2:datatake_type\":\"INS-NOBS\",\"s2:generation_time\":\"2020-10-08T13:15:49.296Z\",\"sat:relative_orbit\":108,\"s2:water_percentage\":0.0,\"s2:mean_solar_zenith\":35.2734778974181,\"s2:mean_solar_azimuth\":146.573255212166,\"s2:processing_baseline\":\"02.12\",\"s2:snow_ice_percentage\":0.0,\"s2:vegetation_percentage\":41.13369,\"s2:thin_cirrus_percentage\":0.0,\"s2:cloud_shadow_percentage\":0.0,\"s2:nodata_pixel_percentage\":62.726372,\"s2:unclassified_percentage\":58.049142,\"s2:dark_features_percentage\":0.0,\"s2:not_vegetated_percentage\":0.806182,\"s2:degraded_msi_data_percentage\":0.0,\"s2:high_proba_clouds_percentage\":0.0,\"s2:reflectance_conversion_factor\":1.03358930864898,\"s2:medium_proba_clouds_percentage\":0.010984,\"s2:saturated_defective_pixel_percentage\":0.0,\"proj:code\":\"EPSG:32630\"},\"links\":[{\"rel\":\"collection\",\"href\":\"https://planetarycomputer.microsoft.com/api/stac/v1/collections/sentinel-2-l2a\",\"type\":\"application/json\"},{\"rel\":\"parent\",\"href\":\"https://planetarycomputer.microsoft.com/api/stac/v1/collections/sentinel-2-l2a\",\"type\":\"application/json\"},{\"rel\":\"root\",\"href\":\"https://planetarycomputer.microsoft.com/api/stac/v1/\",\"type\":\"application/json\",\"title\":\"Microsoft Planetary Computer STAC API\"},{\"rel\":\"self\",\"href\":\"https://planetarycomputer.microsoft.com/api/stac/v1/collections/sentinel-2-l2a/items/S2B_MSIL2A_20181226T103439_R108_T30NWM_20201008T131549\",\"type\":\"application/geo+json\"},{\"rel\":\"license\",\"href\":\"https://sentinel.esa.int/documents/247904/690755/Sentinel_Data_Legal_Notice\"},{\"rel\":\"preview\",\"href\":\"https://planetarycomputer.microsoft.com/api/data/v1/item/map?collection=sentinel-2-l2a&item=S2B_MSIL2A_20181226T103439_R108_T30NWM_20201008T131549\",\"type\":\"text/html\",\"title\":\"Map of item\"}],\"assets\":{\"AOT\":{\"href\":\"https://sentinel2l2a01.blob.core.windows.net/sentinel2-l2/30/N/WM/2018/12/26/S2B_MSIL2A_20181226T103439_N0212_R108_T30NWM_20201008T131549.SAFE/GRANULE/L2A_T30NWM_A009429_20181226T103914/IMG_DATA/R10m/T30NWM_20181226T103439_AOT_10m.tif?st=2026-08-11T01%3A17%3A56Z&se=2026-08-12T02%3A02%3A56Z&sp=rl&sv=2025-07-05&sr=c&skoid=9c8ff44a-6a2c-4dfb-b298-1c9212f64d9a&sktid=72f988bf-86f1-41af-91ab-2d7cd011db47&skt=2026-08-12T01%3A07%3A44Z&ske=2026-08-19T01%3A07%3A44Z&sks=b&skv=2025-07-05&sig=B2YvTOLEb5cIB%2BAfkaHX5RnWtg5vNwwi%2B5CHS5%2BtSO4%3D\",\"type\":\"image/tiff; application=geotiff; profile=cloud-optimized\",\"title\":\"Aerosol optical thickness (AOT)\",\"proj:bbox\":[499980.0,590220.0,609780.0,700020.0],\"proj:shape\":[10980,10980],\"proj:transform\":[10.0,0.0,499980.0,0.0,-10.0,700020.0],\"gsd\":10.0,\"roles\":[\"data\"]},\"B01\":{\"href\":\"https://sentinel2l2a01.blob.core.windows.net/sentinel2-l2/30/N/WM/2018/12/26/S2B_MSIL2A_20181226T103439_N0212_R108_T30NWM_20201008T131549.SAFE/GRANULE/L2A_T30NWM_A009429_20181226T103914/IMG_DATA/R60m/T30NWM_20181226T103439_B01_60m.tif?st=2026-08-11T01%3A17%3A56Z&se=2026-08-12T02%3A02%3A56Z&sp=rl&sv=2025-07-05&sr=c&skoid=9c8ff44a-6a2c-4dfb-b298-1c9212f64d9a&sktid=72f988bf-86f1-41af-91ab-2d7cd011db47&skt=2026-08-12T01%3A07%3A44Z&ske=2026-08-19T01%3A07%3A44Z&sks=b&skv=2025-07-05&sig=B2YvTOLEb5cIB%2BAfkaHX5RnWtg5vNwwi%2B5CHS5%2BtSO4%3D\",\"type\":\"image/tiff; application=geotiff; profile=cloud-optimized\",\"title\":\"Band 1 - Coastal aerosol - 60m\",\"proj:bbox\":[499980.0,590220.0,609780.0,700020.0],\"proj:shape\":[1830,1830],\"proj:transform\":[60.0,0.0,499980.0,0.0,-60.0,700020.0],\"gsd\":60.0,\"eo:bands\":[{\"name\":\"B01\",\"common_name\":\"coastal\",\"description\":\"Band 1 - Coastal aerosol\",\"center_wavelength\":0.443,\"full_width_half_max\":0.027}],\"roles\":[\"data\"]},\"B02\":{\"href\":\"https://sentinel2l2a01.blob.core.windows.net/sentinel2-l2/30/N/WM/2018/12/26/S2B_MSIL2A_20181226T103439_N0212_R108_T30NWM_20201008T131549.SAFE/GRANULE/L2A_T30NWM_A009429_20181226T103914/IMG_DATA/R10m/T30NWM_20181226T103439_B02_10m.tif?st=2026-08-11T01%3A17%3A56Z&se=2026-08-12T02%3A02%3A56Z&sp=rl&sv=2025-07-05&sr=c&skoid=9c8ff44a-6a2c-4dfb-b298-1c9212f64d9a&sktid=72f988bf-86f1-41af-91ab-2d7cd011db47&skt=2026-08-12T01%3A07%3A44Z&ske=2026-08-19T01%3A07%3A44Z&sks=b&skv=2025-07-05&sig=B2YvTOLEb5cIB%2BAfkaHX5RnWtg5vNwwi%2B5CHS5%2BtSO4%3D\",\"type\":\"image/tiff; application=geotiff; profile=cloud-optimized\",\"title\":\"Band 2 - Blue - 10m\",\"proj:bbox\":[499980.0,590220.0,609780.0,700020.0],\"proj:shape\":[10980,10980],\"proj:transform\":[10.0,0.0,499980.0,0.0,-10.0,700020.0],\"gsd\":10.0,\"eo:bands\":[{\"name\":\"B02\",\"common_name\":\"blue\",\"description\":\"Band 2 - Blue\",\"center_wavelength\":0.49,\"full_width_half_max\":0.098}],\"roles\":[\"data\"]},\"B03\":{\"href\":\"https://sentinel2l2a01.blob.core.windows.net/sentinel2-l2/30/N/WM/2018/12/26/S2B_MSIL2A_20181226T103439_N0212_R108_T30NWM_20201008T131549.SAFE/GRANULE/L2A_T30NWM_A009429_20181226T103914/IMG_DATA/R10m/T30NWM_20181226T103439_B03_10m.tif?st=2026-08-11T01%3A17%3A56Z&se=2026-08-12T02%3A02%3A56Z&sp=rl&sv=2025-07-05&sr=c&skoid=9c8ff44a-6a2c-4dfb-b298-1c9212f64d9a&sktid=72f988bf-86f1-41af-91ab-2d7cd011db47&skt=2026-08-12T01%3A07%3A44Z&ske=2026-08-19T01%3A07%3A44Z&sks=b&skv=2025-07-05&sig=B2YvTOLEb5cIB%2BAfkaHX5RnWtg5vNwwi%2B5CHS5%2BtSO4%3D\",\"type\":\"image/tiff; application=geotiff; profile=cloud-optimized\",\"title\":\"Band 3 - Green - 10m\",\"proj:bbox\":[499980.0,590220.0,609780.0,700020.0],\"proj:shape\":[10980,10980],\"proj:transform\":[10.0,0.0,499980.0,0.0,-10.0,700020.0],\"gsd\":10.0,\"eo:bands\":[{\"name\":\"B03\",\"common_name\":\"green\",\"description\":\"Band 3 - Green\",\"center_wavelength\":0.56,\"full_width_half_max\":0.045}],\"roles\":[\"data\"]},\"B04\":{\"href\":\"https://sentinel2l2a01.blob.core.windows.net/sentinel2-l2/30/N/WM/2018/12/26/S2B_MSIL2A_20181226T103439_N0212_R108_T30NWM_20201008T131549.SAFE/GRANULE/L2A_T30NWM_A009429_20181226T103914/IMG_DATA/R10m/T30NWM_20181226T103439_B04_10m.tif?st=2026-08-11T01%3A17%3A56Z&se=2026-08-12T02%3A02%3A56Z&sp=rl&sv=2025-07-05&sr=c&skoid=9c8ff44a-6a2c-4dfb-b298-1c9212f64d9a&sktid=72f988bf-86f1-41af-91ab-2d7cd011db47&skt=2026-08-12T01%3A07%3A44Z&ske=2026-08-19T01%3A07%3A44Z&sks=b&skv=2025-07-05&sig=B2YvTOLEb5cIB%2BAfkaHX5RnWtg5vNwwi%2B5CHS5%2BtSO4%3D\",\"type\":\"image/tiff; application=geotiff; profile=cloud-optimized\",\"title\":\"Band 4 - Red - 10m\",\"proj:bbox\":[499980.0,590220.0,609780.0,700020.0],\"proj:shape\":[10980,10980],\"proj:transform\":[10.0,0.0,499980.0,0.0,-10.0,700020.0],\"gsd\":10.0,\"eo:bands\":[{\"name\":\"B04\",\"common_name\":\"red\",\"description\":\"Band 4 - Red\",\"center_wavelength\":0.665,\"full_width_half_max\":0.038}],\"roles\":[\"data\"]},\"B05\":{\"href\":\"https://sentinel2l2a01.blob.core.windows.net/sentinel2-l2/30/N/WM/2018/12/26/S2B_MSIL2A_20181226T103439_N0212_R108_T30NWM_20201008T131549.SAFE/GRANULE/L2A_T30NWM_A009429_20181226T103914/IMG_DATA/R20m/T30NWM_20181226T103439_B05_20m.tif?st=2026-08-11T01%3A17%3A56Z&se=2026-08-12T02%3A02%3A56Z&sp=rl&sv=2025-07-05&sr=c&skoid=9c8ff44a-6a2c-4dfb-b298-1c9212f64d9a&sktid=72f988bf-86f1-41af-91ab-2d7cd011db47&skt=2026-08-12T01%3A07%3A44Z&ske=2026-08-19T01%3A07%3A44Z&sks=b&skv=2025-07-05&sig=B2YvTOLEb5cIB%2BAfkaHX5RnWtg5vNwwi%2B5CHS5%2BtSO4%3D\",\"type\":\"image/tiff; application=geotiff; profile=cloud-optimized\",\"title\":\"Band 5 - Vegetation red edge 1 - 20m\",\"proj:bbox\":[499980.0,590220.0,609780.0,700020.0],\"proj:shape\":[5490,5490],\"proj:transform\":[20.0,0.0,499980.0,0.0,-20.0,700020.0],\"gsd\":20.0,\"eo:bands\":[{\"name\":\"B05\",\"common_name\":\"rededge\",\"description\":\"Band 5 - Vegetation red edge 1\",\"center_wavelength\":0.704,\"full_width_half_max\":0.019}],\"roles\":[\"data\"]},\"B06\":{\"href\":\"https://sentinel2l2a01.blob.core.windows.net/sentinel2-l2/30/N/WM/2018/12/26/S2B_MSIL2A_20181226T103439_N0212_R108_T30NWM_20201008T131549.SAFE/GRANULE/L2A_T30NWM_A009429_20181226T103914/IMG_DATA/R20m/T30NWM_20181226T103439_B06_20m.tif?st=2026-08-11T01%3A17%3A56Z&se=2026-08-12T02%3A02%3A56Z&sp=rl&sv=2025-07-05&sr=c&skoid=9c8ff44a-6a2c-4dfb-b298-1c9212f64d9a&sktid=72f988bf-86f1-41af-91ab-2d7cd011db47&skt=2026-08-12T01%3A07%3A44Z&ske=2026-08-19T01%3A07%3A44Z&sks=b&skv=2025-07-05&sig=B2YvTOLEb5cIB%2BAfkaHX5RnWtg5vNwwi%2B5CHS5%2BtSO4%3D\",\"type\":\"image/tiff; application=geotiff; profile=cloud-optimized\",\"title\":\"Band 6 - Vegetation red edge 2 - 20m\",\"proj:bbox\":[499980.0,590220.0,609780.0,700020.0],\"proj:shape\":[5490,5490],\"proj:transform\":[20.0,0.0,499980.0,0.0,-20.0,700020.0],\"gsd\":20.0,\"eo:bands\":[{\"name\":\"B06\",\"common_name\":\"rededge\",\"description\":\"Band 6 - Vegetation red edge 2\",\"center_wavelength\":0.74,\"full_width_half_max\":0.018}],\"roles\":[\"data\"]},\"B07\":{\"href\":\"https://sentinel2l2a01.blob.core.windows.net/sentinel2-l2/30/N/WM/2018/12/26/S2B_MSIL2A_20181226T103439_N0212_R108_T30NWM_20201008T131549.SAFE/GRANULE/L2A_T30NWM_A009429_20181226T103914/IMG_DATA/R20m/T30NWM_20181226T103439_B07_20m.tif?st=2026-08-11T01%3A17%3A56Z&se=2026-08-12T02%3A02%3A56Z&sp=rl&sv=2025-07-05&sr=c&skoid=9c8ff44a-6a2c-4dfb-b298-1c9212f64d9a&sktid=72f988bf-86f1-41af-91ab-2d7cd011db47&skt=2026-08-12T01%3A07%3A44Z&ske=2026-08-19T01%3A07%3A44Z&sks=b&skv=2025-07-05&sig=B2YvTOLEb5cIB%2BAfkaHX5RnWtg5vNwwi%2B5CHS5%2BtSO4%3D\",\"type\":\"image/tiff; application=geotiff; profile=cloud-optimized\",\"title\":\"Band 7 - Vegetation red edge 3 - 20m\",\"proj:bbox\":[499980.0,590220.0,609780.0,700020.0],\"proj:shape\":[5490,5490],\"proj:transform\":[20.0,0.0,499980.0,0.0,-20.0,700020.0],\"gsd\":20.0,\"eo:bands\":[{\"name\":\"B07\",\"common_name\":\"rededge\",\"description\":\"Band 7 - Vegetation red edge 3\",\"center_wavelength\":0.783,\"full_width_half_max\":0.028}],\"roles\":[\"data\"]},\"B08\":{\"href\":\"https://sentinel2l2a01.blob.core.windows.net/sentinel2-l2/30/N/WM/2018/12/26/S2B_MSIL2A_20181226T103439_N0212_R108_T30NWM_20201008T131549.SAFE/GRANULE/L2A_T30NWM_A009429_20181226T103914/IMG_DATA/R10m/T30NWM_20181226T103439_B08_10m.tif?st=2026-08-11T01%3A17%3A56Z&se=2026-08-12T02%3A02%3A56Z&sp=rl&sv=2025-07-05&sr=c&skoid=9c8ff44a-6a2c-4dfb-b298-1c9212f64d9a&sktid=72f988bf-86f1-41af-91ab-2d7cd011db47&skt=2026-08-12T01%3A07%3A44Z&ske=2026-08-19T01%3A07%3A44Z&sks=b&skv=2025-07-05&sig=B2YvTOLEb5cIB%2BAfkaHX5RnWtg5vNwwi%2B5CHS5%2BtSO4%3D\",\"type\":\"image/tiff; application=geotiff; profile=cloud-optimized\",\"title\":\"Band 8 - NIR - 10m\",\"proj:bbox\":[499980.0,590220.0,609780.0,700020.0],\"proj:shape\":[10980,10980],\"proj:transform\":[10.0,0.0,499980.0,0.0,-10.0,700020.0],\"gsd\":10.0,\"eo:bands\":[{\"name\":\"B08\",\"common_name\":\"nir\",\"description\":\"Band 8 - NIR\",\"center_wavelength\":0.842,\"full_width_half_max\":0.145}],\"roles\":[\"data\"]},\"B09\":{\"href\":\"https://sentinel2l2a01.blob.core.windows.net/sentinel2-l2/30/N/WM/2018/12/26/S2B_MSIL2A_20181226T103439_N0212_R108_T30NWM_20201008T131549.SAFE/GRANULE/L2A_T30NWM_A009429_20181226T103914/IMG_DATA/R60m/T30NWM_20181226T103439_B09_60m.tif?st=2026-08-11T01%3A17%3A56Z&se=2026-08-12T02%3A02%3A56Z&sp=rl&sv=2025-07-05&sr=c&skoid=9c8ff44a-6a2c-4dfb-b298-1c9212f64d9a&sktid=72f988bf-86f1-41af-91ab-2d7cd011db47&skt=2026-08-12T01%3A07%3A44Z&ske=2026-08-19T01%3A07%3A44Z&sks=b&skv=2025-07-05&sig=B2YvTOLEb5cIB%2BAfkaHX5RnWtg5vNwwi%2B5CHS5%2BtSO4%3D\",\"type\":\"image/tiff; application=geotiff; profile=cloud-optimized\",\"title\":\"Band 9 - Water vapor - 60m\",\"proj:bbox\":[499980.0,590220.0,609780.0,700020.0],\"proj:shape\":[1830,1830],\"proj:transform\":[60.0,0.0,499980.0,0.0,-60.0,700020.0],\"gsd\":60.0,\"eo:bands\":[{\"name\":\"B09\",\"description\":\"Band 9 - Water vapor\",\"center_wavelength\":0.945,\"full_width_half_max\":0.026}],\"roles\":[\"data\"]},\"B11\":{\"href\":\"https://sentinel2l2a01.blob.core.windows.net/sentinel2-l2/30/N/WM/2018/12/26/S2B_MSIL2A_20181226T103439_N0212_R108_T30NWM_20201008T131549.SAFE/GRANULE/L2A_T30NWM_A009429_20181226T103914/IMG_DATA/R20m/T30NWM_20181226T103439_B11_20m.tif?st=2026-08-11T01%3A17%3A56Z&se=2026-08-12T02%3A02%3A56Z&sp=rl&sv=2025-07-05&sr=c&skoid=9c8ff44a-6a2c-4dfb-b298-1c9212f64d9a&sktid=72f988bf-86f1-41af-91ab-2d7cd011db47&skt=2026-08-12T01%3A07%3A44Z&ske=2026-08-19T01%3A07%3A44Z&sks=b&skv=2025-07-05&sig=B2YvTOLEb5cIB%2BAfkaHX5RnWtg5vNwwi%2B5CHS5%2BtSO4%3D\",\"type\":\"image/tiff; application=geotiff; profile=cloud-optimized\",\"title\":\"Band 11 - SWIR (1.6) - 20m\",\"proj:bbox\":[499980.0,590220.0,609780.0,700020.0],\"proj:shape\":[5490,5490],\"proj:transform\":[20.0,0.0,499980.0,0.0,-20.0,700020.0],\"gsd\":20.0,\"eo:bands\":[{\"name\":\"B11\",\"common_name\":\"swir16\",\"description\":\"Band 11 - SWIR (1.6)\",\"center_wavelength\":1.61,\"full_width_half_max\":0.143}],\"roles\":[\"data\"]},\"B12\":{\"href\":\"https://sentinel2l2a01.blob.core.windows.net/sentinel2-l2/30/N/WM/2018/12/26/S2B_MSIL2A_20181226T103439_N0212_R108_T30NWM_20201008T131549.SAFE/GRANULE/L2A_T30NWM_A009429_20181226T103914/IMG_DATA/R20m/T30NWM_20181226T103439_B12_20m.tif?st=2026-08-11T01%3A17%3A56Z&se=2026-08-12T02%3A02%3A56Z&sp=rl&sv=2025-07-05&sr=c&skoid=9c8ff44a-6a2c-4dfb-b298-1c9212f64d9a&sktid=72f988bf-86f1-41af-91ab-2d7cd011db47&skt=2026-08-12T01%3A07%3A44Z&ske=2026-08-19T01%3A07%3A44Z&sks=b&skv=2025-07-05&sig=B2YvTOLEb5cIB%2BAfkaHX5RnWtg5vNwwi%2B5CHS5%2BtSO4%3D\",\"type\":\"image/tiff; application=geotiff; profile=cloud-optimized\",\"title\":\"Band 12 - SWIR (2.2) - 20m\",\"proj:bbox\":[499980.0,590220.0,609780.0,700020.0],\"proj:shape\":[5490,5490],\"proj:transform\":[20.0,0.0,499980.0,0.0,-20.0,700020.0],\"gsd\":20.0,\"eo:bands\":[{\"name\":\"B12\",\"common_name\":\"swir22\",\"description\":\"Band 12 - SWIR (2.2)\",\"center_wavelength\":2.19,\"full_width_half_max\":0.242}],\"roles\":[\"data\"]},\"B8A\":{\"href\":\"https://sentinel2l2a01.blob.core.windows.net/sentinel2-l2/30/N/WM/2018/12/26/S2B_MSIL2A_20181226T103439_N0212_R108_T30NWM_20201008T131549.SAFE/GRANULE/L2A_T30NWM_A009429_20181226T103914/IMG_DATA/R20m/T30NWM_20181226T103439_B8A_20m.tif?st=2026-08-11T01%3A17%3A56Z&se=2026-08-12T02%3A02%3A56Z&sp=rl&sv=2025-07-05&sr=c&skoid=9c8ff44a-6a2c-4dfb-b298-1c9212f64d9a&sktid=72f988bf-86f1-41af-91ab-2d7cd011db47&skt=2026-08-12T01%3A07%3A44Z&ske=2026-08-19T01%3A07%3A44Z&sks=b&skv=2025-07-05&sig=B2YvTOLEb5cIB%2BAfkaHX5RnWtg5vNwwi%2B5CHS5%2BtSO4%3D\",\"type\":\"image/tiff; application=geotiff; profile=cloud-optimized\",\"title\":\"Band 8A - Vegetation red edge 4 - 20m\",\"proj:bbox\":[499980.0,590220.0,609780.0,700020.0],\"proj:shape\":[5490,5490],\"proj:transform\":[20.0,0.0,499980.0,0.0,-20.0,700020.0],\"gsd\":20.0,\"eo:bands\":[{\"name\":\"B8A\",\"common_name\":\"rededge\",\"description\":\"Band 8A - Vegetation red edge 4\",\"center_wavelength\":0.865,\"full_width_half_max\":0.033}],\"roles\":[\"data\"]},\"SCL\":{\"href\":\"https://sentinel2l2a01.blob.core.windows.net/sentinel2-l2/30/N/WM/2018/12/26/S2B_MSIL2A_20181226T103439_N0212_R108_T30NWM_20201008T131549.SAFE/GRANULE/L2A_T30NWM_A009429_20181226T103914/IMG_DATA/R20m/T30NWM_20181226T103439_SCL_20m.tif?st=2026-08-11T01%3A17%3A56Z&se=2026-08-12T02%3A02%3A56Z&sp=rl&sv=2025-07-05&sr=c&skoid=9c8ff44a-6a2c-4dfb-b298-1c9212f64d9a&sktid=72f988bf-86f1-41af-91ab-2d7cd011db47&skt=2026-08-12T01%3A07%3A44Z&ske=2026-08-19T01%3A07%3A44Z&sks=b&skv=2025-07-05&sig=B2YvTOLEb5cIB%2BAfkaHX5RnWtg5vNwwi%2B5CHS5%2BtSO4%3D\",\"type\":\"image/tiff; application=geotiff; profile=cloud-optimized\",\"title\":\"Scene classfication map (SCL)\",\"proj:bbox\":[499980.0,590220.0,609780.0,700020.0],\"proj:shape\":[5490,5490],\"proj:transform\":[20.0,0.0,499980.0,0.0,-20.0,700020.0],\"gsd\":20.0,\"roles\":[\"data\"]},\"WVP\":{\"href\":\"https://sentinel2l2a01.blob.core.windows.net/sentinel2-l2/30/N/WM/2018/12/26/S2B_MSIL2A_20181226T103439_N0212_R108_T30NWM_20201008T131549.SAFE/GRANULE/L2A_T30NWM_A009429_20181226T103914/IMG_DATA/R10m/T30NWM_20181226T103439_WVP_10m.tif?st=2026-08-11T01%3A17%3A56Z&se=2026-08-12T02%3A02%3A56Z&sp=rl&sv=2025-07-05&sr=c&skoid=9c8ff44a-6a2c-4dfb-b298-1c9212f64d9a&sktid=72f988bf-86f1-41af-91ab-2d7cd011db47&skt=2026-08-12T01%3A07%3A44Z&ske=2026-08-19T01%3A07%3A44Z&sks=b&skv=2025-07-05&sig=B2YvTOLEb5cIB%2BAfkaHX5RnWtg5vNwwi%2B5CHS5%2BtSO4%3D\",\"type\":\"image/tiff; application=geotiff; profile=cloud-optimized\",\"title\":\"Water vapour (WVP)\",\"proj:bbox\":[499980.0,590220.0,609780.0,700020.0],\"proj:shape\":[10980,10980],\"proj:transform\":[10.0,0.0,499980.0,0.0,-10.0,700020.0],\"gsd\":10.0,\"roles\":[\"data\"]},\"visual\":{\"href\":\"https://sentinel2l2a01.blob.core.windows.net/sentinel2-l2/30/N/WM/2018/12/26/S2B_MSIL2A_20181226T103439_N0212_R108_T30NWM_20201008T131549.SAFE/GRANULE/L2A_T30NWM_A009429_20181226T103914/IMG_DATA/R10m/T30NWM_20181226T103439_TCI_10m.tif?st=2026-08-11T01%3A17%3A56Z&se=2026-08-12T02%3A02%3A56Z&sp=rl&sv=2025-07-05&sr=c&skoid=9c8ff44a-6a2c-4dfb-b298-1c9212f64d9a&sktid=72f988bf-86f1-41af-91ab-2d7cd011db47&skt=2026-08-12T01%3A07%3A44Z&ske=2026-08-19T01%3A07%3A44Z&sks=b&skv=2025-07-05&sig=B2YvTOLEb5cIB%2BAfkaHX5RnWtg5vNwwi%2B5CHS5%2BtSO4%3D\",\"type\":\"image/tiff; application=geotiff; profile=cloud-optimized\",\"title\":\"True color image\",\"proj:bbox\":[499980.0,590220.0,609780.0,700020.0],\"proj:shape\":[10980,10980],\"proj:transform\":[10.0,0.0,499980.0,0.0,-10.0,700020.0],\"gsd\":10.0,\"eo:bands\":[{\"name\":\"B04\",\"common_name\":\"red\",\"description\":\"Band 4 - Red\",\"center_wavelength\":0.665,\"full_width_half_max\":0.038},{\"name\":\"B03\",\"common_name\":\"green\",\"description\":\"Band 3 - Green\",\"center_wavelength\":0.56,\"full_width_half_max\":0.045},{\"name\":\"B02\",\"common_name\":\"blue\",\"description\":\"Band 2 - Blue\",\"center_wavelength\":0.49,\"full_width_half_max\":0.098}],\"roles\":[\"data\"]},\"preview\":{\"href\":\"https://sentinel2l2a01.blob.core.windows.net/sentinel2-l2/30/N/WM/2018/12/26/S2B_MSIL2A_20181226T103439_N0212_R108_T30NWM_20201008T131549.SAFE/GRANULE/L2A_T30NWM_A009429_20181226T103914/QI_DATA/T30NWM_20181226T103439_PVI.tif?st=2026-08-11T01%3A17%3A56Z&se=2026-08-12T02%3A02%3A56Z&sp=rl&sv=2025-07-05&sr=c&skoid=9c8ff44a-6a2c-4dfb-b298-1c9212f64d9a&sktid=72f988bf-86f1-41af-91ab-2d7cd011db47&skt=2026-08-12T01%3A07%3A44Z&ske=2026-08-19T01%3A07%3A44Z&sks=b&skv=2025-07-05&sig=B2YvTOLEb5cIB%2BAfkaHX5RnWtg5vNwwi%2B5CHS5%2BtSO4%3D\",\"type\":\"image/tiff; application=geotiff; profile=cloud-optimized\",\"title\":\"Thumbnail\",\"roles\":[\"thumbnail\"]},\"safe-manifest\":{\"href\":\"https://sentinel2l2a01.blob.core.windows.net/sentinel2-l2/30/N/WM/2018/12/26/S2B_MSIL2A_20181226T103439_N0212_R108_T30NWM_20201008T131549.SAFE/manifest.safe?st=2026-08-11T01%3A17%3A56Z&se=2026-08-12T02%3A02%3A56Z&sp=rl&sv=2025-07-05&sr=c&skoid=9c8ff44a-6a2c-4dfb-b298-1c9212f64d9a&sktid=72f988bf-86f1-41af-91ab-2d7cd011db47&skt=2026-08-12T01%3A07%3A44Z&ske=2026-08-19T01%3A07%3A44Z&sks=b&skv=2025-07-05&sig=B2YvTOLEb5cIB%2BAfkaHX5RnWtg5vNwwi%2B5CHS5%2BtSO4%3D\",\"type\":\"application/xml\",\"title\":\"SAFE manifest\",\"roles\":[\"metadata\"]},\"granule-metadata\":{\"href\":\"https://sentinel2l2a01.blob.core.windows.net/sentinel2-l2/30/N/WM/2018/12/26/S2B_MSIL2A_20181226T103439_N0212_R108_T30NWM_20201008T131549.SAFE/GRANULE/L2A_T30NWM_A009429_20181226T103914/MTD_TL.xml?st=2026-08-11T01%3A17%3A56Z&se=2026-08-12T02%3A02%3A56Z&sp=rl&sv=2025-07-05&sr=c&skoid=9c8ff44a-6a2c-4dfb-b298-1c9212f64d9a&sktid=72f988bf-86f1-41af-91ab-2d7cd011db47&skt=2026-08-12T01%3A07%3A44Z&ske=2026-08-19T01%3A07%3A44Z&sks=b&skv=2025-07-05&sig=B2YvTOLEb5cIB%2BAfkaHX5RnWtg5vNwwi%2B5CHS5%2BtSO4%3D\",\"type\":\"application/xml\",\"title\":\"Granule metadata\",\"roles\":[\"metadata\"]},\"inspire-metadata\":{\"href\":\"https://sentinel2l2a01.blob.core.windows.net/sentinel2-l2/30/N/WM/2018/12/26/S2B_MSIL2A_20181226T103439_N0212_R108_T30NWM_20201008T131549.SAFE/INSPIRE.xml?st=2026-08-11T01%3A17%3A56Z&se=2026-08-12T02%3A02%3A56Z&sp=rl&sv=2025-07-05&sr=c&skoid=9c8ff44a-6a2c-4dfb-b298-1c9212f64d9a&sktid=72f988bf-86f1-41af-91ab-2d7cd011db47&skt=2026-08-12T01%3A07%3A44Z&ske=2026-08-19T01%3A07%3A44Z&sks=b&skv=2025-07-05&sig=B2YvTOLEb5cIB%2BAfkaHX5RnWtg5vNwwi%2B5CHS5%2BtSO4%3D\",\"type\":\"application/xml\",\"title\":\"INSPIRE metadata\",\"roles\":[\"metadata\"]},\"product-metadata\":{\"href\":\"https://sentinel2l2a01.blob.core.windows.net/sentinel2-l2/30/N/WM/2018/12/26/S2B_MSIL2A_20181226T103439_N0212_R108_T30NWM_20201008T131549.SAFE/MTD_MSIL2A.xml?st=2026-08-11T01%3A17%3A56Z&se=2026-08-12T02%3A02%3A56Z&sp=rl&sv=2025-07-05&sr=c&skoid=9c8ff44a-6a2c-4dfb-b298-1c9212f64d9a&sktid=72f988bf-86f1-41af-91ab-2d7cd011db47&skt=2026-08-12T01%3A07%3A44Z&ske=2026-08-19T01%3A07%3A44Z&sks=b&skv=2025-07-05&sig=B2YvTOLEb5cIB%2BAfkaHX5RnWtg5vNwwi%2B5CHS5%2BtSO4%3D\",\"type\":\"application/xml\",\"title\":\"Product metadata\",\"roles\":[\"metadata\"]},\"datastrip-metadata\":{\"href\":\"https://sentinel2l2a01.blob.core.windows.net/sentinel2-l2/30/N/WM/2018/12/26/S2B_MSIL2A_20181226T103439_N0212_R108_T30NWM_20201008T131549.SAFE/DATASTRIP/DS_ESRI_20201008T131551_S20181226T103914/MTD_DS.xml?st=2026-08-11T01%3A17%3A56Z&se=2026-08-12T02%3A02%3A56Z&sp=rl&sv=2025-07-05&sr=c&skoid=9c8ff44a-6a2c-4dfb-b298-1c9212f64d9a&sktid=72f988bf-86f1-41af-91ab-2d7cd011db47&skt=2026-08-12T01%3A07%3A44Z&ske=2026-08-19T01%3A07%3A44Z&sks=b&skv=2025-07-05&sig=B2YvTOLEb5cIB%2BAfkaHX5RnWtg5vNwwi%2B5CHS5%2BtSO4%3D\",\"type\":\"application/xml\",\"title\":\"Datastrip metadata\",\"roles\":[\"metadata\"]},\"tilejson\":{\"href\":\"https://planetarycomputer.microsoft.com/api/data/v1/item/tilejson.json?collection=sentinel-2-l2a&item=S2B_MSIL2A_20181226T103439_R108_T30NWM_20201008T131549&assets=visual&asset_bidx=visual%7C1%2C2%2C3&nodata=0&format=png\",\"type\":\"application/json\",\"title\":\"TileJSON with default rendering\",\"roles\":[\"tiles\"]},\"rendered_preview\":{\"href\":\"https://planetarycomputer.microsoft.com/api/data/v1/item/preview.png?collection=sentinel-2-l2a&item=S2B_MSIL2A_20181226T103439_R108_T30NWM_20201008T131549&assets=visual&asset_bidx=visual%7C1%2C2%2C3&nodata=0&format=png\",\"type\":\"image/png\",\"title\":\"Rendered preview\",\"rel\":\"preview\",\"roles\":[\"overview\"]}},\"collection\":\"sentinel-2-l2a\"}],\"metadata\":{\"description\":\"Cloud/shadow/invalid mask from Scene Classification Layer (SCL)\"}}",
+          "coordinates": "var_order"
         },
         "zarr_format": 3,
         "consolidated_metadata": {
@@ -30,17 +23,8 @@
       "dynamicworld": {
         "attributes": {
           "AREA_OR_POINT": "Area",
-          "has_band": true,
-          "tag": "{\"datetime\":[\"2018-12-26T00:00:00.000000\",\"2018-12-26T23:59:59.999999\"],\"metadata\":{},\"plot_meta\":{\"class_map\":{\"0\":\"No Data\",\"1\":\"Water\",\"2\":\"Trees\",\"3\":\"Grass\",\"4\":\"Flooded Vegetation\",\"5\":\"Crops\",\"6\":\"Scrub\",\"7\":\"Built Area\",\"8\":\"Bare Ground\",\"9\":\"Snow and Ice\",\"10\":\"Cloud\"},\"color_map\":{\"0\":\"#000000\",\"1\":\"#419bdf\",\"2\":\"#397d49\",\"3\":\"#88b053\",\"4\":\"#7a87c6\",\"5\":\"#e49635\",\"6\":\"#dfc35a\",\"7\":\"#c4281b\",\"8\":\"#a59b8f\",\"9\":\"#f0f0f0\",\"10\":\"#d3d3d3\"}}}",
-          "var_order": [
-            "band_1"
-          ],
-          "dim_order": {
-            "band_1": [
-              "y",
-              "x"
-            ]
-          }
+          "tag": "{\"datetime\":[\"2018-12-26T00:00:00.000000\",\"2018-12-26T23:59:59.999999\"],\"stac\":[],\"plot_meta\":{\"class_map\":{\"0\":\"No Data\",\"1\":\"Water\",\"2\":\"Trees\",\"3\":\"Grass\",\"4\":\"Flooded Vegetation\",\"5\":\"Crops\",\"6\":\"Scrub\",\"7\":\"Built Area\",\"8\":\"Bare Ground\",\"9\":\"Snow and Ice\",\"10\":\"Cloud\"},\"color_map\":{\"0\":\"#000000\",\"1\":\"#419bdf\",\"2\":\"#397d49\",\"3\":\"#88b053\",\"4\":\"#7a87c6\",\"5\":\"#e49635\",\"6\":\"#dfc35a\",\"7\":\"#c4281b\",\"8\":\"#a59b8f\",\"9\":\"#f0f0f0\",\"10\":\"#d3d3d3\"}}}",
+          "coordinates": "var_order"
         },
         "zarr_format": 3,
         "consolidated_metadata": {
@@ -52,17 +36,8 @@
       },
       "ndvi": {
         "attributes": {
-          "has_band": false,
-          "tag": "{\"datetime\":[\"2018-12-26T10:34:39.024000\",\"2018-12-26T10:34:39.024000\"],\"metadata\":{\"description\":\"Normalized Difference Vegetation Index\"},\"plot_meta\":{}}",
-          "var_order": [
-            "data"
-          ],
-          "dim_order": {
-            "data": [
-              "y",
-              "x"
-            ]
-          }
+          "tag": "{\"datetime\":[\"2018-12-26T10:34:39.024000\",\"2018-12-26T10:34:39.024000\"],\"stac\":[{\"type\":\"Feature\",\"stac_version\":\"1.1.0\",\"stac_extensions\":[\"https://stac-extensions.github.io/eo/v1.1.0/schema.json\",\"https://stac-extensions.github.io/sat/v1.0.0/schema.json\",\"https://stac-extensions.github.io/projection/v2.0.0/schema.json\"],\"id\":\"S2B_MSIL2A_20181226T103439_R108_T30NWM_20201008T131549\",\"geometry\":{\"type\":\"Polygon\",\"coordinates\":[[[-2.5195312,6.3325828],[-2.5367432,6.2556941],[-2.5700073,6.1071494],[-2.6035461,5.95870013],[-2.6365051,5.81009742],[-2.6696167,5.6615693],[-2.7026672,5.5130452],[-2.7359924,5.36454565],[-2.7415771,5.33954199],[-3.000183,5.33975051],[-3.000183,6.33304217],[-2.5195312,6.3325828]]]},\"bbox\":[-3.000183,5.33954198577784,-2.5195312,6.33304216622498],\"properties\":{\"datetime\":\"2018-12-26T10:34:39.024000Z\",\"platform\":\"Sentinel-2B\",\"instruments\":[\"msi\"],\"s2:mgrs_tile\":\"30NWM\",\"constellation\":\"Sentinel 2\",\"s2:granule_id\":\"S2B_OPER_MSI_L2A_TL_ESRI_20201008T131551_A009429_T30NWM_N02.12\",\"eo:cloud_cover\":0.010984,\"s2:datatake_id\":\"GS2B_20181226T103439_009429_N02.12\",\"s2:product_uri\":\"S2B_MSIL2A_20181226T103439_N0212_R108_T30NWM_20201008T131549.SAFE\",\"s2:datastrip_id\":\"S2B_OPER_MSI_L2A_DS_ESRI_20201008T131551_S20181226T103914_N02.12\",\"s2:product_type\":\"S2MSI2A\",\"sat:orbit_state\":\"descending\",\"s2:datatake_type\":\"INS-NOBS\",\"s2:generation_time\":\"2020-10-08T13:15:49.296Z\",\"sat:relative_orbit\":108,\"s2:water_percentage\":0.0,\"s2:mean_solar_zenith\":35.2734778974181,\"s2:mean_solar_azimuth\":146.573255212166,\"s2:processing_baseline\":\"02.12\",\"s2:snow_ice_percentage\":0.0,\"s2:vegetation_percentage\":41.13369,\"s2:thin_cirrus_percentage\":0.0,\"s2:cloud_shadow_percentage\":0.0,\"s2:nodata_pixel_percentage\":62.726372,\"s2:unclassified_percentage\":58.049142,\"s2:dark_features_percentage\":0.0,\"s2:not_vegetated_percentage\":0.806182,\"s2:degraded_msi_data_percentage\":0.0,\"s2:high_proba_clouds_percentage\":0.0,\"s2:reflectance_conversion_factor\":1.03358930864898,\"s2:medium_proba_clouds_percentage\":0.010984,\"s2:saturated_defective_pixel_percentage\":0.0,\"proj:code\":\"EPSG:32630\"},\"links\":[{\"rel\":\"collection\",\"href\":\"https://planetarycomputer.microsoft.com/api/stac/v1/collections/sentinel-2-l2a\",\"type\":\"application/json\"},{\"rel\":\"parent\",\"href\":\"https://planetarycomputer.microsoft.com/api/stac/v1/collections/sentinel-2-l2a\",\"type\":\"application/json\"},{\"rel\":\"root\",\"href\":\"https://planetarycomputer.microsoft.com/api/stac/v1/\",\"type\":\"application/json\",\"title\":\"Microsoft Planetary Computer STAC API\"},{\"rel\":\"self\",\"href\":\"https://planetarycomputer.microsoft.com/api/stac/v1/collections/sentinel-2-l2a/items/S2B_MSIL2A_20181226T103439_R108_T30NWM_20201008T131549\",\"type\":\"application/geo+json\"},{\"rel\":\"license\",\"href\":\"https://sentinel.esa.int/documents/247904/690755/Sentinel_Data_Legal_Notice\"},{\"rel\":\"preview\",\"href\":\"https://planetarycomputer.microsoft.com/api/data/v1/item/map?collection=sentinel-2-l2a&item=S2B_MSIL2A_20181226T103439_R108_T30NWM_20201008T131549\",\"type\":\"text/html\",\"title\":\"Map of item\"}],\"assets\":{\"AOT\":{\"href\":\"https://sentinel2l2a01.blob.core.windows.net/sentinel2-l2/30/N/WM/2018/12/26/S2B_MSIL2A_20181226T103439_N0212_R108_T30NWM_20201008T131549.SAFE/GRANULE/L2A_T30NWM_A009429_20181226T103914/IMG_DATA/R10m/T30NWM_20181226T103439_AOT_10m.tif?st=2026-08-11T01%3A17%3A56Z&se=2026-08-12T02%3A02%3A56Z&sp=rl&sv=2025-07-05&sr=c&skoid=9c8ff44a-6a2c-4dfb-b298-1c9212f64d9a&sktid=72f988bf-86f1-41af-91ab-2d7cd011db47&skt=2026-08-12T01%3A07%3A44Z&ske=2026-08-19T01%3A07%3A44Z&sks=b&skv=2025-07-05&sig=B2YvTOLEb5cIB%2BAfkaHX5RnWtg5vNwwi%2B5CHS5%2BtSO4%3D\",\"type\":\"image/tiff; application=geotiff; profile=cloud-optimized\",\"title\":\"Aerosol optical thickness (AOT)\",\"proj:bbox\":[499980.0,590220.0,609780.0,700020.0],\"proj:shape\":[10980,10980],\"proj:transform\":[10.0,0.0,499980.0,0.0,-10.0,700020.0],\"gsd\":10.0,\"roles\":[\"data\"]},\"B01\":{\"href\":\"https://sentinel2l2a01.blob.core.windows.net/sentinel2-l2/30/N/WM/2018/12/26/S2B_MSIL2A_20181226T103439_N0212_R108_T30NWM_20201008T131549.SAFE/GRANULE/L2A_T30NWM_A009429_20181226T103914/IMG_DATA/R60m/T30NWM_20181226T103439_B01_60m.tif?st=2026-08-11T01%3A17%3A56Z&se=2026-08-12T02%3A02%3A56Z&sp=rl&sv=2025-07-05&sr=c&skoid=9c8ff44a-6a2c-4dfb-b298-1c9212f64d9a&sktid=72f988bf-86f1-41af-91ab-2d7cd011db47&skt=2026-08-12T01%3A07%3A44Z&ske=2026-08-19T01%3A07%3A44Z&sks=b&skv=2025-07-05&sig=B2YvTOLEb5cIB%2BAfkaHX5RnWtg5vNwwi%2B5CHS5%2BtSO4%3D\",\"type\":\"image/tiff; application=geotiff; profile=cloud-optimized\",\"title\":\"Band 1 - Coastal aerosol - 60m\",\"proj:bbox\":[499980.0,590220.0,609780.0,700020.0],\"proj:shape\":[1830,1830],\"proj:transform\":[60.0,0.0,499980.0,0.0,-60.0,700020.0],\"gsd\":60.0,\"eo:bands\":[{\"name\":\"B01\",\"common_name\":\"coastal\",\"description\":\"Band 1 - Coastal aerosol\",\"center_wavelength\":0.443,\"full_width_half_max\":0.027}],\"roles\":[\"data\"]},\"B02\":{\"href\":\"https://sentinel2l2a01.blob.core.windows.net/sentinel2-l2/30/N/WM/2018/12/26/S2B_MSIL2A_20181226T103439_N0212_R108_T30NWM_20201008T131549.SAFE/GRANULE/L2A_T30NWM_A009429_20181226T103914/IMG_DATA/R10m/T30NWM_20181226T103439_B02_10m.tif?st=2026-08-11T01%3A17%3A56Z&se=2026-08-12T02%3A02%3A56Z&sp=rl&sv=2025-07-05&sr=c&skoid=9c8ff44a-6a2c-4dfb-b298-1c9212f64d9a&sktid=72f988bf-86f1-41af-91ab-2d7cd011db47&skt=2026-08-12T01%3A07%3A44Z&ske=2026-08-19T01%3A07%3A44Z&sks=b&skv=2025-07-05&sig=B2YvTOLEb5cIB%2BAfkaHX5RnWtg5vNwwi%2B5CHS5%2BtSO4%3D\",\"type\":\"image/tiff; application=geotiff; profile=cloud-optimized\",\"title\":\"Band 2 - Blue - 10m\",\"proj:bbox\":[499980.0,590220.0,609780.0,700020.0],\"proj:shape\":[10980,10980],\"proj:transform\":[10.0,0.0,499980.0,0.0,-10.0,700020.0],\"gsd\":10.0,\"eo:bands\":[{\"name\":\"B02\",\"common_name\":\"blue\",\"description\":\"Band 2 - Blue\",\"center_wavelength\":0.49,\"full_width_half_max\":0.098}],\"roles\":[\"data\"]},\"B03\":{\"href\":\"https://sentinel2l2a01.blob.core.windows.net/sentinel2-l2/30/N/WM/2018/12/26/S2B_MSIL2A_20181226T103439_N0212_R108_T30NWM_20201008T131549.SAFE/GRANULE/L2A_T30NWM_A009429_20181226T103914/IMG_DATA/R10m/T30NWM_20181226T103439_B03_10m.tif?st=2026-08-11T01%3A17%3A56Z&se=2026-08-12T02%3A02%3A56Z&sp=rl&sv=2025-07-05&sr=c&skoid=9c8ff44a-6a2c-4dfb-b298-1c9212f64d9a&sktid=72f988bf-86f1-41af-91ab-2d7cd011db47&skt=2026-08-12T01%3A07%3A44Z&ske=2026-08-19T01%3A07%3A44Z&sks=b&skv=2025-07-05&sig=B2YvTOLEb5cIB%2BAfkaHX5RnWtg5vNwwi%2B5CHS5%2BtSO4%3D\",\"type\":\"image/tiff; application=geotiff; profile=cloud-optimized\",\"title\":\"Band 3 - Green - 10m\",\"proj:bbox\":[499980.0,590220.0,609780.0,700020.0],\"proj:shape\":[10980,10980],\"proj:transform\":[10.0,0.0,499980.0,0.0,-10.0,700020.0],\"gsd\":10.0,\"eo:bands\":[{\"name\":\"B03\",\"common_name\":\"green\",\"description\":\"Band 3 - Green\",\"center_wavelength\":0.56,\"full_width_half_max\":0.045}],\"roles\":[\"data\"]},\"B04\":{\"href\":\"https://sentinel2l2a01.blob.core.windows.net/sentinel2-l2/30/N/WM/2018/12/26/S2B_MSIL2A_20181226T103439_N0212_R108_T30NWM_20201008T131549.SAFE/GRANULE/L2A_T30NWM_A009429_20181226T103914/IMG_DATA/R10m/T30NWM_20181226T103439_B04_10m.tif?st=2026-08-11T01%3A17%3A56Z&se=2026-08-12T02%3A02%3A56Z&sp=rl&sv=2025-07-05&sr=c&skoid=9c8ff44a-6a2c-4dfb-b298-1c9212f64d9a&sktid=72f988bf-86f1-41af-91ab-2d7cd011db47&skt=2026-08-12T01%3A07%3A44Z&ske=2026-08-19T01%3A07%3A44Z&sks=b&skv=2025-07-05&sig=B2YvTOLEb5cIB%2BAfkaHX5RnWtg5vNwwi%2B5CHS5%2BtSO4%3D\",\"type\":\"image/tiff; application=geotiff; profile=cloud-optimized\",\"title\":\"Band 4 - Red - 10m\",\"proj:bbox\":[499980.0,590220.0,609780.0,700020.0],\"proj:shape\":[10980,10980],\"proj:transform\":[10.0,0.0,499980.0,0.0,-10.0,700020.0],\"gsd\":10.0,\"eo:bands\":[{\"name\":\"B04\",\"common_name\":\"red\",\"description\":\"Band 4 - Red\",\"center_wavelength\":0.665,\"full_width_half_max\":0.038}],\"roles\":[\"data\"]},\"B05\":{\"href\":\"https://sentinel2l2a01.blob.core.windows.net/sentinel2-l2/30/N/WM/2018/12/26/S2B_MSIL2A_20181226T103439_N0212_R108_T30NWM_20201008T131549.SAFE/GRANULE/L2A_T30NWM_A009429_20181226T103914/IMG_DATA/R20m/T30NWM_20181226T103439_B05_20m.tif?st=2026-08-11T01%3A17%3A56Z&se=2026-08-12T02%3A02%3A56Z&sp=rl&sv=2025-07-05&sr=c&skoid=9c8ff44a-6a2c-4dfb-b298-1c9212f64d9a&sktid=72f988bf-86f1-41af-91ab-2d7cd011db47&skt=2026-08-12T01%3A07%3A44Z&ske=2026-08-19T01%3A07%3A44Z&sks=b&skv=2025-07-05&sig=B2YvTOLEb5cIB%2BAfkaHX5RnWtg5vNwwi%2B5CHS5%2BtSO4%3D\",\"type\":\"image/tiff; application=geotiff; profile=cloud-optimized\",\"title\":\"Band 5 - Vegetation red edge 1 - 20m\",\"proj:bbox\":[499980.0,590220.0,609780.0,700020.0],\"proj:shape\":[5490,5490],\"proj:transform\":[20.0,0.0,499980.0,0.0,-20.0,700020.0],\"gsd\":20.0,\"eo:bands\":[{\"name\":\"B05\",\"common_name\":\"rededge\",\"description\":\"Band 5 - Vegetation red edge 1\",\"center_wavelength\":0.704,\"full_width_half_max\":0.019}],\"roles\":[\"data\"]},\"B06\":{\"href\":\"https://sentinel2l2a01.blob.core.windows.net/sentinel2-l2/30/N/WM/2018/12/26/S2B_MSIL2A_20181226T103439_N0212_R108_T30NWM_20201008T131549.SAFE/GRANULE/L2A_T30NWM_A009429_20181226T103914/IMG_DATA/R20m/T30NWM_20181226T103439_B06_20m.tif?st=2026-08-11T01%3A17%3A56Z&se=2026-08-12T02%3A02%3A56Z&sp=rl&sv=2025-07-05&sr=c&skoid=9c8ff44a-6a2c-4dfb-b298-1c9212f64d9a&sktid=72f988bf-86f1-41af-91ab-2d7cd011db47&skt=2026-08-12T01%3A07%3A44Z&ske=2026-08-19T01%3A07%3A44Z&sks=b&skv=2025-07-05&sig=B2YvTOLEb5cIB%2BAfkaHX5RnWtg5vNwwi%2B5CHS5%2BtSO4%3D\",\"type\":\"image/tiff; application=geotiff; profile=cloud-optimized\",\"title\":\"Band 6 - Vegetation red edge 2 - 20m\",\"proj:bbox\":[499980.0,590220.0,609780.0,700020.0],\"proj:shape\":[5490,5490],\"proj:transform\":[20.0,0.0,499980.0,0.0,-20.0,700020.0],\"gsd\":20.0,\"eo:bands\":[{\"name\":\"B06\",\"common_name\":\"rededge\",\"description\":\"Band 6 - Vegetation red edge 2\",\"center_wavelength\":0.74,\"full_width_half_max\":0.018}],\"roles\":[\"data\"]},\"B07\":{\"href\":\"https://sentinel2l2a01.blob.core.windows.net/sentinel2-l2/30/N/WM/2018/12/26/S2B_MSIL2A_20181226T103439_N0212_R108_T30NWM_20201008T131549.SAFE/GRANULE/L2A_T30NWM_A009429_20181226T103914/IMG_DATA/R20m/T30NWM_20181226T103439_B07_20m.tif?st=2026-08-11T01%3A17%3A56Z&se=2026-08-12T02%3A02%3A56Z&sp=rl&sv=2025-07-05&sr=c&skoid=9c8ff44a-6a2c-4dfb-b298-1c9212f64d9a&sktid=72f988bf-86f1-41af-91ab-2d7cd011db47&skt=2026-08-12T01%3A07%3A44Z&ske=2026-08-19T01%3A07%3A44Z&sks=b&skv=2025-07-05&sig=B2YvTOLEb5cIB%2BAfkaHX5RnWtg5vNwwi%2B5CHS5%2BtSO4%3D\",\"type\":\"image/tiff; application=geotiff; profile=cloud-optimized\",\"title\":\"Band 7 - Vegetation red edge 3 - 20m\",\"proj:bbox\":[499980.0,590220.0,609780.0,700020.0],\"proj:shape\":[5490,5490],\"proj:transform\":[20.0,0.0,499980.0,0.0,-20.0,700020.0],\"gsd\":20.0,\"eo:bands\":[{\"name\":\"B07\",\"common_name\":\"rededge\",\"description\":\"Band 7 - Vegetation red edge 3\",\"center_wavelength\":0.783,\"full_width_half_max\":0.028}],\"roles\":[\"data\"]},\"B08\":{\"href\":\"https://sentinel2l2a01.blob.core.windows.net/sentinel2-l2/30/N/WM/2018/12/26/S2B_MSIL2A_20181226T103439_N0212_R108_T30NWM_20201008T131549.SAFE/GRANULE/L2A_T30NWM_A009429_20181226T103914/IMG_DATA/R10m/T30NWM_20181226T103439_B08_10m.tif?st=2026-08-11T01%3A17%3A56Z&se=2026-08-12T02%3A02%3A56Z&sp=rl&sv=2025-07-05&sr=c&skoid=9c8ff44a-6a2c-4dfb-b298-1c9212f64d9a&sktid=72f988bf-86f1-41af-91ab-2d7cd011db47&skt=2026-08-12T01%3A07%3A44Z&ske=2026-08-19T01%3A07%3A44Z&sks=b&skv=2025-07-05&sig=B2YvTOLEb5cIB%2BAfkaHX5RnWtg5vNwwi%2B5CHS5%2BtSO4%3D\",\"type\":\"image/tiff; application=geotiff; profile=cloud-optimized\",\"title\":\"Band 8 - NIR - 10m\",\"proj:bbox\":[499980.0,590220.0,609780.0,700020.0],\"proj:shape\":[10980,10980],\"proj:transform\":[10.0,0.0,499980.0,0.0,-10.0,700020.0],\"gsd\":10.0,\"eo:bands\":[{\"name\":\"B08\",\"common_name\":\"nir\",\"description\":\"Band 8 - NIR\",\"center_wavelength\":0.842,\"full_width_half_max\":0.145}],\"roles\":[\"data\"]},\"B09\":{\"href\":\"https://sentinel2l2a01.blob.core.windows.net/sentinel2-l2/30/N/WM/2018/12/26/S2B_MSIL2A_20181226T103439_N0212_R108_T30NWM_20201008T131549.SAFE/GRANULE/L2A_T30NWM_A009429_20181226T103914/IMG_DATA/R60m/T30NWM_20181226T103439_B09_60m.tif?st=2026-08-11T01%3A17%3A56Z&se=2026-08-12T02%3A02%3A56Z&sp=rl&sv=2025-07-05&sr=c&skoid=9c8ff44a-6a2c-4dfb-b298-1c9212f64d9a&sktid=72f988bf-86f1-41af-91ab-2d7cd011db47&skt=2026-08-12T01%3A07%3A44Z&ske=2026-08-19T01%3A07%3A44Z&sks=b&skv=2025-07-05&sig=B2YvTOLEb5cIB%2BAfkaHX5RnWtg5vNwwi%2B5CHS5%2BtSO4%3D\",\"type\":\"image/tiff; application=geotiff; profile=cloud-optimized\",\"title\":\"Band 9 - Water vapor - 60m\",\"proj:bbox\":[499980.0,590220.0,609780.0,700020.0],\"proj:shape\":[1830,1830],\"proj:transform\":[60.0,0.0,499980.0,0.0,-60.0,700020.0],\"gsd\":60.0,\"eo:bands\":[{\"name\":\"B09\",\"description\":\"Band 9 - Water vapor\",\"center_wavelength\":0.945,\"full_width_half_max\":0.026}],\"roles\":[\"data\"]},\"B11\":{\"href\":\"https://sentinel2l2a01.blob.core.windows.net/sentinel2-l2/30/N/WM/2018/12/26/S2B_MSIL2A_20181226T103439_N0212_R108_T30NWM_20201008T131549.SAFE/GRANULE/L2A_T30NWM_A009429_20181226T103914/IMG_DATA/R20m/T30NWM_20181226T103439_B11_20m.tif?st=2026-08-11T01%3A17%3A56Z&se=2026-08-12T02%3A02%3A56Z&sp=rl&sv=2025-07-05&sr=c&skoid=9c8ff44a-6a2c-4dfb-b298-1c9212f64d9a&sktid=72f988bf-86f1-41af-91ab-2d7cd011db47&skt=2026-08-12T01%3A07%3A44Z&ske=2026-08-19T01%3A07%3A44Z&sks=b&skv=2025-07-05&sig=B2YvTOLEb5cIB%2BAfkaHX5RnWtg5vNwwi%2B5CHS5%2BtSO4%3D\",\"type\":\"image/tiff; application=geotiff; profile=cloud-optimized\",\"title\":\"Band 11 - SWIR (1.6) - 20m\",\"proj:bbox\":[499980.0,590220.0,609780.0,700020.0],\"proj:shape\":[5490,5490],\"proj:transform\":[20.0,0.0,499980.0,0.0,-20.0,700020.0],\"gsd\":20.0,\"eo:bands\":[{\"name\":\"B11\",\"common_name\":\"swir16\",\"description\":\"Band 11 - SWIR (1.6)\",\"center_wavelength\":1.61,\"full_width_half_max\":0.143}],\"roles\":[\"data\"]},\"B12\":{\"href\":\"https://sentinel2l2a01.blob.core.windows.net/sentinel2-l2/30/N/WM/2018/12/26/S2B_MSIL2A_20181226T103439_N0212_R108_T30NWM_20201008T131549.SAFE/GRANULE/L2A_T30NWM_A009429_20181226T103914/IMG_DATA/R20m/T30NWM_20181226T103439_B12_20m.tif?st=2026-08-11T01%3A17%3A56Z&se=2026-08-12T02%3A02%3A56Z&sp=rl&sv=2025-07-05&sr=c&skoid=9c8ff44a-6a2c-4dfb-b298-1c9212f64d9a&sktid=72f988bf-86f1-41af-91ab-2d7cd011db47&skt=2026-08-12T01%3A07%3A44Z&ske=2026-08-19T01%3A07%3A44Z&sks=b&skv=2025-07-05&sig=B2YvTOLEb5cIB%2BAfkaHX5RnWtg5vNwwi%2B5CHS5%2BtSO4%3D\",\"type\":\"image/tiff; application=geotiff; profile=cloud-optimized\",\"title\":\"Band 12 - SWIR (2.2) - 20m\",\"proj:bbox\":[499980.0,590220.0,609780.0,700020.0],\"proj:shape\":[5490,5490],\"proj:transform\":[20.0,0.0,499980.0,0.0,-20.0,700020.0],\"gsd\":20.0,\"eo:bands\":[{\"name\":\"B12\",\"common_name\":\"swir22\",\"description\":\"Band 12 - SWIR (2.2)\",\"center_wavelength\":2.19,\"full_width_half_max\":0.242}],\"roles\":[\"data\"]},\"B8A\":{\"href\":\"https://sentinel2l2a01.blob.core.windows.net/sentinel2-l2/30/N/WM/2018/12/26/S2B_MSIL2A_20181226T103439_N0212_R108_T30NWM_20201008T131549.SAFE/GRANULE/L2A_T30NWM_A009429_20181226T103914/IMG_DATA/R20m/T30NWM_20181226T103439_B8A_20m.tif?st=2026-08-11T01%3A17%3A56Z&se=2026-08-12T02%3A02%3A56Z&sp=rl&sv=2025-07-05&sr=c&skoid=9c8ff44a-6a2c-4dfb-b298-1c9212f64d9a&sktid=72f988bf-86f1-41af-91ab-2d7cd011db47&skt=2026-08-12T01%3A07%3A44Z&ske=2026-08-19T01%3A07%3A44Z&sks=b&skv=2025-07-05&sig=B2YvTOLEb5cIB%2BAfkaHX5RnWtg5vNwwi%2B5CHS5%2BtSO4%3D\",\"type\":\"image/tiff; application=geotiff; profile=cloud-optimized\",\"title\":\"Band 8A - Vegetation red edge 4 - 20m\",\"proj:bbox\":[499980.0,590220.0,609780.0,700020.0],\"proj:shape\":[5490,5490],\"proj:transform\":[20.0,0.0,499980.0,0.0,-20.0,700020.0],\"gsd\":20.0,\"eo:bands\":[{\"name\":\"B8A\",\"common_name\":\"rededge\",\"description\":\"Band 8A - Vegetation red edge 4\",\"center_wavelength\":0.865,\"full_width_half_max\":0.033}],\"roles\":[\"data\"]},\"SCL\":{\"href\":\"https://sentinel2l2a01.blob.core.windows.net/sentinel2-l2/30/N/WM/2018/12/26/S2B_MSIL2A_20181226T103439_N0212_R108_T30NWM_20201008T131549.SAFE/GRANULE/L2A_T30NWM_A009429_20181226T103914/IMG_DATA/R20m/T30NWM_20181226T103439_SCL_20m.tif?st=2026-08-11T01%3A17%3A56Z&se=2026-08-12T02%3A02%3A56Z&sp=rl&sv=2025-07-05&sr=c&skoid=9c8ff44a-6a2c-4dfb-b298-1c9212f64d9a&sktid=72f988bf-86f1-41af-91ab-2d7cd011db47&skt=2026-08-12T01%3A07%3A44Z&ske=2026-08-19T01%3A07%3A44Z&sks=b&skv=2025-07-05&sig=B2YvTOLEb5cIB%2BAfkaHX5RnWtg5vNwwi%2B5CHS5%2BtSO4%3D\",\"type\":\"image/tiff; application=geotiff; profile=cloud-optimized\",\"title\":\"Scene classfication map (SCL)\",\"proj:bbox\":[499980.0,590220.0,609780.0,700020.0],\"proj:shape\":[5490,5490],\"proj:transform\":[20.0,0.0,499980.0,0.0,-20.0,700020.0],\"gsd\":20.0,\"roles\":[\"data\"]},\"WVP\":{\"href\":\"https://sentinel2l2a01.blob.core.windows.net/sentinel2-l2/30/N/WM/2018/12/26/S2B_MSIL2A_20181226T103439_N0212_R108_T30NWM_20201008T131549.SAFE/GRANULE/L2A_T30NWM_A009429_20181226T103914/IMG_DATA/R10m/T30NWM_20181226T103439_WVP_10m.tif?st=2026-08-11T01%3A17%3A56Z&se=2026-08-12T02%3A02%3A56Z&sp=rl&sv=2025-07-05&sr=c&skoid=9c8ff44a-6a2c-4dfb-b298-1c9212f64d9a&sktid=72f988bf-86f1-41af-91ab-2d7cd011db47&skt=2026-08-12T01%3A07%3A44Z&ske=2026-08-19T01%3A07%3A44Z&sks=b&skv=2025-07-05&sig=B2YvTOLEb5cIB%2BAfkaHX5RnWtg5vNwwi%2B5CHS5%2BtSO4%3D\",\"type\":\"image/tiff; application=geotiff; profile=cloud-optimized\",\"title\":\"Water vapour (WVP)\",\"proj:bbox\":[499980.0,590220.0,609780.0,700020.0],\"proj:shape\":[10980,10980],\"proj:transform\":[10.0,0.0,499980.0,0.0,-10.0,700020.0],\"gsd\":10.0,\"roles\":[\"data\"]},\"visual\":{\"href\":\"https://sentinel2l2a01.blob.core.windows.net/sentinel2-l2/30/N/WM/2018/12/26/S2B_MSIL2A_20181226T103439_N0212_R108_T30NWM_20201008T131549.SAFE/GRANULE/L2A_T30NWM_A009429_20181226T103914/IMG_DATA/R10m/T30NWM_20181226T103439_TCI_10m.tif?st=2026-08-11T01%3A17%3A56Z&se=2026-08-12T02%3A02%3A56Z&sp=rl&sv=2025-07-05&sr=c&skoid=9c8ff44a-6a2c-4dfb-b298-1c9212f64d9a&sktid=72f988bf-86f1-41af-91ab-2d7cd011db47&skt=2026-08-12T01%3A07%3A44Z&ske=2026-08-19T01%3A07%3A44Z&sks=b&skv=2025-07-05&sig=B2YvTOLEb5cIB%2BAfkaHX5RnWtg5vNwwi%2B5CHS5%2BtSO4%3D\",\"type\":\"image/tiff; application=geotiff; profile=cloud-optimized\",\"title\":\"True color image\",\"proj:bbox\":[499980.0,590220.0,609780.0,700020.0],\"proj:shape\":[10980,10980],\"proj:transform\":[10.0,0.0,499980.0,0.0,-10.0,700020.0],\"gsd\":10.0,\"eo:bands\":[{\"name\":\"B04\",\"common_name\":\"red\",\"description\":\"Band 4 - Red\",\"center_wavelength\":0.665,\"full_width_half_max\":0.038},{\"name\":\"B03\",\"common_name\":\"green\",\"description\":\"Band 3 - Green\",\"center_wavelength\":0.56,\"full_width_half_max\":0.045},{\"name\":\"B02\",\"common_name\":\"blue\",\"description\":\"Band 2 - Blue\",\"center_wavelength\":0.49,\"full_width_half_max\":0.098}],\"roles\":[\"data\"]},\"preview\":{\"href\":\"https://sentinel2l2a01.blob.core.windows.net/sentinel2-l2/30/N/WM/2018/12/26/S2B_MSIL2A_20181226T103439_N0212_R108_T30NWM_20201008T131549.SAFE/GRANULE/L2A_T30NWM_A009429_20181226T103914/QI_DATA/T30NWM_20181226T103439_PVI.tif?st=2026-08-11T01%3A17%3A56Z&se=2026-08-12T02%3A02%3A56Z&sp=rl&sv=2025-07-05&sr=c&skoid=9c8ff44a-6a2c-4dfb-b298-1c9212f64d9a&sktid=72f988bf-86f1-41af-91ab-2d7cd011db47&skt=2026-08-12T01%3A07%3A44Z&ske=2026-08-19T01%3A07%3A44Z&sks=b&skv=2025-07-05&sig=B2YvTOLEb5cIB%2BAfkaHX5RnWtg5vNwwi%2B5CHS5%2BtSO4%3D\",\"type\":\"image/tiff; application=geotiff; profile=cloud-optimized\",\"title\":\"Thumbnail\",\"roles\":[\"thumbnail\"]},\"safe-manifest\":{\"href\":\"https://sentinel2l2a01.blob.core.windows.net/sentinel2-l2/30/N/WM/2018/12/26/S2B_MSIL2A_20181226T103439_N0212_R108_T30NWM_20201008T131549.SAFE/manifest.safe?st=2026-08-11T01%3A17%3A56Z&se=2026-08-12T02%3A02%3A56Z&sp=rl&sv=2025-07-05&sr=c&skoid=9c8ff44a-6a2c-4dfb-b298-1c9212f64d9a&sktid=72f988bf-86f1-41af-91ab-2d7cd011db47&skt=2026-08-12T01%3A07%3A44Z&ske=2026-08-19T01%3A07%3A44Z&sks=b&skv=2025-07-05&sig=B2YvTOLEb5cIB%2BAfkaHX5RnWtg5vNwwi%2B5CHS5%2BtSO4%3D\",\"type\":\"application/xml\",\"title\":\"SAFE manifest\",\"roles\":[\"metadata\"]},\"granule-metadata\":{\"href\":\"https://sentinel2l2a01.blob.core.windows.net/sentinel2-l2/30/N/WM/2018/12/26/S2B_MSIL2A_20181226T103439_N0212_R108_T30NWM_20201008T131549.SAFE/GRANULE/L2A_T30NWM_A009429_20181226T103914/MTD_TL.xml?st=2026-08-11T01%3A17%3A56Z&se=2026-08-12T02%3A02%3A56Z&sp=rl&sv=2025-07-05&sr=c&skoid=9c8ff44a-6a2c-4dfb-b298-1c9212f64d9a&sktid=72f988bf-86f1-41af-91ab-2d7cd011db47&skt=2026-08-12T01%3A07%3A44Z&ske=2026-08-19T01%3A07%3A44Z&sks=b&skv=2025-07-05&sig=B2YvTOLEb5cIB%2BAfkaHX5RnWtg5vNwwi%2B5CHS5%2BtSO4%3D\",\"type\":\"application/xml\",\"title\":\"Granule metadata\",\"roles\":[\"metadata\"]},\"inspire-metadata\":{\"href\":\"https://sentinel2l2a01.blob.core.windows.net/sentinel2-l2/30/N/WM/2018/12/26/S2B_MSIL2A_20181226T103439_N0212_R108_T30NWM_20201008T131549.SAFE/INSPIRE.xml?st=2026-08-11T01%3A17%3A56Z&se=2026-08-12T02%3A02%3A56Z&sp=rl&sv=2025-07-05&sr=c&skoid=9c8ff44a-6a2c-4dfb-b298-1c9212f64d9a&sktid=72f988bf-86f1-41af-91ab-2d7cd011db47&skt=2026-08-12T01%3A07%3A44Z&ske=2026-08-19T01%3A07%3A44Z&sks=b&skv=2025-07-05&sig=B2YvTOLEb5cIB%2BAfkaHX5RnWtg5vNwwi%2B5CHS5%2BtSO4%3D\",\"type\":\"application/xml\",\"title\":\"INSPIRE metadata\",\"roles\":[\"metadata\"]},\"product-metadata\":{\"href\":\"https://sentinel2l2a01.blob.core.windows.net/sentinel2-l2/30/N/WM/2018/12/26/S2B_MSIL2A_20181226T103439_N0212_R108_T30NWM_20201008T131549.SAFE/MTD_MSIL2A.xml?st=2026-08-11T01%3A17%3A56Z&se=2026-08-12T02%3A02%3A56Z&sp=rl&sv=2025-07-05&sr=c&skoid=9c8ff44a-6a2c-4dfb-b298-1c9212f64d9a&sktid=72f988bf-86f1-41af-91ab-2d7cd011db47&skt=2026-08-12T01%3A07%3A44Z&ske=2026-08-19T01%3A07%3A44Z&sks=b&skv=2025-07-05&sig=B2YvTOLEb5cIB%2BAfkaHX5RnWtg5vNwwi%2B5CHS5%2BtSO4%3D\",\"type\":\"application/xml\",\"title\":\"Product metadata\",\"roles\":[\"metadata\"]},\"datastrip-metadata\":{\"href\":\"https://sentinel2l2a01.blob.core.windows.net/sentinel2-l2/30/N/WM/2018/12/26/S2B_MSIL2A_20181226T103439_N0212_R108_T30NWM_20201008T131549.SAFE/DATASTRIP/DS_ESRI_20201008T131551_S20181226T103914/MTD_DS.xml?st=2026-08-11T01%3A17%3A56Z&se=2026-08-12T02%3A02%3A56Z&sp=rl&sv=2025-07-05&sr=c&skoid=9c8ff44a-6a2c-4dfb-b298-1c9212f64d9a&sktid=72f988bf-86f1-41af-91ab-2d7cd011db47&skt=2026-08-12T01%3A07%3A44Z&ske=2026-08-19T01%3A07%3A44Z&sks=b&skv=2025-07-05&sig=B2YvTOLEb5cIB%2BAfkaHX5RnWtg5vNwwi%2B5CHS5%2BtSO4%3D\",\"type\":\"application/xml\",\"title\":\"Datastrip metadata\",\"roles\":[\"metadata\"]},\"tilejson\":{\"href\":\"https://planetarycomputer.microsoft.com/api/data/v1/item/tilejson.json?collection=sentinel-2-l2a&item=S2B_MSIL2A_20181226T103439_R108_T30NWM_20201008T131549&assets=visual&asset_bidx=visual%7C1%2C2%2C3&nodata=0&format=png\",\"type\":\"application/json\",\"title\":\"TileJSON with default rendering\",\"roles\":[\"tiles\"]},\"rendered_preview\":{\"href\":\"https://planetarycomputer.microsoft.com/api/data/v1/item/preview.png?collection=sentinel-2-l2a&item=S2B_MSIL2A_20181226T103439_R108_T30NWM_20201008T131549&assets=visual&asset_bidx=visual%7C1%2C2%2C3&nodata=0&format=png\",\"type\":\"image/png\",\"title\":\"Rendered preview\",\"rel\":\"preview\",\"roles\":[\"overview\"]}},\"collection\":\"sentinel-2-l2a\"}],\"metadata\":{\"description\":\"Normalized Difference Vegetation Index\"}}",
+          "coordinates": "var_order"
         },
         "zarr_format": 3,
         "consolidated_metadata": {
@@ -74,17 +49,8 @@
       },
       "scl": {
         "attributes": {
-          "has_band": false,
-          "tag": "{\"datetime\":[\"2018-12-26T10:34:39.024000\",\"2018-12-26T10:34:39.024000\"],\"metadata\":{\"description\":\"Sentinel-2 L2A Scene Classification Layer (Sen2Cor)\"},\"plot_meta\":{\"class_map\":{\"0\":\"no_data\",\"1\":\"saturated_defective\",\"2\":\"dark_area\",\"3\":\"cloud_shadow\",\"4\":\"vegetation\",\"5\":\"bare_soil\",\"6\":\"water\",\"7\":\"unclassified\",\"8\":\"cloud_medium_prob\",\"9\":\"cloud_high_prob\",\"10\":\"thin_cirrus\",\"11\":\"snow_ice\"},\"color_map\":{\"0\":\"#000000\",\"1\":\"#ff0000\",\"2\":\"#2f2f2f\",\"3\":\"#643200\",\"4\":\"#00a600\",\"5\":\"#ffe65a\",\"6\":\"#0000ff\",\"7\":\"#808080\",\"8\":\"#c0c0c0\",\"9\":\"#ffffff\",\"10\":\"#66ccff\",\"11\":\"#ff66ff\"}}}",
-          "var_order": [
-            "data"
-          ],
-          "dim_order": {
-            "data": [
-              "y",
-              "x"
-            ]
-          }
+          "tag": "{\"datetime\":[\"2018-12-26T10:34:39.024000\",\"2018-12-26T10:34:39.024000\"],\"class_map\":{\"0\":\"no_data\",\"1\":\"saturated_defective\",\"2\":\"dark_area\",\"3\":\"cloud_shadow\",\"4\":\"vegetation\",\"5\":\"bare_soil\",\"6\":\"water\",\"7\":\"unclassified\",\"8\":\"cloud_medium_prob\",\"9\":\"cloud_high_prob\",\"10\":\"thin_cirrus\",\"11\":\"snow_ice\"},\"color_map\":{\"0\":\"#000000\",\"1\":\"#ff0000\",\"2\":\"#2f2f2f\",\"3\":\"#643200\",\"4\":\"#00a600\",\"5\":\"#ffe65a\",\"6\":\"#0000ff\",\"7\":\"#808080\",\"8\":\"#c0c0c0\",\"9\":\"#ffffff\",\"10\":\"#66ccff\",\"11\":\"#ff66ff\"},\"stac\":[{\"type\":\"Feature\",\"stac_version\":\"1.1.0\",\"stac_extensions\":[\"https://stac-extensions.github.io/eo/v1.1.0/schema.json\",\"https://stac-extensions.github.io/sat/v1.0.0/schema.json\",\"https://stac-extensions.github.io/projection/v2.0.0/schema.json\"],\"id\":\"S2B_MSIL2A_20181226T103439_R108_T30NWM_20201008T131549\",\"geometry\":{\"type\":\"Polygon\",\"coordinates\":[[[-2.5195312,6.3325828],[-2.5367432,6.2556941],[-2.5700073,6.1071494],[-2.6035461,5.95870013],[-2.6365051,5.81009742],[-2.6696167,5.6615693],[-2.7026672,5.5130452],[-2.7359924,5.36454565],[-2.7415771,5.33954199],[-3.000183,5.33975051],[-3.000183,6.33304217],[-2.5195312,6.3325828]]]},\"bbox\":[-3.000183,5.33954198577784,-2.5195312,6.33304216622498],\"properties\":{\"datetime\":\"2018-12-26T10:34:39.024000Z\",\"platform\":\"Sentinel-2B\",\"instruments\":[\"msi\"],\"s2:mgrs_tile\":\"30NWM\",\"constellation\":\"Sentinel 2\",\"s2:granule_id\":\"S2B_OPER_MSI_L2A_TL_ESRI_20201008T131551_A009429_T30NWM_N02.12\",\"eo:cloud_cover\":0.010984,\"s2:datatake_id\":\"GS2B_20181226T103439_009429_N02.12\",\"s2:product_uri\":\"S2B_MSIL2A_20181226T103439_N0212_R108_T30NWM_20201008T131549.SAFE\",\"s2:datastrip_id\":\"S2B_OPER_MSI_L2A_DS_ESRI_20201008T131551_S20181226T103914_N02.12\",\"s2:product_type\":\"S2MSI2A\",\"sat:orbit_state\":\"descending\",\"s2:datatake_type\":\"INS-NOBS\",\"s2:generation_time\":\"2020-10-08T13:15:49.296Z\",\"sat:relative_orbit\":108,\"s2:water_percentage\":0.0,\"s2:mean_solar_zenith\":35.2734778974181,\"s2:mean_solar_azimuth\":146.573255212166,\"s2:processing_baseline\":\"02.12\",\"s2:snow_ice_percentage\":0.0,\"s2:vegetation_percentage\":41.13369,\"s2:thin_cirrus_percentage\":0.0,\"s2:cloud_shadow_percentage\":0.0,\"s2:nodata_pixel_percentage\":62.726372,\"s2:unclassified_percentage\":58.049142,\"s2:dark_features_percentage\":0.0,\"s2:not_vegetated_percentage\":0.806182,\"s2:degraded_msi_data_percentage\":0.0,\"s2:high_proba_clouds_percentage\":0.0,\"s2:reflectance_conversion_factor\":1.03358930864898,\"s2:medium_proba_clouds_percentage\":0.010984,\"s2:saturated_defective_pixel_percentage\":0.0,\"proj:code\":\"EPSG:32630\"},\"links\":[{\"rel\":\"collection\",\"href\":\"https://planetarycomputer.microsoft.com/api/stac/v1/collections/sentinel-2-l2a\",\"type\":\"application/json\"},{\"rel\":\"parent\",\"href\":\"https://planetarycomputer.microsoft.com/api/stac/v1/collections/sentinel-2-l2a\",\"type\":\"application/json\"},{\"rel\":\"root\",\"href\":\"https://planetarycomputer.microsoft.com/api/stac/v1/\",\"type\":\"application/json\",\"title\":\"Microsoft Planetary Computer STAC API\"},{\"rel\":\"self\",\"href\":\"https://planetarycomputer.microsoft.com/api/stac/v1/collections/sentinel-2-l2a/items/S2B_MSIL2A_20181226T103439_R108_T30NWM_20201008T131549\",\"type\":\"application/geo+json\"},{\"rel\":\"license\",\"href\":\"https://sentinel.esa.int/documents/247904/690755/Sentinel_Data_Legal_Notice\"},{\"rel\":\"preview\",\"href\":\"https://planetarycomputer.microsoft.com/api/data/v1/item/map?collection=sentinel-2-l2a&item=S2B_MSIL2A_20181226T103439_R108_T30NWM_20201008T131549\",\"type\":\"text/html\",\"title\":\"Map of item\"}],\"assets\":{\"AOT\":{\"href\":\"https://sentinel2l2a01.blob.core.windows.net/sentinel2-l2/30/N/WM/2018/12/26/S2B_MSIL2A_20181226T103439_N0212_R108_T30NWM_20201008T131549.SAFE/GRANULE/L2A_T30NWM_A009429_20181226T103914/IMG_DATA/R10m/T30NWM_20181226T103439_AOT_10m.tif?st=2026-08-11T01%3A17%3A56Z&se=2026-08-12T02%3A02%3A56Z&sp=rl&sv=2025-07-05&sr=c&skoid=9c8ff44a-6a2c-4dfb-b298-1c9212f64d9a&sktid=72f988bf-86f1-41af-91ab-2d7cd011db47&skt=2026-08-12T01%3A07%3A44Z&ske=2026-08-19T01%3A07%3A44Z&sks=b&skv=2025-07-05&sig=B2YvTOLEb5cIB%2BAfkaHX5RnWtg5vNwwi%2B5CHS5%2BtSO4%3D\",\"type\":\"image/tiff; application=geotiff; profile=cloud-optimized\",\"title\":\"Aerosol optical thickness (AOT)\",\"proj:bbox\":[499980.0,590220.0,609780.0,700020.0],\"proj:shape\":[10980,10980],\"proj:transform\":[10.0,0.0,499980.0,0.0,-10.0,700020.0],\"gsd\":10.0,\"roles\":[\"data\"]},\"B01\":{\"href\":\"https://sentinel2l2a01.blob.core.windows.net/sentinel2-l2/30/N/WM/2018/12/26/S2B_MSIL2A_20181226T103439_N0212_R108_T30NWM_20201008T131549.SAFE/GRANULE/L2A_T30NWM_A009429_20181226T103914/IMG_DATA/R60m/T30NWM_20181226T103439_B01_60m.tif?st=2026-08-11T01%3A17%3A56Z&se=2026-08-12T02%3A02%3A56Z&sp=rl&sv=2025-07-05&sr=c&skoid=9c8ff44a-6a2c-4dfb-b298-1c9212f64d9a&sktid=72f988bf-86f1-41af-91ab-2d7cd011db47&skt=2026-08-12T01%3A07%3A44Z&ske=2026-08-19T01%3A07%3A44Z&sks=b&skv=2025-07-05&sig=B2YvTOLEb5cIB%2BAfkaHX5RnWtg5vNwwi%2B5CHS5%2BtSO4%3D\",\"type\":\"image/tiff; application=geotiff; profile=cloud-optimized\",\"title\":\"Band 1 - Coastal aerosol - 60m\",\"proj:bbox\":[499980.0,590220.0,609780.0,700020.0],\"proj:shape\":[1830,1830],\"proj:transform\":[60.0,0.0,499980.0,0.0,-60.0,700020.0],\"gsd\":60.0,\"eo:bands\":[{\"name\":\"B01\",\"common_name\":\"coastal\",\"description\":\"Band 1 - Coastal aerosol\",\"center_wavelength\":0.443,\"full_width_half_max\":0.027}],\"roles\":[\"data\"]},\"B02\":{\"href\":\"https://sentinel2l2a01.blob.core.windows.net/sentinel2-l2/30/N/WM/2018/12/26/S2B_MSIL2A_20181226T103439_N0212_R108_T30NWM_20201008T131549.SAFE/GRANULE/L2A_T30NWM_A009429_20181226T103914/IMG_DATA/R10m/T30NWM_20181226T103439_B02_10m.tif?st=2026-08-11T01%3A17%3A56Z&se=2026-08-12T02%3A02%3A56Z&sp=rl&sv=2025-07-05&sr=c&skoid=9c8ff44a-6a2c-4dfb-b298-1c9212f64d9a&sktid=72f988bf-86f1-41af-91ab-2d7cd011db47&skt=2026-08-12T01%3A07%3A44Z&ske=2026-08-19T01%3A07%3A44Z&sks=b&skv=2025-07-05&sig=B2YvTOLEb5cIB%2BAfkaHX5RnWtg5vNwwi%2B5CHS5%2BtSO4%3D\",\"type\":\"image/tiff; application=geotiff; profile=cloud-optimized\",\"title\":\"Band 2 - Blue - 10m\",\"proj:bbox\":[499980.0,590220.0,609780.0,700020.0],\"proj:shape\":[10980,10980],\"proj:transform\":[10.0,0.0,499980.0,0.0,-10.0,700020.0],\"gsd\":10.0,\"eo:bands\":[{\"name\":\"B02\",\"common_name\":\"blue\",\"description\":\"Band 2 - Blue\",\"center_wavelength\":0.49,\"full_width_half_max\":0.098}],\"roles\":[\"data\"]},\"B03\":{\"href\":\"https://sentinel2l2a01.blob.core.windows.net/sentinel2-l2/30/N/WM/2018/12/26/S2B_MSIL2A_20181226T103439_N0212_R108_T30NWM_20201008T131549.SAFE/GRANULE/L2A_T30NWM_A009429_20181226T103914/IMG_DATA/R10m/T30NWM_20181226T103439_B03_10m.tif?st=2026-08-11T01%3A17%3A56Z&se=2026-08-12T02%3A02%3A56Z&sp=rl&sv=2025-07-05&sr=c&skoid=9c8ff44a-6a2c-4dfb-b298-1c9212f64d9a&sktid=72f988bf-86f1-41af-91ab-2d7cd011db47&skt=2026-08-12T01%3A07%3A44Z&ske=2026-08-19T01%3A07%3A44Z&sks=b&skv=2025-07-05&sig=B2YvTOLEb5cIB%2BAfkaHX5RnWtg5vNwwi%2B5CHS5%2BtSO4%3D\",\"type\":\"image/tiff; application=geotiff; profile=cloud-optimized\",\"title\":\"Band 3 - Green - 10m\",\"proj:bbox\":[499980.0,590220.0,609780.0,700020.0],\"proj:shape\":[10980,10980],\"proj:transform\":[10.0,0.0,499980.0,0.0,-10.0,700020.0],\"gsd\":10.0,\"eo:bands\":[{\"name\":\"B03\",\"common_name\":\"green\",\"description\":\"Band 3 - Green\",\"center_wavelength\":0.56,\"full_width_half_max\":0.045}],\"roles\":[\"data\"]},\"B04\":{\"href\":\"https://sentinel2l2a01.blob.core.windows.net/sentinel2-l2/30/N/WM/2018/12/26/S2B_MSIL2A_20181226T103439_N0212_R108_T30NWM_20201008T131549.SAFE/GRANULE/L2A_T30NWM_A009429_20181226T103914/IMG_DATA/R10m/T30NWM_20181226T103439_B04_10m.tif?st=2026-08-11T01%3A17%3A56Z&se=2026-08-12T02%3A02%3A56Z&sp=rl&sv=2025-07-05&sr=c&skoid=9c8ff44a-6a2c-4dfb-b298-1c9212f64d9a&sktid=72f988bf-86f1-41af-91ab-2d7cd011db47&skt=2026-08-12T01%3A07%3A44Z&ske=2026-08-19T01%3A07%3A44Z&sks=b&skv=2025-07-05&sig=B2YvTOLEb5cIB%2BAfkaHX5RnWtg5vNwwi%2B5CHS5%2BtSO4%3D\",\"type\":\"image/tiff; application=geotiff; profile=cloud-optimized\",\"title\":\"Band 4 - Red - 10m\",\"proj:bbox\":[499980.0,590220.0,609780.0,700020.0],\"proj:shape\":[10980,10980],\"proj:transform\":[10.0,0.0,499980.0,0.0,-10.0,700020.0],\"gsd\":10.0,\"eo:bands\":[{\"name\":\"B04\",\"common_name\":\"red\",\"description\":\"Band 4 - Red\",\"center_wavelength\":0.665,\"full_width_half_max\":0.038}],\"roles\":[\"data\"]},\"B05\":{\"href\":\"https://sentinel2l2a01.blob.core.windows.net/sentinel2-l2/30/N/WM/2018/12/26/S2B_MSIL2A_20181226T103439_N0212_R108_T30NWM_20201008T131549.SAFE/GRANULE/L2A_T30NWM_A009429_20181226T103914/IMG_DATA/R20m/T30NWM_20181226T103439_B05_20m.tif?st=2026-08-11T01%3A17%3A56Z&se=2026-08-12T02%3A02%3A56Z&sp=rl&sv=2025-07-05&sr=c&skoid=9c8ff44a-6a2c-4dfb-b298-1c9212f64d9a&sktid=72f988bf-86f1-41af-91ab-2d7cd011db47&skt=2026-08-12T01%3A07%3A44Z&ske=2026-08-19T01%3A07%3A44Z&sks=b&skv=2025-07-05&sig=B2YvTOLEb5cIB%2BAfkaHX5RnWtg5vNwwi%2B5CHS5%2BtSO4%3D\",\"type\":\"image/tiff; application=geotiff; profile=cloud-optimized\",\"title\":\"Band 5 - Vegetation red edge 1 - 20m\",\"proj:bbox\":[499980.0,590220.0,609780.0,700020.0],\"proj:shape\":[5490,5490],\"proj:transform\":[20.0,0.0,499980.0,0.0,-20.0,700020.0],\"gsd\":20.0,\"eo:bands\":[{\"name\":\"B05\",\"common_name\":\"rededge\",\"description\":\"Band 5 - Vegetation red edge 1\",\"center_wavelength\":0.704,\"full_width_half_max\":0.019}],\"roles\":[\"data\"]},\"B06\":{\"href\":\"https://sentinel2l2a01.blob.core.windows.net/sentinel2-l2/30/N/WM/2018/12/26/S2B_MSIL2A_20181226T103439_N0212_R108_T30NWM_20201008T131549.SAFE/GRANULE/L2A_T30NWM_A009429_20181226T103914/IMG_DATA/R20m/T30NWM_20181226T103439_B06_20m.tif?st=2026-08-11T01%3A17%3A56Z&se=2026-08-12T02%3A02%3A56Z&sp=rl&sv=2025-07-05&sr=c&skoid=9c8ff44a-6a2c-4dfb-b298-1c9212f64d9a&sktid=72f988bf-86f1-41af-91ab-2d7cd011db47&skt=2026-08-12T01%3A07%3A44Z&ske=2026-08-19T01%3A07%3A44Z&sks=b&skv=2025-07-05&sig=B2YvTOLEb5cIB%2BAfkaHX5RnWtg5vNwwi%2B5CHS5%2BtSO4%3D\",\"type\":\"image/tiff; application=geotiff; profile=cloud-optimized\",\"title\":\"Band 6 - Vegetation red edge 2 - 20m\",\"proj:bbox\":[499980.0,590220.0,609780.0,700020.0],\"proj:shape\":[5490,5490],\"proj:transform\":[20.0,0.0,499980.0,0.0,-20.0,700020.0],\"gsd\":20.0,\"eo:bands\":[{\"name\":\"B06\",\"common_name\":\"rededge\",\"description\":\"Band 6 - Vegetation red edge 2\",\"center_wavelength\":0.74,\"full_width_half_max\":0.018}],\"roles\":[\"data\"]},\"B07\":{\"href\":\"https://sentinel2l2a01.blob.core.windows.net/sentinel2-l2/30/N/WM/2018/12/26/S2B_MSIL2A_20181226T103439_N0212_R108_T30NWM_20201008T131549.SAFE/GRANULE/L2A_T30NWM_A009429_20181226T103914/IMG_DATA/R20m/T30NWM_20181226T103439_B07_20m.tif?st=2026-08-11T01%3A17%3A56Z&se=2026-08-12T02%3A02%3A56Z&sp=rl&sv=2025-07-05&sr=c&skoid=9c8ff44a-6a2c-4dfb-b298-1c9212f64d9a&sktid=72f988bf-86f1-41af-91ab-2d7cd011db47&skt=2026-08-12T01%3A07%3A44Z&ske=2026-08-19T01%3A07%3A44Z&sks=b&skv=2025-07-05&sig=B2YvTOLEb5cIB%2BAfkaHX5RnWtg5vNwwi%2B5CHS5%2BtSO4%3D\",\"type\":\"image/tiff; application=geotiff; profile=cloud-optimized\",\"title\":\"Band 7 - Vegetation red edge 3 - 20m\",\"proj:bbox\":[499980.0,590220.0,609780.0,700020.0],\"proj:shape\":[5490,5490],\"proj:transform\":[20.0,0.0,499980.0,0.0,-20.0,700020.0],\"gsd\":20.0,\"eo:bands\":[{\"name\":\"B07\",\"common_name\":\"rededge\",\"description\":\"Band 7 - Vegetation red edge 3\",\"center_wavelength\":0.783,\"full_width_half_max\":0.028}],\"roles\":[\"data\"]},\"B08\":{\"href\":\"https://sentinel2l2a01.blob.core.windows.net/sentinel2-l2/30/N/WM/2018/12/26/S2B_MSIL2A_20181226T103439_N0212_R108_T30NWM_20201008T131549.SAFE/GRANULE/L2A_T30NWM_A009429_20181226T103914/IMG_DATA/R10m/T30NWM_20181226T103439_B08_10m.tif?st=2026-08-11T01%3A17%3A56Z&se=2026-08-12T02%3A02%3A56Z&sp=rl&sv=2025-07-05&sr=c&skoid=9c8ff44a-6a2c-4dfb-b298-1c9212f64d9a&sktid=72f988bf-86f1-41af-91ab-2d7cd011db47&skt=2026-08-12T01%3A07%3A44Z&ske=2026-08-19T01%3A07%3A44Z&sks=b&skv=2025-07-05&sig=B2YvTOLEb5cIB%2BAfkaHX5RnWtg5vNwwi%2B5CHS5%2BtSO4%3D\",\"type\":\"image/tiff; application=geotiff; profile=cloud-optimized\",\"title\":\"Band 8 - NIR - 10m\",\"proj:bbox\":[499980.0,590220.0,609780.0,700020.0],\"proj:shape\":[10980,10980],\"proj:transform\":[10.0,0.0,499980.0,0.0,-10.0,700020.0],\"gsd\":10.0,\"eo:bands\":[{\"name\":\"B08\",\"common_name\":\"nir\",\"description\":\"Band 8 - NIR\",\"center_wavelength\":0.842,\"full_width_half_max\":0.145}],\"roles\":[\"data\"]},\"B09\":{\"href\":\"https://sentinel2l2a01.blob.core.windows.net/sentinel2-l2/30/N/WM/2018/12/26/S2B_MSIL2A_20181226T103439_N0212_R108_T30NWM_20201008T131549.SAFE/GRANULE/L2A_T30NWM_A009429_20181226T103914/IMG_DATA/R60m/T30NWM_20181226T103439_B09_60m.tif?st=2026-08-11T01%3A17%3A56Z&se=2026-08-12T02%3A02%3A56Z&sp=rl&sv=2025-07-05&sr=c&skoid=9c8ff44a-6a2c-4dfb-b298-1c9212f64d9a&sktid=72f988bf-86f1-41af-91ab-2d7cd011db47&skt=2026-08-12T01%3A07%3A44Z&ske=2026-08-19T01%3A07%3A44Z&sks=b&skv=2025-07-05&sig=B2YvTOLEb5cIB%2BAfkaHX5RnWtg5vNwwi%2B5CHS5%2BtSO4%3D\",\"type\":\"image/tiff; application=geotiff; profile=cloud-optimized\",\"title\":\"Band 9 - Water vapor - 60m\",\"proj:bbox\":[499980.0,590220.0,609780.0,700020.0],\"proj:shape\":[1830,1830],\"proj:transform\":[60.0,0.0,499980.0,0.0,-60.0,700020.0],\"gsd\":60.0,\"eo:bands\":[{\"name\":\"B09\",\"description\":\"Band 9 - Water vapor\",\"center_wavelength\":0.945,\"full_width_half_max\":0.026}],\"roles\":[\"data\"]},\"B11\":{\"href\":\"https://sentinel2l2a01.blob.core.windows.net/sentinel2-l2/30/N/WM/2018/12/26/S2B_MSIL2A_20181226T103439_N0212_R108_T30NWM_20201008T131549.SAFE/GRANULE/L2A_T30NWM_A009429_20181226T103914/IMG_DATA/R20m/T30NWM_20181226T103439_B11_20m.tif?st=2026-08-11T01%3A17%3A56Z&se=2026-08-12T02%3A02%3A56Z&sp=rl&sv=2025-07-05&sr=c&skoid=9c8ff44a-6a2c-4dfb-b298-1c9212f64d9a&sktid=72f988bf-86f1-41af-91ab-2d7cd011db47&skt=2026-08-12T01%3A07%3A44Z&ske=2026-08-19T01%3A07%3A44Z&sks=b&skv=2025-07-05&sig=B2YvTOLEb5cIB%2BAfkaHX5RnWtg5vNwwi%2B5CHS5%2BtSO4%3D\",\"type\":\"image/tiff; application=geotiff; profile=cloud-optimized\",\"title\":\"Band 11 - SWIR (1.6) - 20m\",\"proj:bbox\":[499980.0,590220.0,609780.0,700020.0],\"proj:shape\":[5490,5490],\"proj:transform\":[20.0,0.0,499980.0,0.0,-20.0,700020.0],\"gsd\":20.0,\"eo:bands\":[{\"name\":\"B11\",\"common_name\":\"swir16\",\"description\":\"Band 11 - SWIR (1.6)\",\"center_wavelength\":1.61,\"full_width_half_max\":0.143}],\"roles\":[\"data\"]},\"B12\":{\"href\":\"https://sentinel2l2a01.blob.core.windows.net/sentinel2-l2/30/N/WM/2018/12/26/S2B_MSIL2A_20181226T103439_N0212_R108_T30NWM_20201008T131549.SAFE/GRANULE/L2A_T30NWM_A009429_20181226T103914/IMG_DATA/R20m/T30NWM_20181226T103439_B12_20m.tif?st=2026-08-11T01%3A17%3A56Z&se=2026-08-12T02%3A02%3A56Z&sp=rl&sv=2025-07-05&sr=c&skoid=9c8ff44a-6a2c-4dfb-b298-1c9212f64d9a&sktid=72f988bf-86f1-41af-91ab-2d7cd011db47&skt=2026-08-12T01%3A07%3A44Z&ske=2026-08-19T01%3A07%3A44Z&sks=b&skv=2025-07-05&sig=B2YvTOLEb5cIB%2BAfkaHX5RnWtg5vNwwi%2B5CHS5%2BtSO4%3D\",\"type\":\"image/tiff; application=geotiff; profile=cloud-optimized\",\"title\":\"Band 12 - SWIR (2.2) - 20m\",\"proj:bbox\":[499980.0,590220.0,609780.0,700020.0],\"proj:shape\":[5490,5490],\"proj:transform\":[20.0,0.0,499980.0,0.0,-20.0,700020.0],\"gsd\":20.0,\"eo:bands\":[{\"name\":\"B12\",\"common_name\":\"swir22\",\"description\":\"Band 12 - SWIR (2.2)\",\"center_wavelength\":2.19,\"full_width_half_max\":0.242}],\"roles\":[\"data\"]},\"B8A\":{\"href\":\"https://sentinel2l2a01.blob.core.windows.net/sentinel2-l2/30/N/WM/2018/12/26/S2B_MSIL2A_20181226T103439_N0212_R108_T30NWM_20201008T131549.SAFE/GRANULE/L2A_T30NWM_A009429_20181226T103914/IMG_DATA/R20m/T30NWM_20181226T103439_B8A_20m.tif?st=2026-08-11T01%3A17%3A56Z&se=2026-08-12T02%3A02%3A56Z&sp=rl&sv=2025-07-05&sr=c&skoid=9c8ff44a-6a2c-4dfb-b298-1c9212f64d9a&sktid=72f988bf-86f1-41af-91ab-2d7cd011db47&skt=2026-08-12T01%3A07%3A44Z&ske=2026-08-19T01%3A07%3A44Z&sks=b&skv=2025-07-05&sig=B2YvTOLEb5cIB%2BAfkaHX5RnWtg5vNwwi%2B5CHS5%2BtSO4%3D\",\"type\":\"image/tiff; application=geotiff; profile=cloud-optimized\",\"title\":\"Band 8A - Vegetation red edge 4 - 20m\",\"proj:bbox\":[499980.0,590220.0,609780.0,700020.0],\"proj:shape\":[5490,5490],\"proj:transform\":[20.0,0.0,499980.0,0.0,-20.0,700020.0],\"gsd\":20.0,\"eo:bands\":[{\"name\":\"B8A\",\"common_name\":\"rededge\",\"description\":\"Band 8A - Vegetation red edge 4\",\"center_wavelength\":0.865,\"full_width_half_max\":0.033}],\"roles\":[\"data\"]},\"SCL\":{\"href\":\"https://sentinel2l2a01.blob.core.windows.net/sentinel2-l2/30/N/WM/2018/12/26/S2B_MSIL2A_20181226T103439_N0212_R108_T30NWM_20201008T131549.SAFE/GRANULE/L2A_T30NWM_A009429_20181226T103914/IMG_DATA/R20m/T30NWM_20181226T103439_SCL_20m.tif?st=2026-08-11T01%3A17%3A56Z&se=2026-08-12T02%3A02%3A56Z&sp=rl&sv=2025-07-05&sr=c&skoid=9c8ff44a-6a2c-4dfb-b298-1c9212f64d9a&sktid=72f988bf-86f1-41af-91ab-2d7cd011db47&skt=2026-08-12T01%3A07%3A44Z&ske=2026-08-19T01%3A07%3A44Z&sks=b&skv=2025-07-05&sig=B2YvTOLEb5cIB%2BAfkaHX5RnWtg5vNwwi%2B5CHS5%2BtSO4%3D\",\"type\":\"image/tiff; application=geotiff; profile=cloud-optimized\",\"title\":\"Scene classfication map (SCL)\",\"proj:bbox\":[499980.0,590220.0,609780.0,700020.0],\"proj:shape\":[5490,5490],\"proj:transform\":[20.0,0.0,499980.0,0.0,-20.0,700020.0],\"gsd\":20.0,\"roles\":[\"data\"]},\"WVP\":{\"href\":\"https://sentinel2l2a01.blob.core.windows.net/sentinel2-l2/30/N/WM/2018/12/26/S2B_MSIL2A_20181226T103439_N0212_R108_T30NWM_20201008T131549.SAFE/GRANULE/L2A_T30NWM_A009429_20181226T103914/IMG_DATA/R10m/T30NWM_20181226T103439_WVP_10m.tif?st=2026-08-11T01%3A17%3A56Z&se=2026-08-12T02%3A02%3A56Z&sp=rl&sv=2025-07-05&sr=c&skoid=9c8ff44a-6a2c-4dfb-b298-1c9212f64d9a&sktid=72f988bf-86f1-41af-91ab-2d7cd011db47&skt=2026-08-12T01%3A07%3A44Z&ske=2026-08-19T01%3A07%3A44Z&sks=b&skv=2025-07-05&sig=B2YvTOLEb5cIB%2BAfkaHX5RnWtg5vNwwi%2B5CHS5%2BtSO4%3D\",\"type\":\"image/tiff; application=geotiff; profile=cloud-optimized\",\"title\":\"Water vapour (WVP)\",\"proj:bbox\":[499980.0,590220.0,609780.0,700020.0],\"proj:shape\":[10980,10980],\"proj:transform\":[10.0,0.0,499980.0,0.0,-10.0,700020.0],\"gsd\":10.0,\"roles\":[\"data\"]},\"visual\":{\"href\":\"https://sentinel2l2a01.blob.core.windows.net/sentinel2-l2/30/N/WM/2018/12/26/S2B_MSIL2A_20181226T103439_N0212_R108_T30NWM_20201008T131549.SAFE/GRANULE/L2A_T30NWM_A009429_20181226T103914/IMG_DATA/R10m/T30NWM_20181226T103439_TCI_10m.tif?st=2026-08-11T01%3A17%3A56Z&se=2026-08-12T02%3A02%3A56Z&sp=rl&sv=2025-07-05&sr=c&skoid=9c8ff44a-6a2c-4dfb-b298-1c9212f64d9a&sktid=72f988bf-86f1-41af-91ab-2d7cd011db47&skt=2026-08-12T01%3A07%3A44Z&ske=2026-08-19T01%3A07%3A44Z&sks=b&skv=2025-07-05&sig=B2YvTOLEb5cIB%2BAfkaHX5RnWtg5vNwwi%2B5CHS5%2BtSO4%3D\",\"type\":\"image/tiff; application=geotiff; profile=cloud-optimized\",\"title\":\"True color image\",\"proj:bbox\":[499980.0,590220.0,609780.0,700020.0],\"proj:shape\":[10980,10980],\"proj:transform\":[10.0,0.0,499980.0,0.0,-10.0,700020.0],\"gsd\":10.0,\"eo:bands\":[{\"name\":\"B04\",\"common_name\":\"red\",\"description\":\"Band 4 - Red\",\"center_wavelength\":0.665,\"full_width_half_max\":0.038},{\"name\":\"B03\",\"common_name\":\"green\",\"description\":\"Band 3 - Green\",\"center_wavelength\":0.56,\"full_width_half_max\":0.045},{\"name\":\"B02\",\"common_name\":\"blue\",\"description\":\"Band 2 - Blue\",\"center_wavelength\":0.49,\"full_width_half_max\":0.098}],\"roles\":[\"data\"]},\"preview\":{\"href\":\"https://sentinel2l2a01.blob.core.windows.net/sentinel2-l2/30/N/WM/2018/12/26/S2B_MSIL2A_20181226T103439_N0212_R108_T30NWM_20201008T131549.SAFE/GRANULE/L2A_T30NWM_A009429_20181226T103914/QI_DATA/T30NWM_20181226T103439_PVI.tif?st=2026-08-11T01%3A17%3A56Z&se=2026-08-12T02%3A02%3A56Z&sp=rl&sv=2025-07-05&sr=c&skoid=9c8ff44a-6a2c-4dfb-b298-1c9212f64d9a&sktid=72f988bf-86f1-41af-91ab-2d7cd011db47&skt=2026-08-12T01%3A07%3A44Z&ske=2026-08-19T01%3A07%3A44Z&sks=b&skv=2025-07-05&sig=B2YvTOLEb5cIB%2BAfkaHX5RnWtg5vNwwi%2B5CHS5%2BtSO4%3D\",\"type\":\"image/tiff; application=geotiff; profile=cloud-optimized\",\"title\":\"Thumbnail\",\"roles\":[\"thumbnail\"]},\"safe-manifest\":{\"href\":\"https://sentinel2l2a01.blob.core.windows.net/sentinel2-l2/30/N/WM/2018/12/26/S2B_MSIL2A_20181226T103439_N0212_R108_T30NWM_20201008T131549.SAFE/manifest.safe?st=2026-08-11T01%3A17%3A56Z&se=2026-08-12T02%3A02%3A56Z&sp=rl&sv=2025-07-05&sr=c&skoid=9c8ff44a-6a2c-4dfb-b298-1c9212f64d9a&sktid=72f988bf-86f1-41af-91ab-2d7cd011db47&skt=2026-08-12T01%3A07%3A44Z&ske=2026-08-19T01%3A07%3A44Z&sks=b&skv=2025-07-05&sig=B2YvTOLEb5cIB%2BAfkaHX5RnWtg5vNwwi%2B5CHS5%2BtSO4%3D\",\"type\":\"application/xml\",\"title\":\"SAFE manifest\",\"roles\":[\"metadata\"]},\"granule-metadata\":{\"href\":\"https://sentinel2l2a01.blob.core.windows.net/sentinel2-l2/30/N/WM/2018/12/26/S2B_MSIL2A_20181226T103439_N0212_R108_T30NWM_20201008T131549.SAFE/GRANULE/L2A_T30NWM_A009429_20181226T103914/MTD_TL.xml?st=2026-08-11T01%3A17%3A56Z&se=2026-08-12T02%3A02%3A56Z&sp=rl&sv=2025-07-05&sr=c&skoid=9c8ff44a-6a2c-4dfb-b298-1c9212f64d9a&sktid=72f988bf-86f1-41af-91ab-2d7cd011db47&skt=2026-08-12T01%3A07%3A44Z&ske=2026-08-19T01%3A07%3A44Z&sks=b&skv=2025-07-05&sig=B2YvTOLEb5cIB%2BAfkaHX5RnWtg5vNwwi%2B5CHS5%2BtSO4%3D\",\"type\":\"application/xml\",\"title\":\"Granule metadata\",\"roles\":[\"metadata\"]},\"inspire-metadata\":{\"href\":\"https://sentinel2l2a01.blob.core.windows.net/sentinel2-l2/30/N/WM/2018/12/26/S2B_MSIL2A_20181226T103439_N0212_R108_T30NWM_20201008T131549.SAFE/INSPIRE.xml?st=2026-08-11T01%3A17%3A56Z&se=2026-08-12T02%3A02%3A56Z&sp=rl&sv=2025-07-05&sr=c&skoid=9c8ff44a-6a2c-4dfb-b298-1c9212f64d9a&sktid=72f988bf-86f1-41af-91ab-2d7cd011db47&skt=2026-08-12T01%3A07%3A44Z&ske=2026-08-19T01%3A07%3A44Z&sks=b&skv=2025-07-05&sig=B2YvTOLEb5cIB%2BAfkaHX5RnWtg5vNwwi%2B5CHS5%2BtSO4%3D\",\"type\":\"application/xml\",\"title\":\"INSPIRE metadata\",\"roles\":[\"metadata\"]},\"product-metadata\":{\"href\":\"https://sentinel2l2a01.blob.core.windows.net/sentinel2-l2/30/N/WM/2018/12/26/S2B_MSIL2A_20181226T103439_N0212_R108_T30NWM_20201008T131549.SAFE/MTD_MSIL2A.xml?st=2026-08-11T01%3A17%3A56Z&se=2026-08-12T02%3A02%3A56Z&sp=rl&sv=2025-07-05&sr=c&skoid=9c8ff44a-6a2c-4dfb-b298-1c9212f64d9a&sktid=72f988bf-86f1-41af-91ab-2d7cd011db47&skt=2026-08-12T01%3A07%3A44Z&ske=2026-08-19T01%3A07%3A44Z&sks=b&skv=2025-07-05&sig=B2YvTOLEb5cIB%2BAfkaHX5RnWtg5vNwwi%2B5CHS5%2BtSO4%3D\",\"type\":\"application/xml\",\"title\":\"Product metadata\",\"roles\":[\"metadata\"]},\"datastrip-metadata\":{\"href\":\"https://sentinel2l2a01.blob.core.windows.net/sentinel2-l2/30/N/WM/2018/12/26/S2B_MSIL2A_20181226T103439_N0212_R108_T30NWM_20201008T131549.SAFE/DATASTRIP/DS_ESRI_20201008T131551_S20181226T103914/MTD_DS.xml?st=2026-08-11T01%3A17%3A56Z&se=2026-08-12T02%3A02%3A56Z&sp=rl&sv=2025-07-05&sr=c&skoid=9c8ff44a-6a2c-4dfb-b298-1c9212f64d9a&sktid=72f988bf-86f1-41af-91ab-2d7cd011db47&skt=2026-08-12T01%3A07%3A44Z&ske=2026-08-19T01%3A07%3A44Z&sks=b&skv=2025-07-05&sig=B2YvTOLEb5cIB%2BAfkaHX5RnWtg5vNwwi%2B5CHS5%2BtSO4%3D\",\"type\":\"application/xml\",\"title\":\"Datastrip metadata\",\"roles\":[\"metadata\"]},\"tilejson\":{\"href\":\"https://planetarycomputer.microsoft.com/api/data/v1/item/tilejson.json?collection=sentinel-2-l2a&item=S2B_MSIL2A_20181226T103439_R108_T30NWM_20201008T131549&assets=visual&asset_bidx=visual%7C1%2C2%2C3&nodata=0&format=png\",\"type\":\"application/json\",\"title\":\"TileJSON with default rendering\",\"roles\":[\"tiles\"]},\"rendered_preview\":{\"href\":\"https://planetarycomputer.microsoft.com/api/data/v1/item/preview.png?collection=sentinel-2-l2a&item=S2B_MSIL2A_20181226T103439_R108_T30NWM_20201008T131549&assets=visual&asset_bidx=visual%7C1%2C2%2C3&nodata=0&format=png\",\"type\":\"image/png\",\"title\":\"Rendered preview\",\"rel\":\"preview\",\"roles\":[\"overview\"]}},\"collection\":\"sentinel-2-l2a\"}],\"metadata\":{\"description\":\"Sentinel-2 L2A Scene Classification Layer (Sen2Cor)\"}}",
+          "coordinates": "var_order"
         },
         "zarr_format": 3,
         "consolidated_metadata": {
@@ -96,84 +62,8 @@
       },
       "sentinel_2_l2a": {
         "attributes": {
-          "has_band": true,
-          "tag": "{\"datetime\":[\"2018-12-26T10:34:39.024000\",\"2018-12-26T10:34:39.024000\"],\"metadata\":{\"description\":\"Sentinel-2 L2A surface reflectance (12 bands)\"},\"plot_meta\":{\"rgb_bands\":[\"B04\",\"B03\",\"B02\"]}}",
-          "var_order": [
-            "B01",
-            "B02",
-            "B03",
-            "B04",
-            "B05",
-            "B06",
-            "B07",
-            "B08",
-            "B8A",
-            "B09",
-            "B11",
-            "B12"
-          ],
-          "dim_order": {
-            "B01": [
-              "time",
-              "y",
-              "x"
-            ],
-            "B02": [
-              "time",
-              "y",
-              "x"
-            ],
-            "B03": [
-              "time",
-              "y",
-              "x"
-            ],
-            "B04": [
-              "time",
-              "y",
-              "x"
-            ],
-            "B05": [
-              "time",
-              "y",
-              "x"
-            ],
-            "B06": [
-              "time",
-              "y",
-              "x"
-            ],
-            "B07": [
-              "time",
-              "y",
-              "x"
-            ],
-            "B08": [
-              "time",
-              "y",
-              "x"
-            ],
-            "B8A": [
-              "time",
-              "y",
-              "x"
-            ],
-            "B09": [
-              "time",
-              "y",
-              "x"
-            ],
-            "B11": [
-              "time",
-              "y",
-              "x"
-            ],
-            "B12": [
-              "time",
-              "y",
-              "x"
-            ]
-          }
+          "tag": "{\"datetime\":[\"2018-12-26T10:34:39.024000\",\"2018-12-26T10:34:39.024000\"],\"rgb_bands\":[\"B04\",\"B03\",\"B02\"],\"stac\":[{\"type\":\"Feature\",\"stac_version\":\"1.1.0\",\"stac_extensions\":[\"https://stac-extensions.github.io/eo/v1.1.0/schema.json\",\"https://stac-extensions.github.io/sat/v1.0.0/schema.json\",\"https://stac-extensions.github.io/projection/v2.0.0/schema.json\"],\"id\":\"S2B_MSIL2A_20181226T103439_R108_T30NWM_20201008T131549\",\"geometry\":{\"type\":\"Polygon\",\"coordinates\":[[[-2.5195312,6.3325828],[-2.5367432,6.2556941],[-2.5700073,6.1071494],[-2.6035461,5.95870013],[-2.6365051,5.81009742],[-2.6696167,5.6615693],[-2.7026672,5.5130452],[-2.7359924,5.36454565],[-2.7415771,5.33954199],[-3.000183,5.33975051],[-3.000183,6.33304217],[-2.5195312,6.3325828]]]},\"bbox\":[-3.000183,5.33954198577784,-2.5195312,6.33304216622498],\"properties\":{\"datetime\":\"2018-12-26T10:34:39.024000Z\",\"platform\":\"Sentinel-2B\",\"instruments\":[\"msi\"],\"s2:mgrs_tile\":\"30NWM\",\"constellation\":\"Sentinel 2\",\"s2:granule_id\":\"S2B_OPER_MSI_L2A_TL_ESRI_20201008T131551_A009429_T30NWM_N02.12\",\"eo:cloud_cover\":0.010984,\"s2:datatake_id\":\"GS2B_20181226T103439_009429_N02.12\",\"s2:product_uri\":\"S2B_MSIL2A_20181226T103439_N0212_R108_T30NWM_20201008T131549.SAFE\",\"s2:datastrip_id\":\"S2B_OPER_MSI_L2A_DS_ESRI_20201008T131551_S20181226T103914_N02.12\",\"s2:product_type\":\"S2MSI2A\",\"sat:orbit_state\":\"descending\",\"s2:datatake_type\":\"INS-NOBS\",\"s2:generation_time\":\"2020-10-08T13:15:49.296Z\",\"sat:relative_orbit\":108,\"s2:water_percentage\":0.0,\"s2:mean_solar_zenith\":35.2734778974181,\"s2:mean_solar_azimuth\":146.573255212166,\"s2:processing_baseline\":\"02.12\",\"s2:snow_ice_percentage\":0.0,\"s2:vegetation_percentage\":41.13369,\"s2:thin_cirrus_percentage\":0.0,\"s2:cloud_shadow_percentage\":0.0,\"s2:nodata_pixel_percentage\":62.726372,\"s2:unclassified_percentage\":58.049142,\"s2:dark_features_percentage\":0.0,\"s2:not_vegetated_percentage\":0.806182,\"s2:degraded_msi_data_percentage\":0.0,\"s2:high_proba_clouds_percentage\":0.0,\"s2:reflectance_conversion_factor\":1.03358930864898,\"s2:medium_proba_clouds_percentage\":0.010984,\"s2:saturated_defective_pixel_percentage\":0.0,\"proj:code\":\"EPSG:32630\"},\"links\":[{\"rel\":\"collection\",\"href\":\"https://planetarycomputer.microsoft.com/api/stac/v1/collections/sentinel-2-l2a\",\"type\":\"application/json\"},{\"rel\":\"parent\",\"href\":\"https://planetarycomputer.microsoft.com/api/stac/v1/collections/sentinel-2-l2a\",\"type\":\"application/json\"},{\"rel\":\"root\",\"href\":\"https://planetarycomputer.microsoft.com/api/stac/v1/\",\"type\":\"application/json\",\"title\":\"Microsoft Planetary Computer STAC API\"},{\"rel\":\"self\",\"href\":\"https://planetarycomputer.microsoft.com/api/stac/v1/collections/sentinel-2-l2a/items/S2B_MSIL2A_20181226T103439_R108_T30NWM_20201008T131549\",\"type\":\"application/geo+json\"},{\"rel\":\"license\",\"href\":\"https://sentinel.esa.int/documents/247904/690755/Sentinel_Data_Legal_Notice\"},{\"rel\":\"preview\",\"href\":\"https://planetarycomputer.microsoft.com/api/data/v1/item/map?collection=sentinel-2-l2a&item=S2B_MSIL2A_20181226T103439_R108_T30NWM_20201008T131549\",\"type\":\"text/html\",\"title\":\"Map of item\"}],\"assets\":{\"AOT\":{\"href\":\"https://sentinel2l2a01.blob.core.windows.net/sentinel2-l2/30/N/WM/2018/12/26/S2B_MSIL2A_20181226T103439_N0212_R108_T30NWM_20201008T131549.SAFE/GRANULE/L2A_T30NWM_A009429_20181226T103914/IMG_DATA/R10m/T30NWM_20181226T103439_AOT_10m.tif?st=2026-08-11T01%3A17%3A56Z&se=2026-08-12T02%3A02%3A56Z&sp=rl&sv=2025-07-05&sr=c&skoid=9c8ff44a-6a2c-4dfb-b298-1c9212f64d9a&sktid=72f988bf-86f1-41af-91ab-2d7cd011db47&skt=2026-08-12T01%3A07%3A44Z&ske=2026-08-19T01%3A07%3A44Z&sks=b&skv=2025-07-05&sig=B2YvTOLEb5cIB%2BAfkaHX5RnWtg5vNwwi%2B5CHS5%2BtSO4%3D\",\"type\":\"image/tiff; application=geotiff; profile=cloud-optimized\",\"title\":\"Aerosol optical thickness (AOT)\",\"proj:bbox\":[499980.0,590220.0,609780.0,700020.0],\"proj:shape\":[10980,10980],\"proj:transform\":[10.0,0.0,499980.0,0.0,-10.0,700020.0],\"gsd\":10.0,\"roles\":[\"data\"]},\"B01\":{\"href\":\"https://sentinel2l2a01.blob.core.windows.net/sentinel2-l2/30/N/WM/2018/12/26/S2B_MSIL2A_20181226T103439_N0212_R108_T30NWM_20201008T131549.SAFE/GRANULE/L2A_T30NWM_A009429_20181226T103914/IMG_DATA/R60m/T30NWM_20181226T103439_B01_60m.tif?st=2026-08-11T01%3A17%3A56Z&se=2026-08-12T02%3A02%3A56Z&sp=rl&sv=2025-07-05&sr=c&skoid=9c8ff44a-6a2c-4dfb-b298-1c9212f64d9a&sktid=72f988bf-86f1-41af-91ab-2d7cd011db47&skt=2026-08-12T01%3A07%3A44Z&ske=2026-08-19T01%3A07%3A44Z&sks=b&skv=2025-07-05&sig=B2YvTOLEb5cIB%2BAfkaHX5RnWtg5vNwwi%2B5CHS5%2BtSO4%3D\",\"type\":\"image/tiff; application=geotiff; profile=cloud-optimized\",\"title\":\"Band 1 - Coastal aerosol - 60m\",\"proj:bbox\":[499980.0,590220.0,609780.0,700020.0],\"proj:shape\":[1830,1830],\"proj:transform\":[60.0,0.0,499980.0,0.0,-60.0,700020.0],\"gsd\":60.0,\"eo:bands\":[{\"name\":\"B01\",\"common_name\":\"coastal\",\"description\":\"Band 1 - Coastal aerosol\",\"center_wavelength\":0.443,\"full_width_half_max\":0.027}],\"roles\":[\"data\"]},\"B02\":{\"href\":\"https://sentinel2l2a01.blob.core.windows.net/sentinel2-l2/30/N/WM/2018/12/26/S2B_MSIL2A_20181226T103439_N0212_R108_T30NWM_20201008T131549.SAFE/GRANULE/L2A_T30NWM_A009429_20181226T103914/IMG_DATA/R10m/T30NWM_20181226T103439_B02_10m.tif?st=2026-08-11T01%3A17%3A56Z&se=2026-08-12T02%3A02%3A56Z&sp=rl&sv=2025-07-05&sr=c&skoid=9c8ff44a-6a2c-4dfb-b298-1c9212f64d9a&sktid=72f988bf-86f1-41af-91ab-2d7cd011db47&skt=2026-08-12T01%3A07%3A44Z&ske=2026-08-19T01%3A07%3A44Z&sks=b&skv=2025-07-05&sig=B2YvTOLEb5cIB%2BAfkaHX5RnWtg5vNwwi%2B5CHS5%2BtSO4%3D\",\"type\":\"image/tiff; application=geotiff; profile=cloud-optimized\",\"title\":\"Band 2 - Blue - 10m\",\"proj:bbox\":[499980.0,590220.0,609780.0,700020.0],\"proj:shape\":[10980,10980],\"proj:transform\":[10.0,0.0,499980.0,0.0,-10.0,700020.0],\"gsd\":10.0,\"eo:bands\":[{\"name\":\"B02\",\"common_name\":\"blue\",\"description\":\"Band 2 - Blue\",\"center_wavelength\":0.49,\"full_width_half_max\":0.098}],\"roles\":[\"data\"]},\"B03\":{\"href\":\"https://sentinel2l2a01.blob.core.windows.net/sentinel2-l2/30/N/WM/2018/12/26/S2B_MSIL2A_20181226T103439_N0212_R108_T30NWM_20201008T131549.SAFE/GRANULE/L2A_T30NWM_A009429_20181226T103914/IMG_DATA/R10m/T30NWM_20181226T103439_B03_10m.tif?st=2026-08-11T01%3A17%3A56Z&se=2026-08-12T02%3A02%3A56Z&sp=rl&sv=2025-07-05&sr=c&skoid=9c8ff44a-6a2c-4dfb-b298-1c9212f64d9a&sktid=72f988bf-86f1-41af-91ab-2d7cd011db47&skt=2026-08-12T01%3A07%3A44Z&ske=2026-08-19T01%3A07%3A44Z&sks=b&skv=2025-07-05&sig=B2YvTOLEb5cIB%2BAfkaHX5RnWtg5vNwwi%2B5CHS5%2BtSO4%3D\",\"type\":\"image/tiff; application=geotiff; profile=cloud-optimized\",\"title\":\"Band 3 - Green - 10m\",\"proj:bbox\":[499980.0,590220.0,609780.0,700020.0],\"proj:shape\":[10980,10980],\"proj:transform\":[10.0,0.0,499980.0,0.0,-10.0,700020.0],\"gsd\":10.0,\"eo:bands\":[{\"name\":\"B03\",\"common_name\":\"green\",\"description\":\"Band 3 - Green\",\"center_wavelength\":0.56,\"full_width_half_max\":0.045}],\"roles\":[\"data\"]},\"B04\":{\"href\":\"https://sentinel2l2a01.blob.core.windows.net/sentinel2-l2/30/N/WM/2018/12/26/S2B_MSIL2A_20181226T103439_N0212_R108_T30NWM_20201008T131549.SAFE/GRANULE/L2A_T30NWM_A009429_20181226T103914/IMG_DATA/R10m/T30NWM_20181226T103439_B04_10m.tif?st=2026-08-11T01%3A17%3A56Z&se=2026-08-12T02%3A02%3A56Z&sp=rl&sv=2025-07-05&sr=c&skoid=9c8ff44a-6a2c-4dfb-b298-1c9212f64d9a&sktid=72f988bf-86f1-41af-91ab-2d7cd011db47&skt=2026-08-12T01%3A07%3A44Z&ske=2026-08-19T01%3A07%3A44Z&sks=b&skv=2025-07-05&sig=B2YvTOLEb5cIB%2BAfkaHX5RnWtg5vNwwi%2B5CHS5%2BtSO4%3D\",\"type\":\"image/tiff; application=geotiff; profile=cloud-optimized\",\"title\":\"Band 4 - Red - 10m\",\"proj:bbox\":[499980.0,590220.0,609780.0,700020.0],\"proj:shape\":[10980,10980],\"proj:transform\":[10.0,0.0,499980.0,0.0,-10.0,700020.0],\"gsd\":10.0,\"eo:bands\":[{\"name\":\"B04\",\"common_name\":\"red\",\"description\":\"Band 4 - Red\",\"center_wavelength\":0.665,\"full_width_half_max\":0.038}],\"roles\":[\"data\"]},\"B05\":{\"href\":\"https://sentinel2l2a01.blob.core.windows.net/sentinel2-l2/30/N/WM/2018/12/26/S2B_MSIL2A_20181226T103439_N0212_R108_T30NWM_20201008T131549.SAFE/GRANULE/L2A_T30NWM_A009429_20181226T103914/IMG_DATA/R20m/T30NWM_20181226T103439_B05_20m.tif?st=2026-08-11T01%3A17%3A56Z&se=2026-08-12T02%3A02%3A56Z&sp=rl&sv=2025-07-05&sr=c&skoid=9c8ff44a-6a2c-4dfb-b298-1c9212f64d9a&sktid=72f988bf-86f1-41af-91ab-2d7cd011db47&skt=2026-08-12T01%3A07%3A44Z&ske=2026-08-19T01%3A07%3A44Z&sks=b&skv=2025-07-05&sig=B2YvTOLEb5cIB%2BAfkaHX5RnWtg5vNwwi%2B5CHS5%2BtSO4%3D\",\"type\":\"image/tiff; application=geotiff; profile=cloud-optimized\",\"title\":\"Band 5 - Vegetation red edge 1 - 20m\",\"proj:bbox\":[499980.0,590220.0,609780.0,700020.0],\"proj:shape\":[5490,5490],\"proj:transform\":[20.0,0.0,499980.0,0.0,-20.0,700020.0],\"gsd\":20.0,\"eo:bands\":[{\"name\":\"B05\",\"common_name\":\"rededge\",\"description\":\"Band 5 - Vegetation red edge 1\",\"center_wavelength\":0.704,\"full_width_half_max\":0.019}],\"roles\":[\"data\"]},\"B06\":{\"href\":\"https://sentinel2l2a01.blob.core.windows.net/sentinel2-l2/30/N/WM/2018/12/26/S2B_MSIL2A_20181226T103439_N0212_R108_T30NWM_20201008T131549.SAFE/GRANULE/L2A_T30NWM_A009429_20181226T103914/IMG_DATA/R20m/T30NWM_20181226T103439_B06_20m.tif?st=2026-08-11T01%3A17%3A56Z&se=2026-08-12T02%3A02%3A56Z&sp=rl&sv=2025-07-05&sr=c&skoid=9c8ff44a-6a2c-4dfb-b298-1c9212f64d9a&sktid=72f988bf-86f1-41af-91ab-2d7cd011db47&skt=2026-08-12T01%3A07%3A44Z&ske=2026-08-19T01%3A07%3A44Z&sks=b&skv=2025-07-05&sig=B2YvTOLEb5cIB%2BAfkaHX5RnWtg5vNwwi%2B5CHS5%2BtSO4%3D\",\"type\":\"image/tiff; application=geotiff; profile=cloud-optimized\",\"title\":\"Band 6 - Vegetation red edge 2 - 20m\",\"proj:bbox\":[499980.0,590220.0,609780.0,700020.0],\"proj:shape\":[5490,5490],\"proj:transform\":[20.0,0.0,499980.0,0.0,-20.0,700020.0],\"gsd\":20.0,\"eo:bands\":[{\"name\":\"B06\",\"common_name\":\"rededge\",\"description\":\"Band 6 - Vegetation red edge 2\",\"center_wavelength\":0.74,\"full_width_half_max\":0.018}],\"roles\":[\"data\"]},\"B07\":{\"href\":\"https://sentinel2l2a01.blob.core.windows.net/sentinel2-l2/30/N/WM/2018/12/26/S2B_MSIL2A_20181226T103439_N0212_R108_T30NWM_20201008T131549.SAFE/GRANULE/L2A_T30NWM_A009429_20181226T103914/IMG_DATA/R20m/T30NWM_20181226T103439_B07_20m.tif?st=2026-08-11T01%3A17%3A56Z&se=2026-08-12T02%3A02%3A56Z&sp=rl&sv=2025-07-05&sr=c&skoid=9c8ff44a-6a2c-4dfb-b298-1c9212f64d9a&sktid=72f988bf-86f1-41af-91ab-2d7cd011db47&skt=2026-08-12T01%3A07%3A44Z&ske=2026-08-19T01%3A07%3A44Z&sks=b&skv=2025-07-05&sig=B2YvTOLEb5cIB%2BAfkaHX5RnWtg5vNwwi%2B5CHS5%2BtSO4%3D\",\"type\":\"image/tiff; application=geotiff; profile=cloud-optimized\",\"title\":\"Band 7 - Vegetation red edge 3 - 20m\",\"proj:bbox\":[499980.0,590220.0,609780.0,700020.0],\"proj:shape\":[5490,5490],\"proj:transform\":[20.0,0.0,499980.0,0.0,-20.0,700020.0],\"gsd\":20.0,\"eo:bands\":[{\"name\":\"B07\",\"common_name\":\"rededge\",\"description\":\"Band 7 - Vegetation red edge 3\",\"center_wavelength\":0.783,\"full_width_half_max\":0.028}],\"roles\":[\"data\"]},\"B08\":{\"href\":\"https://sentinel2l2a01.blob.core.windows.net/sentinel2-l2/30/N/WM/2018/12/26/S2B_MSIL2A_20181226T103439_N0212_R108_T30NWM_20201008T131549.SAFE/GRANULE/L2A_T30NWM_A009429_20181226T103914/IMG_DATA/R10m/T30NWM_20181226T103439_B08_10m.tif?st=2026-08-11T01%3A17%3A56Z&se=2026-08-12T02%3A02%3A56Z&sp=rl&sv=2025-07-05&sr=c&skoid=9c8ff44a-6a2c-4dfb-b298-1c9212f64d9a&sktid=72f988bf-86f1-41af-91ab-2d7cd011db47&skt=2026-08-12T01%3A07%3A44Z&ske=2026-08-19T01%3A07%3A44Z&sks=b&skv=2025-07-05&sig=B2YvTOLEb5cIB%2BAfkaHX5RnWtg5vNwwi%2B5CHS5%2BtSO4%3D\",\"type\":\"image/tiff; application=geotiff; profile=cloud-optimized\",\"title\":\"Band 8 - NIR - 10m\",\"proj:bbox\":[499980.0,590220.0,609780.0,700020.0],\"proj:shape\":[10980,10980],\"proj:transform\":[10.0,0.0,499980.0,0.0,-10.0,700020.0],\"gsd\":10.0,\"eo:bands\":[{\"name\":\"B08\",\"common_name\":\"nir\",\"description\":\"Band 8 - NIR\",\"center_wavelength\":0.842,\"full_width_half_max\":0.145}],\"roles\":[\"data\"]},\"B09\":{\"href\":\"https://sentinel2l2a01.blob.core.windows.net/sentinel2-l2/30/N/WM/2018/12/26/S2B_MSIL2A_20181226T103439_N0212_R108_T30NWM_20201008T131549.SAFE/GRANULE/L2A_T30NWM_A009429_20181226T103914/IMG_DATA/R60m/T30NWM_20181226T103439_B09_60m.tif?st=2026-08-11T01%3A17%3A56Z&se=2026-08-12T02%3A02%3A56Z&sp=rl&sv=2025-07-05&sr=c&skoid=9c8ff44a-6a2c-4dfb-b298-1c9212f64d9a&sktid=72f988bf-86f1-41af-91ab-2d7cd011db47&skt=2026-08-12T01%3A07%3A44Z&ske=2026-08-19T01%3A07%3A44Z&sks=b&skv=2025-07-05&sig=B2YvTOLEb5cIB%2BAfkaHX5RnWtg5vNwwi%2B5CHS5%2BtSO4%3D\",\"type\":\"image/tiff; application=geotiff; profile=cloud-optimized\",\"title\":\"Band 9 - Water vapor - 60m\",\"proj:bbox\":[499980.0,590220.0,609780.0,700020.0],\"proj:shape\":[1830,1830],\"proj:transform\":[60.0,0.0,499980.0,0.0,-60.0,700020.0],\"gsd\":60.0,\"eo:bands\":[{\"name\":\"B09\",\"description\":\"Band 9 - Water vapor\",\"center_wavelength\":0.945,\"full_width_half_max\":0.026}],\"roles\":[\"data\"]},\"B11\":{\"href\":\"https://sentinel2l2a01.blob.core.windows.net/sentinel2-l2/30/N/WM/2018/12/26/S2B_MSIL2A_20181226T103439_N0212_R108_T30NWM_20201008T131549.SAFE/GRANULE/L2A_T30NWM_A009429_20181226T103914/IMG_DATA/R20m/T30NWM_20181226T103439_B11_20m.tif?st=2026-08-11T01%3A17%3A56Z&se=2026-08-12T02%3A02%3A56Z&sp=rl&sv=2025-07-05&sr=c&skoid=9c8ff44a-6a2c-4dfb-b298-1c9212f64d9a&sktid=72f988bf-86f1-41af-91ab-2d7cd011db47&skt=2026-08-12T01%3A07%3A44Z&ske=2026-08-19T01%3A07%3A44Z&sks=b&skv=2025-07-05&sig=B2YvTOLEb5cIB%2BAfkaHX5RnWtg5vNwwi%2B5CHS5%2BtSO4%3D\",\"type\":\"image/tiff; application=geotiff; profile=cloud-optimized\",\"title\":\"Band 11 - SWIR (1.6) - 20m\",\"proj:bbox\":[499980.0,590220.0,609780.0,700020.0],\"proj:shape\":[5490,5490],\"proj:transform\":[20.0,0.0,499980.0,0.0,-20.0,700020.0],\"gsd\":20.0,\"eo:bands\":[{\"name\":\"B11\",\"common_name\":\"swir16\",\"description\":\"Band 11 - SWIR (1.6)\",\"center_wavelength\":1.61,\"full_width_half_max\":0.143}],\"roles\":[\"data\"]},\"B12\":{\"href\":\"https://sentinel2l2a01.blob.core.windows.net/sentinel2-l2/30/N/WM/2018/12/26/S2B_MSIL2A_20181226T103439_N0212_R108_T30NWM_20201008T131549.SAFE/GRANULE/L2A_T30NWM_A009429_20181226T103914/IMG_DATA/R20m/T30NWM_20181226T103439_B12_20m.tif?st=2026-08-11T01%3A17%3A56Z&se=2026-08-12T02%3A02%3A56Z&sp=rl&sv=2025-07-05&sr=c&skoid=9c8ff44a-6a2c-4dfb-b298-1c9212f64d9a&sktid=72f988bf-86f1-41af-91ab-2d7cd011db47&skt=2026-08-12T01%3A07%3A44Z&ske=2026-08-19T01%3A07%3A44Z&sks=b&skv=2025-07-05&sig=B2YvTOLEb5cIB%2BAfkaHX5RnWtg5vNwwi%2B5CHS5%2BtSO4%3D\",\"type\":\"image/tiff; application=geotiff; profile=cloud-optimized\",\"title\":\"Band 12 - SWIR (2.2) - 20m\",\"proj:bbox\":[499980.0,590220.0,609780.0,700020.0],\"proj:shape\":[5490,5490],\"proj:transform\":[20.0,0.0,499980.0,0.0,-20.0,700020.0],\"gsd\":20.0,\"eo:bands\":[{\"name\":\"B12\",\"common_name\":\"swir22\",\"description\":\"Band 12 - SWIR (2.2)\",\"center_wavelength\":2.19,\"full_width_half_max\":0.242}],\"roles\":[\"data\"]},\"B8A\":{\"href\":\"https://sentinel2l2a01.blob.core.windows.net/sentinel2-l2/30/N/WM/2018/12/26/S2B_MSIL2A_20181226T103439_N0212_R108_T30NWM_20201008T131549.SAFE/GRANULE/L2A_T30NWM_A009429_20181226T103914/IMG_DATA/R20m/T30NWM_20181226T103439_B8A_20m.tif?st=2026-08-11T01%3A17%3A56Z&se=2026-08-12T02%3A02%3A56Z&sp=rl&sv=2025-07-05&sr=c&skoid=9c8ff44a-6a2c-4dfb-b298-1c9212f64d9a&sktid=72f988bf-86f1-41af-91ab-2d7cd011db47&skt=2026-08-12T01%3A07%3A44Z&ske=2026-08-19T01%3A07%3A44Z&sks=b&skv=2025-07-05&sig=B2YvTOLEb5cIB%2BAfkaHX5RnWtg5vNwwi%2B5CHS5%2BtSO4%3D\",\"type\":\"image/tiff; application=geotiff; profile=cloud-optimized\",\"title\":\"Band 8A - Vegetation red edge 4 - 20m\",\"proj:bbox\":[499980.0,590220.0,609780.0,700020.0],\"proj:shape\":[5490,5490],\"proj:transform\":[20.0,0.0,499980.0,0.0,-20.0,700020.0],\"gsd\":20.0,\"eo:bands\":[{\"name\":\"B8A\",\"common_name\":\"rededge\",\"description\":\"Band 8A - Vegetation red edge 4\",\"center_wavelength\":0.865,\"full_width_half_max\":0.033}],\"roles\":[\"data\"]},\"SCL\":{\"href\":\"https://sentinel2l2a01.blob.core.windows.net/sentinel2-l2/30/N/WM/2018/12/26/S2B_MSIL2A_20181226T103439_N0212_R108_T30NWM_20201008T131549.SAFE/GRANULE/L2A_T30NWM_A009429_20181226T103914/IMG_DATA/R20m/T30NWM_20181226T103439_SCL_20m.tif?st=2026-08-11T01%3A17%3A56Z&se=2026-08-12T02%3A02%3A56Z&sp=rl&sv=2025-07-05&sr=c&skoid=9c8ff44a-6a2c-4dfb-b298-1c9212f64d9a&sktid=72f988bf-86f1-41af-91ab-2d7cd011db47&skt=2026-08-12T01%3A07%3A44Z&ske=2026-08-19T01%3A07%3A44Z&sks=b&skv=2025-07-05&sig=B2YvTOLEb5cIB%2BAfkaHX5RnWtg5vNwwi%2B5CHS5%2BtSO4%3D\",\"type\":\"image/tiff; application=geotiff; profile=cloud-optimized\",\"title\":\"Scene classfication map (SCL)\",\"proj:bbox\":[499980.0,590220.0,609780.0,700020.0],\"proj:shape\":[5490,5490],\"proj:transform\":[20.0,0.0,499980.0,0.0,-20.0,700020.0],\"gsd\":20.0,\"roles\":[\"data\"]},\"WVP\":{\"href\":\"https://sentinel2l2a01.blob.core.windows.net/sentinel2-l2/30/N/WM/2018/12/26/S2B_MSIL2A_20181226T103439_N0212_R108_T30NWM_20201008T131549.SAFE/GRANULE/L2A_T30NWM_A009429_20181226T103914/IMG_DATA/R10m/T30NWM_20181226T103439_WVP_10m.tif?st=2026-08-11T01%3A17%3A56Z&se=2026-08-12T02%3A02%3A56Z&sp=rl&sv=2025-07-05&sr=c&skoid=9c8ff44a-6a2c-4dfb-b298-1c9212f64d9a&sktid=72f988bf-86f1-41af-91ab-2d7cd011db47&skt=2026-08-12T01%3A07%3A44Z&ske=2026-08-19T01%3A07%3A44Z&sks=b&skv=2025-07-05&sig=B2YvTOLEb5cIB%2BAfkaHX5RnWtg5vNwwi%2B5CHS5%2BtSO4%3D\",\"type\":\"image/tiff; application=geotiff; profile=cloud-optimized\",\"title\":\"Water vapour (WVP)\",\"proj:bbox\":[499980.0,590220.0,609780.0,700020.0],\"proj:shape\":[10980,10980],\"proj:transform\":[10.0,0.0,499980.0,0.0,-10.0,700020.0],\"gsd\":10.0,\"roles\":[\"data\"]},\"visual\":{\"href\":\"https://sentinel2l2a01.blob.core.windows.net/sentinel2-l2/30/N/WM/2018/12/26/S2B_MSIL2A_20181226T103439_N0212_R108_T30NWM_20201008T131549.SAFE/GRANULE/L2A_T30NWM_A009429_20181226T103914/IMG_DATA/R10m/T30NWM_20181226T103439_TCI_10m.tif?st=2026-08-11T01%3A17%3A56Z&se=2026-08-12T02%3A02%3A56Z&sp=rl&sv=2025-07-05&sr=c&skoid=9c8ff44a-6a2c-4dfb-b298-1c9212f64d9a&sktid=72f988bf-86f1-41af-91ab-2d7cd011db47&skt=2026-08-12T01%3A07%3A44Z&ske=2026-08-19T01%3A07%3A44Z&sks=b&skv=2025-07-05&sig=B2YvTOLEb5cIB%2BAfkaHX5RnWtg5vNwwi%2B5CHS5%2BtSO4%3D\",\"type\":\"image/tiff; application=geotiff; profile=cloud-optimized\",\"title\":\"True color image\",\"proj:bbox\":[499980.0,590220.0,609780.0,700020.0],\"proj:shape\":[10980,10980],\"proj:transform\":[10.0,0.0,499980.0,0.0,-10.0,700020.0],\"gsd\":10.0,\"eo:bands\":[{\"name\":\"B04\",\"common_name\":\"red\",\"description\":\"Band 4 - Red\",\"center_wavelength\":0.665,\"full_width_half_max\":0.038},{\"name\":\"B03\",\"common_name\":\"green\",\"description\":\"Band 3 - Green\",\"center_wavelength\":0.56,\"full_width_half_max\":0.045},{\"name\":\"B02\",\"common_name\":\"blue\",\"description\":\"Band 2 - Blue\",\"center_wavelength\":0.49,\"full_width_half_max\":0.098}],\"roles\":[\"data\"]},\"preview\":{\"href\":\"https://sentinel2l2a01.blob.core.windows.net/sentinel2-l2/30/N/WM/2018/12/26/S2B_MSIL2A_20181226T103439_N0212_R108_T30NWM_20201008T131549.SAFE/GRANULE/L2A_T30NWM_A009429_20181226T103914/QI_DATA/T30NWM_20181226T103439_PVI.tif?st=2026-08-11T01%3A17%3A56Z&se=2026-08-12T02%3A02%3A56Z&sp=rl&sv=2025-07-05&sr=c&skoid=9c8ff44a-6a2c-4dfb-b298-1c9212f64d9a&sktid=72f988bf-86f1-41af-91ab-2d7cd011db47&skt=2026-08-12T01%3A07%3A44Z&ske=2026-08-19T01%3A07%3A44Z&sks=b&skv=2025-07-05&sig=B2YvTOLEb5cIB%2BAfkaHX5RnWtg5vNwwi%2B5CHS5%2BtSO4%3D\",\"type\":\"image/tiff; application=geotiff; profile=cloud-optimized\",\"title\":\"Thumbnail\",\"roles\":[\"thumbnail\"]},\"safe-manifest\":{\"href\":\"https://sentinel2l2a01.blob.core.windows.net/sentinel2-l2/30/N/WM/2018/12/26/S2B_MSIL2A_20181226T103439_N0212_R108_T30NWM_20201008T131549.SAFE/manifest.safe?st=2026-08-11T01%3A17%3A56Z&se=2026-08-12T02%3A02%3A56Z&sp=rl&sv=2025-07-05&sr=c&skoid=9c8ff44a-6a2c-4dfb-b298-1c9212f64d9a&sktid=72f988bf-86f1-41af-91ab-2d7cd011db47&skt=2026-08-12T01%3A07%3A44Z&ske=2026-08-19T01%3A07%3A44Z&sks=b&skv=2025-07-05&sig=B2YvTOLEb5cIB%2BAfkaHX5RnWtg5vNwwi%2B5CHS5%2BtSO4%3D\",\"type\":\"application/xml\",\"title\":\"SAFE manifest\",\"roles\":[\"metadata\"]},\"granule-metadata\":{\"href\":\"https://sentinel2l2a01.blob.core.windows.net/sentinel2-l2/30/N/WM/2018/12/26/S2B_MSIL2A_20181226T103439_N0212_R108_T30NWM_20201008T131549.SAFE/GRANULE/L2A_T30NWM_A009429_20181226T103914/MTD_TL.xml?st=2026-08-11T01%3A17%3A56Z&se=2026-08-12T02%3A02%3A56Z&sp=rl&sv=2025-07-05&sr=c&skoid=9c8ff44a-6a2c-4dfb-b298-1c9212f64d9a&sktid=72f988bf-86f1-41af-91ab-2d7cd011db47&skt=2026-08-12T01%3A07%3A44Z&ske=2026-08-19T01%3A07%3A44Z&sks=b&skv=2025-07-05&sig=B2YvTOLEb5cIB%2BAfkaHX5RnWtg5vNwwi%2B5CHS5%2BtSO4%3D\",\"type\":\"application/xml\",\"title\":\"Granule metadata\",\"roles\":[\"metadata\"]},\"inspire-metadata\":{\"href\":\"https://sentinel2l2a01.blob.core.windows.net/sentinel2-l2/30/N/WM/2018/12/26/S2B_MSIL2A_20181226T103439_N0212_R108_T30NWM_20201008T131549.SAFE/INSPIRE.xml?st=2026-08-11T01%3A17%3A56Z&se=2026-08-12T02%3A02%3A56Z&sp=rl&sv=2025-07-05&sr=c&skoid=9c8ff44a-6a2c-4dfb-b298-1c9212f64d9a&sktid=72f988bf-86f1-41af-91ab-2d7cd011db47&skt=2026-08-12T01%3A07%3A44Z&ske=2026-08-19T01%3A07%3A44Z&sks=b&skv=2025-07-05&sig=B2YvTOLEb5cIB%2BAfkaHX5RnWtg5vNwwi%2B5CHS5%2BtSO4%3D\",\"type\":\"application/xml\",\"title\":\"INSPIRE metadata\",\"roles\":[\"metadata\"]},\"product-metadata\":{\"href\":\"https://sentinel2l2a01.blob.core.windows.net/sentinel2-l2/30/N/WM/2018/12/26/S2B_MSIL2A_20181226T103439_N0212_R108_T30NWM_20201008T131549.SAFE/MTD_MSIL2A.xml?st=2026-08-11T01%3A17%3A56Z&se=2026-08-12T02%3A02%3A56Z&sp=rl&sv=2025-07-05&sr=c&skoid=9c8ff44a-6a2c-4dfb-b298-1c9212f64d9a&sktid=72f988bf-86f1-41af-91ab-2d7cd011db47&skt=2026-08-12T01%3A07%3A44Z&ske=2026-08-19T01%3A07%3A44Z&sks=b&skv=2025-07-05&sig=B2YvTOLEb5cIB%2BAfkaHX5RnWtg5vNwwi%2B5CHS5%2BtSO4%3D\",\"type\":\"application/xml\",\"title\":\"Product metadata\",\"roles\":[\"metadata\"]},\"datastrip-metadata\":{\"href\":\"https://sentinel2l2a01.blob.core.windows.net/sentinel2-l2/30/N/WM/2018/12/26/S2B_MSIL2A_20181226T103439_N0212_R108_T30NWM_20201008T131549.SAFE/DATASTRIP/DS_ESRI_20201008T131551_S20181226T103914/MTD_DS.xml?st=2026-08-11T01%3A17%3A56Z&se=2026-08-12T02%3A02%3A56Z&sp=rl&sv=2025-07-05&sr=c&skoid=9c8ff44a-6a2c-4dfb-b298-1c9212f64d9a&sktid=72f988bf-86f1-41af-91ab-2d7cd011db47&skt=2026-08-12T01%3A07%3A44Z&ske=2026-08-19T01%3A07%3A44Z&sks=b&skv=2025-07-05&sig=B2YvTOLEb5cIB%2BAfkaHX5RnWtg5vNwwi%2B5CHS5%2BtSO4%3D\",\"type\":\"application/xml\",\"title\":\"Datastrip metadata\",\"roles\":[\"metadata\"]},\"tilejson\":{\"href\":\"https://planetarycomputer.microsoft.com/api/data/v1/item/tilejson.json?collection=sentinel-2-l2a&item=S2B_MSIL2A_20181226T103439_R108_T30NWM_20201008T131549&assets=visual&asset_bidx=visual%7C1%2C2%2C3&nodata=0&format=png\",\"type\":\"application/json\",\"title\":\"TileJSON with default rendering\",\"roles\":[\"tiles\"]},\"rendered_preview\":{\"href\":\"https://planetarycomputer.microsoft.com/api/data/v1/item/preview.png?collection=sentinel-2-l2a&item=S2B_MSIL2A_20181226T103439_R108_T30NWM_20201008T131549&assets=visual&asset_bidx=visual%7C1%2C2%2C3&nodata=0&format=png\",\"type\":\"image/png\",\"title\":\"Rendered preview\",\"rel\":\"preview\",\"roles\":[\"overview\"]}},\"collection\":\"sentinel-2-l2a\"}],\"metadata\":{\"description\":\"Sentinel-2 L2A surface reflectance (12 bands)\"}}",
+          "coordinates": "var_order"
         },
         "zarr_format": 3,
         "consolidated_metadata": {
@@ -193,7 +83,7 @@
           "name": "regular",
           "configuration": {
             "chunk_shape": [
-              255,
+              510,
               510
             ]
           }
@@ -230,7 +120,7 @@
       },
       "cloud_mask/spatial_ref": {
         "shape": [],
-        "data_type": "int64",
+        "data_type": "int32",
         "chunk_grid": {
           "name": "regular",
           "configuration": {
@@ -260,7 +150,8 @@
           }
         ],
         "attributes": {
-          "crs_wkt": "PROJCS[\"WGS 84 / UTM zone 30N\",GEOGCS[\"WGS 84\",DATUM[\"WGS_1984\",SPHEROID[\"WGS 84\",6378137,298.257223563]],PRIMEM[\"Greenwich\",0],UNIT[\"degree\",0.0174532925199433,AUTHORITY[\"EPSG\",\"9122\"]],AUTHORITY[\"EPSG\",\"4326\"]],PROJECTION[\"Transverse_Mercator\"],PARAMETER[\"latitude_of_origin\",0],PARAMETER[\"central_meridian\",-3],PARAMETER[\"scale_factor\",0.9996],PARAMETER[\"false_easting\",500000],PARAMETER[\"false_northing\",0],UNIT[\"metre\",1],AXIS[\"Easting\",EAST],AXIS[\"Northing\",NORTH],AUTHORITY[\"EPSG\",\"32630\"]]",
+          "spatial_ref": "PROJCRS[\"WGS 84 / UTM zone 30N\",BASEGEOGCRS[\"WGS 84\",DATUM[\"World Geodetic System 1984\",ELLIPSOID[\"WGS 84\",6378137,298.257223563,LENGTHUNIT[\"metre\",1]]],PRIMEM[\"Greenwich\",0,ANGLEUNIT[\"degree\",0.0174532925199433]],ID[\"EPSG\",4326]],CONVERSION[\"UTM zone 30N\",METHOD[\"Transverse Mercator\",ID[\"EPSG\",9807]],PARAMETER[\"Latitude of natural origin\",0,ANGLEUNIT[\"degree\",0.0174532925199433],ID[\"EPSG\",8801]],PARAMETER[\"Longitude of natural origin\",-3,ANGLEUNIT[\"degree\",0.0174532925199433],ID[\"EPSG\",8802]],PARAMETER[\"Scale factor at natural origin\",0.9996,SCALEUNIT[\"unity\",1],ID[\"EPSG\",8805]],PARAMETER[\"False easting\",500000,LENGTHUNIT[\"metre\",1],ID[\"EPSG\",8806]],PARAMETER[\"False northing\",0,LENGTHUNIT[\"metre\",1],ID[\"EPSG\",8807]]],CS[Cartesian,2],AXIS[\"easting\",east,ORDER[1],LENGTHUNIT[\"metre\",1]],AXIS[\"northing\",north,ORDER[2],LENGTHUNIT[\"metre\",1]],ID[\"EPSG\",32630]]",
+          "crs_wkt": "PROJCRS[\"WGS 84 / UTM zone 30N\",BASEGEOGCRS[\"WGS 84\",DATUM[\"World Geodetic System 1984\",ELLIPSOID[\"WGS 84\",6378137,298.257223563,LENGTHUNIT[\"metre\",1]]],PRIMEM[\"Greenwich\",0,ANGLEUNIT[\"degree\",0.0174532925199433]],ID[\"EPSG\",4326]],CONVERSION[\"UTM zone 30N\",METHOD[\"Transverse Mercator\",ID[\"EPSG\",9807]],PARAMETER[\"Latitude of natural origin\",0,ANGLEUNIT[\"degree\",0.0174532925199433],ID[\"EPSG\",8801]],PARAMETER[\"Longitude of natural origin\",-3,ANGLEUNIT[\"degree\",0.0174532925199433],ID[\"EPSG\",8802]],PARAMETER[\"Scale factor at natural origin\",0.9996,SCALEUNIT[\"unity\",1],ID[\"EPSG\",8805]],PARAMETER[\"False easting\",500000,LENGTHUNIT[\"metre\",1],ID[\"EPSG\",8806]],PARAMETER[\"False northing\",0,LENGTHUNIT[\"metre\",1],ID[\"EPSG\",8807]]],CS[Cartesian,2],AXIS[\"easting\",east,ORDER[1],LENGTHUNIT[\"metre\",1]],AXIS[\"northing\",north,ORDER[2],LENGTHUNIT[\"metre\",1]],ID[\"EPSG\",32630]]",
           "semi_major_axis": 6378137.0,
           "semi_minor_axis": 6356752.314245179,
           "inverse_flattening": 298.257223563,
@@ -275,10 +166,56 @@
           "longitude_of_central_meridian": -3.0,
           "false_easting": 500000.0,
           "false_northing": 0.0,
-          "scale_factor_at_central_meridian": 0.9996,
-          "spatial_ref": "PROJCS[\"WGS 84 / UTM zone 30N\",GEOGCS[\"WGS 84\",DATUM[\"WGS_1984\",SPHEROID[\"WGS 84\",6378137,298.257223563]],PRIMEM[\"Greenwich\",0],UNIT[\"degree\",0.0174532925199433,AUTHORITY[\"EPSG\",\"9122\"]],AUTHORITY[\"EPSG\",\"4326\"]],PROJECTION[\"Transverse_Mercator\"],PARAMETER[\"latitude_of_origin\",0],PARAMETER[\"central_meridian\",-3],PARAMETER[\"scale_factor\",0.9996],PARAMETER[\"false_easting\",500000],PARAMETER[\"false_northing\",0],UNIT[\"metre\",1],AXIS[\"Easting\",EAST],AXIS[\"Northing\",NORTH],AUTHORITY[\"EPSG\",\"32630\"]]",
-          "GeoTransform": "526080.0 10.0 0.0 627620.0 0.0 -10.0"
+          "scale_factor_at_central_meridian": 0.9996
         },
+        "zarr_format": 3,
+        "node_type": "array",
+        "storage_transformers": []
+      },
+      "cloud_mask/var_order": {
+        "shape": [
+          1
+        ],
+        "data_type": {
+          "name": "fixed_length_utf32",
+          "configuration": {
+            "length_bytes": 16
+          }
+        },
+        "chunk_grid": {
+          "name": "regular",
+          "configuration": {
+            "chunk_shape": [
+              1
+            ]
+          }
+        },
+        "chunk_key_encoding": {
+          "name": "default",
+          "configuration": {
+            "separator": "/"
+          }
+        },
+        "fill_value": "",
+        "codecs": [
+          {
+            "name": "bytes",
+            "configuration": {
+              "endian": "little"
+            }
+          },
+          {
+            "name": "zstd",
+            "configuration": {
+              "level": 0,
+              "checksum": false
+            }
+          }
+        ],
+        "attributes": {},
+        "dimension_names": [
+          "var"
+        ],
         "zarr_format": 3,
         "node_type": "array",
         "storage_transformers": []
@@ -426,7 +363,7 @@
       },
       "dynamicworld/spatial_ref": {
         "shape": [],
-        "data_type": "int64",
+        "data_type": "int32",
         "chunk_grid": {
           "name": "regular",
           "configuration": {
@@ -456,7 +393,8 @@
           }
         ],
         "attributes": {
-          "crs_wkt": "PROJCS[\"WGS 84 / UTM zone 30N\",GEOGCS[\"WGS 84\",DATUM[\"WGS_1984\",SPHEROID[\"WGS 84\",6378137,298.257223563,AUTHORITY[\"EPSG\",\"7030\"]],AUTHORITY[\"EPSG\",\"6326\"]],PRIMEM[\"Greenwich\",0,AUTHORITY[\"EPSG\",\"8901\"]],UNIT[\"degree\",0.0174532925199433,AUTHORITY[\"EPSG\",\"9122\"]],AUTHORITY[\"EPSG\",\"4326\"]],PROJECTION[\"Transverse_Mercator\"],PARAMETER[\"latitude_of_origin\",0],PARAMETER[\"central_meridian\",-3],PARAMETER[\"scale_factor\",0.9996],PARAMETER[\"false_easting\",500000],PARAMETER[\"false_northing\",0],UNIT[\"metre\",1,AUTHORITY[\"EPSG\",\"9001\"]],AXIS[\"Easting\",EAST],AXIS[\"Northing\",NORTH],AUTHORITY[\"EPSG\",\"32630\"]]",
+          "spatial_ref": "PROJCRS[\"WGS 84 / UTM zone 30N\",BASEGEOGCRS[\"WGS 84\",DATUM[\"World Geodetic System 1984\",ELLIPSOID[\"WGS 84\",6378137,298.257223563,LENGTHUNIT[\"metre\",1]]],PRIMEM[\"Greenwich\",0,ANGLEUNIT[\"degree\",0.0174532925199433]],ID[\"EPSG\",4326]],CONVERSION[\"UTM zone 30N\",METHOD[\"Transverse Mercator\",ID[\"EPSG\",9807]],PARAMETER[\"Latitude of natural origin\",0,ANGLEUNIT[\"degree\",0.0174532925199433],ID[\"EPSG\",8801]],PARAMETER[\"Longitude of natural origin\",-3,ANGLEUNIT[\"degree\",0.0174532925199433],ID[\"EPSG\",8802]],PARAMETER[\"Scale factor at natural origin\",0.9996,SCALEUNIT[\"unity\",1],ID[\"EPSG\",8805]],PARAMETER[\"False easting\",500000,LENGTHUNIT[\"metre\",1],ID[\"EPSG\",8806]],PARAMETER[\"False northing\",0,LENGTHUNIT[\"metre\",1],ID[\"EPSG\",8807]]],CS[Cartesian,2],AXIS[\"easting\",east,ORDER[1],LENGTHUNIT[\"metre\",1]],AXIS[\"northing\",north,ORDER[2],LENGTHUNIT[\"metre\",1]],ID[\"EPSG\",32630]]",
+          "crs_wkt": "PROJCRS[\"WGS 84 / UTM zone 30N\",BASEGEOGCRS[\"WGS 84\",DATUM[\"World Geodetic System 1984\",ELLIPSOID[\"WGS 84\",6378137,298.257223563,LENGTHUNIT[\"metre\",1]]],PRIMEM[\"Greenwich\",0,ANGLEUNIT[\"degree\",0.0174532925199433]],ID[\"EPSG\",4326]],CONVERSION[\"UTM zone 30N\",METHOD[\"Transverse Mercator\",ID[\"EPSG\",9807]],PARAMETER[\"Latitude of natural origin\",0,ANGLEUNIT[\"degree\",0.0174532925199433],ID[\"EPSG\",8801]],PARAMETER[\"Longitude of natural origin\",-3,ANGLEUNIT[\"degree\",0.0174532925199433],ID[\"EPSG\",8802]],PARAMETER[\"Scale factor at natural origin\",0.9996,SCALEUNIT[\"unity\",1],ID[\"EPSG\",8805]],PARAMETER[\"False easting\",500000,LENGTHUNIT[\"metre\",1],ID[\"EPSG\",8806]],PARAMETER[\"False northing\",0,LENGTHUNIT[\"metre\",1],ID[\"EPSG\",8807]]],CS[Cartesian,2],AXIS[\"easting\",east,ORDER[1],LENGTHUNIT[\"metre\",1]],AXIS[\"northing\",north,ORDER[2],LENGTHUNIT[\"metre\",1]],ID[\"EPSG\",32630]]",
           "semi_major_axis": 6378137.0,
           "semi_minor_axis": 6356752.314245179,
           "inverse_flattening": 298.257223563,
@@ -471,10 +409,56 @@
           "longitude_of_central_meridian": -3.0,
           "false_easting": 500000.0,
           "false_northing": 0.0,
-          "scale_factor_at_central_meridian": 0.9996,
-          "spatial_ref": "PROJCS[\"WGS 84 / UTM zone 30N\",GEOGCS[\"WGS 84\",DATUM[\"WGS_1984\",SPHEROID[\"WGS 84\",6378137,298.257223563,AUTHORITY[\"EPSG\",\"7030\"]],AUTHORITY[\"EPSG\",\"6326\"]],PRIMEM[\"Greenwich\",0,AUTHORITY[\"EPSG\",\"8901\"]],UNIT[\"degree\",0.0174532925199433,AUTHORITY[\"EPSG\",\"9122\"]],AUTHORITY[\"EPSG\",\"4326\"]],PROJECTION[\"Transverse_Mercator\"],PARAMETER[\"latitude_of_origin\",0],PARAMETER[\"central_meridian\",-3],PARAMETER[\"scale_factor\",0.9996],PARAMETER[\"false_easting\",500000],PARAMETER[\"false_northing\",0],UNIT[\"metre\",1,AUTHORITY[\"EPSG\",\"9001\"]],AXIS[\"Easting\",EAST],AXIS[\"Northing\",NORTH],AUTHORITY[\"EPSG\",\"32630\"]]",
-          "GeoTransform": "526080.0 10.0 0.0 627620.0 0.0 -10.0"
+          "scale_factor_at_central_meridian": 0.9996
         },
+        "zarr_format": 3,
+        "node_type": "array",
+        "storage_transformers": []
+      },
+      "dynamicworld/var_order": {
+        "shape": [
+          1
+        ],
+        "data_type": {
+          "name": "fixed_length_utf32",
+          "configuration": {
+            "length_bytes": 24
+          }
+        },
+        "chunk_grid": {
+          "name": "regular",
+          "configuration": {
+            "chunk_shape": [
+              1
+            ]
+          }
+        },
+        "chunk_key_encoding": {
+          "name": "default",
+          "configuration": {
+            "separator": "/"
+          }
+        },
+        "fill_value": "",
+        "codecs": [
+          {
+            "name": "bytes",
+            "configuration": {
+              "endian": "little"
+            }
+          },
+          {
+            "name": "zstd",
+            "configuration": {
+              "level": 0,
+              "checksum": false
+            }
+          }
+        ],
+        "attributes": {},
+        "dimension_names": [
+          "var"
+        ],
         "zarr_format": 3,
         "node_type": "array",
         "storage_transformers": []
@@ -579,8 +563,8 @@
           "name": "regular",
           "configuration": {
             "chunk_shape": [
-              255,
-              255
+              510,
+              510
             ]
           }
         },
@@ -620,7 +604,7 @@
       },
       "ndvi/spatial_ref": {
         "shape": [],
-        "data_type": "int64",
+        "data_type": "int32",
         "chunk_grid": {
           "name": "regular",
           "configuration": {
@@ -650,7 +634,8 @@
           }
         ],
         "attributes": {
-          "crs_wkt": "PROJCS[\"WGS 84 / UTM zone 30N\",GEOGCS[\"WGS 84\",DATUM[\"WGS_1984\",SPHEROID[\"WGS 84\",6378137,298.257223563]],PRIMEM[\"Greenwich\",0],UNIT[\"degree\",0.0174532925199433,AUTHORITY[\"EPSG\",\"9122\"]],AUTHORITY[\"EPSG\",\"4326\"]],PROJECTION[\"Transverse_Mercator\"],PARAMETER[\"latitude_of_origin\",0],PARAMETER[\"central_meridian\",-3],PARAMETER[\"scale_factor\",0.9996],PARAMETER[\"false_easting\",500000],PARAMETER[\"false_northing\",0],UNIT[\"metre\",1],AXIS[\"Easting\",EAST],AXIS[\"Northing\",NORTH],AUTHORITY[\"EPSG\",\"32630\"]]",
+          "spatial_ref": "PROJCRS[\"WGS 84 / UTM zone 30N\",BASEGEOGCRS[\"WGS 84\",DATUM[\"World Geodetic System 1984\",ELLIPSOID[\"WGS 84\",6378137,298.257223563,LENGTHUNIT[\"metre\",1]]],PRIMEM[\"Greenwich\",0,ANGLEUNIT[\"degree\",0.0174532925199433]],ID[\"EPSG\",4326]],CONVERSION[\"UTM zone 30N\",METHOD[\"Transverse Mercator\",ID[\"EPSG\",9807]],PARAMETER[\"Latitude of natural origin\",0,ANGLEUNIT[\"degree\",0.0174532925199433],ID[\"EPSG\",8801]],PARAMETER[\"Longitude of natural origin\",-3,ANGLEUNIT[\"degree\",0.0174532925199433],ID[\"EPSG\",8802]],PARAMETER[\"Scale factor at natural origin\",0.9996,SCALEUNIT[\"unity\",1],ID[\"EPSG\",8805]],PARAMETER[\"False easting\",500000,LENGTHUNIT[\"metre\",1],ID[\"EPSG\",8806]],PARAMETER[\"False northing\",0,LENGTHUNIT[\"metre\",1],ID[\"EPSG\",8807]]],CS[Cartesian,2],AXIS[\"easting\",east,ORDER[1],LENGTHUNIT[\"metre\",1]],AXIS[\"northing\",north,ORDER[2],LENGTHUNIT[\"metre\",1]],ID[\"EPSG\",32630]]",
+          "crs_wkt": "PROJCRS[\"WGS 84 / UTM zone 30N\",BASEGEOGCRS[\"WGS 84\",DATUM[\"World Geodetic System 1984\",ELLIPSOID[\"WGS 84\",6378137,298.257223563,LENGTHUNIT[\"metre\",1]]],PRIMEM[\"Greenwich\",0,ANGLEUNIT[\"degree\",0.0174532925199433]],ID[\"EPSG\",4326]],CONVERSION[\"UTM zone 30N\",METHOD[\"Transverse Mercator\",ID[\"EPSG\",9807]],PARAMETER[\"Latitude of natural origin\",0,ANGLEUNIT[\"degree\",0.0174532925199433],ID[\"EPSG\",8801]],PARAMETER[\"Longitude of natural origin\",-3,ANGLEUNIT[\"degree\",0.0174532925199433],ID[\"EPSG\",8802]],PARAMETER[\"Scale factor at natural origin\",0.9996,SCALEUNIT[\"unity\",1],ID[\"EPSG\",8805]],PARAMETER[\"False easting\",500000,LENGTHUNIT[\"metre\",1],ID[\"EPSG\",8806]],PARAMETER[\"False northing\",0,LENGTHUNIT[\"metre\",1],ID[\"EPSG\",8807]]],CS[Cartesian,2],AXIS[\"easting\",east,ORDER[1],LENGTHUNIT[\"metre\",1]],AXIS[\"northing\",north,ORDER[2],LENGTHUNIT[\"metre\",1]],ID[\"EPSG\",32630]]",
           "semi_major_axis": 6378137.0,
           "semi_minor_axis": 6356752.314245179,
           "inverse_flattening": 298.257223563,
@@ -665,10 +650,56 @@
           "longitude_of_central_meridian": -3.0,
           "false_easting": 500000.0,
           "false_northing": 0.0,
-          "scale_factor_at_central_meridian": 0.9996,
-          "spatial_ref": "PROJCS[\"WGS 84 / UTM zone 30N\",GEOGCS[\"WGS 84\",DATUM[\"WGS_1984\",SPHEROID[\"WGS 84\",6378137,298.257223563]],PRIMEM[\"Greenwich\",0],UNIT[\"degree\",0.0174532925199433,AUTHORITY[\"EPSG\",\"9122\"]],AUTHORITY[\"EPSG\",\"4326\"]],PROJECTION[\"Transverse_Mercator\"],PARAMETER[\"latitude_of_origin\",0],PARAMETER[\"central_meridian\",-3],PARAMETER[\"scale_factor\",0.9996],PARAMETER[\"false_easting\",500000],PARAMETER[\"false_northing\",0],UNIT[\"metre\",1],AXIS[\"Easting\",EAST],AXIS[\"Northing\",NORTH],AUTHORITY[\"EPSG\",\"32630\"]]",
-          "GeoTransform": "526080.0 10.0 0.0 627620.0 0.0 -10.0"
+          "scale_factor_at_central_meridian": 0.9996
         },
+        "zarr_format": 3,
+        "node_type": "array",
+        "storage_transformers": []
+      },
+      "ndvi/var_order": {
+        "shape": [
+          1
+        ],
+        "data_type": {
+          "name": "fixed_length_utf32",
+          "configuration": {
+            "length_bytes": 16
+          }
+        },
+        "chunk_grid": {
+          "name": "regular",
+          "configuration": {
+            "chunk_shape": [
+              1
+            ]
+          }
+        },
+        "chunk_key_encoding": {
+          "name": "default",
+          "configuration": {
+            "separator": "/"
+          }
+        },
+        "fill_value": "",
+        "codecs": [
+          {
+            "name": "bytes",
+            "configuration": {
+              "endian": "little"
+            }
+          },
+          {
+            "name": "zstd",
+            "configuration": {
+              "level": 0,
+              "checksum": false
+            }
+          }
+        ],
+        "attributes": {},
+        "dimension_names": [
+          "var"
+        ],
         "zarr_format": 3,
         "node_type": "array",
         "storage_transformers": []
@@ -779,7 +810,7 @@
           "name": "regular",
           "configuration": {
             "chunk_shape": [
-              255,
+              510,
               510
             ]
           }
@@ -816,7 +847,7 @@
       },
       "scl/spatial_ref": {
         "shape": [],
-        "data_type": "int64",
+        "data_type": "int32",
         "chunk_grid": {
           "name": "regular",
           "configuration": {
@@ -846,7 +877,8 @@
           }
         ],
         "attributes": {
-          "crs_wkt": "PROJCS[\"WGS 84 / UTM zone 30N\",GEOGCS[\"WGS 84\",DATUM[\"WGS_1984\",SPHEROID[\"WGS 84\",6378137,298.257223563]],PRIMEM[\"Greenwich\",0],UNIT[\"degree\",0.0174532925199433,AUTHORITY[\"EPSG\",\"9122\"]],AUTHORITY[\"EPSG\",\"4326\"]],PROJECTION[\"Transverse_Mercator\"],PARAMETER[\"latitude_of_origin\",0],PARAMETER[\"central_meridian\",-3],PARAMETER[\"scale_factor\",0.9996],PARAMETER[\"false_easting\",500000],PARAMETER[\"false_northing\",0],UNIT[\"metre\",1],AXIS[\"Easting\",EAST],AXIS[\"Northing\",NORTH],AUTHORITY[\"EPSG\",\"32630\"]]",
+          "spatial_ref": "PROJCRS[\"WGS 84 / UTM zone 30N\",BASEGEOGCRS[\"WGS 84\",DATUM[\"World Geodetic System 1984\",ELLIPSOID[\"WGS 84\",6378137,298.257223563,LENGTHUNIT[\"metre\",1]]],PRIMEM[\"Greenwich\",0,ANGLEUNIT[\"degree\",0.0174532925199433]],ID[\"EPSG\",4326]],CONVERSION[\"UTM zone 30N\",METHOD[\"Transverse Mercator\",ID[\"EPSG\",9807]],PARAMETER[\"Latitude of natural origin\",0,ANGLEUNIT[\"degree\",0.0174532925199433],ID[\"EPSG\",8801]],PARAMETER[\"Longitude of natural origin\",-3,ANGLEUNIT[\"degree\",0.0174532925199433],ID[\"EPSG\",8802]],PARAMETER[\"Scale factor at natural origin\",0.9996,SCALEUNIT[\"unity\",1],ID[\"EPSG\",8805]],PARAMETER[\"False easting\",500000,LENGTHUNIT[\"metre\",1],ID[\"EPSG\",8806]],PARAMETER[\"False northing\",0,LENGTHUNIT[\"metre\",1],ID[\"EPSG\",8807]]],CS[Cartesian,2],AXIS[\"easting\",east,ORDER[1],LENGTHUNIT[\"metre\",1]],AXIS[\"northing\",north,ORDER[2],LENGTHUNIT[\"metre\",1]],ID[\"EPSG\",32630]]",
+          "crs_wkt": "PROJCRS[\"WGS 84 / UTM zone 30N\",BASEGEOGCRS[\"WGS 84\",DATUM[\"World Geodetic System 1984\",ELLIPSOID[\"WGS 84\",6378137,298.257223563,LENGTHUNIT[\"metre\",1]]],PRIMEM[\"Greenwich\",0,ANGLEUNIT[\"degree\",0.0174532925199433]],ID[\"EPSG\",4326]],CONVERSION[\"UTM zone 30N\",METHOD[\"Transverse Mercator\",ID[\"EPSG\",9807]],PARAMETER[\"Latitude of natural origin\",0,ANGLEUNIT[\"degree\",0.0174532925199433],ID[\"EPSG\",8801]],PARAMETER[\"Longitude of natural origin\",-3,ANGLEUNIT[\"degree\",0.0174532925199433],ID[\"EPSG\",8802]],PARAMETER[\"Scale factor at natural origin\",0.9996,SCALEUNIT[\"unity\",1],ID[\"EPSG\",8805]],PARAMETER[\"False easting\",500000,LENGTHUNIT[\"metre\",1],ID[\"EPSG\",8806]],PARAMETER[\"False northing\",0,LENGTHUNIT[\"metre\",1],ID[\"EPSG\",8807]]],CS[Cartesian,2],AXIS[\"easting\",east,ORDER[1],LENGTHUNIT[\"metre\",1]],AXIS[\"northing\",north,ORDER[2],LENGTHUNIT[\"metre\",1]],ID[\"EPSG\",32630]]",
           "semi_major_axis": 6378137.0,
           "semi_minor_axis": 6356752.314245179,
           "inverse_flattening": 298.257223563,
@@ -861,10 +893,56 @@
           "longitude_of_central_meridian": -3.0,
           "false_easting": 500000.0,
           "false_northing": 0.0,
-          "scale_factor_at_central_meridian": 0.9996,
-          "spatial_ref": "PROJCS[\"WGS 84 / UTM zone 30N\",GEOGCS[\"WGS 84\",DATUM[\"WGS_1984\",SPHEROID[\"WGS 84\",6378137,298.257223563]],PRIMEM[\"Greenwich\",0],UNIT[\"degree\",0.0174532925199433,AUTHORITY[\"EPSG\",\"9122\"]],AUTHORITY[\"EPSG\",\"4326\"]],PROJECTION[\"Transverse_Mercator\"],PARAMETER[\"latitude_of_origin\",0],PARAMETER[\"central_meridian\",-3],PARAMETER[\"scale_factor\",0.9996],PARAMETER[\"false_easting\",500000],PARAMETER[\"false_northing\",0],UNIT[\"metre\",1],AXIS[\"Easting\",EAST],AXIS[\"Northing\",NORTH],AUTHORITY[\"EPSG\",\"32630\"]]",
-          "GeoTransform": "526080.0 10.0 0.0 627620.0 0.0 -10.0"
+          "scale_factor_at_central_meridian": 0.9996
         },
+        "zarr_format": 3,
+        "node_type": "array",
+        "storage_transformers": []
+      },
+      "scl/var_order": {
+        "shape": [
+          1
+        ],
+        "data_type": {
+          "name": "fixed_length_utf32",
+          "configuration": {
+            "length_bytes": 16
+          }
+        },
+        "chunk_grid": {
+          "name": "regular",
+          "configuration": {
+            "chunk_shape": [
+              1
+            ]
+          }
+        },
+        "chunk_key_encoding": {
+          "name": "default",
+          "configuration": {
+            "separator": "/"
+          }
+        },
+        "fill_value": "",
+        "codecs": [
+          {
+            "name": "bytes",
+            "configuration": {
+              "endian": "little"
+            }
+          },
+          {
+            "name": "zstd",
+            "configuration": {
+              "level": 0,
+              "checksum": false
+            }
+          }
+        ],
+        "attributes": {},
+        "dimension_names": [
+          "var"
+        ],
         "zarr_format": 3,
         "node_type": "array",
         "storage_transformers": []
@@ -977,7 +1055,7 @@
           "configuration": {
             "chunk_shape": [
               1,
-              255,
+              510,
               510
             ]
           }
@@ -1028,7 +1106,7 @@
           "configuration": {
             "chunk_shape": [
               1,
-              255,
+              510,
               510
             ]
           }
@@ -1079,7 +1157,7 @@
           "configuration": {
             "chunk_shape": [
               1,
-              255,
+              510,
               510
             ]
           }
@@ -1130,7 +1208,7 @@
           "configuration": {
             "chunk_shape": [
               1,
-              255,
+              510,
               510
             ]
           }
@@ -1181,7 +1259,7 @@
           "configuration": {
             "chunk_shape": [
               1,
-              255,
+              510,
               510
             ]
           }
@@ -1232,7 +1310,7 @@
           "configuration": {
             "chunk_shape": [
               1,
-              255,
+              510,
               510
             ]
           }
@@ -1283,7 +1361,7 @@
           "configuration": {
             "chunk_shape": [
               1,
-              255,
+              510,
               510
             ]
           }
@@ -1334,7 +1412,7 @@
           "configuration": {
             "chunk_shape": [
               1,
-              255,
+              510,
               510
             ]
           }
@@ -1385,7 +1463,7 @@
           "configuration": {
             "chunk_shape": [
               1,
-              255,
+              510,
               510
             ]
           }
@@ -1436,7 +1514,7 @@
           "configuration": {
             "chunk_shape": [
               1,
-              255,
+              510,
               510
             ]
           }
@@ -1487,7 +1565,7 @@
           "configuration": {
             "chunk_shape": [
               1,
-              255,
+              510,
               510
             ]
           }
@@ -1538,7 +1616,7 @@
           "configuration": {
             "chunk_shape": [
               1,
-              255,
+              510,
               510
             ]
           }
@@ -1579,7 +1657,7 @@
       },
       "sentinel_2_l2a/spatial_ref": {
         "shape": [],
-        "data_type": "int64",
+        "data_type": "int32",
         "chunk_grid": {
           "name": "regular",
           "configuration": {
@@ -1609,7 +1687,8 @@
           }
         ],
         "attributes": {
-          "crs_wkt": "PROJCS[\"WGS 84 / UTM zone 30N\",GEOGCS[\"WGS 84\",DATUM[\"WGS_1984\",SPHEROID[\"WGS 84\",6378137,298.257223563]],PRIMEM[\"Greenwich\",0],UNIT[\"degree\",0.0174532925199433,AUTHORITY[\"EPSG\",\"9122\"]],AUTHORITY[\"EPSG\",\"4326\"]],PROJECTION[\"Transverse_Mercator\"],PARAMETER[\"latitude_of_origin\",0],PARAMETER[\"central_meridian\",-3],PARAMETER[\"scale_factor\",0.9996],PARAMETER[\"false_easting\",500000],PARAMETER[\"false_northing\",0],UNIT[\"metre\",1],AXIS[\"Easting\",EAST],AXIS[\"Northing\",NORTH],AUTHORITY[\"EPSG\",\"32630\"]]",
+          "spatial_ref": "PROJCRS[\"WGS 84 / UTM zone 30N\",BASEGEOGCRS[\"WGS 84\",DATUM[\"World Geodetic System 1984\",ELLIPSOID[\"WGS 84\",6378137,298.257223563,LENGTHUNIT[\"metre\",1]]],PRIMEM[\"Greenwich\",0,ANGLEUNIT[\"degree\",0.0174532925199433]],ID[\"EPSG\",4326]],CONVERSION[\"UTM zone 30N\",METHOD[\"Transverse Mercator\",ID[\"EPSG\",9807]],PARAMETER[\"Latitude of natural origin\",0,ANGLEUNIT[\"degree\",0.0174532925199433],ID[\"EPSG\",8801]],PARAMETER[\"Longitude of natural origin\",-3,ANGLEUNIT[\"degree\",0.0174532925199433],ID[\"EPSG\",8802]],PARAMETER[\"Scale factor at natural origin\",0.9996,SCALEUNIT[\"unity\",1],ID[\"EPSG\",8805]],PARAMETER[\"False easting\",500000,LENGTHUNIT[\"metre\",1],ID[\"EPSG\",8806]],PARAMETER[\"False northing\",0,LENGTHUNIT[\"metre\",1],ID[\"EPSG\",8807]]],CS[Cartesian,2],AXIS[\"easting\",east,ORDER[1],LENGTHUNIT[\"metre\",1]],AXIS[\"northing\",north,ORDER[2],LENGTHUNIT[\"metre\",1]],ID[\"EPSG\",32630]]",
+          "crs_wkt": "PROJCRS[\"WGS 84 / UTM zone 30N\",BASEGEOGCRS[\"WGS 84\",DATUM[\"World Geodetic System 1984\",ELLIPSOID[\"WGS 84\",6378137,298.257223563,LENGTHUNIT[\"metre\",1]]],PRIMEM[\"Greenwich\",0,ANGLEUNIT[\"degree\",0.0174532925199433]],ID[\"EPSG\",4326]],CONVERSION[\"UTM zone 30N\",METHOD[\"Transverse Mercator\",ID[\"EPSG\",9807]],PARAMETER[\"Latitude of natural origin\",0,ANGLEUNIT[\"degree\",0.0174532925199433],ID[\"EPSG\",8801]],PARAMETER[\"Longitude of natural origin\",-3,ANGLEUNIT[\"degree\",0.0174532925199433],ID[\"EPSG\",8802]],PARAMETER[\"Scale factor at natural origin\",0.9996,SCALEUNIT[\"unity\",1],ID[\"EPSG\",8805]],PARAMETER[\"False easting\",500000,LENGTHUNIT[\"metre\",1],ID[\"EPSG\",8806]],PARAMETER[\"False northing\",0,LENGTHUNIT[\"metre\",1],ID[\"EPSG\",8807]]],CS[Cartesian,2],AXIS[\"easting\",east,ORDER[1],LENGTHUNIT[\"metre\",1]],AXIS[\"northing\",north,ORDER[2],LENGTHUNIT[\"metre\",1]],ID[\"EPSG\",32630]]",
           "semi_major_axis": 6378137.0,
           "semi_minor_axis": 6356752.314245179,
           "inverse_flattening": 298.257223563,
@@ -1624,9 +1703,7 @@
           "longitude_of_central_meridian": -3.0,
           "false_easting": 500000.0,
           "false_northing": 0.0,
-          "scale_factor_at_central_meridian": 0.9996,
-          "spatial_ref": "PROJCS[\"WGS 84 / UTM zone 30N\",GEOGCS[\"WGS 84\",DATUM[\"WGS_1984\",SPHEROID[\"WGS 84\",6378137,298.257223563]],PRIMEM[\"Greenwich\",0],UNIT[\"degree\",0.0174532925199433,AUTHORITY[\"EPSG\",\"9122\"]],AUTHORITY[\"EPSG\",\"4326\"]],PROJECTION[\"Transverse_Mercator\"],PARAMETER[\"latitude_of_origin\",0],PARAMETER[\"central_meridian\",-3],PARAMETER[\"scale_factor\",0.9996],PARAMETER[\"false_easting\",500000],PARAMETER[\"false_northing\",0],UNIT[\"metre\",1],AXIS[\"Easting\",EAST],AXIS[\"Northing\",NORTH],AUTHORITY[\"EPSG\",\"32630\"]]",
-          "GeoTransform": "526080.0 10.0 0.0 627620.0 0.0 -10.0"
+          "scale_factor_at_central_meridian": 0.9996
         },
         "zarr_format": 3,
         "node_type": "array",
@@ -1673,6 +1750,54 @@
         },
         "dimension_names": [
           "time"
+        ],
+        "zarr_format": 3,
+        "node_type": "array",
+        "storage_transformers": []
+      },
+      "sentinel_2_l2a/var_order": {
+        "shape": [
+          12
+        ],
+        "data_type": {
+          "name": "fixed_length_utf32",
+          "configuration": {
+            "length_bytes": 12
+          }
+        },
+        "chunk_grid": {
+          "name": "regular",
+          "configuration": {
+            "chunk_shape": [
+              12
+            ]
+          }
+        },
+        "chunk_key_encoding": {
+          "name": "default",
+          "configuration": {
+            "separator": "/"
+          }
+        },
+        "fill_value": "",
+        "codecs": [
+          {
+            "name": "bytes",
+            "configuration": {
+              "endian": "little"
+            }
+          },
+          {
+            "name": "zstd",
+            "configuration": {
+              "level": 0,
+              "checksum": false
+            }
+          }
+        ],
+        "attributes": {},
+        "dimension_names": [
+          "var"
         ],
         "zarr_format": 3,
         "node_type": "array",

@@ -108,7 +108,9 @@ class Prithvi(nn.Module):
                 f"{model_name!r} not in {type(self).__name__}.MODEL_NAMES; must be one of {list(model_names)}"
             )
 
-        self.out_indices = out_indices if out_indices is not None else list(model_names[model_name]['out_indices'])
+        # explicit annotation: nn.Module.__setattr__'s stub type (Tensor | Module) would
+        # otherwise override inference for every later self.out_indices read.
+        self.out_indices: list[int] = out_indices if out_indices is not None else list(model_names[model_name]['out_indices'])
         # bands=None -> terratorch assumes the pretrained 6-band HLS S30 order itself
         # (prithvi_vit.py: "model_bands is None -> model_bands = pretrained_bands").
         # Any other in_channels needs an explicit same-length list; plain ints carry
@@ -128,7 +130,9 @@ class Prithvi(nn.Module):
             vpt_n_tokens=vpt_n_tokens,
             vpt_dropout=vpt_dropout,
         )
-        self.model = cast(PrithviViT, model)
+        # explicit annotation: nn.Module.__setattr__'s stub type (Tensor | Module) would
+        # otherwise override cast()'s narrowing for every later self.model read.
+        self.model: PrithviViT = cast(PrithviViT, model)
 
         # ViT: same embed_dim/spatial stride at every block, unlike a CNN's per-stage
         # channel growth + downsampling — still indexed per out_index for robustness.
@@ -144,21 +148,12 @@ class Prithvi(nn.Module):
     def forward(
         self,
         x: torch.Tensor,
-        temporal_coords: torch.Tensor | None = None,
-        location_coords: torch.Tensor | None = None,
     ) -> list[torch.Tensor]:
         """Forward pass for the backbone — raw passthrough to the wrapped model.
 
         Args:
             x: Input tensor of shape (batch_size, in_chans, height, width).
-            temporal_coords: (B, num_frames, 2) float32 — (year, day-of-year) per
-                frame, day-of-year 0-indexed (Jan 1st = 0), real calendar values,
-                not normalized. Only has an effect on a `coords_encoding=["time", ...]`
-                model (`PrithviTL`'s variants); ignored otherwise.
-            location_coords: (B, 2) float32 — (lat, lon) in degrees, real values.
-                Only has an effect on a `coords_encoding=[..., "location"]` model
-                (`PrithviTL`'s variants); ignored otherwise.
-
+            
         Returns:
             List of per-`out_indices` token tensors, each (B, 1 + N_patches, embed_dim)
             — CLS token at index 0.
@@ -170,7 +165,7 @@ class Prithvi(nn.Module):
         """
         # (B, 1+N_patches, embed_dim) per block, full depth -- see forward_pyramid for the
         # out_indices-sliced, spatially-reshaped version used by the actual pipeline.
-        return self.model(x, temporal_coords=temporal_coords, location_coords=location_coords)
+        return self.model(x, temporal_coords=None, location_coords=None)
 
     @model_context()
     def forward_pyramid(self, image: torch.Tensor) -> tuple[list, list]:
@@ -272,12 +267,12 @@ class PrithviTL(Prithvi):
             ... }
             >>> out = PrithviTL().forward_pyramid(ctx)
         """
-        features = self.model.forward_features(  # list[depth] of (B, 1+N_patches, embed_dim), CLS at idx 0
+        features = self.model.forward_features(  # list[depth] of (B, 1+N_patches, embed_dim), CLS at idx 0 # type: ignore
             image, temporal_coords=temporal_coords, location_coords=location_coords
         )
-        features = [features[i] for i in self.out_indices]  # list[len(out_indices)] of (B, 1+N_patches, embed_dim)
+        features = [features[i] for i in self.out_indices]  # pyright: ignore[reportGeneralTypeIssues] # list[len(out_indices)] of (B, 1+N_patches, embed_dim)
         prefix_tokens = [f[:, :1, :] for f in features]  # list[len(out_indices)] of (B, 1, embed_dim) -- CLS only
-        pyramid = self.model.prepare_features_for_image_model(features)  # list of (B, embed_dim, H/patch, W/patch)
+        pyramid = self.model.prepare_features_for_image_model(features)  # type: ignore # list of (B, embed_dim, H/patch, W/patch)
         return pyramid, prefix_tokens
 
 

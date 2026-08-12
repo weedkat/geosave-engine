@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from geosave_engine.geodata.tile import GeoTile
+from geosave_engine.geodata.spatial import GeoTile
 from geosave_engine.geodata.pipeline import GeoPipeline
 from geosave_engine.geodata.stac import StacClient
 from geosave_engine.geodata.stac.source import StacSource

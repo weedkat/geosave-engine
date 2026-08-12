@@ -7,7 +7,7 @@ from typing import Annotated, Any, Iterator, Literal
 
 from pydantic import BaseModel, Field, TypeAdapter, field_validator
 
-from geosave_engine.geodata.tile import AnchorDatetime, GeoAnchor
+from geosave_engine.geodata.spatial import AnchorDatetime, GeoAnchor
 from geosave_engine.geodata.utils import chunk_geotile
 
 

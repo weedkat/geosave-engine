@@ -1,22 +1,24 @@
-"""PyTorch dataset classes: rasters (geo/non-geo) and label tables, joinable by key."""
-from geosave_engine.geodata.datasets.base_dataset import BaseDataset
-from geosave_engine.geodata.datasets.coco_dataset import CocoDataset
-from geosave_engine.geodata.datasets.geo_dataset import GeoDataset
-from geosave_engine.geodata.datasets.geostack_dataset import GeoStackDataset
-from geosave_engine.geodata.datasets.intersection_dataset import IntersectionDataset
-from geosave_engine.geodata.datasets.non_geo_dataset import NonGeoDataset
-from geosave_engine.geodata.datasets.samplers import stack_samples
-from geosave_engine.geodata.datasets.table_dataset import TableDataset
-from geosave_engine.geodata.datasets.yolo_dataset import YoloDataset
+"""PyTorch dataset classes over complete, standalone samples.
+
+Two kinds, both index-based (no string key/join layer): `StackDataset`
+reads raw `GeoStack` zarr directly off disk; `StoreDataset` reads a packed
+`SampleStore`. A dataset here always renders a complete sample on its
+own — combine sources upstream (e.g. into one `SampleStore`) instead of
+downstream. Custom formats not covered by either: write your own
+`torch.utils.data.Dataset`.
+
+SKELETON — both classes are being rebuilt from scratch for a consistent
+shape, see their own module docstrings.
+
+ML-input only — samples are keyed and materialized whole for training/inference.
+For windowed access to a big raster (serving/viewing), see geodata.datastore instead.
+"""
+from .stack import StackDataset
+from .store import StoreDataset
+from .samplers import stack_samples
 
 __all__ = [
-    "BaseDataset",
-    "CocoDataset",
-    "GeoDataset",
-    "GeoStackDataset",
-    "IntersectionDataset",
-    "NonGeoDataset",
-    "TableDataset",
-    "YoloDataset",
+    "StackDataset",
+    "StoreDataset",
     "stack_samples",
 ]

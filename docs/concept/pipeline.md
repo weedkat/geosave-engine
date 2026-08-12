@@ -33,9 +33,7 @@ every stage below — full API in [geotile.md](geotile.md).
 ## Anatomy of a GeoPipeline
 
 ```python
-from functools import cached_property
-
-from geosave_engine.geodata.tile import GeoTile
+from geosave_engine.geodata.spatial import GeoTile
 from geosave_engine.geodata.pipeline import GeoPipeline
 from geosave_engine.geodata.stac import StacClient
 from geosave_engine.geodata.stac.source import StacSource
@@ -46,7 +44,6 @@ stac_client = StacClient.cdse()
 class Sentinel2OnlyPipeline(GeoPipeline):
     """Fetch Sentinel-2 L1C RGB bands for one anchor tile."""
 
-    @cached_property
     def sources(self) -> dict[str, StacSource]:
         return {
             "sentinel_2_l1c": stac_client.source(
@@ -61,10 +58,10 @@ class Sentinel2OnlyPipeline(GeoPipeline):
 
 | Method | Override when | Default |
 | --- | --- | --- |
-| `sources` (property) | Your pipeline pulls from named sources (the common case) — one `.load(anchor)` call per source. Use `cached_property` if building a source needs a live client (STAC auth, etc.), so constructing the pipeline just to call `.ingest()` stays network-free until actually used. | `{}` |
+| `sources` | Your pipeline pulls from named sources (the common case) — one `.load(anchor)` call per source. A plain method, called fresh by `fetch()` on every `ingest()` — build the STAC client once in `__init__` and store it as an attribute (as above), so this method only ever builds cheap `StacSource` objects from it, not a live connection. | `{}` |
 | `fetch(anchor)` | Almost never — only if your anchor already carries its own data and there's no I/O left to do (e.g. a label pipeline reading pixels an anchor built via `GeoTile.from_geotiff` already loaded). | Calls `.load(anchor)` on every entry in `sources`, aligning results across sources by real time overlap. |
 | `preprocess(raw)` | Deriving final layers from fetched raw layers — pure, no I/O. | Passthrough. |
-| `context(tiles)` | Supplying extra per-sample keys a model needs — e.g. a Prithvi/Clay encoder's `temporal_coords`/`location_coords` — beyond the tensor + `"tiles"` every sample already carries. See [Supplying model-specific context](#supplying-model-specific-context) below. | Returns `{}` — no extra keys. |
+| `context(tiles)` | Supplying extra per-sample keys a model needs — e.g. a Prithvi/Clay encoder's `temporal_coords`/`location_coords` — beyond the tensor + `"geobox"`/`"geotags"` every sample already carries. See [Supplying model-specific context](#supplying-model-specific-context) below. | Returns `{}` — no extra keys. |
 | `ingest(anchor)` | Rarely — it's just `preprocess(fetch(anchor))`, wrapped into a `GeoStack` per aligned sample. | As described. |
 
 `ingest(anchor) -> Iterator[GeoStack]` is the one method every pipeline is
@@ -204,7 +201,7 @@ For labels or any pre-downloaded raster that isn't self-describing about its
 acquisition date, `GeoTile.from_geotiff` derives one from the filename:
 
 ```python
-from geosave_engine.geodata.tile import GeoTile
+from geosave_engine.geodata.spatial import GeoTile
 
 anchors = [GeoTile.from_geotiff(p, load_data=True) for p in Path("data/raw/train/labels/").glob("*.tif")]
 ```
@@ -227,10 +224,11 @@ cloud/shadow mask math in `_ingest_cloud_mask`/`_ingest_ndvi`):
 class Pipeline(GeoPipeline):
     """Sentinel-2 imagery + cloud/shadow mask + NDVI for one anchor."""
 
-    @cached_property
+    def __init__(self) -> None:
+        self.stac_client = StacClient.cdse()
+
     def sources(self) -> dict[str, StacSource]:
-        stac_client = StacClient.cdse()
-        return {"sentinel_2_l1c": stac_client.source("sentinel-2-l1c", bands=L1C_BANDS, max_nodata_fraction=0.1)}
+        return {"sentinel_2_l1c": self.stac_client.source("sentinel-2-l1c", bands=L1C_BANDS, max_nodata_fraction=0.1)}
 
     def preprocess(self, raw: dict[str, GeoTile]) -> dict[str, GeoTile]:
         s2 = raw["sentinel_2_l1c"]
@@ -251,13 +249,19 @@ Everything `_ingest_cloud_mask`/`_ingest_ndvi` need is already sitting on
 
 ## Supplying model-specific context
 
-Every rendered sample always carries its tensors plus `"tiles"`
-(`dict[LayerName, GeoTile]`, the real tile per layer, lazy when loaded from
-disk — see [geotile.md](geotile.md)). Some models need more than that: a Prithvi
-`_tl` encoder wants `temporal_coords`/`location_coords`; Clay wants
-`time`/`latlon`/`gsd`. `GeoPipeline.context(tiles)` is where a pipeline
-supplies exactly those extra keys — overridable, same pattern as
-`preprocess`, default `{}` (no extra keys):
+Every rendered sample always carries its tensors plus `"geobox"`/`"geotags"`
+(JSON-safe dicts — see [model.md](model.md#what-are-the-geoboxgeotags-keys)).
+Some models need more than that: a Prithvi `_tl` encoder wants
+`temporal_coords`/`location_coords`; Clay wants `time`/`latlon`/`gsd`.
+`GeoPipeline.context(tiles)` is where a pipeline supplies exactly those extra
+keys — overridable, same pattern as `preprocess`, default `{}` (no extra
+keys). `context()` itself still gets the real, live `dict[LayerName,
+GeoTile]` (not the JSON-safe `"geotags"` form) — but unlike `preprocess`, it
+runs exactly **once**, called by `ingest()` right after `preprocess()`
+(not at every render): its result rides on the yielded `GeoStack` as its own
+`.context` field from then on, persisted through `to_zarr`/restored by
+`from_zarr`, so reading a saved sample a thousand times over a training run
+costs the same as reading it once — no per-epoch recomputation.
 
 ```python
 class Pipeline(GeoPipeline):
@@ -286,12 +290,14 @@ dict (see [model.md](model.md) for `ContextChain`/`model_context`) — one
 pipeline's `context()` can serve several different model architectures at
 once without any of them needing to know about the others' keys.
 
-Reaches every consumer that renders a sample: `GeoStack.to_tensor(context_fn=...)`,
-`GeoStackDataset(context_fn=...)`, and `ingest_to_tensor` all take/use the same
-function. `SemanticSegmentationDataModule`'s own `pipeline` arg wires a
-`GeoPipeline` instance's `.context` into every split's `GeoStackDataset`
-automatically (see [model.md](model.md#semanticsegmentationdatamodule)) —
-nothing to call by hand for the standardized training path.
+Only one call site: `ingest()`. Every consumer that renders a sample later
+— `GeoStack.to_tensor()`/`to_numpy()`, `StackDataset`, `ingest_to_tensor` —
+just reads the already-computed `GeoStack.context` field, no `context_fn`
+to configure or pass around. `SemanticSegmentationDataModule` doesn't take
+a `pipeline` arg at all (see
+[model.md](model.md#semanticsegmentationdatamodule)) — whichever `Pipeline`
+did the ingesting already baked its `context()` output into every `.zarr`
+it wrote.
 
 ## Handling labels
 
@@ -316,16 +322,21 @@ def ingest_group(raw_dir: Path, out_root: Path) -> None:
         if stack_path.exists():
             continue   # already ingested
         for stack in Pipeline().ingest(anchor):   # imagery, unchanged Pipeline
-            stack.add("dynamicworld", build_label(anchor)).save(stack_path)
+            combined = GeoStack(stack, dynamicworld=build_label(anchor))
+            combined.to_zarr(stack_path)
 ```
 
 Why not fold this into `Pipeline.ingest()`: the raw anchor here already *is*
 the label source (`GeoTile.from_geotiff` loaded its pixels), and the remap
 table is tied to one specific dataset release's class encoding — bundling
 it into the general-purpose imagery `Pipeline` would couple two things that
-vary independently. `stack.add(name, tile)` returns a new `GeoStack` with
-the label merged in, ready for one single `.save()` call alongside the
-imagery layers.
+vary independently. `GeoStack(stack, dynamicworld=label)` flattens `stack`'s
+own imagery layers (and its `.context`, if `Pipeline` set any — see
+[Supplying model-specific context](#supplying-model-specific-context)) in
+alongside the new label layer, ready for one single `.to_zarr()` call —
+passing `stack` positionally like this instead of splatting `**stack.tiles`
+is what carries `.context` forward; splatting only the tiles would silently
+drop it.
 
 ## Saving to disk
 
@@ -333,7 +344,7 @@ imagery layers.
 root = Path("data/train")
 for anchor in anchors:
     for stack in pipeline.ingest(anchor):
-        stack.save(root / f"{anchor.stem}.zarr")
+        stack.to_zarr(root / f"{anchor.stem}.zarr")
 ```
 
 Writes `root/<anchor_stem>.zarr` — one Zarr group per layer in each yielded
@@ -359,7 +370,7 @@ call, or a hand-built list for anchors that don't fit an existing source
 ```python
 for anchor in anchors:
     for sample in pipeline.ingest_to_tensor(anchor, sel_bands={"sentinel_2_l1c": ["B04", "B03", "B02"]}):
-        ...  # tensor dict + "tiles", same shape GeoStackDataset.__getitem__ returns,
+        ...  # tensor dict + "geobox"/"geotags", same shape StackDataset.__getitem__ returns,
              # plus this pipeline's own context() keys if it overrides one
 ```
 
@@ -367,12 +378,12 @@ Same one-anchor contract as `ingest()` — looping over many anchors is the
 caller's own plain loop around it, not this method's job (see
 [Philosophy](#philosophy) above). A plain generator method, not a Dataset
 class — for predicting straight from a live source with no disk round
-trip. Always applies `self.context`
-(see [Supplying model-specific context](#supplying-model-specific-context)
-above) — the live-predict path and the disk-training path
-(`GeoStackDataset(context_fn=...)`) both end up calling the same
-`GeoStack.to_tensor(context_fn=...)`, so a pipeline's `context()` behaves
-identically either way. Wrap it in a one-off `IterableDataset` at the call
+trip. Built on `ingest()`, so `self.context` (see
+[Supplying model-specific context](#supplying-model-specific-context)
+above) is already baked into each yielded `GeoStack` before this renders
+it — the live-predict path and the disk-training path see identical
+`context()` output either way, computed the same once-per-sample way in
+both cases. Wrap it in a one-off `IterableDataset` at the call
 site if a `DataLoader` needs one, and shard it by
 `torch.utils.data.get_worker_info()` there if using `num_workers > 1` —
 `ingest_to_tensor` itself has no worker-awareness.

@@ -27,7 +27,7 @@ Multiple tiles are grouped by ``(name, bands, date)`` first, then split into
 connected components by actual bbox adjacency/overlap (not just centroid
 proximity — an intentional tiling grid has *different* centroids by
 design) — only tiles that are genuinely part of one contiguous area *and*
-the same named layer mosaic together (via ``geosave_engine.geodata.tile.mosaic_spatial``);
+the same named layer mosaic together (via ``geosave_engine.geodata.spatial.mosaic_spatial``);
 anything else facets as its own panel, even if it happens to share bands
 and date. Name comes from the input: a ``dict[str, GeoTile]``/``GeoStack``
 gives each tile its own layer name (so two different layers, e.g. imagery
@@ -62,7 +62,7 @@ from matplotlib.patches import Patch
 from odc.geo.math import apply_affine
 from typing_extensions import Unpack
 
-from geosave_engine.geodata.tile import GeoTile, mosaic_spatial
+from geosave_engine.geodata.spatial import GeoTile, mosaic_spatial
 from geosave_engine.utils.colorize import Palette, colorize
 
 # DejaVu Sans (matplotlib's default) has no CJK glyphs — a reverse-geocoded
@@ -100,7 +100,7 @@ def _resolve_rgb_bands(tile: GeoTile, title: str, rgb_bands: tuple[str, str, str
         raise ValueError(
             f"{title!r}: {tile.num_bands} bands {tile.bands} — which 3 are R/G/B is ambiguous. "
             f"Pass rgb_bands=(r_name, g_name, b_name) to plot(), or set it once via "
-            f"tile.rebase(plot_meta={{'rgb_bands': (r_name, g_name, b_name)}})."
+            f"tile.rebase(rgb_bands=(r_name, g_name, b_name))."
         )
     missing = [b for b in rgb_bands if b not in tile.bands]
     if missing:
@@ -118,10 +118,10 @@ def _detect_panel(
     rgb_bands: tuple[str, str, str] | None,
     polygon_alpha: float,
 ) -> _Panel:
-    """Pick a renderer for `tile`, preferring its own `plot_meta` over the call-level fallback."""
-    rgb_bands = tile.plot_meta.rgb_bands or rgb_bands
-    class_map = tile.plot_meta.class_map or class_map
-    color_map = tile.plot_meta.color_map or color_map
+    """Pick a renderer for `tile`, preferring its own rendering hints over the call-level fallback."""
+    rgb_bands = tile.rgb_bands or rgb_bands
+    class_map = tile.class_map or class_map
+    color_map = tile.color_map or color_map
     if tile.num_bands >= 3:
         return _Panel(
             "rgb", tile, title, rgb_bands=_resolve_rgb_bands(tile, title, rgb_bands), polygon_alpha=polygon_alpha
@@ -134,7 +134,7 @@ def _detect_panel(
             if class_map is None and color_map is None:
                 warnings.warn(
                     f"{title!r}: categorical tile has no class_map/color_map — auto-palette used, "
-                    f"values shown as raw ints. Set via tile.rebase(plot_meta={{'class_map': ..., 'color_map': ...}}) "
+                    f"values shown as raw ints. Set via tile.rebase(class_map=..., color_map=...) "
                     f"for readable labels.",
                     stacklevel=2,
                 )

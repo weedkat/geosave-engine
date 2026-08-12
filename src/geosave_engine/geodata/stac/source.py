@@ -21,7 +21,7 @@ from odc.stac import load as odc_load
 from tenacity import retry, retry_if_exception_type, stop_after_attempt, wait_exponential
 
 from geosave_engine.geodata.errors import AnchorFetchError
-from geosave_engine.geodata.tile import GeoAnchor, GeoTag, GeoTile
+from geosave_engine.geodata.spatial import GeoAnchor, GeoTag, GeoTile
 from geosave_engine.geodata.utils.datetime import DateRange
 
 from .query import StacQuery

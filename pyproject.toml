@@ -77,6 +77,7 @@ dependencies = [
     "xformers>=0.0.35",
     "torchsummary>=1.5.1",
     "xcube-core>=1.6.0",
+    "litdata>=0.2.67",
 ]
 
 [project.urls]

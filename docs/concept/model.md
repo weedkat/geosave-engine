@@ -1,19 +1,34 @@
-# GeoStackDataset and model definition
+# StackDataset and model definition
 
 Reference for turning ingested `.zarr` stores into training batches,
 and for the standardized `SemanticSegmentationTask`/`DataModule` pair. For
 the ordered how-to (pick a path, train, evaluate), see
 [workflow.md](../guide/workflow.md#5-define-the-model-).
 
-## From ingested data to tensors: GeoStackDataset
+Everything on this page is `geodata.datasets` — training-only, whole-sample
+reads. See [geotile.md](geotile.md#small-vs-big-datasets-vs-datastore) for
+how that differs from `geodata.datastore` (windowed, serving/viewing).
 
-`geosave_engine.geodata.datasets.GeoStackDataset` reads a directory of
-`.zarr` stores built via `GeoStack.save()` (see [pipeline.md](pipeline.md)):
+> **Status:** `geodata.datasets` is mid-rehaul — `StackDataset` (below) and
+> `StoreDataset` (a `SampleStore`-backed counterpart, for bulk litdata
+> storage instead of one `.zarr` per anchor) are both currently skeletons
+> (`NotImplementedError` bodies). The shape described here is the settled
+> target design, not yet runnable. `GeoDataset`/`NonGeoDataset`/
+> `IntersectionDataset`/`BaseDataset`/`TableDataset`/`YoloDataset`/
+> `CocoDataset` — an earlier generation of this module — are gone: `SampleStore`
+> is now the primary bulk-storage mechanism, and joining separate
+> single-modality datasets by a shared key was judged out of scope for this
+> library (a data-team concern, not a training-time one).
+
+## From ingested data to tensors: StackDataset
+
+`geosave_engine.geodata.datasets.StackDataset` reads a directory of
+`.zarr` stores built via `GeoStack.to_zarr()` (see [pipeline.md](pipeline.md)):
 
 ```python
-from geosave_engine.geodata.datasets import GeoStackDataset
+from geosave_engine.geodata.datasets import StackDataset
 
-ds = GeoStackDataset("data/train")
+ds = StackDataset("data/train")
 ```
 
 Discovery is `root.rglob("*.zarr")` — every anchor store, at any
@@ -24,9 +39,11 @@ delegates straight to `GeoStack.to_tensor`:
 
 ```python
 {
-    "sentinel_2_l1c": torch.Tensor,   # [C, H, W]
-    "dynamicworld": torch.Tensor,     # [1, H, W]
-    "tiles": dict[str, GeoTile],      # the real tile per layer, see below
+    "sentinel_2_l1c": torch.Tensor,             # [C, H, W]
+    "dynamicworld": torch.Tensor,               # [1, H, W]
+    "geobox": dict,                             # this stack's one shared geobox, JSON-safe
+    "geotags": dict[str, dict],                 # per-layer geotag, JSON-safe, see below
+    # plus whatever keys the ingesting GeoStack's own .context carried, if any
 }
 ```
 
@@ -36,34 +53,43 @@ delegates straight to `GeoStack.to_tensor`:
 | `required_layers` | `None` (all layers) | Only include anchors whose `.zarr` store has every one of these layer names (as Zarr groups) — a store missing one is silently excluded. |
 | `sel_bands` | `None` (all bands) | `{layer: [band, ...]}` — subset bands per layer. |
 | `dtype_override` | `None` (saved dtype) | `{layer: torch.dtype}` — cast a layer's tensor, e.g. a saved `uint8` mask to `bool`. |
-| `context_fn` | `None` (no extra keys) | `dict[LayerName, GeoTile] -> dict[str, torch.Tensor]` — merged into every sample, same function a `GeoPipeline.context` override supplies (see [pipeline.md](pipeline.md#supplying-model-specific-context)). |
 
-**`fields` property** (inherited from `BaseDataset`) — the dict keys the
-first sample has (`list[str]`, includes `"tiles"`), useful for
-sanity-checking a dataset without indexing into it by hand.
+No `context_fn` here — a `GeoStack`'s `context` (see
+[the geobox/geotags section below](#what-are-the-geoboxgeotags-keys)) is
+computed once at ingest time and persisted in the `.zarr` itself; `render`
+just reads it back, nothing to configure per dataset.
 
-**Building your own Dataset:** subclass `GeoStackDataset` when you need
+**Building your own Dataset:** subclass `StackDataset` when you need
 per-sample logic beyond what it gives you. For streaming inference over
 fresh data without ingesting to disk first, there's
 [ingest_to_tensor()](pipeline.md).
 
-## What is the tiles key
+## What are the geobox/geotags keys
 
-Every sample always carries a `"tiles"` key — `dict[LayerName, GeoTile]`,
-the real tile per layer (not configurable, always present regardless of
-layer content). Data stays lazy when the tile was loaded lazily (the normal
-case — `GeoStackDataset` opens with `load_data=False`), so carrying it costs
-nothing beyond spatial identity unless a consumer actually reads `.data`.
-It's a dict, not one collapsed anchor: `align()` guarantees every layer
-shares the same `geobox`, but not `datetime`/`metadata`/`polygon` — picking
-one representative layer would silently lose the others' real values, so a
-consumer that needs exactly one picks whichever layer's tile it actually
-means (usually the model's own input layer, e.g. `tiles[image_key]`).
+Every sample always carries `"geobox"` and `"geotags"` — plain, JSON-safe
+dicts (not configurable, always present regardless of layer content):
+`"geobox"` is this stack's one shared geobox (`{"shape", "affine", "crs", "centroid"}`
+— `"centroid"` is a precomputed WGS84 `(lon, lat)`, done once here since
+reprojecting a GeoBox is real work, not something a model's hot forward
+loop should redo per call);
+`"geotags"` is `dict[LayerName, dict]`, one geotag per layer. Geobox is
+genuinely shared — `align()` guarantees every layer sits on the same grid —
+but datetime/metadata/polygon aren't, so geotags stays per-layer rather than
+one collapsed value: picking one representative layer would silently lose
+the others' real values, so a consumer that needs exactly one picks
+whichever layer's geotag it actually means (usually the model's own input
+layer, e.g. `geotags[image_key]`).
 
-`"tiles"` is not per-sample metadata extraction on its own — a model that
+Neither key is per-sample metadata extraction on its own — a model that
 needs derived context (day-of-year, lat/lon as a `temporal_coords` tensor,
-etc.) gets it from a `GeoPipeline.context()` override instead, merged into
-the sample alongside `"tiles"` at render time. See
+etc.) gets it from a `GeoPipeline.context()` override instead. Unlike
+`"geobox"`/`"geotags"`, this isn't computed at render time: `GeoStack` has
+its own `context: dict[str, torch.Tensor]` field, set once when
+`GeoPipeline.ingest()` builds the stack, persisted through `to_zarr`/
+restored by `from_zarr` (a root-level attr), and merged into
+`to_tensor()`/`to_numpy()`'s output every time after that with no
+recomputation — reading a saved `.zarr` a thousand times over a training
+run costs the same as reading it once. See
 [pipeline.md](pipeline.md#supplying-model-specific-context) for the full
 mechanism and a real example.
 
@@ -75,7 +101,7 @@ dimension (`(time, band, y, x)`) natively — a plain GeoTIFF can't.
 array plus datetime, metadata, and polygon footprint as store attributes —
 no guessing from the path.
 
-`GeoStackDataset`'s discovery pass opens every store with `load_data=False` —
+`StackDataset`'s discovery pass opens every store with `load_data=False` —
 header-only, geobox and datetime read from attrs without touching pixels.
 Scanning a large `data/train/` directory to build the sample index is cheap
 for exactly this reason. Pixels are only materialized when `__getitem__`
@@ -83,25 +109,15 @@ calls `tile.to_tensor()`, which clips to the tile's bbox and reads — so the
 cost of one epoch is proportional to what the `DataLoader` actually visits,
 not to how many `.zarr` stores exist on disk.
 
-## Single-file rasters: GeoDataset and NonGeoDataset
+## Bulk litdata storage: StoreDataset
 
-For data that isn't ingested into `.zarr` anchors — an already-aligned
-external dataset, a plain image folder — `GeoDataset` and `NonGeoDataset`
-read one file per sample instead of one anchor folder per sample. Same
-shape, different treatment of geo metadata:
-
-- `GeoDataset(root, extension)` — `.tif`/`.tiff`/`.zarr` with real,
-  usable CRS/geobox. Reads via `GeoTile.from_geotiff`/`from_zarr`, so
-  `render()` returns `{layer_name: Tensor, "anchor": GeoAnchor}` — the
-  file's own georeferencing preserved.
-- `NonGeoDataset(root, extension)` — `.tif`/`.zarr`/`.jpg`/`.png`/`.jp2`
-  read literally, no CRS interpretation. Use this when the file has no
-  geo metadata, or it isn't needed.
-
-Both are one-file-per-sample, one-modality-per-instance — join several
-(e.g. image + label) with `IntersectionDataset`/`&` on their shared stem
-key, same as `GeoStackDataset`'s layers are joined inside one anchor
-store.
+For data that doesn't need per-anchor `.zarr` folders — high-throughput
+training reads, or an existing `SampleStore` bulk export — `StoreDataset`
+wraps a `litdata.StreamingDataset` over a `SampleStore`. Complete-sample-only,
+same as `StackDataset`: neither class joins separate single-modality
+datasets by a shared key (see the status note above) — a sample carries
+everything it needs, or it belongs in a different `SampleStore`/`.zarr`
+anchor.
 
 ## stack_samples
 
@@ -111,26 +127,29 @@ batched dict, recursively, by value type:
 ```python
 def stack_samples(samples: Iterable[Mapping[str, Any]]) -> dict[str, Any]:
     # tensor values  -> torch.stack(values)      (one stacked Tensor)
-    # dict values     -> stack_samples(values)     (recurse — this is what batches "tiles")
+    # dict values     -> stack_samples(values)     (recurse — this is what batches "geotags")
     # anything else  -> list(values)               (gathered as-is)
 ```
 
-Because `GeoStackDataset.__getitem__` keys samples by raw layer name, the batch
+Because `StackDataset.__getitem__` keys samples by raw layer name, the batch
 you get back has one tensor key per ingested layer, unchanged, plus
-`"tiles"` recursed one level (dict values -> `stack_samples` again) into
-one `list[GeoTile]` per layer:
+`"geobox"` gathered as a `list[dict]` (length B, one per sample — not a
+shared value, since different samples in a batch cover different places)
+and `"geotags"` recursed one level (dict values -> `stack_samples` again)
+into one `list[dict]` per layer:
 
 ```python
 {
     "sentinel_2_l1c": Tensor[B, C, H, W],
     "dynamicworld": Tensor[B, 1, H, W],
-    "tiles": {"sentinel_2_l1c": [GeoTile, ...], "dynamicworld": [GeoTile, ...]},  # each list length B
+    "geobox": [dict, ...],  # length B
+    "geotags": {"sentinel_2_l1c": [dict, ...], "dynamicworld": [dict, ...]},  # each list length B
 }
 ```
 
-No new collation code needed for `"tiles"` — `stack_samples`'s existing
-dict-recursion handles it for free, same as it always has for any nested
-dict value.
+No new collation code needed for either key — `stack_samples`'s existing
+dict-recursion and plain-value gathering handle them for free, same as it
+always has for any nested dict value.
 
 ## SemanticSegmentationTask
 
@@ -165,7 +184,7 @@ class or channel indices.
 | `class_map` | **Yes** | `{class_id: class_name}`, dense from 0. `num_classes` is `len(class_map)`. |
 | `band_map` | **Yes** | `{channel_idx: band_name}`, dense from 0. `in_channels` is `len(band_map)`. |
 | `color_map` | No | `{class_id: hex_color}` — prediction visualization only; skipped with a warning if unset. |
-| `image_key` / `label_key` / `mask_key` | No (`image`/`label`/`mask`) | Batch keys — point these at your `GeoStackDataset`'s raw layer names instead of requiring a renaming step. |
+| `image_key` / `label_key` / `mask_key` | No (`image`/`label`/`mask`) | Batch keys — point these at your `StackDataset`'s raw layer names instead of requiring a renaming step. |
 | `ignore_index` | No (`255`) | Class index excluded from loss and metrics. |
 | `input_size` | No (`224`) | Spatial patch size for sliding-window inference. |
 | `loss` / `optimizer` / `scheduler` | No | Registry keys — see `ml/registry/{loss,optimizer,scheduler}.py` for what's registered (`CELoss`/`OHEMLoss`; `AdamW`/`Adam`/`SGD`/`RMSprop`/`Adagrad`; `CosineAnnealingLR`/`LRScheduler`). |
@@ -187,16 +206,15 @@ map removes the second, redundant source of truth entirely.
 ## SemanticSegmentationDataModule
 
 `geosave_engine.ml.tasks.SemanticSegmentationDataModule` pairs with the
-task above, building one `GeoStackDataset` per split.
+task above, building one `StackDataset` per split.
 
 | Arg | Required | Purpose |
 | --- | --- | --- |
-| `train_root` | For `fit` | `GeoStackDataset` root for the train split. |
-| `val_root` | For `fit`/`validate` | `GeoStackDataset` root for the val split. |
-| `test_root` | For `test` | `GeoStackDataset` root for the test split. |
-| `predict_root` | For `predict` | `GeoStackDataset` root for the predict split. |
-| `sel_bands` / `dtype_override` | No | Forwarded straight to each `GeoStackDataset`. |
-| `pipeline` | No | A `GeoPipeline` whose `.context` supplies per-sample context — `None` omits context entirely. |
+| `train_root` | For `fit` | `StackDataset` root for the train split. |
+| `val_root` | For `fit`/`validate` | `StackDataset` root for the val split. |
+| `test_root` | For `test` | `StackDataset` root for the test split. |
+| `predict_root` | For `predict` | `StackDataset` root for the predict split. |
+| `sel_bands` / `dtype_override` | No | Forwarded straight to each `StackDataset`. |
 | `batch_size` / `num_workers` / `pin_memory` / `prefetch_factor` / `persistent_workers` | No | Standard `DataLoader` args. |
 
 Each split's root is its own param, not a fixed subfolder name under one
@@ -207,17 +225,16 @@ force awkward symlinks/copies to satisfy it. Calling `setup("fit")` without
 `train_root` set raises a clear `ValueError` naming the missing arg, rather
 than failing deeper inside dataset construction.
 
-`pipeline` resolves via LightningCLI's normal `class_path`/`init_args`
-mechanism — same as `model.class_path`/`data.class_path` themselves, one
-level deeper, no extra wiring:
+No `pipeline` arg here — a model-context-needing `Pipeline` is configured
+once, at ingest time (see [pipeline.md](pipeline.md#supplying-model-specific-context)),
+not re-wired into every training run. `StackDataset` just reads whatever
+`GeoStack.context` each `.zarr` already carries:
 
 ```yaml
 data:
   class_path: geosave_engine.ml.tasks.SemanticSegmentationDataModule
   init_args:
     train_root: data/train
-    pipeline:
-      class_path: modules.data_pipeline.Pipeline
 ```
 
 ## Model construction: registry, model_context, ContextChain
@@ -400,77 +417,3 @@ No default `model_class`/`datamodule_class` is passed — every config
 above). `model:` keys under `init_args` go straight to your
 `LightningModule.__init__`; `data:` keys under `init_args` go straight to
 your `LightningDataModule.__init__`.
-
-## Writing predictions: TilePredictionWriter and DensePredictionWriter
-
-Two independent, composable callbacks in `geosave_engine.ml.callbacks` —
-neither is auto-attached (deployment-specific `output_dir` has no sensible
-default), opt in via `trainer.callbacks:`. Both write into the same
-`<output_dir>/<model_name>/<job_id>/tiles/<stem>.zarr` layout and can safely
-target the *same* run directory at once — `GeoStack.save(mode="append")`
-(see [geotile.md](geotile.md#the-zarr-store-convention)) lets each one add
-its own layers without touching the other's, regardless of callback order.
-Neither is a general "any prediction" writer — both are scoped to
-dense/raster tasks (pixelwise regression, semantic segmentation); a task
-with vector-shaped output (e.g. object detection boxes) needs a different
-writer entirely, not a subclass of either of these.
-
-**`TilePredictionWriter`** persists real `GeoTile`s straight from
-`batch["tiles"]` — the model's *input*, not its output. Nothing to parse or
-convert: these are already real, already-band-named tiles (see
-[What is the tiles key](#what-is-the-tiles-key) above). Also adds each
-tile's own `rgb_subset()` companion layer automatically when its
-`plot_meta.rgb_bands` is set and usable.
-
-```yaml
-trainer:
-  callbacks:
-    - class_path: geosave_engine.ml.callbacks.TilePredictionWriter
-      init_args:
-        output_dir: predictions
-        layers: [sentinel_2_l1c]   # omit to persist every batch["tiles"] key
-```
-
-**`DensePredictionWriter`** persists `predict_step`'s own output. Recognizes
-a small fixed vocabulary of keys — `"logits"`/`"proba"`/`"pred"`, whichever
-are present — the same pattern `ThresholdCalibrator`/`DensePredictionLogger`
-already use reading `outputs['logits']`/`['label']` off validation/test
-output, rather than a task-specific parsing hook. Anything else
-`predict_step` returns is ignored, so a task can freely return extra keys
-for other callbacks. Spatial identity comes from `batch["tiles"][image_key]`
-(`image_key` is this callback's own constructor arg — it doesn't share the
-task's), not from `predict_step`'s return value.
-
-```yaml
-trainer:
-  callbacks:
-    - class_path: geosave_engine.ml.callbacks.DensePredictionWriter
-      init_args:
-        output_dir: predictions
-        image_key: sentinel_2_l1c
-        class_map: {0: water, 1: trees}
-        color_map: {0: "#0000ff", 1: "#00ff00"}
-```
-
-`SemanticSegmentationTask.predict_step` returns `{"pred": ..., "proba": ...}`
-— no `"tiles"`/anchor bookkeeping needed in `predict_step` itself, since
-`DensePredictionWriter` reads `batch["tiles"]` directly. An RGB view of the
-source imagery comes from `TilePredictionWriter`'s automatic `rgb_subset()`
-(driven by ingestion-time `plot_meta.rgb_bands`), not a task-level config —
-one source of truth instead of two overlapping ones.
-
-**Provenance and visualization hints travel with the data, not a sidecar
-dict.** Each `DensePredictionWriter` output tile is `rebase()`d off its
-reference anchor before being built, so it carries this run's
-`model_name`/`job_id`/`checkpoint`/`created_at` (in `geotag.metadata`) and,
-if `class_map`/`color_map` were given, those too (in `geotag.plot_meta` —
-`tile.plot_meta.class_map` works directly on a loaded prediction tile, no
-separate lookup). `TilePredictionWriter` does *not* do this to its forwarded
-tiles — they're the model's input, tagging them "produced by model X" would
-be wrong.
-
-Both callbacks also write a small `metadata.json` at the run root
-(`model_name`/`job_id`/`checkpoint`/`created_at`) and write `write_zarr`
-(default on, ml-preferred)/`write_cog` (default off, serving-preferred)
-independently. Re-running predict against the same run directory skips
-layers already written.

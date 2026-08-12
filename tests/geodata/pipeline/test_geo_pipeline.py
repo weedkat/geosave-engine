@@ -11,8 +11,7 @@ import numpy as np
 import torch
 from odc.geo.geobox import GeoBox
 
-from geosave_engine.geodata.tile import GeoAnchor, GeoTag, GeoTile, GeoStack
-from geosave_engine.geodata.datasets import GeoStackDataset
+from geosave_engine.geodata.spatial import GeoAnchor, GeoTag, GeoTile, GeoStack
 from geosave_engine.geodata.pipeline import GeoPipeline
 
 UTM = "EPSG:32633"
@@ -43,13 +42,6 @@ class TestIngest:
         # standardized (time, band, y, x) — time=1 since temporal_slots defaults to 1
         assert tuple(stacks[0].tiles["image"].data.shape) == (1, 2, 32, 32)
 
-    def test_saved_stack_readable_by_geostackdataset(self, tmp_path):
-        anchor = _toy_anchor()
-        stack = next(iter(_ToyPipeline().ingest(anchor)))
-        stack.save(tmp_path / f"{anchor.stem}.zarr")
-        ds = GeoStackDataset(tmp_path)
-        assert len(ds) == 1
-
 
 class TestIngestToTensor:
     def test_renders_sample(self):
@@ -65,7 +57,8 @@ class TestIngestToTensor:
         assert len(samples) == 1
         assert tuple(samples[0]["image"].shape) == (1, 1, 32, 32)  # time=1, C(sel B02), H, W
         assert samples[0]["image"].dtype == torch.float32
-        assert samples[0]["tiles"]["image"].start.isoformat() == "2023-02-01T00:00:00"
+        start = datetime.fromisoformat(samples[0]["geotags"]["image"]["datetime"][0])
+        assert start.isoformat(timespec="seconds") == "2023-02-01T00:00:00"
 
     def test_no_files_written(self, tmp_path):
         """ingest_to_tensor never touches disk — nothing to assert against tmp_path except that it stays empty."""

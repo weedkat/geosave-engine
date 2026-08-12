@@ -11,7 +11,7 @@ def stack_samples(samples: Iterable[Mapping[str, Any]]) -> dict[str, Any]:
     Tensor values are stacked on dim 0; dict values collated recursively; non-tensor values gathered as list.
 
     Args:
-        samples: Iterable of sample dicts from GeoStackDataset.__getitem__.
+        samples: Iterable of sample dicts from StackDataset.__getitem__.
 
     Returns:
         {

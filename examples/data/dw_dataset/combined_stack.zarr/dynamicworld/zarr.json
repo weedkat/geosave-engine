@@ -1,17 +1,8 @@
 {
   "attributes": {
     "AREA_OR_POINT": "Area",
-    "has_band": true,
-    "tag": "{\"datetime\":[\"2019-07-13T00:00:00.000000\",\"2019-07-13T23:59:59.999999\"],\"metadata\":{},\"plot_meta\":{\"class_map\":{\"0\":\"No Data\",\"1\":\"Water\",\"2\":\"Trees\",\"3\":\"Grass\",\"4\":\"Flooded Vegetation\",\"5\":\"Crops\",\"6\":\"Scrub\",\"7\":\"Built Area\",\"8\":\"Bare Ground\",\"9\":\"Snow and Ice\",\"10\":\"Cloud\"},\"color_map\":{\"0\":\"#000000\",\"1\":\"#419bdf\",\"2\":\"#397d49\",\"3\":\"#88b053\",\"4\":\"#7a87c6\",\"5\":\"#e49635\",\"6\":\"#dfc35a\",\"7\":\"#c4281b\",\"8\":\"#a59b8f\",\"9\":\"#f0f0f0\",\"10\":\"#d3d3d3\"}}}",
-    "var_order": [
-      "band_1"
-    ],
-    "dim_order": {
-      "band_1": [
-        "y",
-        "x"
-      ]
-    }
+    "tag": "{\"datetime\":[\"2019-07-13T00:00:00.000000\",\"2019-07-13T23:59:59.999999\"],\"class_map\":{\"0\":\"No Data\",\"1\":\"Water\",\"2\":\"Trees\",\"3\":\"Grass\",\"4\":\"Flooded Vegetation\",\"5\":\"Crops\",\"6\":\"Scrub\",\"7\":\"Built Area\",\"8\":\"Bare Ground\",\"9\":\"Snow and Ice\",\"10\":\"Cloud\"},\"color_map\":{\"0\":\"#000000\",\"1\":\"#419bdf\",\"2\":\"#397d49\",\"3\":\"#88b053\",\"4\":\"#7a87c6\",\"5\":\"#e49635\",\"6\":\"#dfc35a\",\"7\":\"#c4281b\",\"8\":\"#a59b8f\",\"9\":\"#f0f0f0\",\"10\":\"#d3d3d3\"},\"stac\":[]}",
+    "coordinates": "var_order"
   },
   "zarr_format": 3,
   "node_type": "group"

@@ -115,7 +115,7 @@
       ],
       "assets": {
         "AOT": {
-          "href": "https://sentinel2l2a01.blob.core.windows.net/sentinel2-l2/49/M/EM/2019/07/13/S2B_MSIL2A_20190713T023559_N0212_R089_T49MEM_20201005T133004.SAFE/GRANULE/L2A_T49MEM_A012270_20190713T025544/IMG_DATA/R10m/T49MEM_20190713T023559_AOT_10m.tif?st=2026-08-01T05%3A38%3A30Z&se=2026-08-02T06%3A23%3A30Z&sp=rl&sv=2025-07-05&sr=c&skoid=9c8ff44a-6a2c-4dfb-b298-1c9212f64d9a&sktid=72f988bf-86f1-41af-91ab-2d7cd011db47&skt=2026-08-02T05%3A32%3A03Z&ske=2026-08-09T05%3A32%3A03Z&sks=b&skv=2025-07-05&sig=igujv6rqIdu8iBsSEXgLpz4WlqjfgmQdkDeU7whOX7s%3D",
+          "href": "https://sentinel2l2a01.blob.core.windows.net/sentinel2-l2/49/M/EM/2019/07/13/S2B_MSIL2A_20190713T023559_N0212_R089_T49MEM_20201005T133004.SAFE/GRANULE/L2A_T49MEM_A012270_20190713T025544/IMG_DATA/R10m/T49MEM_20190713T023559_AOT_10m.tif?st=2026-08-11T01%3A17%3A56Z&se=2026-08-12T02%3A02%3A56Z&sp=rl&sv=2025-07-05&sr=c&skoid=9c8ff44a-6a2c-4dfb-b298-1c9212f64d9a&sktid=72f988bf-86f1-41af-91ab-2d7cd011db47&skt=2026-08-12T01%3A07%3A44Z&ske=2026-08-19T01%3A07%3A44Z&sks=b&skv=2025-07-05&sig=B2YvTOLEb5cIB%2BAfkaHX5RnWtg5vNwwi%2B5CHS5%2BtSO4%3D",
           "type": "image/tiff; application=geotiff; profile=cloud-optimized",
           "title": "Aerosol optical thickness (AOT)",
           "proj:bbox": [
@@ -142,7 +142,7 @@
           ]
         },
         "B01": {
-          "href": "https://sentinel2l2a01.blob.core.windows.net/sentinel2-l2/49/M/EM/2019/07/13/S2B_MSIL2A_20190713T023559_N0212_R089_T49MEM_20201005T133004.SAFE/GRANULE/L2A_T49MEM_A012270_20190713T025544/IMG_DATA/R60m/T49MEM_20190713T023559_B01_60m.tif?st=2026-08-01T05%3A38%3A30Z&se=2026-08-02T06%3A23%3A30Z&sp=rl&sv=2025-07-05&sr=c&skoid=9c8ff44a-6a2c-4dfb-b298-1c9212f64d9a&sktid=72f988bf-86f1-41af-91ab-2d7cd011db47&skt=2026-08-02T05%3A32%3A03Z&ske=2026-08-09T05%3A32%3A03Z&sks=b&skv=2025-07-05&sig=igujv6rqIdu8iBsSEXgLpz4WlqjfgmQdkDeU7whOX7s%3D",
+          "href": "https://sentinel2l2a01.blob.core.windows.net/sentinel2-l2/49/M/EM/2019/07/13/S2B_MSIL2A_20190713T023559_N0212_R089_T49MEM_20201005T133004.SAFE/GRANULE/L2A_T49MEM_A012270_20190713T025544/IMG_DATA/R60m/T49MEM_20190713T023559_B01_60m.tif?st=2026-08-11T01%3A17%3A56Z&se=2026-08-12T02%3A02%3A56Z&sp=rl&sv=2025-07-05&sr=c&skoid=9c8ff44a-6a2c-4dfb-b298-1c9212f64d9a&sktid=72f988bf-86f1-41af-91ab-2d7cd011db47&skt=2026-08-12T01%3A07%3A44Z&ske=2026-08-19T01%3A07%3A44Z&sks=b&skv=2025-07-05&sig=B2YvTOLEb5cIB%2BAfkaHX5RnWtg5vNwwi%2B5CHS5%2BtSO4%3D",
           "type": "image/tiff; application=geotiff; profile=cloud-optimized",
           "title": "Band 1 - Coastal aerosol - 60m",
           "proj:bbox": [
@@ -178,7 +178,7 @@
           ]
         },
         "B02": {
-          "href": "https://sentinel2l2a01.blob.core.windows.net/sentinel2-l2/49/M/EM/2019/07/13/S2B_MSIL2A_20190713T023559_N0212_R089_T49MEM_20201005T133004.SAFE/GRANULE/L2A_T49MEM_A012270_20190713T025544/IMG_DATA/R10m/T49MEM_20190713T023559_B02_10m.tif?st=2026-08-01T05%3A38%3A30Z&se=2026-08-02T06%3A23%3A30Z&sp=rl&sv=2025-07-05&sr=c&skoid=9c8ff44a-6a2c-4dfb-b298-1c9212f64d9a&sktid=72f988bf-86f1-41af-91ab-2d7cd011db47&skt=2026-08-02T05%3A32%3A03Z&ske=2026-08-09T05%3A32%3A03Z&sks=b&skv=2025-07-05&sig=igujv6rqIdu8iBsSEXgLpz4WlqjfgmQdkDeU7whOX7s%3D",
+          "href": "https://sentinel2l2a01.blob.core.windows.net/sentinel2-l2/49/M/EM/2019/07/13/S2B_MSIL2A_20190713T023559_N0212_R089_T49MEM_20201005T133004.SAFE/GRANULE/L2A_T49MEM_A012270_20190713T025544/IMG_DATA/R10m/T49MEM_20190713T023559_B02_10m.tif?st=2026-08-11T01%3A17%3A56Z&se=2026-08-12T02%3A02%3A56Z&sp=rl&sv=2025-07-05&sr=c&skoid=9c8ff44a-6a2c-4dfb-b298-1c9212f64d9a&sktid=72f988bf-86f1-41af-91ab-2d7cd011db47&skt=2026-08-12T01%3A07%3A44Z&ske=2026-08-19T01%3A07%3A44Z&sks=b&skv=2025-07-05&sig=B2YvTOLEb5cIB%2BAfkaHX5RnWtg5vNwwi%2B5CHS5%2BtSO4%3D",
           "type": "image/tiff; application=geotiff; profile=cloud-optimized",
           "title": "Band 2 - Blue - 10m",
           "proj:bbox": [
@@ -214,7 +214,7 @@
           ]
         },
         "B03": {
-          "href": "https://sentinel2l2a01.blob.core.windows.net/sentinel2-l2/49/M/EM/2019/07/13/S2B_MSIL2A_20190713T023559_N0212_R089_T49MEM_20201005T133004.SAFE/GRANULE/L2A_T49MEM_A012270_20190713T025544/IMG_DATA/R10m/T49MEM_20190713T023559_B03_10m.tif?st=2026-08-01T05%3A38%3A30Z&se=2026-08-02T06%3A23%3A30Z&sp=rl&sv=2025-07-05&sr=c&skoid=9c8ff44a-6a2c-4dfb-b298-1c9212f64d9a&sktid=72f988bf-86f1-41af-91ab-2d7cd011db47&skt=2026-08-02T05%3A32%3A03Z&ske=2026-08-09T05%3A32%3A03Z&sks=b&skv=2025-07-05&sig=igujv6rqIdu8iBsSEXgLpz4WlqjfgmQdkDeU7whOX7s%3D",
+          "href": "https://sentinel2l2a01.blob.core.windows.net/sentinel2-l2/49/M/EM/2019/07/13/S2B_MSIL2A_20190713T023559_N0212_R089_T49MEM_20201005T133004.SAFE/GRANULE/L2A_T49MEM_A012270_20190713T025544/IMG_DATA/R10m/T49MEM_20190713T023559_B03_10m.tif?st=2026-08-11T01%3A17%3A56Z&se=2026-08-12T02%3A02%3A56Z&sp=rl&sv=2025-07-05&sr=c&skoid=9c8ff44a-6a2c-4dfb-b298-1c9212f64d9a&sktid=72f988bf-86f1-41af-91ab-2d7cd011db47&skt=2026-08-12T01%3A07%3A44Z&ske=2026-08-19T01%3A07%3A44Z&sks=b&skv=2025-07-05&sig=B2YvTOLEb5cIB%2BAfkaHX5RnWtg5vNwwi%2B5CHS5%2BtSO4%3D",
           "type": "image/tiff; application=geotiff; profile=cloud-optimized",
           "title": "Band 3 - Green - 10m",
           "proj:bbox": [
@@ -250,7 +250,7 @@
           ]
         },
         "B04": {
-          "href": "https://sentinel2l2a01.blob.core.windows.net/sentinel2-l2/49/M/EM/2019/07/13/S2B_MSIL2A_20190713T023559_N0212_R089_T49MEM_20201005T133004.SAFE/GRANULE/L2A_T49MEM_A012270_20190713T025544/IMG_DATA/R10m/T49MEM_20190713T023559_B04_10m.tif?st=2026-08-01T05%3A38%3A30Z&se=2026-08-02T06%3A23%3A30Z&sp=rl&sv=2025-07-05&sr=c&skoid=9c8ff44a-6a2c-4dfb-b298-1c9212f64d9a&sktid=72f988bf-86f1-41af-91ab-2d7cd011db47&skt=2026-08-02T05%3A32%3A03Z&ske=2026-08-09T05%3A32%3A03Z&sks=b&skv=2025-07-05&sig=igujv6rqIdu8iBsSEXgLpz4WlqjfgmQdkDeU7whOX7s%3D",
+          "href": "https://sentinel2l2a01.blob.core.windows.net/sentinel2-l2/49/M/EM/2019/07/13/S2B_MSIL2A_20190713T023559_N0212_R089_T49MEM_20201005T133004.SAFE/GRANULE/L2A_T49MEM_A012270_20190713T025544/IMG_DATA/R10m/T49MEM_20190713T023559_B04_10m.tif?st=2026-08-11T01%3A17%3A56Z&se=2026-08-12T02%3A02%3A56Z&sp=rl&sv=2025-07-05&sr=c&skoid=9c8ff44a-6a2c-4dfb-b298-1c9212f64d9a&sktid=72f988bf-86f1-41af-91ab-2d7cd011db47&skt=2026-08-12T01%3A07%3A44Z&ske=2026-08-19T01%3A07%3A44Z&sks=b&skv=2025-07-05&sig=B2YvTOLEb5cIB%2BAfkaHX5RnWtg5vNwwi%2B5CHS5%2BtSO4%3D",
           "type": "image/tiff; application=geotiff; profile=cloud-optimized",
           "title": "Band 4 - Red - 10m",
           "proj:bbox": [
@@ -286,7 +286,7 @@
           ]
         },
         "B05": {
-          "href": "https://sentinel2l2a01.blob.core.windows.net/sentinel2-l2/49/M/EM/2019/07/13/S2B_MSIL2A_20190713T023559_N0212_R089_T49MEM_20201005T133004.SAFE/GRANULE/L2A_T49MEM_A012270_20190713T025544/IMG_DATA/R20m/T49MEM_20190713T023559_B05_20m.tif?st=2026-08-01T05%3A38%3A30Z&se=2026-08-02T06%3A23%3A30Z&sp=rl&sv=2025-07-05&sr=c&skoid=9c8ff44a-6a2c-4dfb-b298-1c9212f64d9a&sktid=72f988bf-86f1-41af-91ab-2d7cd011db47&skt=2026-08-02T05%3A32%3A03Z&ske=2026-08-09T05%3A32%3A03Z&sks=b&skv=2025-07-05&sig=igujv6rqIdu8iBsSEXgLpz4WlqjfgmQdkDeU7whOX7s%3D",
+          "href": "https://sentinel2l2a01.blob.core.windows.net/sentinel2-l2/49/M/EM/2019/07/13/S2B_MSIL2A_20190713T023559_N0212_R089_T49MEM_20201005T133004.SAFE/GRANULE/L2A_T49MEM_A012270_20190713T025544/IMG_DATA/R20m/T49MEM_20190713T023559_B05_20m.tif?st=2026-08-11T01%3A17%3A56Z&se=2026-08-12T02%3A02%3A56Z&sp=rl&sv=2025-07-05&sr=c&skoid=9c8ff44a-6a2c-4dfb-b298-1c9212f64d9a&sktid=72f988bf-86f1-41af-91ab-2d7cd011db47&skt=2026-08-12T01%3A07%3A44Z&ske=2026-08-19T01%3A07%3A44Z&sks=b&skv=2025-07-05&sig=B2YvTOLEb5cIB%2BAfkaHX5RnWtg5vNwwi%2B5CHS5%2BtSO4%3D",
           "type": "image/tiff; application=geotiff; profile=cloud-optimized",
           "title": "Band 5 - Vegetation red edge 1 - 20m",
           "proj:bbox": [
@@ -322,7 +322,7 @@
           ]
         },
         "B06": {
-          "href": "https://sentinel2l2a01.blob.core.windows.net/sentinel2-l2/49/M/EM/2019/07/13/S2B_MSIL2A_20190713T023559_N0212_R089_T49MEM_20201005T133004.SAFE/GRANULE/L2A_T49MEM_A012270_20190713T025544/IMG_DATA/R20m/T49MEM_20190713T023559_B06_20m.tif?st=2026-08-01T05%3A38%3A30Z&se=2026-08-02T06%3A23%3A30Z&sp=rl&sv=2025-07-05&sr=c&skoid=9c8ff44a-6a2c-4dfb-b298-1c9212f64d9a&sktid=72f988bf-86f1-41af-91ab-2d7cd011db47&skt=2026-08-02T05%3A32%3A03Z&ske=2026-08-09T05%3A32%3A03Z&sks=b&skv=2025-07-05&sig=igujv6rqIdu8iBsSEXgLpz4WlqjfgmQdkDeU7whOX7s%3D",
+          "href": "https://sentinel2l2a01.blob.core.windows.net/sentinel2-l2/49/M/EM/2019/07/13/S2B_MSIL2A_20190713T023559_N0212_R089_T49MEM_20201005T133004.SAFE/GRANULE/L2A_T49MEM_A012270_20190713T025544/IMG_DATA/R20m/T49MEM_20190713T023559_B06_20m.tif?st=2026-08-11T01%3A17%3A56Z&se=2026-08-12T02%3A02%3A56Z&sp=rl&sv=2025-07-05&sr=c&skoid=9c8ff44a-6a2c-4dfb-b298-1c9212f64d9a&sktid=72f988bf-86f1-41af-91ab-2d7cd011db47&skt=2026-08-12T01%3A07%3A44Z&ske=2026-08-19T01%3A07%3A44Z&sks=b&skv=2025-07-05&sig=B2YvTOLEb5cIB%2BAfkaHX5RnWtg5vNwwi%2B5CHS5%2BtSO4%3D",
           "type": "image/tiff; application=geotiff; profile=cloud-optimized",
           "title": "Band 6 - Vegetation red edge 2 - 20m",
           "proj:bbox": [
@@ -358,7 +358,7 @@
           ]
         },
         "B07": {
-          "href": "https://sentinel2l2a01.blob.core.windows.net/sentinel2-l2/49/M/EM/2019/07/13/S2B_MSIL2A_20190713T023559_N0212_R089_T49MEM_20201005T133004.SAFE/GRANULE/L2A_T49MEM_A012270_20190713T025544/IMG_DATA/R20m/T49MEM_20190713T023559_B07_20m.tif?st=2026-08-01T05%3A38%3A30Z&se=2026-08-02T06%3A23%3A30Z&sp=rl&sv=2025-07-05&sr=c&skoid=9c8ff44a-6a2c-4dfb-b298-1c9212f64d9a&sktid=72f988bf-86f1-41af-91ab-2d7cd011db47&skt=2026-08-02T05%3A32%3A03Z&ske=2026-08-09T05%3A32%3A03Z&sks=b&skv=2025-07-05&sig=igujv6rqIdu8iBsSEXgLpz4WlqjfgmQdkDeU7whOX7s%3D",
+          "href": "https://sentinel2l2a01.blob.core.windows.net/sentinel2-l2/49/M/EM/2019/07/13/S2B_MSIL2A_20190713T023559_N0212_R089_T49MEM_20201005T133004.SAFE/GRANULE/L2A_T49MEM_A012270_20190713T025544/IMG_DATA/R20m/T49MEM_20190713T023559_B07_20m.tif?st=2026-08-11T01%3A17%3A56Z&se=2026-08-12T02%3A02%3A56Z&sp=rl&sv=2025-07-05&sr=c&skoid=9c8ff44a-6a2c-4dfb-b298-1c9212f64d9a&sktid=72f988bf-86f1-41af-91ab-2d7cd011db47&skt=2026-08-12T01%3A07%3A44Z&ske=2026-08-19T01%3A07%3A44Z&sks=b&skv=2025-07-05&sig=B2YvTOLEb5cIB%2BAfkaHX5RnWtg5vNwwi%2B5CHS5%2BtSO4%3D",
           "type": "image/tiff; application=geotiff; profile=cloud-optimized",
           "title": "Band 7 - Vegetation red edge 3 - 20m",
           "proj:bbox": [
@@ -394,7 +394,7 @@
           ]
         },
         "B08": {
-          "href": "https://sentinel2l2a01.blob.core.windows.net/sentinel2-l2/49/M/EM/2019/07/13/S2B_MSIL2A_20190713T023559_N0212_R089_T49MEM_20201005T133004.SAFE/GRANULE/L2A_T49MEM_A012270_20190713T025544/IMG_DATA/R10m/T49MEM_20190713T023559_B08_10m.tif?st=2026-08-01T05%3A38%3A30Z&se=2026-08-02T06%3A23%3A30Z&sp=rl&sv=2025-07-05&sr=c&skoid=9c8ff44a-6a2c-4dfb-b298-1c9212f64d9a&sktid=72f988bf-86f1-41af-91ab-2d7cd011db47&skt=2026-08-02T05%3A32%3A03Z&ske=2026-08-09T05%3A32%3A03Z&sks=b&skv=2025-07-05&sig=igujv6rqIdu8iBsSEXgLpz4WlqjfgmQdkDeU7whOX7s%3D",
+          "href": "https://sentinel2l2a01.blob.core.windows.net/sentinel2-l2/49/M/EM/2019/07/13/S2B_MSIL2A_20190713T023559_N0212_R089_T49MEM_20201005T133004.SAFE/GRANULE/L2A_T49MEM_A012270_20190713T025544/IMG_DATA/R10m/T49MEM_20190713T023559_B08_10m.tif?st=2026-08-11T01%3A17%3A56Z&se=2026-08-12T02%3A02%3A56Z&sp=rl&sv=2025-07-05&sr=c&skoid=9c8ff44a-6a2c-4dfb-b298-1c9212f64d9a&sktid=72f988bf-86f1-41af-91ab-2d7cd011db47&skt=2026-08-12T01%3A07%3A44Z&ske=2026-08-19T01%3A07%3A44Z&sks=b&skv=2025-07-05&sig=B2YvTOLEb5cIB%2BAfkaHX5RnWtg5vNwwi%2B5CHS5%2BtSO4%3D",
           "type": "image/tiff; application=geotiff; profile=cloud-optimized",
           "title": "Band 8 - NIR - 10m",
           "proj:bbox": [
@@ -430,7 +430,7 @@
           ]
         },
         "B09": {
-          "href": "https://sentinel2l2a01.blob.core.windows.net/sentinel2-l2/49/M/EM/2019/07/13/S2B_MSIL2A_20190713T023559_N0212_R089_T49MEM_20201005T133004.SAFE/GRANULE/L2A_T49MEM_A012270_20190713T025544/IMG_DATA/R60m/T49MEM_20190713T023559_B09_60m.tif?st=2026-08-01T05%3A38%3A30Z&se=2026-08-02T06%3A23%3A30Z&sp=rl&sv=2025-07-05&sr=c&skoid=9c8ff44a-6a2c-4dfb-b298-1c9212f64d9a&sktid=72f988bf-86f1-41af-91ab-2d7cd011db47&skt=2026-08-02T05%3A32%3A03Z&ske=2026-08-09T05%3A32%3A03Z&sks=b&skv=2025-07-05&sig=igujv6rqIdu8iBsSEXgLpz4WlqjfgmQdkDeU7whOX7s%3D",
+          "href": "https://sentinel2l2a01.blob.core.windows.net/sentinel2-l2/49/M/EM/2019/07/13/S2B_MSIL2A_20190713T023559_N0212_R089_T49MEM_20201005T133004.SAFE/GRANULE/L2A_T49MEM_A012270_20190713T025544/IMG_DATA/R60m/T49MEM_20190713T023559_B09_60m.tif?st=2026-08-11T01%3A17%3A56Z&se=2026-08-12T02%3A02%3A56Z&sp=rl&sv=2025-07-05&sr=c&skoid=9c8ff44a-6a2c-4dfb-b298-1c9212f64d9a&sktid=72f988bf-86f1-41af-91ab-2d7cd011db47&skt=2026-08-12T01%3A07%3A44Z&ske=2026-08-19T01%3A07%3A44Z&sks=b&skv=2025-07-05&sig=B2YvTOLEb5cIB%2BAfkaHX5RnWtg5vNwwi%2B5CHS5%2BtSO4%3D",
           "type": "image/tiff; application=geotiff; profile=cloud-optimized",
           "title": "Band 9 - Water vapor - 60m",
           "proj:bbox": [
@@ -465,7 +465,7 @@
           ]
         },
         "B11": {
-          "href": "https://sentinel2l2a01.blob.core.windows.net/sentinel2-l2/49/M/EM/2019/07/13/S2B_MSIL2A_20190713T023559_N0212_R089_T49MEM_20201005T133004.SAFE/GRANULE/L2A_T49MEM_A012270_20190713T025544/IMG_DATA/R20m/T49MEM_20190713T023559_B11_20m.tif?st=2026-08-01T05%3A38%3A30Z&se=2026-08-02T06%3A23%3A30Z&sp=rl&sv=2025-07-05&sr=c&skoid=9c8ff44a-6a2c-4dfb-b298-1c9212f64d9a&sktid=72f988bf-86f1-41af-91ab-2d7cd011db47&skt=2026-08-02T05%3A32%3A03Z&ske=2026-08-09T05%3A32%3A03Z&sks=b&skv=2025-07-05&sig=igujv6rqIdu8iBsSEXgLpz4WlqjfgmQdkDeU7whOX7s%3D",
+          "href": "https://sentinel2l2a01.blob.core.windows.net/sentinel2-l2/49/M/EM/2019/07/13/S2B_MSIL2A_20190713T023559_N0212_R089_T49MEM_20201005T133004.SAFE/GRANULE/L2A_T49MEM_A012270_20190713T025544/IMG_DATA/R20m/T49MEM_20190713T023559_B11_20m.tif?st=2026-08-11T01%3A17%3A56Z&se=2026-08-12T02%3A02%3A56Z&sp=rl&sv=2025-07-05&sr=c&skoid=9c8ff44a-6a2c-4dfb-b298-1c9212f64d9a&sktid=72f988bf-86f1-41af-91ab-2d7cd011db47&skt=2026-08-12T01%3A07%3A44Z&ske=2026-08-19T01%3A07%3A44Z&sks=b&skv=2025-07-05&sig=B2YvTOLEb5cIB%2BAfkaHX5RnWtg5vNwwi%2B5CHS5%2BtSO4%3D",
           "type": "image/tiff; application=geotiff; profile=cloud-optimized",
           "title": "Band 11 - SWIR (1.6) - 20m",
           "proj:bbox": [
@@ -501,7 +501,7 @@
           ]
         },
         "B12": {
-          "href": "https://sentinel2l2a01.blob.core.windows.net/sentinel2-l2/49/M/EM/2019/07/13/S2B_MSIL2A_20190713T023559_N0212_R089_T49MEM_20201005T133004.SAFE/GRANULE/L2A_T49MEM_A012270_20190713T025544/IMG_DATA/R20m/T49MEM_20190713T023559_B12_20m.tif?st=2026-08-01T05%3A38%3A30Z&se=2026-08-02T06%3A23%3A30Z&sp=rl&sv=2025-07-05&sr=c&skoid=9c8ff44a-6a2c-4dfb-b298-1c9212f64d9a&sktid=72f988bf-86f1-41af-91ab-2d7cd011db47&skt=2026-08-02T05%3A32%3A03Z&ske=2026-08-09T05%3A32%3A03Z&sks=b&skv=2025-07-05&sig=igujv6rqIdu8iBsSEXgLpz4WlqjfgmQdkDeU7whOX7s%3D",
+          "href": "https://sentinel2l2a01.blob.core.windows.net/sentinel2-l2/49/M/EM/2019/07/13/S2B_MSIL2A_20190713T023559_N0212_R089_T49MEM_20201005T133004.SAFE/GRANULE/L2A_T49MEM_A012270_20190713T025544/IMG_DATA/R20m/T49MEM_20190713T023559_B12_20m.tif?st=2026-08-11T01%3A17%3A56Z&se=2026-08-12T02%3A02%3A56Z&sp=rl&sv=2025-07-05&sr=c&skoid=9c8ff44a-6a2c-4dfb-b298-1c9212f64d9a&sktid=72f988bf-86f1-41af-91ab-2d7cd011db47&skt=2026-08-12T01%3A07%3A44Z&ske=2026-08-19T01%3A07%3A44Z&sks=b&skv=2025-07-05&sig=B2YvTOLEb5cIB%2BAfkaHX5RnWtg5vNwwi%2B5CHS5%2BtSO4%3D",
           "type": "image/tiff; application=geotiff; profile=cloud-optimized",
           "title": "Band 12 - SWIR (2.2) - 20m",
           "proj:bbox": [
@@ -537,7 +537,7 @@
           ]
         },
         "B8A": {
-          "href": "https://sentinel2l2a01.blob.core.windows.net/sentinel2-l2/49/M/EM/2019/07/13/S2B_MSIL2A_20190713T023559_N0212_R089_T49MEM_20201005T133004.SAFE/GRANULE/L2A_T49MEM_A012270_20190713T025544/IMG_DATA/R20m/T49MEM_20190713T023559_B8A_20m.tif?st=2026-08-01T05%3A38%3A30Z&se=2026-08-02T06%3A23%3A30Z&sp=rl&sv=2025-07-05&sr=c&skoid=9c8ff44a-6a2c-4dfb-b298-1c9212f64d9a&sktid=72f988bf-86f1-41af-91ab-2d7cd011db47&skt=2026-08-02T05%3A32%3A03Z&ske=2026-08-09T05%3A32%3A03Z&sks=b&skv=2025-07-05&sig=igujv6rqIdu8iBsSEXgLpz4WlqjfgmQdkDeU7whOX7s%3D",
+          "href": "https://sentinel2l2a01.blob.core.windows.net/sentinel2-l2/49/M/EM/2019/07/13/S2B_MSIL2A_20190713T023559_N0212_R089_T49MEM_20201005T133004.SAFE/GRANULE/L2A_T49MEM_A012270_20190713T025544/IMG_DATA/R20m/T49MEM_20190713T023559_B8A_20m.tif?st=2026-08-11T01%3A17%3A56Z&se=2026-08-12T02%3A02%3A56Z&sp=rl&sv=2025-07-05&sr=c&skoid=9c8ff44a-6a2c-4dfb-b298-1c9212f64d9a&sktid=72f988bf-86f1-41af-91ab-2d7cd011db47&skt=2026-08-12T01%3A07%3A44Z&ske=2026-08-19T01%3A07%3A44Z&sks=b&skv=2025-07-05&sig=B2YvTOLEb5cIB%2BAfkaHX5RnWtg5vNwwi%2B5CHS5%2BtSO4%3D",
           "type": "image/tiff; application=geotiff; profile=cloud-optimized",
           "title": "Band 8A - Vegetation red edge 4 - 20m",
           "proj:bbox": [
@@ -573,7 +573,7 @@
           ]
         },
         "SCL": {
-          "href": "https://sentinel2l2a01.blob.core.windows.net/sentinel2-l2/49/M/EM/2019/07/13/S2B_MSIL2A_20190713T023559_N0212_R089_T49MEM_20201005T133004.SAFE/GRANULE/L2A_T49MEM_A012270_20190713T025544/IMG_DATA/R20m/T49MEM_20190713T023559_SCL_20m.tif?st=2026-08-01T05%3A38%3A30Z&se=2026-08-02T06%3A23%3A30Z&sp=rl&sv=2025-07-05&sr=c&skoid=9c8ff44a-6a2c-4dfb-b298-1c9212f64d9a&sktid=72f988bf-86f1-41af-91ab-2d7cd011db47&skt=2026-08-02T05%3A32%3A03Z&ske=2026-08-09T05%3A32%3A03Z&sks=b&skv=2025-07-05&sig=igujv6rqIdu8iBsSEXgLpz4WlqjfgmQdkDeU7whOX7s%3D",
+          "href": "https://sentinel2l2a01.blob.core.windows.net/sentinel2-l2/49/M/EM/2019/07/13/S2B_MSIL2A_20190713T023559_N0212_R089_T49MEM_20201005T133004.SAFE/GRANULE/L2A_T49MEM_A012270_20190713T025544/IMG_DATA/R20m/T49MEM_20190713T023559_SCL_20m.tif?st=2026-08-11T01%3A17%3A56Z&se=2026-08-12T02%3A02%3A56Z&sp=rl&sv=2025-07-05&sr=c&skoid=9c8ff44a-6a2c-4dfb-b298-1c9212f64d9a&sktid=72f988bf-86f1-41af-91ab-2d7cd011db47&skt=2026-08-12T01%3A07%3A44Z&ske=2026-08-19T01%3A07%3A44Z&sks=b&skv=2025-07-05&sig=B2YvTOLEb5cIB%2BAfkaHX5RnWtg5vNwwi%2B5CHS5%2BtSO4%3D",
           "type": "image/tiff; application=geotiff; profile=cloud-optimized",
           "title": "Scene classfication map (SCL)",
           "proj:bbox": [
@@ -600,7 +600,7 @@
           ]
         },
         "WVP": {
-          "href": "https://sentinel2l2a01.blob.core.windows.net/sentinel2-l2/49/M/EM/2019/07/13/S2B_MSIL2A_20190713T023559_N0212_R089_T49MEM_20201005T133004.SAFE/GRANULE/L2A_T49MEM_A012270_20190713T025544/IMG_DATA/R10m/T49MEM_20190713T023559_WVP_10m.tif?st=2026-08-01T05%3A38%3A30Z&se=2026-08-02T06%3A23%3A30Z&sp=rl&sv=2025-07-05&sr=c&skoid=9c8ff44a-6a2c-4dfb-b298-1c9212f64d9a&sktid=72f988bf-86f1-41af-91ab-2d7cd011db47&skt=2026-08-02T05%3A32%3A03Z&ske=2026-08-09T05%3A32%3A03Z&sks=b&skv=2025-07-05&sig=igujv6rqIdu8iBsSEXgLpz4WlqjfgmQdkDeU7whOX7s%3D",
+          "href": "https://sentinel2l2a01.blob.core.windows.net/sentinel2-l2/49/M/EM/2019/07/13/S2B_MSIL2A_20190713T023559_N0212_R089_T49MEM_20201005T133004.SAFE/GRANULE/L2A_T49MEM_A012270_20190713T025544/IMG_DATA/R10m/T49MEM_20190713T023559_WVP_10m.tif?st=2026-08-11T01%3A17%3A56Z&se=2026-08-12T02%3A02%3A56Z&sp=rl&sv=2025-07-05&sr=c&skoid=9c8ff44a-6a2c-4dfb-b298-1c9212f64d9a&sktid=72f988bf-86f1-41af-91ab-2d7cd011db47&skt=2026-08-12T01%3A07%3A44Z&ske=2026-08-19T01%3A07%3A44Z&sks=b&skv=2025-07-05&sig=B2YvTOLEb5cIB%2BAfkaHX5RnWtg5vNwwi%2B5CHS5%2BtSO4%3D",
           "type": "image/tiff; application=geotiff; profile=cloud-optimized",
           "title": "Water vapour (WVP)",
           "proj:bbox": [
@@ -627,7 +627,7 @@
           ]
         },
         "visual": {
-          "href": "https://sentinel2l2a01.blob.core.windows.net/sentinel2-l2/49/M/EM/2019/07/13/S2B_MSIL2A_20190713T023559_N0212_R089_T49MEM_20201005T133004.SAFE/GRANULE/L2A_T49MEM_A012270_20190713T025544/IMG_DATA/R10m/T49MEM_20190713T023559_TCI_10m.tif?st=2026-08-01T05%3A38%3A30Z&se=2026-08-02T06%3A23%3A30Z&sp=rl&sv=2025-07-05&sr=c&skoid=9c8ff44a-6a2c-4dfb-b298-1c9212f64d9a&sktid=72f988bf-86f1-41af-91ab-2d7cd011db47&skt=2026-08-02T05%3A32%3A03Z&ske=2026-08-09T05%3A32%3A03Z&sks=b&skv=2025-07-05&sig=igujv6rqIdu8iBsSEXgLpz4WlqjfgmQdkDeU7whOX7s%3D",
+          "href": "https://sentinel2l2a01.blob.core.windows.net/sentinel2-l2/49/M/EM/2019/07/13/S2B_MSIL2A_20190713T023559_N0212_R089_T49MEM_20201005T133004.SAFE/GRANULE/L2A_T49MEM_A012270_20190713T025544/IMG_DATA/R10m/T49MEM_20190713T023559_TCI_10m.tif?st=2026-08-11T01%3A17%3A56Z&se=2026-08-12T02%3A02%3A56Z&sp=rl&sv=2025-07-05&sr=c&skoid=9c8ff44a-6a2c-4dfb-b298-1c9212f64d9a&sktid=72f988bf-86f1-41af-91ab-2d7cd011db47&skt=2026-08-12T01%3A07%3A44Z&ske=2026-08-19T01%3A07%3A44Z&sks=b&skv=2025-07-05&sig=B2YvTOLEb5cIB%2BAfkaHX5RnWtg5vNwwi%2B5CHS5%2BtSO4%3D",
           "type": "image/tiff; application=geotiff; profile=cloud-optimized",
           "title": "True color image",
           "proj:bbox": [
@@ -677,7 +677,7 @@
           ]
         },
         "preview": {
-          "href": "https://sentinel2l2a01.blob.core.windows.net/sentinel2-l2/49/M/EM/2019/07/13/S2B_MSIL2A_20190713T023559_N0212_R089_T49MEM_20201005T133004.SAFE/GRANULE/L2A_T49MEM_A012270_20190713T025544/QI_DATA/T49MEM_20190713T023559_PVI.tif?st=2026-08-01T05%3A38%3A30Z&se=2026-08-02T06%3A23%3A30Z&sp=rl&sv=2025-07-05&sr=c&skoid=9c8ff44a-6a2c-4dfb-b298-1c9212f64d9a&sktid=72f988bf-86f1-41af-91ab-2d7cd011db47&skt=2026-08-02T05%3A32%3A03Z&ske=2026-08-09T05%3A32%3A03Z&sks=b&skv=2025-07-05&sig=igujv6rqIdu8iBsSEXgLpz4WlqjfgmQdkDeU7whOX7s%3D",
+          "href": "https://sentinel2l2a01.blob.core.windows.net/sentinel2-l2/49/M/EM/2019/07/13/S2B_MSIL2A_20190713T023559_N0212_R089_T49MEM_20201005T133004.SAFE/GRANULE/L2A_T49MEM_A012270_20190713T025544/QI_DATA/T49MEM_20190713T023559_PVI.tif?st=2026-08-11T01%3A17%3A56Z&se=2026-08-12T02%3A02%3A56Z&sp=rl&sv=2025-07-05&sr=c&skoid=9c8ff44a-6a2c-4dfb-b298-1c9212f64d9a&sktid=72f988bf-86f1-41af-91ab-2d7cd011db47&skt=2026-08-12T01%3A07%3A44Z&ske=2026-08-19T01%3A07%3A44Z&sks=b&skv=2025-07-05&sig=B2YvTOLEb5cIB%2BAfkaHX5RnWtg5vNwwi%2B5CHS5%2BtSO4%3D",
           "type": "image/tiff; application=geotiff; profile=cloud-optimized",
           "title": "Thumbnail",
           "roles": [
@@ -685,7 +685,7 @@
           ]
         },
         "safe-manifest": {
-          "href": "https://sentinel2l2a01.blob.core.windows.net/sentinel2-l2/49/M/EM/2019/07/13/S2B_MSIL2A_20190713T023559_N0212_R089_T49MEM_20201005T133004.SAFE/manifest.safe?st=2026-08-01T05%3A38%3A30Z&se=2026-08-02T06%3A23%3A30Z&sp=rl&sv=2025-07-05&sr=c&skoid=9c8ff44a-6a2c-4dfb-b298-1c9212f64d9a&sktid=72f988bf-86f1-41af-91ab-2d7cd011db47&skt=2026-08-02T05%3A32%3A03Z&ske=2026-08-09T05%3A32%3A03Z&sks=b&skv=2025-07-05&sig=igujv6rqIdu8iBsSEXgLpz4WlqjfgmQdkDeU7whOX7s%3D",
+          "href": "https://sentinel2l2a01.blob.core.windows.net/sentinel2-l2/49/M/EM/2019/07/13/S2B_MSIL2A_20190713T023559_N0212_R089_T49MEM_20201005T133004.SAFE/manifest.safe?st=2026-08-11T01%3A17%3A56Z&se=2026-08-12T02%3A02%3A56Z&sp=rl&sv=2025-07-05&sr=c&skoid=9c8ff44a-6a2c-4dfb-b298-1c9212f64d9a&sktid=72f988bf-86f1-41af-91ab-2d7cd011db47&skt=2026-08-12T01%3A07%3A44Z&ske=2026-08-19T01%3A07%3A44Z&sks=b&skv=2025-07-05&sig=B2YvTOLEb5cIB%2BAfkaHX5RnWtg5vNwwi%2B5CHS5%2BtSO4%3D",
           "type": "application/xml",
           "title": "SAFE manifest",
           "roles": [
@@ -693,7 +693,7 @@
           ]
         },
         "granule-metadata": {
-          "href": "https://sentinel2l2a01.blob.core.windows.net/sentinel2-l2/49/M/EM/2019/07/13/S2B_MSIL2A_20190713T023559_N0212_R089_T49MEM_20201005T133004.SAFE/GRANULE/L2A_T49MEM_A012270_20190713T025544/MTD_TL.xml?st=2026-08-01T05%3A38%3A30Z&se=2026-08-02T06%3A23%3A30Z&sp=rl&sv=2025-07-05&sr=c&skoid=9c8ff44a-6a2c-4dfb-b298-1c9212f64d9a&sktid=72f988bf-86f1-41af-91ab-2d7cd011db47&skt=2026-08-02T05%3A32%3A03Z&ske=2026-08-09T05%3A32%3A03Z&sks=b&skv=2025-07-05&sig=igujv6rqIdu8iBsSEXgLpz4WlqjfgmQdkDeU7whOX7s%3D",
+          "href": "https://sentinel2l2a01.blob.core.windows.net/sentinel2-l2/49/M/EM/2019/07/13/S2B_MSIL2A_20190713T023559_N0212_R089_T49MEM_20201005T133004.SAFE/GRANULE/L2A_T49MEM_A012270_20190713T025544/MTD_TL.xml?st=2026-08-11T01%3A17%3A56Z&se=2026-08-12T02%3A02%3A56Z&sp=rl&sv=2025-07-05&sr=c&skoid=9c8ff44a-6a2c-4dfb-b298-1c9212f64d9a&sktid=72f988bf-86f1-41af-91ab-2d7cd011db47&skt=2026-08-12T01%3A07%3A44Z&ske=2026-08-19T01%3A07%3A44Z&sks=b&skv=2025-07-05&sig=B2YvTOLEb5cIB%2BAfkaHX5RnWtg5vNwwi%2B5CHS5%2BtSO4%3D",
           "type": "application/xml",
           "title": "Granule metadata",
           "roles": [
@@ -701,7 +701,7 @@
           ]
         },
         "inspire-metadata": {
-          "href": "https://sentinel2l2a01.blob.core.windows.net/sentinel2-l2/49/M/EM/2019/07/13/S2B_MSIL2A_20190713T023559_N0212_R089_T49MEM_20201005T133004.SAFE/INSPIRE.xml?st=2026-08-01T05%3A38%3A30Z&se=2026-08-02T06%3A23%3A30Z&sp=rl&sv=2025-07-05&sr=c&skoid=9c8ff44a-6a2c-4dfb-b298-1c9212f64d9a&sktid=72f988bf-86f1-41af-91ab-2d7cd011db47&skt=2026-08-02T05%3A32%3A03Z&ske=2026-08-09T05%3A32%3A03Z&sks=b&skv=2025-07-05&sig=igujv6rqIdu8iBsSEXgLpz4WlqjfgmQdkDeU7whOX7s%3D",
+          "href": "https://sentinel2l2a01.blob.core.windows.net/sentinel2-l2/49/M/EM/2019/07/13/S2B_MSIL2A_20190713T023559_N0212_R089_T49MEM_20201005T133004.SAFE/INSPIRE.xml?st=2026-08-11T01%3A17%3A56Z&se=2026-08-12T02%3A02%3A56Z&sp=rl&sv=2025-07-05&sr=c&skoid=9c8ff44a-6a2c-4dfb-b298-1c9212f64d9a&sktid=72f988bf-86f1-41af-91ab-2d7cd011db47&skt=2026-08-12T01%3A07%3A44Z&ske=2026-08-19T01%3A07%3A44Z&sks=b&skv=2025-07-05&sig=B2YvTOLEb5cIB%2BAfkaHX5RnWtg5vNwwi%2B5CHS5%2BtSO4%3D",
           "type": "application/xml",
           "title": "INSPIRE metadata",
           "roles": [
@@ -709,7 +709,7 @@
           ]
         },
         "product-metadata": {
-          "href": "https://sentinel2l2a01.blob.core.windows.net/sentinel2-l2/49/M/EM/2019/07/13/S2B_MSIL2A_20190713T023559_N0212_R089_T49MEM_20201005T133004.SAFE/MTD_MSIL2A.xml?st=2026-08-01T05%3A38%3A30Z&se=2026-08-02T06%3A23%3A30Z&sp=rl&sv=2025-07-05&sr=c&skoid=9c8ff44a-6a2c-4dfb-b298-1c9212f64d9a&sktid=72f988bf-86f1-41af-91ab-2d7cd011db47&skt=2026-08-02T05%3A32%3A03Z&ske=2026-08-09T05%3A32%3A03Z&sks=b&skv=2025-07-05&sig=igujv6rqIdu8iBsSEXgLpz4WlqjfgmQdkDeU7whOX7s%3D",
+          "href": "https://sentinel2l2a01.blob.core.windows.net/sentinel2-l2/49/M/EM/2019/07/13/S2B_MSIL2A_20190713T023559_N0212_R089_T49MEM_20201005T133004.SAFE/MTD_MSIL2A.xml?st=2026-08-11T01%3A17%3A56Z&se=2026-08-12T02%3A02%3A56Z&sp=rl&sv=2025-07-05&sr=c&skoid=9c8ff44a-6a2c-4dfb-b298-1c9212f64d9a&sktid=72f988bf-86f1-41af-91ab-2d7cd011db47&skt=2026-08-12T01%3A07%3A44Z&ske=2026-08-19T01%3A07%3A44Z&sks=b&skv=2025-07-05&sig=B2YvTOLEb5cIB%2BAfkaHX5RnWtg5vNwwi%2B5CHS5%2BtSO4%3D",
           "type": "application/xml",
           "title": "Product metadata",
           "roles": [
@@ -717,7 +717,7 @@
           ]
         },
         "datastrip-metadata": {
-          "href": "https://sentinel2l2a01.blob.core.windows.net/sentinel2-l2/49/M/EM/2019/07/13/S2B_MSIL2A_20190713T023559_N0212_R089_T49MEM_20201005T133004.SAFE/DATASTRIP/DS_ESRI_20201005T133006_S20190713T025544/MTD_DS.xml?st=2026-08-01T05%3A38%3A30Z&se=2026-08-02T06%3A23%3A30Z&sp=rl&sv=2025-07-05&sr=c&skoid=9c8ff44a-6a2c-4dfb-b298-1c9212f64d9a&sktid=72f988bf-86f1-41af-91ab-2d7cd011db47&skt=2026-08-02T05%3A32%3A03Z&ske=2026-08-09T05%3A32%3A03Z&sks=b&skv=2025-07-05&sig=igujv6rqIdu8iBsSEXgLpz4WlqjfgmQdkDeU7whOX7s%3D",
+          "href": "https://sentinel2l2a01.blob.core.windows.net/sentinel2-l2/49/M/EM/2019/07/13/S2B_MSIL2A_20190713T023559_N0212_R089_T49MEM_20201005T133004.SAFE/DATASTRIP/DS_ESRI_20201005T133006_S20190713T025544/MTD_DS.xml?st=2026-08-11T01%3A17%3A56Z&se=2026-08-12T02%3A02%3A56Z&sp=rl&sv=2025-07-05&sr=c&skoid=9c8ff44a-6a2c-4dfb-b298-1c9212f64d9a&sktid=72f988bf-86f1-41af-91ab-2d7cd011db47&skt=2026-08-12T01%3A07%3A44Z&ske=2026-08-19T01%3A07%3A44Z&sks=b&skv=2025-07-05&sig=B2YvTOLEb5cIB%2BAfkaHX5RnWtg5vNwwi%2B5CHS5%2BtSO4%3D",
           "type": "application/xml",
           "title": "Datastrip metadata",
           "roles": [
@@ -978,7 +978,7 @@
       ],
       "assets": {
         "AOT": {
-          "href": "https://sentinel2l2a01.blob.core.windows.net/sentinel2-l2/49/L/EL/2019/07/13/S2B_MSIL2A_20190713T023559_N0212_R089_T49LEL_20201005T132959.SAFE/GRANULE/L2A_T49LEL_A012270_20190713T025544/IMG_DATA/R10m/T49LEL_20190713T023559_AOT_10m.tif?st=2026-08-01T05%3A38%3A30Z&se=2026-08-02T06%3A23%3A30Z&sp=rl&sv=2025-07-05&sr=c&skoid=9c8ff44a-6a2c-4dfb-b298-1c9212f64d9a&sktid=72f988bf-86f1-41af-91ab-2d7cd011db47&skt=2026-08-02T05%3A32%3A03Z&ske=2026-08-09T05%3A32%3A03Z&sks=b&skv=2025-07-05&sig=igujv6rqIdu8iBsSEXgLpz4WlqjfgmQdkDeU7whOX7s%3D",
+          "href": "https://sentinel2l2a01.blob.core.windows.net/sentinel2-l2/49/L/EL/2019/07/13/S2B_MSIL2A_20190713T023559_N0212_R089_T49LEL_20201005T132959.SAFE/GRANULE/L2A_T49LEL_A012270_20190713T025544/IMG_DATA/R10m/T49LEL_20190713T023559_AOT_10m.tif?st=2026-08-11T01%3A17%3A56Z&se=2026-08-12T02%3A02%3A56Z&sp=rl&sv=2025-07-05&sr=c&skoid=9c8ff44a-6a2c-4dfb-b298-1c9212f64d9a&sktid=72f988bf-86f1-41af-91ab-2d7cd011db47&skt=2026-08-12T01%3A07%3A44Z&ske=2026-08-19T01%3A07%3A44Z&sks=b&skv=2025-07-05&sig=B2YvTOLEb5cIB%2BAfkaHX5RnWtg5vNwwi%2B5CHS5%2BtSO4%3D",
           "type": "image/tiff; application=geotiff; profile=cloud-optimized",
           "title": "Aerosol optical thickness (AOT)",
           "proj:bbox": [
@@ -1005,7 +1005,7 @@
           ]
         },
         "B01": {
-          "href": "https://sentinel2l2a01.blob.core.windows.net/sentinel2-l2/49/L/EL/2019/07/13/S2B_MSIL2A_20190713T023559_N0212_R089_T49LEL_20201005T132959.SAFE/GRANULE/L2A_T49LEL_A012270_20190713T025544/IMG_DATA/R60m/T49LEL_20190713T023559_B01_60m.tif?st=2026-08-01T05%3A38%3A30Z&se=2026-08-02T06%3A23%3A30Z&sp=rl&sv=2025-07-05&sr=c&skoid=9c8ff44a-6a2c-4dfb-b298-1c9212f64d9a&sktid=72f988bf-86f1-41af-91ab-2d7cd011db47&skt=2026-08-02T05%3A32%3A03Z&ske=2026-08-09T05%3A32%3A03Z&sks=b&skv=2025-07-05&sig=igujv6rqIdu8iBsSEXgLpz4WlqjfgmQdkDeU7whOX7s%3D",
+          "href": "https://sentinel2l2a01.blob.core.windows.net/sentinel2-l2/49/L/EL/2019/07/13/S2B_MSIL2A_20190713T023559_N0212_R089_T49LEL_20201005T132959.SAFE/GRANULE/L2A_T49LEL_A012270_20190713T025544/IMG_DATA/R60m/T49LEL_20190713T023559_B01_60m.tif?st=2026-08-11T01%3A17%3A56Z&se=2026-08-12T02%3A02%3A56Z&sp=rl&sv=2025-07-05&sr=c&skoid=9c8ff44a-6a2c-4dfb-b298-1c9212f64d9a&sktid=72f988bf-86f1-41af-91ab-2d7cd011db47&skt=2026-08-12T01%3A07%3A44Z&ske=2026-08-19T01%3A07%3A44Z&sks=b&skv=2025-07-05&sig=B2YvTOLEb5cIB%2BAfkaHX5RnWtg5vNwwi%2B5CHS5%2BtSO4%3D",
           "type": "image/tiff; application=geotiff; profile=cloud-optimized",
           "title": "Band 1 - Coastal aerosol - 60m",
           "proj:bbox": [
@@ -1041,7 +1041,7 @@
           ]
         },
         "B02": {
-          "href": "https://sentinel2l2a01.blob.core.windows.net/sentinel2-l2/49/L/EL/2019/07/13/S2B_MSIL2A_20190713T023559_N0212_R089_T49LEL_20201005T132959.SAFE/GRANULE/L2A_T49LEL_A012270_20190713T025544/IMG_DATA/R10m/T49LEL_20190713T023559_B02_10m.tif?st=2026-08-01T05%3A38%3A30Z&se=2026-08-02T06%3A23%3A30Z&sp=rl&sv=2025-07-05&sr=c&skoid=9c8ff44a-6a2c-4dfb-b298-1c9212f64d9a&sktid=72f988bf-86f1-41af-91ab-2d7cd011db47&skt=2026-08-02T05%3A32%3A03Z&ske=2026-08-09T05%3A32%3A03Z&sks=b&skv=2025-07-05&sig=igujv6rqIdu8iBsSEXgLpz4WlqjfgmQdkDeU7whOX7s%3D",
+          "href": "https://sentinel2l2a01.blob.core.windows.net/sentinel2-l2/49/L/EL/2019/07/13/S2B_MSIL2A_20190713T023559_N0212_R089_T49LEL_20201005T132959.SAFE/GRANULE/L2A_T49LEL_A012270_20190713T025544/IMG_DATA/R10m/T49LEL_20190713T023559_B02_10m.tif?st=2026-08-11T01%3A17%3A56Z&se=2026-08-12T02%3A02%3A56Z&sp=rl&sv=2025-07-05&sr=c&skoid=9c8ff44a-6a2c-4dfb-b298-1c9212f64d9a&sktid=72f988bf-86f1-41af-91ab-2d7cd011db47&skt=2026-08-12T01%3A07%3A44Z&ske=2026-08-19T01%3A07%3A44Z&sks=b&skv=2025-07-05&sig=B2YvTOLEb5cIB%2BAfkaHX5RnWtg5vNwwi%2B5CHS5%2BtSO4%3D",
           "type": "image/tiff; application=geotiff; profile=cloud-optimized",
           "title": "Band 2 - Blue - 10m",
           "proj:bbox": [
@@ -1077,7 +1077,7 @@
           ]
         },
         "B03": {
-          "href": "https://sentinel2l2a01.blob.core.windows.net/sentinel2-l2/49/L/EL/2019/07/13/S2B_MSIL2A_20190713T023559_N0212_R089_T49LEL_20201005T132959.SAFE/GRANULE/L2A_T49LEL_A012270_20190713T025544/IMG_DATA/R10m/T49LEL_20190713T023559_B03_10m.tif?st=2026-08-01T05%3A38%3A30Z&se=2026-08-02T06%3A23%3A30Z&sp=rl&sv=2025-07-05&sr=c&skoid=9c8ff44a-6a2c-4dfb-b298-1c9212f64d9a&sktid=72f988bf-86f1-41af-91ab-2d7cd011db47&skt=2026-08-02T05%3A32%3A03Z&ske=2026-08-09T05%3A32%3A03Z&sks=b&skv=2025-07-05&sig=igujv6rqIdu8iBsSEXgLpz4WlqjfgmQdkDeU7whOX7s%3D",
+          "href": "https://sentinel2l2a01.blob.core.windows.net/sentinel2-l2/49/L/EL/2019/07/13/S2B_MSIL2A_20190713T023559_N0212_R089_T49LEL_20201005T132959.SAFE/GRANULE/L2A_T49LEL_A012270_20190713T025544/IMG_DATA/R10m/T49LEL_20190713T023559_B03_10m.tif?st=2026-08-11T01%3A17%3A56Z&se=2026-08-12T02%3A02%3A56Z&sp=rl&sv=2025-07-05&sr=c&skoid=9c8ff44a-6a2c-4dfb-b298-1c9212f64d9a&sktid=72f988bf-86f1-41af-91ab-2d7cd011db47&skt=2026-08-12T01%3A07%3A44Z&ske=2026-08-19T01%3A07%3A44Z&sks=b&skv=2025-07-05&sig=B2YvTOLEb5cIB%2BAfkaHX5RnWtg5vNwwi%2B5CHS5%2BtSO4%3D",
           "type": "image/tiff; application=geotiff; profile=cloud-optimized",
           "title": "Band 3 - Green - 10m",
           "proj:bbox": [
@@ -1113,7 +1113,7 @@
           ]
         },
         "B04": {
-          "href": "https://sentinel2l2a01.blob.core.windows.net/sentinel2-l2/49/L/EL/2019/07/13/S2B_MSIL2A_20190713T023559_N0212_R089_T49LEL_20201005T132959.SAFE/GRANULE/L2A_T49LEL_A012270_20190713T025544/IMG_DATA/R10m/T49LEL_20190713T023559_B04_10m.tif?st=2026-08-01T05%3A38%3A30Z&se=2026-08-02T06%3A23%3A30Z&sp=rl&sv=2025-07-05&sr=c&skoid=9c8ff44a-6a2c-4dfb-b298-1c9212f64d9a&sktid=72f988bf-86f1-41af-91ab-2d7cd011db47&skt=2026-08-02T05%3A32%3A03Z&ske=2026-08-09T05%3A32%3A03Z&sks=b&skv=2025-07-05&sig=igujv6rqIdu8iBsSEXgLpz4WlqjfgmQdkDeU7whOX7s%3D",
+          "href": "https://sentinel2l2a01.blob.core.windows.net/sentinel2-l2/49/L/EL/2019/07/13/S2B_MSIL2A_20190713T023559_N0212_R089_T49LEL_20201005T132959.SAFE/GRANULE/L2A_T49LEL_A012270_20190713T025544/IMG_DATA/R10m/T49LEL_20190713T023559_B04_10m.tif?st=2026-08-11T01%3A17%3A56Z&se=2026-08-12T02%3A02%3A56Z&sp=rl&sv=2025-07-05&sr=c&skoid=9c8ff44a-6a2c-4dfb-b298-1c9212f64d9a&sktid=72f988bf-86f1-41af-91ab-2d7cd011db47&skt=2026-08-12T01%3A07%3A44Z&ske=2026-08-19T01%3A07%3A44Z&sks=b&skv=2025-07-05&sig=B2YvTOLEb5cIB%2BAfkaHX5RnWtg5vNwwi%2B5CHS5%2BtSO4%3D",
           "type": "image/tiff; application=geotiff; profile=cloud-optimized",
           "title": "Band 4 - Red - 10m",
           "proj:bbox": [
@@ -1149,7 +1149,7 @@
           ]
         },
         "B05": {
-          "href": "https://sentinel2l2a01.blob.core.windows.net/sentinel2-l2/49/L/EL/2019/07/13/S2B_MSIL2A_20190713T023559_N0212_R089_T49LEL_20201005T132959.SAFE/GRANULE/L2A_T49LEL_A012270_20190713T025544/IMG_DATA/R20m/T49LEL_20190713T023559_B05_20m.tif?st=2026-08-01T05%3A38%3A30Z&se=2026-08-02T06%3A23%3A30Z&sp=rl&sv=2025-07-05&sr=c&skoid=9c8ff44a-6a2c-4dfb-b298-1c9212f64d9a&sktid=72f988bf-86f1-41af-91ab-2d7cd011db47&skt=2026-08-02T05%3A32%3A03Z&ske=2026-08-09T05%3A32%3A03Z&sks=b&skv=2025-07-05&sig=igujv6rqIdu8iBsSEXgLpz4WlqjfgmQdkDeU7whOX7s%3D",
+          "href": "https://sentinel2l2a01.blob.core.windows.net/sentinel2-l2/49/L/EL/2019/07/13/S2B_MSIL2A_20190713T023559_N0212_R089_T49LEL_20201005T132959.SAFE/GRANULE/L2A_T49LEL_A012270_20190713T025544/IMG_DATA/R20m/T49LEL_20190713T023559_B05_20m.tif?st=2026-08-11T01%3A17%3A56Z&se=2026-08-12T02%3A02%3A56Z&sp=rl&sv=2025-07-05&sr=c&skoid=9c8ff44a-6a2c-4dfb-b298-1c9212f64d9a&sktid=72f988bf-86f1-41af-91ab-2d7cd011db47&skt=2026-08-12T01%3A07%3A44Z&ske=2026-08-19T01%3A07%3A44Z&sks=b&skv=2025-07-05&sig=B2YvTOLEb5cIB%2BAfkaHX5RnWtg5vNwwi%2B5CHS5%2BtSO4%3D",
           "type": "image/tiff; application=geotiff; profile=cloud-optimized",
           "title": "Band 5 - Vegetation red edge 1 - 20m",
           "proj:bbox": [
@@ -1185,7 +1185,7 @@
           ]
         },
         "B06": {
-          "href": "https://sentinel2l2a01.blob.core.windows.net/sentinel2-l2/49/L/EL/2019/07/13/S2B_MSIL2A_20190713T023559_N0212_R089_T49LEL_20201005T132959.SAFE/GRANULE/L2A_T49LEL_A012270_20190713T025544/IMG_DATA/R20m/T49LEL_20190713T023559_B06_20m.tif?st=2026-08-01T05%3A38%3A30Z&se=2026-08-02T06%3A23%3A30Z&sp=rl&sv=2025-07-05&sr=c&skoid=9c8ff44a-6a2c-4dfb-b298-1c9212f64d9a&sktid=72f988bf-86f1-41af-91ab-2d7cd011db47&skt=2026-08-02T05%3A32%3A03Z&ske=2026-08-09T05%3A32%3A03Z&sks=b&skv=2025-07-05&sig=igujv6rqIdu8iBsSEXgLpz4WlqjfgmQdkDeU7whOX7s%3D",
+          "href": "https://sentinel2l2a01.blob.core.windows.net/sentinel2-l2/49/L/EL/2019/07/13/S2B_MSIL2A_20190713T023559_N0212_R089_T49LEL_20201005T132959.SAFE/GRANULE/L2A_T49LEL_A012270_20190713T025544/IMG_DATA/R20m/T49LEL_20190713T023559_B06_20m.tif?st=2026-08-11T01%3A17%3A56Z&se=2026-08-12T02%3A02%3A56Z&sp=rl&sv=2025-07-05&sr=c&skoid=9c8ff44a-6a2c-4dfb-b298-1c9212f64d9a&sktid=72f988bf-86f1-41af-91ab-2d7cd011db47&skt=2026-08-12T01%3A07%3A44Z&ske=2026-08-19T01%3A07%3A44Z&sks=b&skv=2025-07-05&sig=B2YvTOLEb5cIB%2BAfkaHX5RnWtg5vNwwi%2B5CHS5%2BtSO4%3D",
           "type": "image/tiff; application=geotiff; profile=cloud-optimized",
           "title": "Band 6 - Vegetation red edge 2 - 20m",
           "proj:bbox": [
@@ -1221,7 +1221,7 @@
           ]
         },
         "B07": {
-          "href": "https://sentinel2l2a01.blob.core.windows.net/sentinel2-l2/49/L/EL/2019/07/13/S2B_MSIL2A_20190713T023559_N0212_R089_T49LEL_20201005T132959.SAFE/GRANULE/L2A_T49LEL_A012270_20190713T025544/IMG_DATA/R20m/T49LEL_20190713T023559_B07_20m.tif?st=2026-08-01T05%3A38%3A30Z&se=2026-08-02T06%3A23%3A30Z&sp=rl&sv=2025-07-05&sr=c&skoid=9c8ff44a-6a2c-4dfb-b298-1c9212f64d9a&sktid=72f988bf-86f1-41af-91ab-2d7cd011db47&skt=2026-08-02T05%3A32%3A03Z&ske=2026-08-09T05%3A32%3A03Z&sks=b&skv=2025-07-05&sig=igujv6rqIdu8iBsSEXgLpz4WlqjfgmQdkDeU7whOX7s%3D",
+          "href": "https://sentinel2l2a01.blob.core.windows.net/sentinel2-l2/49/L/EL/2019/07/13/S2B_MSIL2A_20190713T023559_N0212_R089_T49LEL_20201005T132959.SAFE/GRANULE/L2A_T49LEL_A012270_20190713T025544/IMG_DATA/R20m/T49LEL_20190713T023559_B07_20m.tif?st=2026-08-11T01%3A17%3A56Z&se=2026-08-12T02%3A02%3A56Z&sp=rl&sv=2025-07-05&sr=c&skoid=9c8ff44a-6a2c-4dfb-b298-1c9212f64d9a&sktid=72f988bf-86f1-41af-91ab-2d7cd011db47&skt=2026-08-12T01%3A07%3A44Z&ske=2026-08-19T01%3A07%3A44Z&sks=b&skv=2025-07-05&sig=B2YvTOLEb5cIB%2BAfkaHX5RnWtg5vNwwi%2B5CHS5%2BtSO4%3D",
           "type": "image/tiff; application=geotiff; profile=cloud-optimized",
           "title": "Band 7 - Vegetation red edge 3 - 20m",
           "proj:bbox": [
@@ -1257,7 +1257,7 @@
           ]
         },
         "B08": {
-          "href": "https://sentinel2l2a01.blob.core.windows.net/sentinel2-l2/49/L/EL/2019/07/13/S2B_MSIL2A_20190713T023559_N0212_R089_T49LEL_20201005T132959.SAFE/GRANULE/L2A_T49LEL_A012270_20190713T025544/IMG_DATA/R10m/T49LEL_20190713T023559_B08_10m.tif?st=2026-08-01T05%3A38%3A30Z&se=2026-08-02T06%3A23%3A30Z&sp=rl&sv=2025-07-05&sr=c&skoid=9c8ff44a-6a2c-4dfb-b298-1c9212f64d9a&sktid=72f988bf-86f1-41af-91ab-2d7cd011db47&skt=2026-08-02T05%3A32%3A03Z&ske=2026-08-09T05%3A32%3A03Z&sks=b&skv=2025-07-05&sig=igujv6rqIdu8iBsSEXgLpz4WlqjfgmQdkDeU7whOX7s%3D",
+          "href": "https://sentinel2l2a01.blob.core.windows.net/sentinel2-l2/49/L/EL/2019/07/13/S2B_MSIL2A_20190713T023559_N0212_R089_T49LEL_20201005T132959.SAFE/GRANULE/L2A_T49LEL_A012270_20190713T025544/IMG_DATA/R10m/T49LEL_20190713T023559_B08_10m.tif?st=2026-08-11T01%3A17%3A56Z&se=2026-08-12T02%3A02%3A56Z&sp=rl&sv=2025-07-05&sr=c&skoid=9c8ff44a-6a2c-4dfb-b298-1c9212f64d9a&sktid=72f988bf-86f1-41af-91ab-2d7cd011db47&skt=2026-08-12T01%3A07%3A44Z&ske=2026-08-19T01%3A07%3A44Z&sks=b&skv=2025-07-05&sig=B2YvTOLEb5cIB%2BAfkaHX5RnWtg5vNwwi%2B5CHS5%2BtSO4%3D",
           "type": "image/tiff; application=geotiff; profile=cloud-optimized",
           "title": "Band 8 - NIR - 10m",
           "proj:bbox": [
@@ -1293,7 +1293,7 @@
           ]
         },
         "B09": {
-          "href": "https://sentinel2l2a01.blob.core.windows.net/sentinel2-l2/49/L/EL/2019/07/13/S2B_MSIL2A_20190713T023559_N0212_R089_T49LEL_20201005T132959.SAFE/GRANULE/L2A_T49LEL_A012270_20190713T025544/IMG_DATA/R60m/T49LEL_20190713T023559_B09_60m.tif?st=2026-08-01T05%3A38%3A30Z&se=2026-08-02T06%3A23%3A30Z&sp=rl&sv=2025-07-05&sr=c&skoid=9c8ff44a-6a2c-4dfb-b298-1c9212f64d9a&sktid=72f988bf-86f1-41af-91ab-2d7cd011db47&skt=2026-08-02T05%3A32%3A03Z&ske=2026-08-09T05%3A32%3A03Z&sks=b&skv=2025-07-05&sig=igujv6rqIdu8iBsSEXgLpz4WlqjfgmQdkDeU7whOX7s%3D",
+          "href": "https://sentinel2l2a01.blob.core.windows.net/sentinel2-l2/49/L/EL/2019/07/13/S2B_MSIL2A_20190713T023559_N0212_R089_T49LEL_20201005T132959.SAFE/GRANULE/L2A_T49LEL_A012270_20190713T025544/IMG_DATA/R60m/T49LEL_20190713T023559_B09_60m.tif?st=2026-08-11T01%3A17%3A56Z&se=2026-08-12T02%3A02%3A56Z&sp=rl&sv=2025-07-05&sr=c&skoid=9c8ff44a-6a2c-4dfb-b298-1c9212f64d9a&sktid=72f988bf-86f1-41af-91ab-2d7cd011db47&skt=2026-08-12T01%3A07%3A44Z&ske=2026-08-19T01%3A07%3A44Z&sks=b&skv=2025-07-05&sig=B2YvTOLEb5cIB%2BAfkaHX5RnWtg5vNwwi%2B5CHS5%2BtSO4%3D",
           "type": "image/tiff; application=geotiff; profile=cloud-optimized",
           "title": "Band 9 - Water vapor - 60m",
           "proj:bbox": [
@@ -1328,7 +1328,7 @@
           ]
         },
         "B11": {
-          "href": "https://sentinel2l2a01.blob.core.windows.net/sentinel2-l2/49/L/EL/2019/07/13/S2B_MSIL2A_20190713T023559_N0212_R089_T49LEL_20201005T132959.SAFE/GRANULE/L2A_T49LEL_A012270_20190713T025544/IMG_DATA/R20m/T49LEL_20190713T023559_B11_20m.tif?st=2026-08-01T05%3A38%3A30Z&se=2026-08-02T06%3A23%3A30Z&sp=rl&sv=2025-07-05&sr=c&skoid=9c8ff44a-6a2c-4dfb-b298-1c9212f64d9a&sktid=72f988bf-86f1-41af-91ab-2d7cd011db47&skt=2026-08-02T05%3A32%3A03Z&ske=2026-08-09T05%3A32%3A03Z&sks=b&skv=2025-07-05&sig=igujv6rqIdu8iBsSEXgLpz4WlqjfgmQdkDeU7whOX7s%3D",
+          "href": "https://sentinel2l2a01.blob.core.windows.net/sentinel2-l2/49/L/EL/2019/07/13/S2B_MSIL2A_20190713T023559_N0212_R089_T49LEL_20201005T132959.SAFE/GRANULE/L2A_T49LEL_A012270_20190713T025544/IMG_DATA/R20m/T49LEL_20190713T023559_B11_20m.tif?st=2026-08-11T01%3A17%3A56Z&se=2026-08-12T02%3A02%3A56Z&sp=rl&sv=2025-07-05&sr=c&skoid=9c8ff44a-6a2c-4dfb-b298-1c9212f64d9a&sktid=72f988bf-86f1-41af-91ab-2d7cd011db47&skt=2026-08-12T01%3A07%3A44Z&ske=2026-08-19T01%3A07%3A44Z&sks=b&skv=2025-07-05&sig=B2YvTOLEb5cIB%2BAfkaHX5RnWtg5vNwwi%2B5CHS5%2BtSO4%3D",
           "type": "image/tiff; application=geotiff; profile=cloud-optimized",
           "title": "Band 11 - SWIR (1.6) - 20m",
           "proj:bbox": [
@@ -1364,7 +1364,7 @@
           ]
         },
         "B12": {
-          "href": "https://sentinel2l2a01.blob.core.windows.net/sentinel2-l2/49/L/EL/2019/07/13/S2B_MSIL2A_20190713T023559_N0212_R089_T49LEL_20201005T132959.SAFE/GRANULE/L2A_T49LEL_A012270_20190713T025544/IMG_DATA/R20m/T49LEL_20190713T023559_B12_20m.tif?st=2026-08-01T05%3A38%3A30Z&se=2026-08-02T06%3A23%3A30Z&sp=rl&sv=2025-07-05&sr=c&skoid=9c8ff44a-6a2c-4dfb-b298-1c9212f64d9a&sktid=72f988bf-86f1-41af-91ab-2d7cd011db47&skt=2026-08-02T05%3A32%3A03Z&ske=2026-08-09T05%3A32%3A03Z&sks=b&skv=2025-07-05&sig=igujv6rqIdu8iBsSEXgLpz4WlqjfgmQdkDeU7whOX7s%3D",
+          "href": "https://sentinel2l2a01.blob.core.windows.net/sentinel2-l2/49/L/EL/2019/07/13/S2B_MSIL2A_20190713T023559_N0212_R089_T49LEL_20201005T132959.SAFE/GRANULE/L2A_T49LEL_A012270_20190713T025544/IMG_DATA/R20m/T49LEL_20190713T023559_B12_20m.tif?st=2026-08-11T01%3A17%3A56Z&se=2026-08-12T02%3A02%3A56Z&sp=rl&sv=2025-07-05&sr=c&skoid=9c8ff44a-6a2c-4dfb-b298-1c9212f64d9a&sktid=72f988bf-86f1-41af-91ab-2d7cd011db47&skt=2026-08-12T01%3A07%3A44Z&ske=2026-08-19T01%3A07%3A44Z&sks=b&skv=2025-07-05&sig=B2YvTOLEb5cIB%2BAfkaHX5RnWtg5vNwwi%2B5CHS5%2BtSO4%3D",
           "type": "image/tiff; application=geotiff; profile=cloud-optimized",
           "title": "Band 12 - SWIR (2.2) - 20m",
           "proj:bbox": [
@@ -1400,7 +1400,7 @@
           ]
         },
         "B8A": {
-          "href": "https://sentinel2l2a01.blob.core.windows.net/sentinel2-l2/49/L/EL/2019/07/13/S2B_MSIL2A_20190713T023559_N0212_R089_T49LEL_20201005T132959.SAFE/GRANULE/L2A_T49LEL_A012270_20190713T025544/IMG_DATA/R20m/T49LEL_20190713T023559_B8A_20m.tif?st=2026-08-01T05%3A38%3A30Z&se=2026-08-02T06%3A23%3A30Z&sp=rl&sv=2025-07-05&sr=c&skoid=9c8ff44a-6a2c-4dfb-b298-1c9212f64d9a&sktid=72f988bf-86f1-41af-91ab-2d7cd011db47&skt=2026-08-02T05%3A32%3A03Z&ske=2026-08-09T05%3A32%3A03Z&sks=b&skv=2025-07-05&sig=igujv6rqIdu8iBsSEXgLpz4WlqjfgmQdkDeU7whOX7s%3D",
+          "href": "https://sentinel2l2a01.blob.core.windows.net/sentinel2-l2/49/L/EL/2019/07/13/S2B_MSIL2A_20190713T023559_N0212_R089_T49LEL_20201005T132959.SAFE/GRANULE/L2A_T49LEL_A012270_20190713T025544/IMG_DATA/R20m/T49LEL_20190713T023559_B8A_20m.tif?st=2026-08-11T01%3A17%3A56Z&se=2026-08-12T02%3A02%3A56Z&sp=rl&sv=2025-07-05&sr=c&skoid=9c8ff44a-6a2c-4dfb-b298-1c9212f64d9a&sktid=72f988bf-86f1-41af-91ab-2d7cd011db47&skt=2026-08-12T01%3A07%3A44Z&ske=2026-08-19T01%3A07%3A44Z&sks=b&skv=2025-07-05&sig=B2YvTOLEb5cIB%2BAfkaHX5RnWtg5vNwwi%2B5CHS5%2BtSO4%3D",
           "type": "image/tiff; application=geotiff; profile=cloud-optimized",
           "title": "Band 8A - Vegetation red edge 4 - 20m",
           "proj:bbox": [
@@ -1436,7 +1436,7 @@
           ]
         },
         "SCL": {
-          "href": "https://sentinel2l2a01.blob.core.windows.net/sentinel2-l2/49/L/EL/2019/07/13/S2B_MSIL2A_20190713T023559_N0212_R089_T49LEL_20201005T132959.SAFE/GRANULE/L2A_T49LEL_A012270_20190713T025544/IMG_DATA/R20m/T49LEL_20190713T023559_SCL_20m.tif?st=2026-08-01T05%3A38%3A30Z&se=2026-08-02T06%3A23%3A30Z&sp=rl&sv=2025-07-05&sr=c&skoid=9c8ff44a-6a2c-4dfb-b298-1c9212f64d9a&sktid=72f988bf-86f1-41af-91ab-2d7cd011db47&skt=2026-08-02T05%3A32%3A03Z&ske=2026-08-09T05%3A32%3A03Z&sks=b&skv=2025-07-05&sig=igujv6rqIdu8iBsSEXgLpz4WlqjfgmQdkDeU7whOX7s%3D",
+          "href": "https://sentinel2l2a01.blob.core.windows.net/sentinel2-l2/49/L/EL/2019/07/13/S2B_MSIL2A_20190713T023559_N0212_R089_T49LEL_20201005T132959.SAFE/GRANULE/L2A_T49LEL_A012270_20190713T025544/IMG_DATA/R20m/T49LEL_20190713T023559_SCL_20m.tif?st=2026-08-11T01%3A17%3A56Z&se=2026-08-12T02%3A02%3A56Z&sp=rl&sv=2025-07-05&sr=c&skoid=9c8ff44a-6a2c-4dfb-b298-1c9212f64d9a&sktid=72f988bf-86f1-41af-91ab-2d7cd011db47&skt=2026-08-12T01%3A07%3A44Z&ske=2026-08-19T01%3A07%3A44Z&sks=b&skv=2025-07-05&sig=B2YvTOLEb5cIB%2BAfkaHX5RnWtg5vNwwi%2B5CHS5%2BtSO4%3D",
           "type": "image/tiff; application=geotiff; profile=cloud-optimized",
           "title": "Scene classfication map (SCL)",
           "proj:bbox": [
@@ -1463,7 +1463,7 @@
           ]
         },
         "WVP": {
-          "href": "https://sentinel2l2a01.blob.core.windows.net/sentinel2-l2/49/L/EL/2019/07/13/S2B_MSIL2A_20190713T023559_N0212_R089_T49LEL_20201005T132959.SAFE/GRANULE/L2A_T49LEL_A012270_20190713T025544/IMG_DATA/R10m/T49LEL_20190713T023559_WVP_10m.tif?st=2026-08-01T05%3A38%3A30Z&se=2026-08-02T06%3A23%3A30Z&sp=rl&sv=2025-07-05&sr=c&skoid=9c8ff44a-6a2c-4dfb-b298-1c9212f64d9a&sktid=72f988bf-86f1-41af-91ab-2d7cd011db47&skt=2026-08-02T05%3A32%3A03Z&ske=2026-08-09T05%3A32%3A03Z&sks=b&skv=2025-07-05&sig=igujv6rqIdu8iBsSEXgLpz4WlqjfgmQdkDeU7whOX7s%3D",
+          "href": "https://sentinel2l2a01.blob.core.windows.net/sentinel2-l2/49/L/EL/2019/07/13/S2B_MSIL2A_20190713T023559_N0212_R089_T49LEL_20201005T132959.SAFE/GRANULE/L2A_T49LEL_A012270_20190713T025544/IMG_DATA/R10m/T49LEL_20190713T023559_WVP_10m.tif?st=2026-08-11T01%3A17%3A56Z&se=2026-08-12T02%3A02%3A56Z&sp=rl&sv=2025-07-05&sr=c&skoid=9c8ff44a-6a2c-4dfb-b298-1c9212f64d9a&sktid=72f988bf-86f1-41af-91ab-2d7cd011db47&skt=2026-08-12T01%3A07%3A44Z&ske=2026-08-19T01%3A07%3A44Z&sks=b&skv=2025-07-05&sig=B2YvTOLEb5cIB%2BAfkaHX5RnWtg5vNwwi%2B5CHS5%2BtSO4%3D",
           "type": "image/tiff; application=geotiff; profile=cloud-optimized",
           "title": "Water vapour (WVP)",
           "proj:bbox": [
@@ -1490,7 +1490,7 @@
           ]
         },
         "visual": {
-          "href": "https://sentinel2l2a01.blob.core.windows.net/sentinel2-l2/49/L/EL/2019/07/13/S2B_MSIL2A_20190713T023559_N0212_R089_T49LEL_20201005T132959.SAFE/GRANULE/L2A_T49LEL_A012270_20190713T025544/IMG_DATA/R10m/T49LEL_20190713T023559_TCI_10m.tif?st=2026-08-01T05%3A38%3A30Z&se=2026-08-02T06%3A23%3A30Z&sp=rl&sv=2025-07-05&sr=c&skoid=9c8ff44a-6a2c-4dfb-b298-1c9212f64d9a&sktid=72f988bf-86f1-41af-91ab-2d7cd011db47&skt=2026-08-02T05%3A32%3A03Z&ske=2026-08-09T05%3A32%3A03Z&sks=b&skv=2025-07-05&sig=igujv6rqIdu8iBsSEXgLpz4WlqjfgmQdkDeU7whOX7s%3D",
+          "href": "https://sentinel2l2a01.blob.core.windows.net/sentinel2-l2/49/L/EL/2019/07/13/S2B_MSIL2A_20190713T023559_N0212_R089_T49LEL_20201005T132959.SAFE/GRANULE/L2A_T49LEL_A012270_20190713T025544/IMG_DATA/R10m/T49LEL_20190713T023559_TCI_10m.tif?st=2026-08-11T01%3A17%3A56Z&se=2026-08-12T02%3A02%3A56Z&sp=rl&sv=2025-07-05&sr=c&skoid=9c8ff44a-6a2c-4dfb-b298-1c9212f64d9a&sktid=72f988bf-86f1-41af-91ab-2d7cd011db47&skt=2026-08-12T01%3A07%3A44Z&ske=2026-08-19T01%3A07%3A44Z&sks=b&skv=2025-07-05&sig=B2YvTOLEb5cIB%2BAfkaHX5RnWtg5vNwwi%2B5CHS5%2BtSO4%3D",
           "type": "image/tiff; application=geotiff; profile=cloud-optimized",
           "title": "True color image",
           "proj:bbox": [
@@ -1540,7 +1540,7 @@
           ]
         },
         "preview": {
-          "href": "https://sentinel2l2a01.blob.core.windows.net/sentinel2-l2/49/L/EL/2019/07/13/S2B_MSIL2A_20190713T023559_N0212_R089_T49LEL_20201005T132959.SAFE/GRANULE/L2A_T49LEL_A012270_20190713T025544/QI_DATA/T49LEL_20190713T023559_PVI.tif?st=2026-08-01T05%3A38%3A30Z&se=2026-08-02T06%3A23%3A30Z&sp=rl&sv=2025-07-05&sr=c&skoid=9c8ff44a-6a2c-4dfb-b298-1c9212f64d9a&sktid=72f988bf-86f1-41af-91ab-2d7cd011db47&skt=2026-08-02T05%3A32%3A03Z&ske=2026-08-09T05%3A32%3A03Z&sks=b&skv=2025-07-05&sig=igujv6rqIdu8iBsSEXgLpz4WlqjfgmQdkDeU7whOX7s%3D",
+          "href": "https://sentinel2l2a01.blob.core.windows.net/sentinel2-l2/49/L/EL/2019/07/13/S2B_MSIL2A_20190713T023559_N0212_R089_T49LEL_20201005T132959.SAFE/GRANULE/L2A_T49LEL_A012270_20190713T025544/QI_DATA/T49LEL_20190713T023559_PVI.tif?st=2026-08-11T01%3A17%3A56Z&se=2026-08-12T02%3A02%3A56Z&sp=rl&sv=2025-07-05&sr=c&skoid=9c8ff44a-6a2c-4dfb-b298-1c9212f64d9a&sktid=72f988bf-86f1-41af-91ab-2d7cd011db47&skt=2026-08-12T01%3A07%3A44Z&ske=2026-08-19T01%3A07%3A44Z&sks=b&skv=2025-07-05&sig=B2YvTOLEb5cIB%2BAfkaHX5RnWtg5vNwwi%2B5CHS5%2BtSO4%3D",
           "type": "image/tiff; application=geotiff; profile=cloud-optimized",
           "title": "Thumbnail",
           "roles": [
@@ -1548,7 +1548,7 @@
           ]
         },
         "safe-manifest": {
-          "href": "https://sentinel2l2a01.blob.core.windows.net/sentinel2-l2/49/L/EL/2019/07/13/S2B_MSIL2A_20190713T023559_N0212_R089_T49LEL_20201005T132959.SAFE/manifest.safe?st=2026-08-01T05%3A38%3A30Z&se=2026-08-02T06%3A23%3A30Z&sp=rl&sv=2025-07-05&sr=c&skoid=9c8ff44a-6a2c-4dfb-b298-1c9212f64d9a&sktid=72f988bf-86f1-41af-91ab-2d7cd011db47&skt=2026-08-02T05%3A32%3A03Z&ske=2026-08-09T05%3A32%3A03Z&sks=b&skv=2025-07-05&sig=igujv6rqIdu8iBsSEXgLpz4WlqjfgmQdkDeU7whOX7s%3D",
+          "href": "https://sentinel2l2a01.blob.core.windows.net/sentinel2-l2/49/L/EL/2019/07/13/S2B_MSIL2A_20190713T023559_N0212_R089_T49LEL_20201005T132959.SAFE/manifest.safe?st=2026-08-11T01%3A17%3A56Z&se=2026-08-12T02%3A02%3A56Z&sp=rl&sv=2025-07-05&sr=c&skoid=9c8ff44a-6a2c-4dfb-b298-1c9212f64d9a&sktid=72f988bf-86f1-41af-91ab-2d7cd011db47&skt=2026-08-12T01%3A07%3A44Z&ske=2026-08-19T01%3A07%3A44Z&sks=b&skv=2025-07-05&sig=B2YvTOLEb5cIB%2BAfkaHX5RnWtg5vNwwi%2B5CHS5%2BtSO4%3D",
           "type": "application/xml",
           "title": "SAFE manifest",
           "roles": [
@@ -1556,7 +1556,7 @@
           ]
         },
         "granule-metadata": {
-          "href": "https://sentinel2l2a01.blob.core.windows.net/sentinel2-l2/49/L/EL/2019/07/13/S2B_MSIL2A_20190713T023559_N0212_R089_T49LEL_20201005T132959.SAFE/GRANULE/L2A_T49LEL_A012270_20190713T025544/MTD_TL.xml?st=2026-08-01T05%3A38%3A30Z&se=2026-08-02T06%3A23%3A30Z&sp=rl&sv=2025-07-05&sr=c&skoid=9c8ff44a-6a2c-4dfb-b298-1c9212f64d9a&sktid=72f988bf-86f1-41af-91ab-2d7cd011db47&skt=2026-08-02T05%3A32%3A03Z&ske=2026-08-09T05%3A32%3A03Z&sks=b&skv=2025-07-05&sig=igujv6rqIdu8iBsSEXgLpz4WlqjfgmQdkDeU7whOX7s%3D",
+          "href": "https://sentinel2l2a01.blob.core.windows.net/sentinel2-l2/49/L/EL/2019/07/13/S2B_MSIL2A_20190713T023559_N0212_R089_T49LEL_20201005T132959.SAFE/GRANULE/L2A_T49LEL_A012270_20190713T025544/MTD_TL.xml?st=2026-08-11T01%3A17%3A56Z&se=2026-08-12T02%3A02%3A56Z&sp=rl&sv=2025-07-05&sr=c&skoid=9c8ff44a-6a2c-4dfb-b298-1c9212f64d9a&sktid=72f988bf-86f1-41af-91ab-2d7cd011db47&skt=2026-08-12T01%3A07%3A44Z&ske=2026-08-19T01%3A07%3A44Z&sks=b&skv=2025-07-05&sig=B2YvTOLEb5cIB%2BAfkaHX5RnWtg5vNwwi%2B5CHS5%2BtSO4%3D",
           "type": "application/xml",
           "title": "Granule metadata",
           "roles": [
@@ -1564,7 +1564,7 @@
           ]
         },
         "inspire-metadata": {
-          "href": "https://sentinel2l2a01.blob.core.windows.net/sentinel2-l2/49/L/EL/2019/07/13/S2B_MSIL2A_20190713T023559_N0212_R089_T49LEL_20201005T132959.SAFE/INSPIRE.xml?st=2026-08-01T05%3A38%3A30Z&se=2026-08-02T06%3A23%3A30Z&sp=rl&sv=2025-07-05&sr=c&skoid=9c8ff44a-6a2c-4dfb-b298-1c9212f64d9a&sktid=72f988bf-86f1-41af-91ab-2d7cd011db47&skt=2026-08-02T05%3A32%3A03Z&ske=2026-08-09T05%3A32%3A03Z&sks=b&skv=2025-07-05&sig=igujv6rqIdu8iBsSEXgLpz4WlqjfgmQdkDeU7whOX7s%3D",
+          "href": "https://sentinel2l2a01.blob.core.windows.net/sentinel2-l2/49/L/EL/2019/07/13/S2B_MSIL2A_20190713T023559_N0212_R089_T49LEL_20201005T132959.SAFE/INSPIRE.xml?st=2026-08-11T01%3A17%3A56Z&se=2026-08-12T02%3A02%3A56Z&sp=rl&sv=2025-07-05&sr=c&skoid=9c8ff44a-6a2c-4dfb-b298-1c9212f64d9a&sktid=72f988bf-86f1-41af-91ab-2d7cd011db47&skt=2026-08-12T01%3A07%3A44Z&ske=2026-08-19T01%3A07%3A44Z&sks=b&skv=2025-07-05&sig=B2YvTOLEb5cIB%2BAfkaHX5RnWtg5vNwwi%2B5CHS5%2BtSO4%3D",
           "type": "application/xml",
           "title": "INSPIRE metadata",
           "roles": [
@@ -1572,7 +1572,7 @@
           ]
         },
         "product-metadata": {
-          "href": "https://sentinel2l2a01.blob.core.windows.net/sentinel2-l2/49/L/EL/2019/07/13/S2B_MSIL2A_20190713T023559_N0212_R089_T49LEL_20201005T132959.SAFE/MTD_MSIL2A.xml?st=2026-08-01T05%3A38%3A30Z&se=2026-08-02T06%3A23%3A30Z&sp=rl&sv=2025-07-05&sr=c&skoid=9c8ff44a-6a2c-4dfb-b298-1c9212f64d9a&sktid=72f988bf-86f1-41af-91ab-2d7cd011db47&skt=2026-08-02T05%3A32%3A03Z&ske=2026-08-09T05%3A32%3A03Z&sks=b&skv=2025-07-05&sig=igujv6rqIdu8iBsSEXgLpz4WlqjfgmQdkDeU7whOX7s%3D",
+          "href": "https://sentinel2l2a01.blob.core.windows.net/sentinel2-l2/49/L/EL/2019/07/13/S2B_MSIL2A_20190713T023559_N0212_R089_T49LEL_20201005T132959.SAFE/MTD_MSIL2A.xml?st=2026-08-11T01%3A17%3A56Z&se=2026-08-12T02%3A02%3A56Z&sp=rl&sv=2025-07-05&sr=c&skoid=9c8ff44a-6a2c-4dfb-b298-1c9212f64d9a&sktid=72f988bf-86f1-41af-91ab-2d7cd011db47&skt=2026-08-12T01%3A07%3A44Z&ske=2026-08-19T01%3A07%3A44Z&sks=b&skv=2025-07-05&sig=B2YvTOLEb5cIB%2BAfkaHX5RnWtg5vNwwi%2B5CHS5%2BtSO4%3D",
           "type": "application/xml",
           "title": "Product metadata",
           "roles": [
@@ -1580,7 +1580,7 @@
           ]
         },
         "datastrip-metadata": {
-          "href": "https://sentinel2l2a01.blob.core.windows.net/sentinel2-l2/49/L/EL/2019/07/13/S2B_MSIL2A_20190713T023559_N0212_R089_T49LEL_20201005T132959.SAFE/DATASTRIP/DS_ESRI_20201005T132959_S20190713T025544/MTD_DS.xml?st=2026-08-01T05%3A38%3A30Z&se=2026-08-02T06%3A23%3A30Z&sp=rl&sv=2025-07-05&sr=c&skoid=9c8ff44a-6a2c-4dfb-b298-1c9212f64d9a&sktid=72f988bf-86f1-41af-91ab-2d7cd011db47&skt=2026-08-02T05%3A32%3A03Z&ske=2026-08-09T05%3A32%3A03Z&sks=b&skv=2025-07-05&sig=igujv6rqIdu8iBsSEXgLpz4WlqjfgmQdkDeU7whOX7s%3D",
+          "href": "https://sentinel2l2a01.blob.core.windows.net/sentinel2-l2/49/L/EL/2019/07/13/S2B_MSIL2A_20190713T023559_N0212_R089_T49LEL_20201005T132959.SAFE/DATASTRIP/DS_ESRI_20201005T132959_S20190713T025544/MTD_DS.xml?st=2026-08-11T01%3A17%3A56Z&se=2026-08-12T02%3A02%3A56Z&sp=rl&sv=2025-07-05&sr=c&skoid=9c8ff44a-6a2c-4dfb-b298-1c9212f64d9a&sktid=72f988bf-86f1-41af-91ab-2d7cd011db47&skt=2026-08-12T01%3A07%3A44Z&ske=2026-08-19T01%3A07%3A44Z&sks=b&skv=2025-07-05&sig=B2YvTOLEb5cIB%2BAfkaHX5RnWtg5vNwwi%2B5CHS5%2BtSO4%3D",
           "type": "application/xml",
           "title": "Datastrip metadata",
           "roles": [

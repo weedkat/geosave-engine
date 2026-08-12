@@ -10,7 +10,7 @@
     "configuration": {
       "chunk_shape": [
         1,
-        255,
+        510,
         510
       ]
     }

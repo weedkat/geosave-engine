@@ -80,6 +80,11 @@ def from_zarr(path: str | Path, group: str | None = None) -> xr.Dataset:
 
     Raises:
         ValueError: `path` doesn't end in `.zarr`.
+
+    Examples:
+        >>> to_zarr("data/train/13.0000E_52.0000N_5kmx5km_10m.zarr", ds, group="sentinel_2_l1c/0")  # nested group, "/" works today
+        >>> from_zarr("data/train/13.0000E_52.0000N_5kmx5km_10m.zarr", group="sentinel_2_l1c/0")  # same nested group back
+        >>> from_zarr("data/train/13.0000E_52.0000N_5kmx5km_10m.zarr")  # group=None reads the store root instead
     """
     path = Path(path)
     if path.suffix != ".zarr":

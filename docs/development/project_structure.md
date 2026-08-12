@@ -19,9 +19,10 @@ src/
 │   ├── geodata
 │   │   ├── datasets
 │   │   │   ├── __init__.py
-│   │   │   ├── geo_dataset.py
-│   │   │   ├── non_geo_dataset.py
-│   │   │   └── samplers.py
+│   │   │   ├── geo.py
+│   │   │   └── non_geo.py
+│   │   ├── datastore
+│   │   │   └── __init__.py
 │   │   ├── errors
 │   │   │   ├── __init__.py
 │   │   │   └── errors.py

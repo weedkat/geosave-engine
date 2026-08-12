@@ -8,7 +8,7 @@ import torch
 
 from geosave_engine.geodata.errors import AnchorFetchError
 from geosave_engine.geodata.stac.source import StacSource, download
-from geosave_engine.geodata.tile import GeoAnchor, GeoTile, GeoStack
+from geosave_engine.geodata.spatial import GeoAnchor, GeoTile, GeoStack
 
 LayerName = str
 
@@ -74,11 +74,11 @@ class GeoPipeline(ABC):
         tiles' anchors (e.g. `temporal_coords`/`location_coords` for a
         Prithvi-family encoder). Must return tensors, no batch dim —
         `stack_samples` only stacks `torch.Tensor` values into a batch;
-        anything else passes through unbatched. Forwarded straight into
-        `GeoStack.to_tensor` as its `context_fn` by `ingest_to_tensor`
-        below — pass this same bound method as a `GeoStackDataset`'s own
-        `context_fn` to get identical derivation for offline training
-        reading this pipeline's saved output.
+        anything else passes through unbatched. Called exactly once, by
+        `ingest()`, right after `preprocess()` — its result rides on the
+        `GeoStack` as `.context` from then on (persisted through `to_zarr`/
+        `from_zarr`, merged into `to_tensor()`/`to_numpy()`'s output), never
+        recomputed at read time.
 
         Args:
             tiles: Layer name to GeoTile map for one aligned, preprocessed
@@ -155,7 +155,10 @@ class GeoPipeline(ABC):
         Built on `fetch()` — same skip-on-empty/skip-on-misalignment
         behavior. `preprocess()` runs once per composed sample; only its
         own `AnchorFetchError` is treated as skip-not-crash, anything else
-        propagates.
+        propagates. `self.context()` runs here too, once, on the same
+        preprocessed tiles — its result rides on the yielded `GeoStack` as
+        `.context` (see there), computed exactly once no matter how many
+        times that `GeoStack` gets rendered/saved/reloaded afterward.
 
         Args:
             anchor: Raw anchor, e.g. straight off an `AnchorSource`.
@@ -165,7 +168,10 @@ class GeoPipeline(ABC):
         """
         for raw in self.fetch(anchor):
             try:
-                yield GeoStack(**self.preprocess(raw))
+                tiles = self.preprocess(raw)
+                context = self.context(tiles)
+                stack = GeoStack(**tiles)
+                yield stack.with_context(context) if context else stack
             except AnchorFetchError as e:
                 log.debug("Sample not usable, skipping: %s", e)
                 continue
@@ -187,9 +193,9 @@ class GeoPipeline(ABC):
         needs one (and shard by `torch.utils.data.get_worker_info()` there
         if using `num_workers>1`, since this generator itself has no
         worker-awareness). Built on `ingest` — same
-        bucketing/reducing/stacking, same skip-on-empty-bucket behavior.
-        Every yielded sample is run through `self.context` (override to add
-        keys — see there), same as `preprocess`, not a call-time override.
+        bucketing/reducing/stacking, same skip-on-empty-bucket behavior,
+        same `self.context` (see there) already baked into each yielded
+        `GeoStack` before this renders it.
 
         Args:
             anchor: Raw anchor, e.g. straight off an `AnchorSource`.
@@ -202,4 +208,4 @@ class GeoPipeline(ABC):
             Tensor dict per sample, rendered via `GeoStack.to_tensor`.
         """
         for stack in self.ingest(anchor):
-            yield stack.to_tensor(sel_bands, dtype_override, self.context)
+            yield stack.to_tensor(sel_bands, dtype_override)

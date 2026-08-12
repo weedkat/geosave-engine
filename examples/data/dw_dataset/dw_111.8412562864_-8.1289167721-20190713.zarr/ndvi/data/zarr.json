@@ -8,8 +8,8 @@
     "name": "regular",
     "configuration": {
       "chunk_shape": [
-        255,
-        255
+        510,
+        510
       ]
     }
   },

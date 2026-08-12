@@ -6,7 +6,7 @@ Reference material (what things *are*, full API/arg tables) lives in
 [docs/concept/](../concept/): [geotile.md](../concept/geotile.md)
 (`GeoAnchor`/`GeoTile`/`GeoStack`), [pipeline.md](../concept/pipeline.md)
 (`GeoPipeline`, sources, STAC), [model.md](../concept/model.md)
-(`GeoStackDataset`, `SemanticSegmentationTask`/`DataModule`, config.yaml). This
+(`StackDataset`, `SemanticSegmentationTask`/`DataModule`, config.yaml). This
 doc links out to them where the mechanics get deep; read this one first.
 
 ## Status legend
@@ -37,12 +37,12 @@ flowchart TD
         AS["AnchorSource\n(Coordinate/GeoJSON/Polygon)"] -->|to_anchors| A["GeoAnchor"]
         A --> GP["GeoPipeline.ingest(anchor)"]
         GP --> GT["GeoStack"]
-        GT -->|.save()| GS["<anchor>.zarr\n(one Zarr group per layer)"]
+        GT -->|.to_zarr()| GS["<anchor>.zarr\n(one Zarr group per layer)"]
         GP2["GeoPipeline.ingest_to_tensor(anchor)"] --> ST["tensor dict\n(no disk)"]
     end
 
     subgraph train ["5-6 · Define + Train"]
-        GS -->|GeoStackDataset rglob *.zarr| DS["GeoStackDataset"]
+        GS -->|StackDataset rglob *.zarr| DS["StackDataset"]
         DS -->|stack_samples| DL["DataLoader batch"]
         DL --> LM["LightningModule\nSemanticSegmentationTask (Path A)\nor your own module (Path B)"]
         LM --> CKPT["checkpoint\nartifacts/<model_name>/version_N/"]
@@ -115,17 +115,17 @@ before committing to bands/collection choices:
 
 ```python
 from geosave_engine.geodata.stac import StacClient
-from geosave_engine.geodata.tile import GeoAnchor
+from geosave_engine.geodata.spatial import GeoAnchor
 
 client = StacClient.cdse()
 client.get_collections()                     # what collections exist
 
 source = client.source("sentinel-2-l1c")
-source.get_bands_metadata().keys()            # what bands this collection has
-source.set_bands(["B04", "B03", "B02"])       # RGB, for a quick look
+source.get_bands_metadata().keys()                    # what bands this collection has
+source = source.set_bands(["B04", "B03", "B02"])       # RGB, for a quick look — returns a new source, doesn't mutate
 
 anchor = GeoAnchor.from_coordinate(lat, lon, size_m=5000, resolution=10, datetime="2026-06-02")
-tile = source.load(anchor)
+tile = next(source.load(anchor))                       # load() yields one GeoTile per sample
 tile.plot(title="Visualization")
 ```
 
@@ -191,7 +191,7 @@ from pathlib import Path
 root = Path("data/train")
 for anchor in anchors:
     for stack in pipeline.ingest(anchor):
-        stack.save(root / f"{anchor.stem}.zarr")
+        stack.to_zarr(root / f"{anchor.stem}.zarr")
 ```
 
 Writes one `<anchor>.zarr` store per anchor (one Zarr group per layer). No
@@ -230,9 +230,10 @@ Two paths — pick per project, not per library rule:
 no Python to write. Fixed batch shape (`image`, `label`, optional `mask`);
 pick an encoder/decoder/head by registry key, and go. A model that needs
 extra per-sample context (e.g. Prithvi's `temporal_coords`/`location_coords`)
-gets it via `data.init_args.pipeline` — your `Pipeline`'s own `context()`,
-same one from step 2, wired straight into every split. Full arg reference,
-`GeoStackDataset`, `model_context`/`ContextChain`, config.yaml composition:
+gets it from your step-2 `Pipeline`'s own `context()` override — computed
+once at ingest time, already baked into every `.zarr` `StackDataset` reads,
+nothing to configure on the data module itself. Full arg reference,
+`StackDataset`, `model_context`/`ContextChain`, config.yaml composition:
 [concept/model.md](../concept/model.md).
 
 **Path B — your own module.** Write `modules/lightning_module.py` yourself

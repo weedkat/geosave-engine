@@ -79,6 +79,7 @@ Write in simple caveman language using google style docstrings:
 - Inline comment: 1 line. Max.
 - Docstring body: 2-3 lines. Max.
 - Say what, never why/history ("confirmed empirically", "converged on", "renamed from"). That's commit/PR content, not code.
+- No comparison to a rejected alternative ("not zarr", "unlike X") — reader has no context on X, and it's why/history in disguise. State what this is, not what it isn't.
 - Over the limit → cut it, don't wrap it. Truly needs more → belongs in `docs/`, ask first.
 
 Example:

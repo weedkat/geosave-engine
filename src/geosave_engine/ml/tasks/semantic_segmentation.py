@@ -11,9 +11,8 @@ from lightning.pytorch.callbacks import Callback
 from lightning.pytorch.utilities.types import OptimizerLRScheduler
 from torch.utils.data import DataLoader
 
-from geosave_engine.geodata.datasets import GeoStackDataset, stack_samples
-from geosave_engine.geodata.datasets.geo_dataset import LayerName
-from geosave_engine.geodata.pipeline import GeoPipeline
+from geosave_engine.geodata.datasets import StackDataset
+from geosave_engine.geodata.datasets.stack import LayerName
 from geosave_engine.ml.callbacks.prediction_logger import DensePredictionLogger
 from geosave_engine.ml.callbacks.threshold_calibrator import ThresholdCalibrator
 from geosave_engine.ml.registry import build_loss, build_model, build_optimizer, build_scheduler
@@ -22,6 +21,7 @@ from geosave_engine.ml.inference.thresholding import apply_thresholds
 from geosave_engine.ml.metrics.semantic_segmentation import SemanticSegmentationMetrics
 from geosave_engine.ml.models.contract import ContextChain
 from geosave_engine.ml.transforms import ImageAugmenter, ImageProcessor
+from geosave_engine.utils import stack_samples
 
 log = logging.getLogger(__name__)
 
@@ -50,7 +50,7 @@ class SemanticSegmentationTask(LightningModule):
 
     Batch keys default to ``image``/``label``/``mask``/``context`` but are
     configurable (``image_key``/``label_key``/``mask_key``) to match your
-    GeoStackDataset's own layer names.
+    StackDataset's own layer names.
 
     For custom training loops, write an independent LightningModule
     instead — this class does not expect to be subclassed.
@@ -397,23 +397,24 @@ class SemanticSegmentationTask(LightningModule):
     # ------------------------------------------------------------------
 
     def _extract_context(self, batch: dict[str, Any]) -> dict[str, Any]:
-        """Every batch key besides image/label/mask/tiles — a pipeline's own `context()` output.
+        """Every batch key besides image/label/mask/geobox/geotags — the ingested `GeoStack.context`.
 
         `image_key`/`label_key`/`mask_key` are this task's own tensors,
-        `"tiles"` is `GeoStack.to_tensor`'s always-present identity key
-        (see `docs/concept/model.md`) — neither is model context. Everything
-        else in `batch` came from a `GeoPipeline.context()` override (e.g.
-        `temporal_coords`/`location_coords`), wired in via this task's own
-        `SemanticSegmentationDataModule(pipeline=...)`.
+        `"geobox"`/`"geotags"` are `GeoStack.to_tensor`'s always-present
+        identity keys (see `docs/concept/model.md`) — none of these five
+        are model context. Everything else in `batch` came from the
+        pipeline's own `context()` override (e.g. `temporal_coords`/
+        `location_coords`), computed once at ingest time and already baked
+        into every saved `StackDataset` sample — nothing to configure here.
 
         Args:
             batch: One `DataLoader` batch, as `stack_samples` produces it.
 
         Returns:
             Extra keys to forward into `self(image, **context)` — `{}` if
-            no `pipeline` was configured (or it returns no extra keys).
+            the ingesting pipeline's `context()` returned none.
         """
-        exclude = {self.image_key, self.label_key, self.mask_key, 'tiles'}
+        exclude = {self.image_key, self.label_key, self.mask_key, 'geobox', 'geotags'}
         return {key: value for key, value in batch.items() if key not in exclude}
 
     def training_step(self, batch: dict[str, Any], batch_idx: int) -> torch.Tensor:
@@ -483,10 +484,10 @@ class SemanticSegmentationTask(LightningModule):
 class SemanticSegmentationDataModule(LightningDataModule):
     """Generic datamodule pairing with SemanticSegmentationTask.
 
-    Reads already-ingested GeoStackDataset directories, one per split — raw layer
+    Reads already-ingested StackDataset directories, one per split — raw layer
     names pass through unchanged. Pair with ``SemanticSegmentationTask``'s
     ``image_key``/``label_key``/``mask_key`` to point the task at whatever
-    layer names your GeoStackDataset actually produces. Ingestion itself (running
+    layer names your StackDataset actually produces. Ingestion itself (running
     your Pipelines) is not this class's job — point each root at a directory
     that already has ``<root>/<layer_name>/*.zarr`` written.
 
@@ -497,21 +498,14 @@ class SemanticSegmentationDataModule(LightningDataModule):
     just force awkward symlinks/copies to satisfy it.
 
     Args:
-        train_root: GeoStackDataset directory for the train split. Required for
+        train_root: StackDataset directory for the train split. Required for
             ``fit``.
-        val_root: GeoStackDataset directory for the val split. Required for
+        val_root: StackDataset directory for the val split. Required for
             ``fit``/``validate``.
-        test_root: GeoStackDataset directory for the test split. Required for
+        test_root: StackDataset directory for the test split. Required for
             ``test``.
-        predict_root: GeoStackDataset directory for the predict split. Required
+        predict_root: StackDataset directory for the predict split. Required
             for ``predict``.
-        pipeline: A ``GeoPipeline`` whose ``.context`` supplies extra
-            per-sample keys (e.g. a Prithvi/Clay encoder's `temporal_coords`/
-            `location_coords`) to every split's `GeoStackDataset`. `None` omits
-            context entirely — plain tensors + `"tiles"` only. Resolved by
-            LightningCLI's own `class_path`/`init_args` mechanism (same as
-            `model.class_path` above), no code to write beyond your
-            `Pipeline` subclass's own `context()` override.
         sel_bands: Layer name → band names to keep; default is all bands.
         dtype_override: Layer name to torch dtype to cast that layer's tensor
             to. Only needed to deviate from the tensor's saved dtype (e.g.
@@ -536,8 +530,6 @@ class SemanticSegmentationDataModule(LightningDataModule):
             train_root: workspace/data/dynamicworld/train
             val_root: workspace/data/dynamicworld/val
             test_root: workspace/data/dynamicworld/test
-            pipeline:
-              class_path: modules.data_pipeline.Pipeline
     """
 
     def __init__(
@@ -547,7 +539,6 @@ class SemanticSegmentationDataModule(LightningDataModule):
         val_root: str | Path | None = None,
         test_root: str | Path | None = None,
         predict_root: str | Path | None = None,
-        pipeline: GeoPipeline | None = None,
         sel_bands: dict[LayerName, list[str]] | None = None,
         dtype_override: dict[LayerName, torch.dtype] | None = None,
         batch_size: int = 16,
@@ -561,7 +552,6 @@ class SemanticSegmentationDataModule(LightningDataModule):
         self.val_root = Path(val_root) if val_root is not None else None
         self.test_root = Path(test_root) if test_root is not None else None
         self.predict_root = Path(predict_root) if predict_root is not None else None
-        self.pipeline = pipeline
         self.sel_bands = sel_bands
         self.dtype_override = dtype_override
         self.batch_size = batch_size
@@ -570,11 +560,10 @@ class SemanticSegmentationDataModule(LightningDataModule):
         self.prefetch_factor = prefetch_factor
         self.persistent_workers = persistent_workers
 
-    def _make_dataset(self, name: str, root: Path | None) -> GeoStackDataset:
+    def _make_dataset(self, name: str, root: Path | None) -> StackDataset:
         if root is None:
             raise ValueError(f"{name} not set — pass `{name}` to build this split's dataset.")
-        context_fn = self.pipeline.context if self.pipeline is not None else None
-        return GeoStackDataset(root, sel_bands=self.sel_bands, dtype_override=self.dtype_override, context_fn=context_fn)
+        return StackDataset(root, sel_bands=self.sel_bands, dtype_override=self.dtype_override)
 
     def setup(self, stage: str | None = None) -> None:
         if stage == "fit":
@@ -589,7 +578,7 @@ class SemanticSegmentationDataModule(LightningDataModule):
         else:
             raise ValueError(f"Invalid stage: {stage!r}")
 
-    def _loader(self, dataset: GeoStackDataset, *, drop_last: bool = False) -> DataLoader:
+    def _loader(self, dataset: StackDataset, *, drop_last: bool = False) -> DataLoader:
         return DataLoader(
             dataset,
             batch_size=self.batch_size,

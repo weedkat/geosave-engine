@@ -16,7 +16,7 @@ from odc.geo.xr import xr_coords
 
 from geosave_engine.geodata.errors import AnchorFetchError
 from geosave_engine.geodata.stac.source import StacSource
-from geosave_engine.geodata.tile import GeoAnchor, GeoTag
+from geosave_engine.geodata.spatial import GeoAnchor, GeoTag
 
 UTM = "EPSG:32633"
 BBOX = (500000, 5000000, 500320, 5000320)  # 32 x 32 px at 10 m

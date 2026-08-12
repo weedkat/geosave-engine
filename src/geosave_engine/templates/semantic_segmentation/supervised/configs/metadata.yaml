@@ -1,6 +1,6 @@
 model:
   init_args:
-    image_key: sentinel_2_l1c   # TODO: your GeoDataset's raw layer name
+    image_key: sentinel_2_l1c   # TODO: your StackDataset's raw layer name
     label_key: label            # TODO
     mask_key: cloud_mask        # TODO — optional, omit if unused
     ignore_index: 255

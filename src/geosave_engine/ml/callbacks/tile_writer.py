@@ -6,7 +6,7 @@ from typing import Any, Literal, Sequence
 from lightning import LightningModule, Trainer
 from lightning.pytorch.callbacks import BasePredictionWriter
 
-from geosave_engine.geodata.tile import GeoStack, GeoTile
+from geosave_engine.geodata.spatial import GeoStack, GeoTile
 from geosave_engine.utils.colorize import Palette
 
 WriteMode = Literal["geosave", "xcube", "cog"]
@@ -26,7 +26,7 @@ class TilePredictionWriter(BasePredictionWriter):
         root: Output root — layers land under `<root>/<model_name>/<job_id>/`.
         model_name: Subdirectory name for this model's runs.
         resolution: Pixel size in meters for any prediction-derived layer's geobox.
-        mode: Output format — `"geosave"` (native multi-group `GeoStack.save`),
+        mode: Output format — `"geosave"` (native multi-group `GeoStack.to_zarr`),
             `"xcube"` (flat `GeoStack.to_xcube`), or `"cog"` (per-layer `GeoTile.to_cog`).
         image_key: `batch["tiles"]` key whose geobox/geotag anchors
             prediction-derived layers. Required only if `prediction` is ever used.
