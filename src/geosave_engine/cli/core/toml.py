@@ -20,8 +20,8 @@ def get_version() -> str:
 def create_toml(
     target_dir: Path,
     name: str,
-    task: str,
-    method: str,
+    task: str | None,
+    method: str | None,
     description: str | None = None,
 ) -> Path:
     """Generates a lean project anchor TOML file."""
@@ -40,8 +40,9 @@ def create_toml(
 
     # --- [workspace] ---
     workspace = tomlkit.table()
-    workspace.add("task", task)
-    workspace.add("method", method)
+    if task and method:
+        workspace.add("task", task)
+        workspace.add("method", method)
     doc.add("workspace", workspace)
 
     # --- [environment] ---

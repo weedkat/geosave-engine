@@ -1,7 +1,5 @@
 from __future__ import annotations
 
-import getpass
-
 from pathlib import Path
 
 from geosave_engine.utils.file_ops import safe_copy
@@ -16,14 +14,13 @@ _REQUIRED_DIRS = frozenset(
         "logs", 
         "modules",
         "notebooks", 
-        "predictions"
+        "predictions",
         "scripts",
     )
 )
 _EXCLUDE = frozenset(("__pycache__", ".ipynb_checkpoints", "description.txt"))
 
-
-def create_workspace(root, task, method) -> None:
+def create_workspace(root, task=None, method=None) -> None:
     """Create directories and copy files for one workspace.
 
     Args:
@@ -36,9 +33,11 @@ def create_workspace(root, task, method) -> None:
 
     safe_copy(common_dir(), root, exclude=_EXCLUDE)
 
-    method_dir = task_dir() / task / method
+    if task and method:
 
-    safe_copy(method_dir, root, exclude=_EXCLUDE)
+        method_dir = task_dir() / task / method
+
+        safe_copy(method_dir, root, exclude=_EXCLUDE)
 
 class Workspace:
     """Load or create one GeoSave workspace."""

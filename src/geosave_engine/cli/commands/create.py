@@ -11,7 +11,9 @@ from ..core.workspace import create_workspace
 from ..core.toml import create_toml
 from ..core.prompts import prompt_required_text, prompt_optional_text, prompt_select
 
-def make_choice(title: str, value: str, description: str) -> qu.Choice:
+BASE_TASK = "blank"
+
+def make_choice(title: str, value: str | None, description: str) -> qu.Choice:
     return qu.Choice(
         title=title,
         value=value,
@@ -67,7 +69,7 @@ def create(
         description = prompt_optional_text("Enter a description for the workspace (optional):")
     
     if not task:
-        choices = []
+        choices = [make_choice(BASE_TASK, None, "No task selected.")]
         for task in method_templates:
             file_txt = (task_dir() / task / "description.txt")
 
@@ -83,7 +85,7 @@ def create(
             choices=choices,
         )
 
-    if not method:
+    if not method and task != BASE_TASK:
         choices = []
         for method in method_templates[task]:
             file_txt = (task_dir() / task / method / "description.txt")
@@ -100,10 +102,10 @@ def create(
             choices=choices,
         )
 
-    if task not in method_templates:
+    if task != BASE_TASK and task not in method_templates:
         raise typer.BadParameter(f"Task '{task}' is not a valid task.")
 
-    if method not in method_templates[task]:
+    if method and method not in method_templates[task]:
         raise typer.BadParameter(f"Method '{method}' is not a valid method for task '{task}'.")
 
     create_workspace(Path.cwd() / name, task, method)
