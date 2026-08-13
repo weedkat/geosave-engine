@@ -38,6 +38,8 @@ class GeoTag(BaseModel):
         datetime: Anchor datetime, normalized to an inclusive (start, end)
             range same as `parse_daterange`.
         polygon: Exact AOI footprint, if narrower than the geobox's bbox.
+        bands: Band names, in order. GeoTile keeps this synced to its own
+            data — not meant to be set by hand. None for a single unnamed band.
         rgb_bands: Which 3 band names count as R/G/B. `plot()` rendering
             hint — otherwise ambiguous from a tile's shape/dtype alone.
         class_map: `{pixel value: class name}` for a categorical tile.
@@ -49,6 +51,7 @@ class GeoTag(BaseModel):
 
     datetime: AnchorDatetime
     polygon: Geometry | None = None
+    bands: tuple[str, ...] | None = None
     rgb_bands: tuple[str, str, str] | None = None
     class_map: dict[int, str] | None = None
     color_map: Palette | None = None
@@ -133,8 +136,15 @@ class GeoAnchor:
     geotag: GeoTag = field(compare=False)
 
     def __repr__(self) -> str:
-        when = str(self.start) if self.start == self.end else f"{self.start}–{self.end}"
-        return f"{type(self).__name__}(bbox={self.bbox}, crs={self.crs!r}, datetime={when}, metadata={self.metadata})"
+        when = str(self.start) if self.start == self.end else f"{self.start} – {self.end}"
+        bbox = tuple(round(v, 2) for v in self.bbox)
+        return (
+            f"{type(self).__name__}\n"
+            f"  bbox:     {bbox}\n"
+            f"  crs:      {self.crs!r}\n"
+            f"  datetime: {when}\n"
+            f"  metadata: {self.metadata}"
+        )
 
     # ------------------------------------------------------------------
     # Tag passthroughs

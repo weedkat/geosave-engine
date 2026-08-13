@@ -13,7 +13,6 @@ from pathlib import Path
 from typing import TYPE_CHECKING, Any
 from typing_extensions import Unpack
 from odc.geo.geobox import GeoBox
-from pydantic import BaseModel
 
 from geosave_engine.geodata.spatial.anchor import _geobox_to_dict
 from geosave_engine.geodata.spatial.tile import GeoTile, _write_stac
@@ -26,21 +25,6 @@ if TYPE_CHECKING:
     from geosave_engine.geodata.utils.geovis import PlotKwargs
 
 LayerName = str
-
-
-class LayerInfo(BaseModel):
-    """One layer's slice of a to_xcube flat Dataset.
-
-    Args:
-        bands: Prefixed band names (`<layer>_<band>`), if the source tile
-            had a band dim. None means the layer is its own bare variable,
-            named after the layer itself — no synthetic band coordinate.
-        had_time: True if the source tile had a time dim.
-    """
-
-    bands: list[str] | None
-    had_time: bool
-
 
 # to_tensor()/to_numpy() flatten context straight into the sample dict
 # alongside layer tensors — these names must stay free for context to land
@@ -110,18 +94,6 @@ def _context_from_json(raw: str | None) -> dict[str, Any]:
         return value
 
     return {key: decode(value) for key, value in json.loads(raw).items()}
-
-
-class StackTag(BaseModel):
-    """Per-layer split info for a to_xcube Dataset, stored as a store attr.
-
-    Args:
-        layer_map: Layer name to its LayerInfo in the flat Dataset.
-        layer_tags: Layer name to that layer's own GeoTag, JSON-encoded.
-    """
-
-    layer_map: dict[str, LayerInfo]
-    layer_tags: dict[str, str]
 
 
 @dataclass(frozen=True, kw_only=True)
@@ -221,8 +193,13 @@ class GeoStack:
         return new
 
     def __repr__(self) -> str:
-        layers = ", ".join(f"{name}={tile!r}" for name, tile in self.tiles.items())
-        return f"{type(self).__name__}({layers})"
+        blocks = []
+        for name, tile in self.tiles.items():
+            lines = repr(tile).splitlines()[1:]  # drop tile's own "GeoTile" header line
+            indented = "\n".join(f"    {line}" for line in lines)
+            blocks.append(f"    {name}:\n{indented}")
+        layers = "\n".join(blocks)
+        return f"{type(self).__name__}\n  layers:\n{layers}\n  context: {self.context}"
 
     def plot(self, cols: int = 4, **kwargs: Unpack[PlotKwargs]) -> tuple[Figure, np.ndarray]:
         """Plot every layer — thin wrapper, see `geosave_engine.geodata.utils.geovis.plot`.
@@ -238,7 +215,7 @@ class GeoStack:
 
         return plot(self.tiles, cols=cols, **kwargs)
 
-    def to_zarr(self, path: str | Path, overwrite: bool = True) -> Path:
+    def to_zarr(self, path: str | Path, overwrite: bool = True, chunk_px: int | None = None) -> Path:
         """Write every layer into its own Zarr group inside one store.
 
         STAC provenance, if any, writes alongside as `<layer_name>.stac.json`.
@@ -248,6 +225,8 @@ class GeoStack:
         Args:
             path: Output Zarr store path, must end in `.zarr`.
             overwrite: False raises instead of replacing an existing group.
+            chunk_px: Spatial (y/x) on-disk chunk side length, same for
+                every layer. None skips chunking.
 
         Returns:
             The written store path.
@@ -268,7 +247,7 @@ class GeoStack:
         for layer_name, tile in self.tiles.items():
             tag = tile.geotag.model_dump_json(exclude_none=True)
             ds = da_to_ds(tile.data).assign_attrs(tag=tag)
-            to_zarr(path, ds, group=layer_name)
+            to_zarr(path, ds, group=layer_name, chunk_px=chunk_px)
             _write_stac(tile.stac, path, group=layer_name)
         if self.context:
             zarr.open_group(path, mode="a").attrs["context"] = _context_to_json(self.context)

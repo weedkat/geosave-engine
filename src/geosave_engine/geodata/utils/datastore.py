@@ -5,8 +5,13 @@ Nothing here is public API; SampleStore is the only caller.
 from __future__ import annotations
 
 import json
+import os
+import warnings
 from pathlib import Path
 from typing import Any, Callable
+
+import numpy as np
+import torch
 
 Sample = dict[str, Any]
 
@@ -19,6 +24,8 @@ INTEGRITY_FIELDS = frozenset({"chunk_size", "chunk_bytes", "compression", "encry
 
 HF_BUCKET_PREFIX = "hf://buckets/"
 WRITABLE_SCHEMES = ("s3", "gs", "r2")  # litdata's own _SUPPORTED_PROVIDERS — all it can write/read remotely
+S3_COMPATIBLE_SCHEMES = ("s3", "r2")  # boto3-style credentials; gs uses its own (GOOGLE_APPLICATION_CREDENTIALS)
+AWS_CREDENTIAL_ENV_VARS = ("AWS_ACCESS_KEY_ID", "AWS_PROFILE", "AWS_SHARED_CREDENTIALS_FILE")
 
 
 def is_remote(path: str | Path) -> bool:
@@ -43,6 +50,25 @@ def integrity_config(config: dict[str, Any]) -> dict[str, Any]:
 
 def identity(x: Any) -> Any:
     return x
+
+
+def sample_to_row(sample: Sample, index: int) -> dict[str, Any]:
+    """One decoded sample's non-array fields, for a manifest table row.
+
+    Drops any array/tensor value (the pixel payload) — used by both
+    SampleStore.to_parquet and StoreDataset.to_pandas so the two build
+    identical rows.
+
+    Args:
+        sample: One decoded sample dict.
+        index: Row position this sample came from.
+
+    Returns:
+        {"index": index, **sample's non-array fields}.
+    """
+    row: dict[str, Any] = {"index": index}
+    row.update({k: v for k, v in sample.items() if not isinstance(v, (np.ndarray, torch.Tensor))})
+    return row
 
 
 def checked(item: Any, fn: Callable[[Any], Sample], expected_fields: frozenset[str]) -> Sample:
@@ -97,15 +123,42 @@ def hf_bucket_storage_options(namespace: str) -> dict[str, Any]:
     }
 
 
+def warn_if_missing_aws_credentials(path: str, storage_options: dict[str, Any] | None) -> None:
+    """Warn if no AWS credentials are visible anywhere boto3 would check.
+
+    Best-effort only — an IAM instance role (EC2/ECS metadata service) works
+    without any of these and isn't checked here (would need a real network
+    call). A false-positive warning there is the tradeoff for not silently
+    waiting until litdata's own read/write fails with an unhelpful error
+    several frames deep in a third-party dependency.
+
+    Args:
+        path: Resolved s3://.../r2://... path, for the warning message.
+        storage_options: As normalize_path is about to return it.
+    """
+    if storage_options and storage_options.get("aws_access_key_id"):
+        return
+    if any(os.getenv(var) for var in AWS_CREDENTIAL_ENV_VARS):
+        return
+    if (Path.home() / ".aws" / "credentials").exists():
+        return
+    warnings.warn(
+        f"{path}: no AWS credentials found in storage_options, "
+        f"{'/'.join(AWS_CREDENTIAL_ENV_VARS)}, or ~/.aws/credentials — read/write will "
+        "likely fail. Pass storage_options={'aws_access_key_id': ..., 'aws_secret_access_key': ...} "
+        "or set AWS_ACCESS_KEY_ID/AWS_SECRET_ACCESS_KEY."
+    )
+
+
 def normalize_path(
     path: str | Path, storage_options: dict[str, Any] | None
 ) -> tuple[str | Path, dict[str, Any] | None]:
     """Resolve path to what litdata actually accepts, translating a Storage Bucket URI.
 
-    hf://buckets/<namespace>/<bucket>[/<key>] becomes s3://<bucket>[/<key>],
-    with storage_options merged onto the gateway's own settings (caller's
-    values win on conflict). A local path or litdata's own s3/gs/r2 schemes
-    pass through unchanged.
+    Dispatches once on scheme — local, hf://buckets/... (Storage Bucket),
+    hf://datasets/... (unsupported here), or one of litdata's own s3/gs/r2 —
+    then, once, warns if the resolved path is S3-compatible (s3/r2) and no
+    AWS credentials look reachable anywhere.
 
     Args:
         path: As given to SampleStore().
@@ -119,19 +172,33 @@ def normalize_path(
             SampleStore.upload_to_hf) or any other unsupported scheme.
     """
     if not isinstance(path, str) or "://" not in path:
-        return path, storage_options
-
-    if path.startswith(HF_BUCKET_PREFIX):
-        namespace, s3_path = parse_hf_bucket_path(path)
-        return s3_path, {**hf_bucket_storage_options(namespace), **(storage_options or {})}
+        return path, storage_options  # local path — no scheme, no credentials involved
 
     scheme = path.split("://", 1)[0]
-    if scheme == "hf":
+
+    if scheme == "hf" and path.startswith(HF_BUCKET_PREFIX):
+        # Storage Bucket — rewrite to its equivalent s3:// URI + gateway settings,
+        # same AWS-style credentials as any other S3-compatible path
+        namespace, s3_path = parse_hf_bucket_path(path)
+        resolved_path = s3_path
+        resolved_options = {**hf_bucket_storage_options(namespace), **(storage_options or {})}
+        warn_if_missing_aws_credentials(resolved_path, resolved_options)
+    elif scheme == "hf":
+        # hf://datasets/... — a Hub dataset repo, not S3-backed, not writable this way
         raise ValueError(
             f"{path!r} — hf://datasets/... isn't writable directly (litdata only writes "
             f"local or {WRITABLE_SCHEMES}); write there then call upload_to_hf(), or use "
             f"{HF_BUCKET_PREFIX}<namespace>/<bucket>[/<key>] for a Storage Bucket"
         )
-    if scheme not in WRITABLE_SCHEMES:
+    elif scheme in S3_COMPATIBLE_SCHEMES:
+        # s3://, r2:// — used as-is, needs the same AWS-style credentials
+        resolved_path, resolved_options = path, storage_options
+        warn_if_missing_aws_credentials(resolved_path, resolved_options)
+    elif scheme in WRITABLE_SCHEMES:
+        # gs:// — litdata's own supported scheme, different credential mechanism
+        # (GOOGLE_APPLICATION_CREDENTIALS/ADC), not checked here
+        resolved_path, resolved_options = path, storage_options
+    else:
         raise ValueError(f"{path!r} — unsupported scheme, must be local or one of {WRITABLE_SCHEMES}")
-    return path, storage_options
+
+    return resolved_path, resolved_options

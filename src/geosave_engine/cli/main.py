@@ -1,11 +1,22 @@
 import typer
+from dotenv import load_dotenv
 
-from geosave_engine.cli.commands.create import create
-from geosave_engine.cli.commands.infra import infra_app
-from geosave_engine.cli.commands.upload import upload
+from .commands.create import create
+from .commands.make import make
 
-app = typer.Typer(help="GeoSave Engine CLI", no_args_is_help=True)
+app = typer.Typer(
+    help="GeoSave Engine CLI", 
+    no_args_is_help=True, 
+    add_completion=True,
+)
 app.command()(create)
-app.command()(upload)
+app.command()(make)
 
-app.add_typer(infra_app, name="infra")
+
+@app.callback()
+def global_callback() -> None:
+    """Load a .env from the current directory (or a parent), if any, before any command runs."""
+    load_dotenv()
+
+if __name__ == "__main__":
+    app()

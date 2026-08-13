@@ -100,8 +100,9 @@ def align_spatial(*tiles: GeoTile, tol: float = 1e-6) -> tuple[GeoTile, ...]:
             raise ValueError(f"align_spatial(): tile {i} not on the common pixel grid")
         col0, row0, ncols, nrows = round(col0), round(row0), round(ncols), round(nrows)
         sub = t.geobox[row0:row0 + nrows, col0:col0 + ncols]
-        cropped = t.data.isel(y=slice(row0, row0 + nrows), x=slice(col0, col0 + ncols))
-        aligned_t = t.rebase(geobox=sub, data=cropped)
+        # data untouched — narrowed geobox is enough, to_numpy()/to_tensor()'s own
+        # rio.clip_box(*bbox) narrows the pixels lazily at render time
+        aligned_t = t.rebase(geobox=sub)
         if t.polygon is not None:
             clip_box = Geometry(
                 {

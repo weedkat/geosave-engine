@@ -60,6 +60,13 @@ class GeoTile(GeoAnchor):
 
     data: xr.DataArray
 
+    def __post_init__(self) -> None:
+        """Sync geotag.bands to data's own band coordinate, always overwritten."""
+        bands = tuple(str(b) for b in self.data.coords["band"].values) if "band" in self.data.dims else None
+        
+        if self.geotag.bands != bands:
+            object.__setattr__(self, "geotag", self.geotag.model_copy(update={"bands": bands}))
+
     # ------------------------------------------------------------------
     # Derived properties
     # ------------------------------------------------------------------
@@ -97,8 +104,7 @@ class GeoTile(GeoAnchor):
         return self.data.rio.nodata
 
     def __repr__(self) -> str:
-        base = super().__repr__()[:-1]  # strip trailing ")"
-        return f"{base}, bands={self.bands}, shape={self.data.shape})"
+        return f"{super().__repr__()}\n  bands:    {self.bands}\n  shape:    {self.data.shape}"
 
     def __and__(self, other: "GeoTile") -> "GeoTile":
         """Sugar for `GeoTile.merge(self, other)` — `&` matches align_spatial/mosaic's own intersect/union use elsewhere in this codebase."""
@@ -512,7 +518,7 @@ class GeoTile(GeoAnchor):
         """
         return self._write(path, driver="COG")
 
-    def to_zarr(self, path: str | Path) -> Path:
+    def to_zarr(self, path: str | Path, chunk_px: int | None = 512) -> Path:
         """Write tile data including any time dimension to a Zarr store.
 
         `geotag` (datetime/metadata/polygon/plot_meta) stored as one store
@@ -524,6 +530,7 @@ class GeoTile(GeoAnchor):
 
         Args:
             path: Output Zarr store path.
+            chunk_px: Spatial (y/x) on-disk chunk side length. None skips chunking.
 
         Returns:
             The written store path.
@@ -531,7 +538,7 @@ class GeoTile(GeoAnchor):
         path = Path(path)
         tag = self.geotag.model_dump_json(exclude_none=True)
         ds = da_to_ds(self.data).assign_attrs(tag=tag)
-        path = to_zarr(path, ds)
+        path = to_zarr(path, ds, chunk_px=chunk_px)
         _write_stac(self.stac, path)
         return path
 

@@ -138,39 +138,41 @@ class TestGeotiffRoundtrip:
     @pytest.mark.parametrize("writer", ["to_geotiff", "to_cog"])
     def test_roundtrip_preserves_names_meta_geobox(self, tmp_path, writer):
         t = _tile(meta={"foo": "bar"})
-        path = getattr(t, writer)(tmp_path / "scene" / "red_20230201.tif")
+        path = getattr(t, writer)(tmp_path / "scene" / "red_20230201.tif")[0]  # one entry, single-step tile
         r = GeoTile.from_geotiff(path, datetime=t.datetime)
         assert r.bands == ("red", "green")
         assert r.metadata == {"foo": "bar"}
         assert r.geobox == t.geobox
 
     def test_band_selection(self, tmp_path):
-        path = _tile().to_geotiff(tmp_path / "red_20230201.tif")
+        path = _tile().to_geotiff(tmp_path / "red_20230201.tif")[0]
         r = GeoTile.from_geotiff(path, datetime=(datetime(2023, 2, 1), datetime(2023, 2, 1)), bands=("green",))
         assert r.bands == ("green",)
 
     def test_datetime_is_caller_supplied_not_read_from_file(self, tmp_path):
         """from_geotiff never reads a date from tags or the filename — caller decides."""
         t = _tile(dt=datetime(2024, 5, 6))
-        path = t.to_geotiff(tmp_path / "scene_20230201.tif")  # embeds 2024-05-06, named 2023-02-01
+        path = t.to_geotiff(tmp_path / "scene_20230201.tif")[0]  # embeds 2024-05-06, named 2023-02-01
 
         r = GeoTile.from_geotiff(path, datetime=(datetime(2019, 1, 1), datetime(2019, 1, 1)))
         assert r.datetime == (datetime(2019, 1, 1), datetime(2019, 1, 1))
 
-    def test_time_series_to_geotiff_raises(self, tmp_path):
+    def test_time_series_writes_one_file_per_step(self, tmp_path):
         t = _tile(names=("red",), times=["2023-01-01", "2023-02-01"])
-        with pytest.raises(ValueError):
-            t.to_geotiff(tmp_path / "x_20230201.tif")
+        paths = t.to_geotiff(tmp_path / "x_20230201.tif")
+        assert len(paths) == 2
+        assert all(p.exists() for p in paths)
+        assert len({p.stem for p in paths}) == 2  # distinct per-step stems
 
     def test_nodata_preserved(self, tmp_path):
         t = _tile(names=("label",)).rebase(nodata=255)
-        path = t.to_geotiff(tmp_path / "x_20230201.tif")
+        path = t.to_geotiff(tmp_path / "x_20230201.tif")[0]
         r = GeoTile.from_geotiff(path, datetime=t.datetime)
         assert r.nodata == 255
 
     def test_no_nodata_stays_none(self, tmp_path):
         t = _tile(names=("label",))
-        path = t.to_geotiff(tmp_path / "x_20230201.tif")
+        path = t.to_geotiff(tmp_path / "x_20230201.tif")[0]
         r = GeoTile.from_geotiff(path, datetime=t.datetime)
         assert r.nodata is None
 
@@ -232,20 +234,23 @@ class TestZarrOps:
         back = from_zarr(path)
         assert back["B02"].dims == ("time", "y", "x")
 
-    def test_rejects_store_without_var_order(self, tmp_path):
-        ds = xr.Dataset({"x": (("y", "x"), np.zeros((2, 2)))})
+    def test_warns_when_store_without_var_order(self, tmp_path):
+        ds = xr.Dataset({"z": (("y", "x"), np.zeros((2, 2)))})
         path = tmp_path / "plain.zarr"
         ds.to_zarr(path, mode="w")
-        with pytest.raises(ValueError, match="not written by to_zarr"):
-            from_zarr(path)
+        with pytest.warns(UserWarning, match="not written by to_zarr"):
+            back = from_zarr(path)
+        assert isinstance(back, xr.Dataset)
 
-    def test_rejects_var_order_mismatch(self, tmp_path):
-        ds = xr.Dataset({"x": (("y", "x"), np.zeros((2, 2)))})
-        ds = ds.assign_attrs(var_order=["x", "ghost"], dim_order={"x": ["y", "x"], "ghost": ["y", "x"]})
+    def test_warns_on_var_order_mismatch(self, tmp_path):
+        # var_order is a coordinate (see validate_ds), not an attr — a real mismatch
+        # needs it set the same way to actually reach that check, not the "missing" one
+        ds = xr.Dataset({"z": (("y", "x"), np.zeros((2, 2)))}).assign_coords(var_order=("var", ["z", "ghost"]))
         path = tmp_path / "cube.zarr"
         ds.to_zarr(path, mode="w", consolidated=True)
-        with pytest.raises(ValueError, match="doesn't match variables"):
-            from_zarr(path)
+        with pytest.warns(UserWarning, match="doesn't match variables"):
+            back = from_zarr(path)
+        assert isinstance(back, xr.Dataset)
 
     def test_extra_attrs_preserved(self, tmp_path):
         ds = xr.Dataset({"x": (("y", "x"), np.zeros((2, 2)))}, attrs={"custom": "value"}).rio.write_crs("EPSG:32633")
@@ -357,7 +362,7 @@ class TestValidateDs:
         ds = xr.Dataset(
             {"stack": (("band", "y", "x"), np.zeros((3, 2, 2)))}, coords={"band": ["a", "b", "c"]}
         ).rio.write_crs("EPSG:32633")
-        with pytest.raises(ValueError, match="'band' dim"):
+        with pytest.raises(ValueError, match="expected dims"):
             validate_ds(ds)
 
     def test_rejects_missing_crs(self):
@@ -383,7 +388,7 @@ class TestPlotMeta:
 
     def test_roundtrip_through_geotiff(self, tmp_path):
         t = _tile(names=("red",)).rebase(class_map={0: "water"})
-        p = t.to_cog(tmp_path / "x_20230201.tif")
+        p = t.to_cog(tmp_path / "x_20230201.tif")[0]
         r = GeoTile.from_geotiff(p, datetime=(datetime(2023, 2, 1), datetime(2023, 2, 1)))
         assert r.class_map == {0: "water"}
 
@@ -448,7 +453,7 @@ class TestStac:
 
     def test_sidecar_roundtrip_cog(self, tmp_path):
         t = _tile(names=("red",), stac=("scene_a",))
-        p = t.to_cog(tmp_path / "x_20230201.tif")
+        p = t.to_cog(tmp_path / "x_20230201.tif")[0]
         assert (tmp_path / "x_20230201.stac.json").exists()
         r = GeoTile.from_geotiff(p, datetime=(datetime(2023, 2, 1), datetime(2023, 2, 1)))
         assert [i.id for i in r.stac] == ["scene_a"]
@@ -474,12 +479,14 @@ class TestSpatial:
         assert m.has_time and len(m.times) == 2
         assert (m.width, m.height) == (64, 32)
 
-    def test_mosaic_different_times_raises(self):
+    def test_mosaic_different_times_merges_without_raising(self):
+        """No time requirement (see mosaic_spatial's own docstring) — mismatched per-step time coords don't raise."""
         a = _tile(names=("red",), times=["2023-01-01", "2023-02-01"])
         b = _tile((500320, 5000000, 500640, 5000320), names=("red",),
                   times=["2023-03-01", "2023-04-01"])
-        with pytest.raises(ValueError):
-            mosaic_spatial(a, b)
+        m = mosaic_spatial(a, b)
+        assert m.has_time
+        assert (m.width, m.height) == (64, 32)
 
     def test_align_narrows_geobox_lazily(self):
         a = _tile((500000, 5000000, 500320, 5000320), names=("red",))

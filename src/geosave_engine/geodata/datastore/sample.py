@@ -14,9 +14,7 @@ import warnings
 from pathlib import Path
 from typing import TYPE_CHECKING, Any, Callable, Literal, Sequence, TypedDict
 
-import numpy as np
 import pandas as pd
-import torch
 from litdata import optimize
 from litdata.processing.readers import BaseReader
 from litdata.streaming import StreamingDataset
@@ -25,7 +23,16 @@ from litdata.utilities.encryption import Encryption
 from typing_extensions import Unpack
 
 from geosave_engine.geodata.spatial.stack import GeoStack
-from geosave_engine.geodata.utils.datastore import Sample, checked, identity, integrity_config, is_remote, jsonable, normalize_path
+from geosave_engine.geodata.utils.datastore import (
+    Sample,
+    checked,
+    identity,
+    integrity_config,
+    is_remote,
+    jsonable,
+    normalize_path,
+    sample_to_row,
+)
 
 if TYPE_CHECKING:
     from concurrent.futures import Future
@@ -78,6 +85,15 @@ class SampleStoreConfig(TypedDict, total=False):
             {}. For a hf://buckets/... path this merges onto the gateway's
             own auto-derived settings (endpoint_url, region_name, config) —
             put credentials here if not using boto3's own env vars/~/.aws/credentials.
+            A missing-credentials warning fires at construction (see
+            utils.datastore.warn_if_missing_aws_credentials) if none of
+            storage_options/env vars/~/.aws/credentials
+            look reachable — best-effort, doesn't catch an IAM instance role.
+            If it was a false negative, the real failure only surfaces on
+            first read/write, as a bare ValueError several frames deep in
+            litdata's own S3 dependency ("Received None from
+            session.get_credentials") — not a geosave-engine error, but
+            that's what it means if you hit it.
         keep_data_ordered: Static per-worker item assignment; False shares
             a queue, less idle time, unordered. Default: True.
         verbose: Print optimize()'s own progress. Default: True.
@@ -211,6 +227,37 @@ class SampleStore:
             }
             if diff:
                 raise ValueError(f"{path} already has {CONFIG_FILENAME} with a different config: {diff}")
+
+    def __repr__(self) -> str:
+        """Multi-line debug summary — path, locked config, sample count, per-layer geotag.
+
+        Opens sample 0 to read layers/geotags (same cost as any other read,
+        cached after the first call via `_get_dataset`). Never raises —
+        degrades to an inline error instead, so a broken/unreachable store
+        doesn't crash a REPL/notebook's implicit repr call. storage_options
+        (may carry credentials) is never shown — only INTEGRITY_FIELDS.
+        """
+        config = integrity_config(dict(self.config))
+        config_str = ", ".join(
+            f"{key}={type(value).__name__ if key in ('encryption', 'item_loader') and value is not None else value!r}"
+            for key, value in config.items()
+        )
+        lines = [f"SampleStore({self.path!r})", f"  config:  {config_str}"]
+
+        try:
+            n = len(self)
+            sample = self[0]
+        except Exception as e:  # repr must never raise — degrade instead
+            lines.append(f"  <no data — {e}>")
+            return "\n".join(lines)
+
+        lines.append(f"  samples: {n}")
+        lines.append(f"  fields:  {tuple(sample)!r}")
+        lines.append("  layers:")
+        for layer_name, geotag in sample.get("geotags", {}).items():
+            bands = geotag.get("bands")
+            lines.append(f"    {layer_name} — bands={tuple(bands) if bands else None}, datetime={geotag.get('datetime')}")
+        return "\n".join(lines)
 
     def write(
         self,
@@ -369,12 +416,7 @@ class SampleStore:
         Returns:
             `path`, as given.
         """
-        rows = []
-        for i in range(len(self)):
-            sample = self[i]
-            row = {"index": i}
-            row.update({k: v for k, v in sample.items() if not isinstance(v, (np.ndarray, torch.Tensor))})
-            rows.append(row)
+        rows = [sample_to_row(self[i], i) for i in range(len(self))]
         path = Path(path)
         pd.json_normalize(rows, sep="_").to_parquet(path)
         return path
