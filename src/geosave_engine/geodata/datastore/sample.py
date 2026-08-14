@@ -10,14 +10,14 @@ import functools
 import json
 import pickle
 import tempfile
-import warnings
 from pathlib import Path
-from typing import TYPE_CHECKING, Any, Callable, Literal, Sequence, TypedDict
+from typing import Any, Callable, Literal, Sequence, TypedDict
 
 import pandas as pd
 from litdata import optimize
 from litdata.processing.readers import BaseReader
 from litdata.streaming import StreamingDataset
+from litdata.streaming.fs_provider import FsProvider, _get_fs_provider
 from litdata.streaming.item_loader import BaseItemLoader
 from litdata.utilities.encryption import Encryption
 from typing_extensions import Unpack
@@ -33,11 +33,6 @@ from geosave_engine.geodata.utils.datastore import (
     normalize_path,
     sample_to_row,
 )
-
-if TYPE_CHECKING:
-    from concurrent.futures import Future
-
-    from huggingface_hub import CommitInfo
 
 CONFIG_FILENAME = "store_config.json"
 
@@ -127,35 +122,6 @@ class SampleStoreConfig(TypedDict, total=False):
     broadcast_paths: bool
 
 
-class UploadToHfKwargs(TypedDict, total=False):
-    """Extra keyword args forwarded to huggingface_hub's HfApi.upload_folder().
-
-    Args:
-        path_in_repo: Target directory in the repo. Default: None (repo root).
-        commit_message: Commit message. Default: None (auto-generated).
-        commit_description: Commit description. Default: None.
-        revision: Branch to commit to. Default: None (repo's default branch).
-        create_pr: Open a PR instead of committing directly. Default: None (False).
-        parent_commit: Parent commit SHA to base this commit on. Default:
-            None (HEAD of revision).
-        allow_patterns: Only upload files matching these glob(s). Default:
-            None (no filter).
-        ignore_patterns: Skip files matching these glob(s). Default: None (no filter).
-        delete_patterns: Delete repo files matching these glob(s) that
-            aren't in folder_path. Default: None (no deletion).
-    """
-
-    path_in_repo: str | None
-    commit_message: str
-    commit_description: str
-    revision: str
-    create_pr: bool
-    parent_commit: str
-    allow_patterns: list[str] | str
-    ignore_patterns: list[str] | str
-    delete_patterns: list[str] | str
-
-
 class SampleStore:
     """Many samples, packed into one litdata store.
 
@@ -163,17 +129,20 @@ class SampleStore:
     grow the store (mode="append") or replace it (mode="overwrite").
     Config is locked at construction and checked against any
     store_config.json already at path; the sample field set locks at the
-    first write() and is checked on every later one. Sidecar checks only
-    run for a local path — a remote path (s3://, ...) skips them.
+    first write() and is checked on every later one. Sidecar read/write
+    works the same for a remote path (s3://, gs://, r2://) as local, via
+    litdata's own fs_provider — same storage_options it already reads chunks with.
 
     litdata itself only writes to a local path or s3://, gs://, r2:// (its
     own hardcoded provider list — not general fsspec). hf://buckets/<namespace>/
     <bucket>[/<key>] also works — a Hugging Face Storage Bucket is S3-compatible,
     so it's rewritten to an equivalent s3:// URI + gateway storage_options at
     construction (see utils.datastore.normalize_path). hf://datasets/... (a Hub dataset repo)
-    is a separate, non-S3 thing and isn't writable this way — write
-    local/s3/gs/r2 then push the whole store with upload_to_hf() instead;
-    same idea for a plain S3 bucket via upload_to_s3().
+    is a separate, non-S3 thing and isn't writable this way — write local/s3/gs/r2
+    then push the whole store with the `upload_dataset_to_hf.py` boilerplate script
+    (`geosave make scripts upload_dataset_to_hf.py`) instead. Pushing to a named
+    destination (HF Hub, a plain S3 bucket, ...) is workflow, not store behavior —
+    deliberately not a method here.
 
     Args:
         path: Store root — local, s3://, gs://, r2://, or
@@ -200,9 +169,6 @@ class SampleStore:
         ...     chunk_size=1000,
         ...     storage_options={"aws_access_key_id": "HFAK...", "aws_secret_access_key": "..."},
         ... )
-
-        >>> # push to Hugging Face Hub after a local/s3/gs/r2 write
-        >>> store.upload_to_hf("org/dataset-name")
     """
 
     def __init__(self, path: str | Path, **config: Unpack[SampleStoreConfig]) -> None:
@@ -216,14 +182,18 @@ class SampleStore:
         self.path = path
         self.config: SampleStoreConfig = config
         self._dataset: StreamingDataset | None = None
+        self._provider: FsProvider | None = None
 
-        existing = self._read_sidecar()
-        if existing is not None:
+        # Cached, not re-read per call — write()/fields reuse this. A store_config.json
+        # rewritten out-of-band by another process won't be picked up until re-construction,
+        # same single-writer-per-instance assumption _dataset already makes.
+        self._sidecar = self._read_sidecar()
+        if self._sidecar is not None:
             current = jsonable(integrity_config(dict(config)))
             diff = {
-                key: (existing["config"].get(key), current.get(key))
-                for key in existing["config"].keys() | current.keys()
-                if existing["config"].get(key) != current.get(key)
+                key: (self._sidecar["config"].get(key), current.get(key))
+                for key in self._sidecar["config"].keys() | current.keys()
+                if self._sidecar["config"].get(key) != current.get(key)
             }
             if diff:
                 raise ValueError(f"{path} already has {CONFIG_FILENAME} with a different config: {diff}")
@@ -303,9 +273,8 @@ class SampleStore:
             else:
                 raise ValueError(f"no auto serializer for {type(first).__name__} — pass fn explicitly")
 
-        existing = self._read_sidecar()
-        if existing is not None:
-            expected_fields = frozenset(existing["fields"])
+        if self._sidecar is not None:
+            expected_fields = frozenset(self._sidecar["fields"])
         else:
             first_sample = fn(samples[0])
             try:
@@ -328,81 +297,8 @@ class SampleStore:
         self._write_sidecar(expected_fields)
         return Path(self.path) if not is_remote(self.path) else self.path
 
-    def upload_to_hf(
-        self,
-        repo_id: str,
-        repo_type: str = "dataset",
-        token: str | None = None,
-        create_parquet: bool = False,
-        **kwargs: Unpack[UploadToHfKwargs],
-    ) -> "CommitInfo | Future[CommitInfo]":
-        """Push this store to a Hugging Face Hub dataset repo.
-
-        Thin wrapper over huggingface_hub's own upload — litdata has no
-        push mechanism of its own. path must be local — HfApi uploads a
-        local folder, not a remote-to-remote transfer.
-
-        Args:
-            repo_id: Target HF Hub dataset repo, e.g. "org/dataset-name".
-            repo_type: HF Hub repo type.
-            token: HF Hub auth token. Default reads the HF_TOKEN env var,
-                then huggingface_hub's own cached login (`hf auth login`).
-            create_parquet: Also push to_parquet()'s manifest as its own
-                repo-root file, named "<store folder name>.parquet" (e.g.
-                "train.parquet") — matches HF's own split-detection
-                convention and won't collide if several stores' folders
-                (train/val/test) end up under one repo. Built in a temp
-                dir, not inside path, so it's independent of wherever
-                kwargs["path_in_repo"] nests the store's own chunk files.
-            **kwargs: Forwarded to HfApi.upload_folder() — see
-                UploadToHfKwargs for the full field list.
-
-        Returns:
-            CommitInfo, or a Future of one if run_as_future=True.
-        """
-        from huggingface_hub import HfApi, get_token
-
-        token = token or get_token()
-        if token is None:
-            warnings.warn(
-                "No HF token found (HF_TOKEN env var unset, not logged in via `hf auth login`) "
-                "— upload_to_hf will fail unless repo_id is a public repo you don't need auth for."
-            )
-        api = HfApi(token=token)
-
-        if create_parquet:
-            with tempfile.TemporaryDirectory() as tmp:
-                manifest_path = Path(tmp) / f"{Path(self.path).name}.parquet"
-                self.to_parquet(manifest_path)
-                api.upload_file(
-                    path_or_fileobj=str(manifest_path),
-                    path_in_repo=manifest_path.name,
-                    repo_id=repo_id,
-                    repo_type=repo_type,
-                )
-
-        return api.upload_folder(
-            folder_path=str(self.path),
-            repo_id=repo_id,
-            repo_type=repo_type,
-            **kwargs,
-        )
-
-    def upload_to_s3(self, bucket: str, prefix: str | None = None) -> None:
-        """Push this store to an S3 bucket.
-
-        Thin wrapper over boto3's own upload — litdata has no push mechanism
-        of its own. path must be local — boto3 uploads a local folder, not
-        a remote-to-remote transfer.
-
-        Args:
-            bucket: Target S3 bucket name.
-            prefix: Optional key prefix under the bucket.
-        """
-        pass
-
-    def to_parquet(self, path: str | Path) -> Path:
-        """Write this store's metadata to one Parquet file, one row per sample.
+    def to_pandas(self) -> pd.DataFrame:
+        """Write this store's metadata to a pandas DataFrame, one row per sample.
 
         Drops payload fields (any array/tensor value — the pixel data,
         looked up by `self._get_dataset()`'s own decode) and flattens the
@@ -410,16 +306,19 @@ class SampleStore:
         custom geotag key like cloud_cover ends up directly queryable.
         `"index"` column points back at this store's row position.
 
-        Args:
-            path: Output `.parquet` file path.
-
         Returns:
-            `path`, as given.
+            `pd.DataFrame`, one row per sample.
         """
         rows = [sample_to_row(self[i], i) for i in range(len(self))]
-        path = Path(path)
-        pd.json_normalize(rows, sep="_").to_parquet(path)
-        return path
+        return pd.json_normalize(rows, sep="_")
+
+    def to_parquet(self, path: str | Path) -> None:
+        """Write this store's metadata to a parquet file, one row per sample.
+        
+        Args:
+            path: Output `.parquet` file path.
+        """
+        self.to_pandas().to_parquet(path)
 
     def __len__(self) -> int:
         """Sample count, read from the store's index — no data load."""
@@ -438,10 +337,9 @@ class SampleStore:
         Raises:
             ValueError: Nothing written yet — no store_config.json.
         """
-        existing = self._read_sidecar()
-        if existing is None:
+        if self._sidecar is None:
             raise ValueError(f"{self.path} has no {CONFIG_FILENAME} yet — call write() first")
-        return tuple(existing["fields"])
+        return tuple(self._sidecar["fields"])
 
     # ------------------------------------------------------------------
     # Sidecar / dataset handle
@@ -452,10 +350,26 @@ class SampleStore:
             self._dataset = StreamingDataset(str(self.path))
         return self._dataset
 
+    def _get_provider(self) -> FsProvider:
+        if self._provider is None:
+            self._provider = _get_fs_provider(str(self.path), storage_options=self.config.get("storage_options"))
+        return self._provider
+
+    def _remote_sidecar_path(self) -> str:
+        return f"{str(self.path).rstrip('/')}/{CONFIG_FILENAME}"
+
     def _read_sidecar(self) -> dict[str, Any] | None:
-        """Read store_config.json at this store's path. None if missing or path is remote."""
+        """Read store_config.json at this store's path, local or remote. None if missing."""
         if is_remote(self.path):
-            return None
+            provider = self._get_provider()
+            remote_path = self._remote_sidecar_path()
+            if not provider.exists(remote_path):
+                return None
+            with tempfile.TemporaryDirectory() as tmp:
+                local_path = Path(tmp) / CONFIG_FILENAME
+                provider.download_file(remote_path, str(local_path))
+                return json.loads(local_path.read_text())
+
         sidecar = Path(self.path) / CONFIG_FILENAME
         if not sidecar.exists():
             return None
@@ -463,11 +377,21 @@ class SampleStore:
 
     def _write_sidecar(self, fields: frozenset[str]) -> None:
         """Write store_config.json — locked config (integrity-relevant fields
-        only, see INTEGRITY_FIELDS) + sample field set. No-op for a remote path.
+        only, see INTEGRITY_FIELDS) + sample field set. Works local or remote,
+        updates the cached sidecar dict (self._sidecar) once written.
         """
-        if is_remote(self.path):
-            return
-        sidecar = Path(self.path) / CONFIG_FILENAME
-        sidecar.parent.mkdir(parents=True, exist_ok=True)
         current = jsonable(integrity_config(dict(self.config)))
-        sidecar.write_text(json.dumps({"config": current, "fields": sorted(fields)}))
+        payload_dict = {"config": current, "fields": sorted(fields)}
+        payload = json.dumps(payload_dict)
+
+        if is_remote(self.path):
+            with tempfile.TemporaryDirectory() as tmp:
+                local_path = Path(tmp) / CONFIG_FILENAME
+                local_path.write_text(payload)
+                self._get_provider().upload_file(str(local_path), self._remote_sidecar_path())
+        else:
+            sidecar = Path(self.path) / CONFIG_FILENAME
+            sidecar.parent.mkdir(parents=True, exist_ok=True)
+            sidecar.write_text(payload)
+
+        self._sidecar = payload_dict

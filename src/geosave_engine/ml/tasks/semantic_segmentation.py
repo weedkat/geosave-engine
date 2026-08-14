@@ -2,16 +2,17 @@ from __future__ import annotations
 
 import logging
 from pathlib import Path
-from typing import Any
+from typing import Any, Literal
 
 import torch
 import torch.nn as nn
 from lightning import LightningDataModule, LightningModule
 from lightning.pytorch.callbacks import Callback
 from lightning.pytorch.utilities.types import OptimizerLRScheduler
-from torch.utils.data import DataLoader
+from litdata import StreamingDataLoader
+from torch.utils.data import DataLoader, Dataset
 
-from geosave_engine.geodata.datasets import StackDataset
+from geosave_engine.geodata.datasets import StackDataset, StoreDataset, stack_samples
 from geosave_engine.geodata.datasets.stack import LayerName
 from geosave_engine.ml.callbacks.prediction_logger import DensePredictionLogger
 from geosave_engine.ml.callbacks.threshold_calibrator import ThresholdCalibrator
@@ -20,8 +21,7 @@ from geosave_engine.ml.inference.sliding_window import split_patches, stitch_pat
 from geosave_engine.ml.inference.thresholding import apply_thresholds
 from geosave_engine.ml.metrics.semantic_segmentation import SemanticSegmentationMetrics
 from geosave_engine.ml.models.contract import ContextChain
-from geosave_engine.ml.transforms import ImageAugmenter, ImageProcessor
-from geosave_engine.utils import stack_samples
+from geosave_engine.ml.transforms import ImageAugmenter, Normalize
 
 log = logging.getLogger(__name__)
 
@@ -220,7 +220,7 @@ class SemanticSegmentationTask(LightningModule):
         self.model = build_model(self.stages, stage_config)
         norm_source: nn.Module = getattr(self.model, first)
 
-        self.preprocessor = ImageProcessor(
+        self.preprocessor = Normalize(
             model=norm_source,
             mean_norm=self.mean_norm,
             std_norm=self.std_norm,
@@ -506,6 +506,13 @@ class SemanticSegmentationDataModule(LightningDataModule):
             ``test``.
         predict_root: StackDataset directory for the predict split. Required
             for ``predict``.
+        dataset: `"stack"` (raw `GeoStack` zarr, via `StackDataset`) or
+            `"store"` (packed `SampleStore`, via `StoreDataset`) — or pass a
+            `Dataset` class directly for anything outside those two.
+        dataset_kwargs: Extra kwargs forwarded to `dataset`'s constructor —
+            e.g. `required_layers` for `StackDataset`, `cache_dir`/`shuffle`
+            for `StoreDataset`. `sel_bands`/`dtype_override` below are
+            already forwarded, don't repeat them here.
         sel_bands: Layer name → band names to keep; default is all bands.
         dtype_override: Layer name to torch dtype to cast that layer's tensor
             to. Only needed to deviate from the tensor's saved dtype (e.g.
@@ -539,6 +546,8 @@ class SemanticSegmentationDataModule(LightningDataModule):
         val_root: str | Path | None = None,
         test_root: str | Path | None = None,
         predict_root: str | Path | None = None,
+        dataset: Literal["stack", "store"] = "stack",
+        dataset_kwargs: dict[str, Any] | None = None,
         sel_bands: dict[LayerName, list[str]] | None = None,
         dtype_override: dict[LayerName, torch.dtype] | None = None,
         batch_size: int = 16,
@@ -552,6 +561,8 @@ class SemanticSegmentationDataModule(LightningDataModule):
         self.val_root = Path(val_root) if val_root is not None else None
         self.test_root = Path(test_root) if test_root is not None else None
         self.predict_root = Path(predict_root) if predict_root is not None else None
+        self.dataset = dataset
+        self.dataset_kwargs = dataset_kwargs or {}
         self.sel_bands = sel_bands
         self.dtype_override = dtype_override
         self.batch_size = batch_size
@@ -560,10 +571,14 @@ class SemanticSegmentationDataModule(LightningDataModule):
         self.prefetch_factor = prefetch_factor
         self.persistent_workers = persistent_workers
 
-    def _make_dataset(self, name: str, root: Path | None) -> StackDataset:
+    def _make_dataset(self, name: str, root: Path | None) -> Dataset:
         if root is None:
             raise ValueError(f"{name} not set — pass `{name}` to build this split's dataset.")
-        return StackDataset(root, sel_bands=self.sel_bands, dtype_override=self.dtype_override)
+        if self.dataset == "stack":
+            return StackDataset(root, sel_bands=self.sel_bands, dtype_override=self.dtype_override, **self.dataset_kwargs)
+        if self.dataset == "store":
+            return StoreDataset(root, sel_bands=self.sel_bands, dtype_override=self.dtype_override, **self.dataset_kwargs)
+        raise ValueError(f"Unknown dataset {self.dataset!r} — must be 'stack' or 'store'")
 
     def setup(self, stage: str | None = None) -> None:
         if stage == "fit":
@@ -578,7 +593,23 @@ class SemanticSegmentationDataModule(LightningDataModule):
         else:
             raise ValueError(f"Invalid stage: {stage!r}")
 
-    def _loader(self, dataset: StackDataset, *, drop_last: bool = False) -> DataLoader:
+    def _loader(self, dataset: Dataset, *, drop_last: bool = False) -> DataLoader:
+        # StoreDataset is a litdata StreamingDataset — a plain DataLoader would iterate it
+        # fine but skip litdata's own shuffle/num_workers/checkpoint-resume wiring, which
+        # only StreamingDataLoader sets up (it calls dataset.set_shuffle()/set_num_workers()
+        # before construction; StreamingDataset even rejects a bare DataLoader outright).
+        if self.dataset == "store":
+            assert isinstance(dataset, StoreDataset)
+            return StreamingDataLoader(
+                dataset,
+                batch_size=self.batch_size,
+                num_workers=self.num_workers,
+                drop_last=drop_last,
+                pin_memory=self.pin_memory,
+                prefetch_factor=self.prefetch_factor,
+                persistent_workers=self.persistent_workers,
+                collate_fn=stack_samples,
+            )
         return DataLoader(
             dataset,
             batch_size=self.batch_size,

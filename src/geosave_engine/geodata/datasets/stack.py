@@ -12,6 +12,7 @@ import torch
 from torch.utils.data import Dataset
 
 from geosave_engine.geodata.spatial.stack import GeoStack
+from geosave_engine.geodata.utils.datastore import sample_to_row
 
 LayerName = str
 
@@ -80,21 +81,25 @@ class StackDataset(Dataset):
         return self.render(index)
 
     def to_row(self, index: int) -> dict[str, Any]:
-        """Manifest row for `index` — cheap metadata, no zarr open.
+        """Manifest row for `index` — renders the sample, drops its arrays.
 
         Args:
             index: Row position in this dataset.
 
         Returns:
-            `{"path": ...}` — the anchor store's path relative to `root`.
+            `{"index": ..., "path": ..., "geobox": ..., "geotags": ...}`,
+            plus any `context` keys — same shape as `StoreDataset.to_row`.
         """
         path, _ = self._samples[index]
-        return {"path": str(path.relative_to(self.root))}
+        row = sample_to_row(self.render(index), index)
+        row["path"] = str(path.relative_to(self.root))
+        return row
 
     def to_pandas(self) -> pd.DataFrame:
         """Snapshot every sample's `to_row` into one table.
 
         Returns:
-            DataFrame, one row per sample, in index order.
+            DataFrame, one row per sample, flattened (e.g. "geotags_rgb_bands").
         """
-        return pd.DataFrame([self.to_row(i) for i in range(len(self))])
+        rows = [self.to_row(i) for i in range(len(self))]
+        return pd.json_normalize(rows, sep="_")

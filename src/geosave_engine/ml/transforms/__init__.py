@@ -1,4 +1,4 @@
 from .augmenter import ImageAugmenter
-from .processor import ImageProcessor
+from .processor import Normalize
 
-__all__ = ["ImageAugmenter", "ImageProcessor"]
+__all__ = ["ImageAugmenter", "Normalize"]

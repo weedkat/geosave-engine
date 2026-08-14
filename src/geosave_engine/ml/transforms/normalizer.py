@@ -9,7 +9,7 @@ import kornia.augmentation as K
 from geosave_engine.ml.models.contract import Normalization
 
 
-class ImageProcessor(nn.Module):
+class Normalize(nn.Module):
     """Deterministic transforms applied on all splits: resize → normalize.
 
     Normalization source priority: explicit ``mean_norm``/``std_norm`` > ``model.img_mean``/``img_std`` > skip.

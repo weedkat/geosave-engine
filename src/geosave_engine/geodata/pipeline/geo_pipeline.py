@@ -70,16 +70,6 @@ class GeoPipeline(ABC):
     def context(self, tiles: dict[LayerName, GeoTile]) -> dict[str, torch.Tensor]:
         """Extra per-sample tensor keys to merge into a rendered sample.
 
-        Override — derive whatever a specific model chain needs from these
-        tiles' anchors (e.g. `temporal_coords`/`location_coords` for a
-        Prithvi-family encoder). Must return tensors, no batch dim —
-        `stack_samples` only stacks `torch.Tensor` values into a batch;
-        anything else passes through unbatched. Called exactly once, by
-        `ingest()`, right after `preprocess()` — its result rides on the
-        `GeoStack` as `.context` from then on (persisted through `to_zarr`/
-        `from_zarr`, merged into `to_tensor()`/`to_numpy()`'s output), never
-        recomputed at read time.
-
         Args:
             tiles: Layer name to GeoTile map for one aligned, preprocessed
                 sample — same shape `preprocess` receives.

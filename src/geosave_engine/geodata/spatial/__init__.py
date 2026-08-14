@@ -4,7 +4,17 @@ from geosave_engine.geodata.utils.zarr import from_zarr, to_zarr
 
 from .anchor import AnchorDatetime, GeoAnchor, GeoTag
 from .tile import GeoTile
-from .ops import align_spatial, chunk_geotile, mosaic_spatial, mosaic_stack, remap, split_spatial
+from .ops import (
+    align_spatial,
+    align_temporal,
+    align_temporal_stack,
+    chunk_geotile,
+    mask_to_polygon,
+    mosaic_spatial,
+    mosaic_stack,
+    remap,
+    split_spatial,
+)
 from .stack import GeoStack
 
 __all__ = [
@@ -13,9 +23,12 @@ __all__ = [
     "GeoTag",
     "GeoTile",
     "align_spatial",
+    "align_temporal",
+    "align_temporal_stack",
     "chunk_geotile",
     "from_geotiff",
     "from_zarr",
+    "mask_to_polygon",
     "mosaic_spatial",
     "mosaic_stack",
     "remap",

@@ -129,7 +129,13 @@ def da_to_ds(da: xr.DataArray) -> xr.Dataset:
         Dataset with one variable per band, or one `data` variable.
     """
     if "band" in da.dims:
-        return da.to_dataset(dim="band")
+        ds = da.to_dataset(dim="band")
+        # to_dataset(dim=...) drops da's own nodata off every split-out variable
+        nodata = da.rio.nodata
+        if nodata is not None:
+            for name in ds.data_vars:
+                ds[name] = ds[name].rio.write_nodata(nodata)
+        return ds
     return da.to_dataset(name=BANDLESS_VAR_NAME)
 
 

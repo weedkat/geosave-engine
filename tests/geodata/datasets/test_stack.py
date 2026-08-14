@@ -86,7 +86,10 @@ class TestManifest:
     def test_to_row_is_relative_path(self, tmp_path):
         _write_stack(tmp_path / "a" / "0.zarr")
         ds = StackDataset(tmp_path)
-        assert ds.to_row(0) == {"path": "a/0.zarr"}
+        row = ds.to_row(0)
+        assert row["path"] == "a/0.zarr"
+        assert row["index"] == 0
+        assert sorted(row["geotags"].keys()) == ["mask", "rgb"]
 
     def test_to_pandas_one_row_per_sample_in_index_order(self, tmp_path):
         _write_stack(tmp_path / "a" / "0.zarr")

@@ -77,10 +77,12 @@ Write in simple caveman language using google style docstrings:
 
 - Focus on expected input and output
 - Inline comment: 1 line. Max.
-- Docstring body: 2-3 lines. Max.
+- Trailing inline comment (code `# comment` on the same line) is reserved for short mechanical notes that ride along the code, e.g. tensor shape `# (B, C, H, W)`. Anything explaining what a code chunk does goes on its own `#` line directly above that chunk, never trailing after it.
+- Docstring body: 2-3 lines. Max — what happens (flow/steps) is fine, why it happens (rationale/mechanism) is not; that's commit/PR content.
 - Say what, never why/history ("confirmed empirically", "converged on", "renamed from"). That's commit/PR content, not code.
 - No comparison to a rejected alternative ("not zarr", "unlike X") — reader has no context on X, and it's why/history in disguise. State what this is, not what it isn't.
 - Over the limit → cut it, don't wrap it. Truly needs more → belongs in `docs/`, ask first.
+- Run `python scripts/check_docstrings.py <file_or_dir>` before calling any docstring/comment edit done — catches body-length and comment-run violations mechanically, don't eyeball it.
 
 Example:
 

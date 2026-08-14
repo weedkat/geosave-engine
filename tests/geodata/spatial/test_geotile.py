@@ -14,15 +14,20 @@ import xarray as xr
 from odc.geo.geobox import GeoBox
 from odc.geo.xr import xr_zeros, xr_coords
 
+from dask.base import is_dask_collection
+
 from geosave_engine.geodata.spatial import (
     GeoAnchor,
     GeoTag,
     GeoTile,
     align_spatial,
+    align_temporal,
+    chunk_geotile,
     from_geotiff,
     from_zarr,
     mosaic_spatial,
     remap,
+    split_spatial,
     to_geotiff,
     to_zarr,
     validate_da,
@@ -75,6 +80,16 @@ def _tile(
         data=da,
         geotag=GeoTag(datetime=dt_range, stac=[_item(s) for s in stac], **(meta or {"foo": "bar"})),
     )
+
+
+def _geographic_tile() -> GeoTile:
+    """1x1deg tile on EPSG:4326 — for the "needs a projected CRS" raise paths."""
+    gb = GeoBox.from_bbox((0, 0, 1, 1), crs="EPSG:4326", resolution=0.1, anchor="edge")
+    arr = np.zeros((gb.height, gb.width), dtype="uint8")
+    coords = dict(xr_coords(gb, dims=("y", "x")))  # force y/x dims — xr_coords names them lat/lon otherwise
+    da = xr.DataArray(arr, dims=("y", "x"), coords=coords).odc.assign_crs("EPSG:4326")
+    d = datetime(2024, 1, 1)
+    return GeoAnchor(geobox=gb, geotag=GeoTag(datetime=(d, d))).to_geotile(da)
 
 
 class TestHeader:
@@ -192,10 +207,11 @@ class TestZarrRoundtrip:
         assert r.geobox == t.geobox
 
     def test_nodata_preserved(self, tmp_path):
+        # zarr/CF decode-on-read replaces declared nodata with real NaN, promoting dtype to float
         t = _tile(names=("label",)).rebase(nodata=255)
         store = t.to_zarr(tmp_path / "cube.zarr")
         r = GeoTile.from_zarr(store)
-        assert r.nodata == 255
+        assert np.isnan(r.nodata)
 
     def test_multi_band_order_preserved(self, tmp_path):
         # non-alphabetical on purpose — zarr lists variables alphabetically on
@@ -497,6 +513,326 @@ class TestSpatial:
         assert a2.data is a.data                  # data untouched — read happens on to_tensor
 
 
+class TestAlignSpatial:
+    def test_zero_tiles_returns_empty(self):
+        assert align_spatial() == ()
+
+    def test_single_tile_passthrough(self):
+        t = _tile(names=("red",))
+        out = align_spatial(t)
+        assert out == (t,)
+
+    def test_three_tiles_narrows_to_shared_intersection(self):
+        a = _tile((500000, 5000000, 500320, 5000320), names=("red",))
+        b = _tile((500000, 5000000, 500240, 5000240), names=("nir",))
+        c = _tile((500080, 5000080, 500320, 5000320), names=("swir",))
+        a2, b2, c2 = align_spatial(a, b, c)
+        assert (a2.width, a2.height) == (16, 16)   # [500080:500240] on both axes
+        assert a2.geobox == b2.geobox == c2.geobox
+
+    def test_non_overlapping_raises(self):
+        a = _tile((500000, 5000000, 500320, 5000320), names=("red",))
+        b = _tile((600000, 5000000, 600320, 5000320), names=("nir",))
+        with pytest.raises(ValueError, match="doesn't overlap"):
+            align_spatial(a, b)
+
+    def test_mismatched_crs_raises(self):
+        a = _tile((500000, 5000000, 500320, 5000320), names=("red",))
+        b = a.rebase(geobox=GeoBox.from_bbox((500000, 5000000, 500320, 5000320), crs="EPSG:32634", resolution=10, anchor="edge"))
+        with pytest.raises(ValueError, match="different CRS"):
+            align_spatial(a, b)
+
+    def test_mismatched_resolution_raises(self):
+        a = _tile((500000, 5000000, 500320, 5000320), names=("red",))
+        b = _tile((500000, 5000000, 500320, 5000320), names=("nir",))
+        b = b.rebase(geobox=GeoBox.from_bbox(b.bbox, crs=UTM, resolution=20, anchor="edge"))
+        with pytest.raises(ValueError, match="different resolution"):
+            align_spatial(a, b)
+
+    def test_off_pixel_grid_raises(self):
+        a = _tile((500000, 5000000, 500320, 5000320), names=("red",))
+        b_geobox = a.geobox.translate_pix(0.5, 0.5)  # half-pixel shift off a's grid
+        b = _tile(names=("nir",)).rebase(geobox=b_geobox)
+        with pytest.raises(ValueError, match="not on the common pixel grid"):
+            align_spatial(a, b)
+
+    def test_tol_allows_near_grid_offset_through(self):
+        a = _tile((500000, 5000000, 500320, 5000320), names=("red",))
+        b = _tile((500000.0000001, 5000000, 500320, 5000320), names=("nir",))
+        a2, b2 = align_spatial(a, b, tol=1e-3)
+        assert a2.geobox == b2.geobox
+
+    def test_non_projected_crs_raises(self):
+        t = _geographic_tile()
+        with pytest.raises(ValueError, match="needs a projected CRS"):
+            align_spatial(t, t)
+
+    def test_polygon_clipped_to_intersection(self):
+        a = _tile((500000, 5000000, 500320, 5000320), names=("red",))
+        a = a.rebase(polygon=a.bbox_polygon)
+        b = _tile((500160, 5000160, 500480, 5000480), names=("nir",))
+        a2, _ = align_spatial(a, b)
+        assert a2.polygon.geom.bounds == (500160.0, 5000160.0, 500320.0, 5000320.0)
+
+
+class TestSplitSpatial:
+    def test_empty_raises(self):
+        with pytest.raises(ValueError, match="at least one tile"):
+            split_spatial()
+
+    def test_negative_tol_raises(self):
+        t = _tile(names=("red",))
+        with pytest.raises(ValueError, match="tol must be >= 0"):
+            split_spatial(t, tol=-1)
+
+    def test_single_tile_is_own_group(self):
+        t = _tile(names=("red",))
+        assert split_spatial(t) == [(t,)]
+
+    def test_disjoint_tiles_stay_separate_groups(self):
+        a = _tile((500000, 5000000, 500320, 5000320), names=("red",))
+        b = _tile((600000, 5000000, 600320, 5000320), names=("red",))
+        groups = split_spatial(a, b)
+        assert len(groups) == 2
+
+    def test_touching_tiles_grouped(self):
+        a = _tile((500000, 5000000, 500320, 5000320), names=("red",))
+        b = _tile((500320, 5000000, 500640, 5000320), names=("red",))  # shares an edge exactly
+        groups = split_spatial(a, b)
+        assert len(groups) == 1 and len(groups[0]) == 2
+
+    def test_transitive_chain_merges_into_one_cluster(self):
+        # a touches b, b touches c — a and c never touch directly
+        a = _tile((0, 0, 320, 320), names=("red",))
+        b = _tile((320, 0, 640, 320), names=("red",))
+        c = _tile((640, 0, 960, 320), names=("red",))
+        groups = split_spatial(a, b, c)
+        assert len(groups) == 1 and len(groups[0]) == 3
+
+    def test_gap_bridged_by_tol_not_by_default(self):
+        a = _tile((0, 0, 320, 320), names=("red",))
+        b = _tile((370, 0, 690, 320), names=("red",))  # 50m gap
+        assert len(split_spatial(a, b)) == 2                # default tol=0, gap not bridged
+        assert len(split_spatial(a, b, tol=60)) == 1         # bridged
+
+
+class TestChunkGeotile:
+    def test_exact_divide_grid_count_and_shape(self):
+        t = _tile((0, 0, 320, 320), names=("red",))  # 32x32 px
+        subs = chunk_geotile(t, 16)
+        assert len(subs) == 4
+        assert all((s.width, s.height) == (16, 16) for s in subs)
+
+    def test_uneven_divide_trims_edge_cells(self):
+        t = _tile((0, 0, 320, 320), names=("red",))  # 32x32 px, 20px chunks
+        subs = chunk_geotile(t, 20)
+        shapes = sorted((s.width, s.height) for s in subs)
+        assert shapes == [(12, 12), (12, 20), (20, 12), (20, 20)]
+
+    def test_chunk_larger_than_tile_returns_one_full_cell(self):
+        t = _tile((0, 0, 320, 320), names=("red",))
+        subs = chunk_geotile(t, 1000)
+        assert len(subs) == 1
+        assert (subs[0].width, subs[0].height) == (32, 32)
+
+    def test_no_polygon_skips_clip_path(self):
+        t = _tile((0, 0, 320, 320), names=("red",))
+        assert t.polygon is None
+        subs = chunk_geotile(t, 16)
+        assert all(s.polygon is None for s in subs)
+
+    def test_polygon_clipped_to_each_cell(self):
+        t = _tile((0, 0, 320, 320), names=("red",))
+        t = t.rebase(polygon=t.bbox_polygon)
+        subs = chunk_geotile(t, 16)
+        for s in subs:
+            assert s.polygon.geom.bounds == pytest.approx(s.bbox)
+
+    def test_geoanchor_input_returns_geoanchors(self):
+        t = _tile((0, 0, 320, 320), names=("red",))
+        anchor = t.to_anchor()
+        subs = chunk_geotile(anchor, 16)
+        assert len(subs) == 4
+        assert all(isinstance(s, GeoAnchor) and not isinstance(s, GeoTile) for s in subs)
+
+
+class TestMosaicSpatial:
+    def test_empty_raises(self):
+        with pytest.raises(ValueError, match="at least one tile"):
+            mosaic_spatial()
+
+    def test_invalid_method_raises(self):
+        t = _tile(names=("red",))
+        with pytest.raises(ValueError, match="method must be"):
+            mosaic_spatial(t, method="max")   # type: ignore[arg-type]
+
+    def test_single_tile_passthrough(self):
+        t = _tile(names=("red",))
+        m = mosaic_spatial(t)
+        assert m.bbox == t.bbox
+
+    def test_method_first_vs_last_pick_opposite_tile_on_full_overlap(self):
+        a = _tile(names=("red",)).rebase(data=_tile(names=("red",)).data * 0 + 1)
+        b = _tile(names=("red",)).rebase(data=_tile(names=("red",)).data * 0 + 2)
+        assert float(mosaic_spatial(a, b, method="first").data.values[0, 0, 0]) == 1
+        assert float(mosaic_spatial(a, b, method="last").data.values[0, 0, 0]) == 2
+
+    def test_mixed_crs_without_target_raises(self):
+        a = _tile(names=("red",))
+        b = a.rebase(geobox=GeoBox.from_bbox(a.bbox, crs="EPSG:32634", resolution=10, anchor="edge"))
+        with pytest.raises(ValueError, match="mixed CRS"):
+            mosaic_spatial(a, b)
+
+    def test_mixed_crs_with_target_reconciles(self):
+        a = _tile(names=("red",))
+        b = a.rebase(geobox=GeoBox.from_bbox(a.bbox, crs="EPSG:32634", resolution=10, anchor="edge"))
+        m = mosaic_spatial(a, b, target_crs="EPSG:32633")
+        assert str(m.crs) == "EPSG:32633"
+
+    def test_mixed_resolution_without_target_raises(self):
+        a = _tile(names=("red",))
+        b = a.rebase(geobox=GeoBox.from_bbox(a.bbox, crs=UTM, resolution=20, anchor="edge"))
+        with pytest.raises(ValueError, match="mixed resolution"):
+            mosaic_spatial(a, b)
+
+    def test_mixed_resolution_with_target_reconciles(self):
+        a = _tile(names=("red",))
+        b = a.rebase(geobox=GeoBox.from_bbox(a.bbox, crs=UTM, resolution=20, anchor="edge"))
+        m = mosaic_spatial(a, b, target_resolution=10)
+        assert m.resolution == 10
+
+    def test_non_projected_crs_raises(self):
+        t = _geographic_tile()
+        with pytest.raises(ValueError, match="needs a projected CRS"):
+            mosaic_spatial(t, t, target_crs="EPSG:4326")
+
+    def test_band_dim_presence_mismatch_raises(self):
+        bandless = _tile(names=("red",))
+        bandless = bandless.rebase(data=bandless.data.squeeze("band", drop=True))
+        banded = _tile(names=("red",))
+        with pytest.raises(ValueError, match="band dim differs"):
+            mosaic_spatial(bandless, banded)
+
+    def test_band_names_mismatch_raises(self):
+        a = _tile(names=("red", "green"))
+        b = _tile(names=("red", "blue"))
+        with pytest.raises(ValueError, match="bands"):
+            mosaic_spatial(a, b)
+
+    def test_rgb_bands_mismatch_raises(self):
+        a = _tile(names=("red", "green", "blue")).rebase(rgb_bands=("red", "green", "blue"))
+        b = _tile(names=("red", "green", "blue")).rebase(rgb_bands=("blue", "green", "red"))
+        with pytest.raises(ValueError, match="rgb_bands"):
+            mosaic_spatial(a, b)
+
+    def test_class_map_mismatch_raises(self):
+        a = _tile(names=("label",)).rebase(class_map={0: "water"})
+        b = _tile(names=("label",)).rebase(class_map={0: "land"})
+        with pytest.raises(ValueError, match="class_map"):
+            mosaic_spatial(a, b)
+
+    def test_color_map_mismatch_raises(self):
+        a = _tile(names=("label",)).rebase(color_map={0: (0, 0, 0)})
+        b = _tile(names=("label",)).rebase(color_map={0: (255, 255, 255)})
+        with pytest.raises(ValueError, match="color_map"):
+            mosaic_spatial(a, b)
+
+    def test_polygon_union(self):
+        a = _tile((0, 0, 320, 320), names=("red",))
+        a = a.rebase(polygon=a.bbox_polygon)
+        b = _tile((320, 0, 640, 320), names=("red",))
+        b = b.rebase(polygon=b.bbox_polygon)
+        m = mosaic_spatial(a, b)
+        assert m.polygon.geom.bounds == (0.0, 0.0, 640.0, 320.0)
+
+    def test_stac_provenance_concatenated(self):
+        a = _tile(names=("red",), stac=("scene_a",))
+        b = _tile((500320, 5000000, 500640, 5000320), names=("red",), stac=("scene_b",))
+        m = mosaic_spatial(a, b)
+        assert [i.id for i in m.stac] == ["scene_a", "scene_b"]
+
+    def test_date_precision_floors_time_coord(self):
+        a = _tile(names=("red",), times=["2023-01-01T03:00"])
+        b = _tile(names=("red",), times=["2023-01-01T18:00"])
+        floored = mosaic_spatial(a, b, date_precision="D")
+        exact = mosaic_spatial(a, b, date_precision=None)
+        assert len(floored.times) == 1
+        assert len(exact.times) == 2
+
+
+class TestAlignTemporal:
+    def test_no_time_dim_is_noop(self):
+        t = _tile(names=("red",))
+        assert align_temporal(t) is t
+
+    def test_no_nodata_declared_no_crop(self):
+        # every pixel real, no nodata sentinel set at all — nothing to intersect against
+        t = _tile(names=("red",), times=["2023-01-01", "2023-02-01"])
+        out = align_temporal(t)
+        assert (out.width, out.height) == (t.width, t.height)
+        assert out.bbox == t.bbox
+
+    def test_crops_to_common_valid_bbox(self):
+        # 32x32 grid, 3 dates, staggered nodata windows — only rows[8:20) x cols[5:20) valid in all three
+        t = _tile(names=("red",), times=["2023-01-01", "2023-02-01", "2023-03-01"])
+        arr = np.ones(t.data.shape, dtype="float32")
+        arr[0, :, 20:, :] = np.nan   # date0 valid rows[:20)
+        arr[0, :, :, 20:] = np.nan   # date0 valid cols[:20)
+        arr[1, :, :5, :] = np.nan    # date1 valid rows[5:)
+        arr[1, :, :, :5] = np.nan    # date1 valid cols[5:)
+        arr[2, :, :8, :] = np.nan    # date2 valid rows[8:)
+        da = t.data.copy(data=arr).rio.write_nodata(np.nan)
+        t = t.rebase(data=da)
+
+        out = align_temporal(t)
+        assert (out.height, out.width) == (12, 15)   # rows[8:20), cols[5:20)
+        assert not bool(out.data.isnull().any())      # every kept pixel real in every date
+
+    def test_no_overlap_raises(self):
+        t = _tile(names=("red",), times=["2023-01-01", "2023-02-01"])
+        arr = np.full(t.data.shape, np.nan, dtype="float32")
+        arr[0, :, :16, :] = 1   # date0 only top half
+        arr[1, :, 16:, :] = 1   # date1 only bottom half — no shared row
+        da = t.data.copy(data=arr).rio.write_nodata(np.nan)
+        t = t.rebase(data=da)
+        with pytest.raises(ValueError, match="no pixel has real data"):
+            align_temporal(t)
+
+    def test_bands_must_all_be_valid(self):
+        # red fully valid; nir has an extra hole — output must respect nir's tighter footprint too
+        t = _tile(names=("red", "nir"), times=["2023-01-01"])
+        arr = np.ones(t.data.shape, dtype="float32")
+        arr[0, 1, :10, :] = np.nan   # band "nir" only, rows[:10) nodata
+        da = t.data.copy(data=arr).rio.write_nodata(np.nan)
+        t = t.rebase(data=da)
+        out = align_temporal(t)
+        assert out.height == 22   # rows[10:32)
+
+    def test_int_dtype_sentinel_nodata_preserves_dtype(self):
+        t = _tile(names=("red",), times=["2023-01-01", "2023-02-01"])
+        arr = np.ones(t.data.shape, dtype="uint16")
+        arr[0, :, :16, :] = 0   # date0 nodata=0 on top half
+        da = t.data.copy(data=arr)
+        t = t.rebase(data=da, nodata=0)
+
+        out = align_temporal(t)
+        assert out.height == 16          # bottom half only
+        assert out.data.dtype == np.uint16   # crop doesn't touch/upcast real values
+
+    def test_lazy_input_stays_lazy(self):
+        t = _tile(names=("red",), times=["2023-01-01", "2023-02-01"])
+        arr = np.ones(t.data.shape, dtype="float32")
+        arr[0, :, :4, :] = np.nan
+        arr[1, :, 28:, :] = np.nan
+        da = t.data.copy(data=arr).rio.write_nodata(np.nan).chunk({"time": 1, "y": 8, "x": 8})
+        t = t.rebase(data=da)
+        assert is_dask_collection(t.data.data)
+
+        out = align_temporal(t)
+        assert is_dask_collection(out.data.data)   # crop stays lazy, not materialized
+        assert (out.height, out.width) == (24, 32)
+
+
 class TestTensor:
     def test_to_numpy_shape_with_time(self):
         t = _tile(names=("red", "green"), times=["2023-01-01", "2023-02-01"])
@@ -533,6 +869,32 @@ class TestRemap:
         t = _tile(names=("label",))  # all zeros
         out = remap(t, {0: 5}).to_tensor()        # (band, y, x)
         assert (out == 5).all()
+
+    def test_empty_mapping_is_noop(self):
+        t = _tile(names=("label",))
+        out = remap(t, {})
+        assert (out.data.values == t.data.values).all()
+
+    def test_value_not_present_is_ignored(self):
+        t = _tile(names=("label",))  # all zeros
+        out = remap(t, {99: 1})
+        assert (out.data.values == 0).all()
+
+    def test_original_tile_untouched(self):
+        t = _tile(names=("label",))
+        remap(t, {0: 5})
+        assert (t.data.values == 0).all()
+
+    def test_sequential_application_can_collapse_a_swap(self):
+        """dict order applies sequentially, not simultaneously — {0: 1, 1: 0} isn't a swap.
+
+        0s become 1s first, then that same rule's second pass (1 -> 0) puts them
+        right back, so every pixel ends up 0. Documents current behavior, not a
+        claim it's the intended one — flag before relying on remap() for a swap.
+        """
+        t = _tile(names=("label",))  # all zeros
+        out = remap(t, {0: 1, 1: 0})
+        assert (out.data.values == 0).all()
 
 
 class TestRealData:

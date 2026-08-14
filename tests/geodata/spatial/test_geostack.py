@@ -9,9 +9,12 @@ from datetime import datetime
 import numpy as np
 import pytest
 import torch
+import xarray as xr
 from odc.geo.geobox import GeoBox
+from odc.geo.xr import xr_coords
 
-from geosave_engine.geodata.spatial import GeoAnchor, GeoTag, GeoTile, GeoStack
+from geosave_engine.geodata.spatial import GeoAnchor, GeoTag, GeoTile, GeoStack, align_temporal_stack
+from geosave_engine.geodata.spatial.ops import mosaic_stack
 
 UTM = "EPSG:32633"
 BBOX = (500000, 5000000, 500320, 5000320)  # 32 x 32 px at 10 m
@@ -26,6 +29,22 @@ def _tile(names: tuple[str, ...], value: int = 1, dtype: str = "uint16", bbox=BB
     arr = np.full((len(names), gb.height, gb.width), value, dtype=dtype)
     d = datetime(2024, 1, 15)
     return GeoAnchor(geobox=gb, geotag=GeoTag(datetime=(d, d))).to_geotile(arr, list(names))
+
+
+def _time_tile(hole_rows: tuple[tuple[int, int], tuple[int, int]], bbox=BBOX) -> GeoTile:
+    """1-band, 2-date tile; hole_rows[i] = (r0, r1) rows set nodata on date i."""
+    gb = _geobox(bbox)
+    d = datetime(2024, 1, 15)
+    coords = {
+        **dict(xr_coords(gb)),
+        "band": ["b1"],
+        "time": [np.datetime64("2024-01-01"), np.datetime64("2024-01-02")],
+    }
+    arr = np.ones((2, 1, gb.height, gb.width), dtype="float32")
+    for i, (r0, r1) in enumerate(hole_rows):
+        arr[i, :, r0:r1, :] = np.nan
+    da = xr.DataArray(arr, dims=("time", "band", "y", "x"), coords=coords).rio.write_nodata(np.nan).odc.assign_crs(UTM)
+    return GeoAnchor(geobox=gb, geotag=GeoTag(datetime=(d, d))).to_geotile(da)
 
 
 class TestConstruction:
@@ -280,3 +299,54 @@ class TestToTensor:
         sample = stack.to_tensor()
         assert sample["geotags"]["a"] == tile.geotag.model_dump(mode="json", exclude_none=True)
         assert sample["geobox"]["crs"] == str(tile.geobox.crs)
+
+
+class TestAlignTemporalStack:
+    def test_layers_cropped_independently_then_stack_realigns(self):
+        # a valid on rows[10:32) across both dates; b valid on rows[0:22) across both dates
+        a = _time_tile(((0, 10), (0, 0)))
+        b = _time_tile(((0, 0), (22, 32)))
+        stack = GeoStack(a=a, b=b)
+
+        out = align_temporal_stack(stack)
+
+        # per-layer temporal crop first (a -> rows[10:32), b -> rows[0:22)), then
+        # GeoStack's own construction-time align_spatial narrows across layers
+        # to their shared spatial intersection, rows[10:22)
+        assert out.tiles["a"].height == 12
+        assert out.tiles["b"].height == 12
+        assert out.tiles["a"].bbox == out.tiles["b"].bbox
+
+    def test_no_time_dim_layers_untouched(self):
+        stack = GeoStack(a=_tile(("b1",)), b=_tile(("b2",)))
+        out = align_temporal_stack(stack)
+        assert out.tiles["a"].height == 32
+        assert out.tiles["b"].height == 32
+
+
+class TestMosaicStack:
+    def test_empty_raises(self):
+        with pytest.raises(ValueError, match="at least one stack"):
+            mosaic_stack()
+
+    def test_layer_only_in_one_stack_passes_through(self):
+        a = GeoStack(shared=_tile(("b1",), value=1, dtype="float32"), only_a=_tile(("b1",), value=9, dtype="float32"))
+        b = GeoStack(shared=_tile(("b1",), value=2, dtype="float32"))
+        out = mosaic_stack(a, b)
+        assert set(out.tiles) == {"shared", "only_a"}
+        assert (out.tiles["only_a"].data.values == 9).all()
+
+    def test_shared_layer_merged_via_method(self):
+        a = GeoStack(shared=_tile(("b1",), value=1, dtype="float32", bbox=BBOX))
+        b = GeoStack(shared=_tile(("b1",), value=2, dtype="float32", bbox=BBOX))
+        first = mosaic_stack(a, b, method="first")
+        last = mosaic_stack(a, b, method="last")
+        assert (first.tiles["shared"].data.values == 1).all()
+        assert (last.tiles["shared"].data.values == 2).all()
+
+    def test_layers_merge_independently(self):
+        a = GeoStack(x=_tile(("b1",), value=1, dtype="float32"), y=_tile(("b1",), value=10, dtype="float32"))
+        b = GeoStack(x=_tile(("b1",), value=2, dtype="float32"), y=_tile(("b1",), value=20, dtype="float32"))
+        out = mosaic_stack(a, b, method="first")
+        assert (out.tiles["x"].data.values == 1).all()   # x's own merge unaffected by y's values
+        assert (out.tiles["y"].data.values == 10).all()

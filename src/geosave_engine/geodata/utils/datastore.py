@@ -168,8 +168,9 @@ def normalize_path(
         (path litdata should use, storage_options litdata should use).
 
     Raises:
-        ValueError: hf://datasets/... (not writable directly — see
-            SampleStore.upload_to_hf) or any other unsupported scheme.
+        ValueError: hf://datasets/... (not writable directly — see the
+            upload_dataset_to_hf.py boilerplate script) or any other
+            unsupported scheme.
     """
     if not isinstance(path, str) or "://" not in path:
         return path, storage_options  # local path — no scheme, no credentials involved
@@ -187,8 +188,8 @@ def normalize_path(
         # hf://datasets/... — a Hub dataset repo, not S3-backed, not writable this way
         raise ValueError(
             f"{path!r} — hf://datasets/... isn't writable directly (litdata only writes "
-            f"local or {WRITABLE_SCHEMES}); write there then call upload_to_hf(), or use "
-            f"{HF_BUCKET_PREFIX}<namespace>/<bucket>[/<key>] for a Storage Bucket"
+            f"local or {WRITABLE_SCHEMES}); write there then push with the upload_dataset_to_hf.py "
+            f"boilerplate script, or use {HF_BUCKET_PREFIX}<namespace>/<bucket>[/<key>] for a Storage Bucket"
         )
     elif scheme in S3_COMPATIBLE_SCHEMES:
         # s3://, r2:// — used as-is, needs the same AWS-style credentials
