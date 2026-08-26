@@ -1,201 +1,300 @@
+"""GeoPipeline: turn one anchor into an ingested surface. See GeoPipeline for details."""
 from __future__ import annotations
 
-import logging
-from abc import ABC
-from typing import Any, Iterator
+from abc import ABC, abstractmethod
+from collections.abc import Iterator
+from itertools import batched
+from pathlib import Path
+from typing import TYPE_CHECKING, Literal, NotRequired, TypedDict, Unpack, cast
 
 import torch
 
-from geosave_engine.geodata.errors import AnchorFetchError
-from geosave_engine.geodata.stac.source import StacSource, download
-from geosave_engine.geodata.spatial import GeoAnchor, GeoTile, GeoStack
+from geosave_engine.geodata.spatial import (
+    DEFAULT_LAYER,
+    GeoAnchor,
+    GeoRaster,
+    GeoStack,
+    GeoTileStack,
+    LayerName,
+)
+from geosave_engine.geodata.stac.source import StacSource
 
-LayerName = str
+if TYPE_CHECKING:
+    from geosave_engine.geodata.datastore import LitDataStore
+    from geosave_engine.geodata.utils.io import ZarrOptions
+    from geosave_engine.geodata.extensions import TilerMode
+    from geosave_engine.geodata.spatial import ContextFn, TensorSample, TimeWindow
 
-log = logging.getLogger(__name__)
+
+class TileOptions(TypedDict, total=False):
+    """How `windows` cuts a surface — `GeoStack.tiles`' own keywords.
+
+    Args:
+        tile_size_px: Window side length in pixels. None uses the shorter axis.
+        stride_px: Distance between window origins. None uses `tile_size_px`.
+        overlap: Forwarded to the tiler; wins over `stride_px` when both are set.
+        mode: How a trailing window's overhang is filled.
+        vector: True gives each window the reference layer's features.
+        time: `(length, stride)` in reference-layer steps, or a bare length.
+        name: Extra text folded into each cut's `group_id`.
+        context_fn: Called with each window's own reference tile; its result
+            becomes that window's `model_context`.
+    """
+
+    tile_size_px: NotRequired[int | None]
+    stride_px: NotRequired[int | None]
+    overlap: NotRequired[int | float | tuple[int, int] | None]
+    mode: NotRequired[TilerMode]
+    vector: NotRequired[bool]
+    time: NotRequired[TimeWindow | None]
+    name: NotRequired[str | None]
+    context_fn: NotRequired[ContextFn | None]
 
 
 class GeoPipeline(ABC):
-    """Build one or more GeoStacks for one anchor.
+    """Turn one anchor into an ingested surface, ready to write or window.
 
-    Override `sources()` (named `StacSource`s to fetch) and, if needed,
-    `preprocess` (derive final layers from the fetched ones). See `fetch`
-    for how sources compose into aligned samples.
+    Override `sources()` and `preprocess()`; `fetch()` and `ingest()` rarely
+    need it. Hooks take and return unbounded types, so the chain stays a
+    dask graph until `ingest_to_zarr` writes it.
 
     Examples:
-        >>> class ToyPipeline(GeoPipeline):
-        ...     def __init__(self) -> None:
-        ...         self.client = my_stac_client
-        ...
-        ...     def sources(self) -> dict[str, StacSource]:
-        ...         return {"image": self.client.source("collection-id")}
-        ...
-        >>> pipeline = ToyPipeline()
-        >>> for stack in pipeline.ingest(anchor):
-        ...     stack.plot()
+        >>> class Pipeline(GeoPipeline):
+        ...     def sources(self) -> dict[LayerName, StacSource]:
+        ...         return {"image": client.source("sentinel-2-l2a")}
+        >>> Pipeline().ingest_to_zarr(anchor, "data/raw")
     """
 
-    def sources(self) -> dict[str, StacSource]:
-        """Named sources `ingest` composes for one anchor.
-
-        Override — build the STAC client once in `__init__` (e.g.
-        `self.client = StacClient.planetary_computer()`) and store it as an
-        attribute, so this method only ever builds cheap `StacSource`
-        objects from it. `StacClient.collections()` (used by `.source()`'s
-        own collection-existence check) memoizes after its first call, so
-        calling this on every access stays cheap too — no need to cache it.
-
-        Default: none.
-        """
-        return {}
-
-    def preprocess(self, raw: dict[str, GeoTile]) -> dict[str, GeoTile]:
-        """Derive final layers from fetched raw layers. Pure — no I/O.
-
-        Plain dict in, plain dict out — deliberately not GeoStack here:
-        building `{"layer": tile, ...}` by hand is the easy, natural shape
-        for an override to construct (see `workspace/modules/data_pipeline.py`'s
-        `Pipeline.preprocess`); `ingest()` wraps the result back into a
-        GeoStack itself.
-
-        Args:
-            raw: Layer name to GeoTile map — one already-bucketed sample
-                composed from each source's own `.load(anchor)` stream.
+    @abstractmethod
+    def sources(self) -> dict[LayerName, StacSource]:
+        """Named sources `fetch()` loads for one anchor.
 
         Returns:
-            Layer name to GeoTile map. Default: passthrough.
+            Layer name to StacSource, in the order `fetch()` returns them.
+            An empty mapping is only valid alongside an overridden `fetch()`,
+            which is how a pipeline reads something that isn't STAC.
         """
-        return raw
 
-    def context(self, tiles: dict[LayerName, GeoTile]) -> dict[str, torch.Tensor]:
-        """Extra per-sample tensor keys to merge into a rendered sample.
+    def fetch(self, anchor: GeoAnchor) -> dict[LayerName, GeoRaster]:
+        """Load every source over one anchor.
 
         Args:
-            tiles: Layer name to GeoTile map for one aligned, preprocessed
-                sample — same shape `preprocess` receives.
+            anchor: Anchor to load.
 
         Returns:
-            Extra keys to merge into the sample. Default: none.
-        """
-        return {}
+            Lazy layers keyed by source name, in `sources()` order. Nothing
+            here asserts they share a grid — compose them into a GeoStack
+            once `preprocess` has aligned them.
 
-    def fetch(self, anchor: GeoAnchor) -> Iterator[dict[str, GeoTile]]:
-        """Every raw sample one anchor becomes, aligned across sources.
-
-        Each source's own `.load(anchor, lazy_load=True)` yields its own
-        independent stream of already-bucketed, still-lazy `GeoTile`s (see
-        `StacSource.load`) — no two sources' streams are guaranteed to line
-        up by position, so samples get composed by real time overlap
-        instead: whichever source produced the most tiles for this anchor
-        drives iteration, every other source is searched for the tile
-        whose own window covers the driving tile's start. Nothing
-        downloads until a sample's alignment is fully confirmed, and each
-        real tile downloads at most once even if it ends up matching
-        several driving tiles (e.g. one static DEM tile spanning many
-        Sentinel-2 months).
-
-        No usable data anywhere for this anchor (`AnchorFetchError` from
-        some source's own search) or no aligned tile in some other source
-        for a given sample is the same outcome either way — skipped, not
-        raised.
-
-        Args:
-            anchor: Raw anchor, e.g. straight off an `AnchorSource`.
-
-        Yields:
-            Layer name to GeoTile map, one per aligned sample, computed.
+        Raises:
+            NotImplementedError: `sources()` declares none and this method
+                wasn't overridden.
+            AnchorFetchError: A source matched no scenes for this anchor.
         """
         sources = self.sources()
         if not sources:
-            return
+            raise NotImplementedError(
+                f"{type(self).__name__} declares no sources() — override sources() or fetch()"
+            )
+        return {name: source.load(anchor) for name, source in sources.items()}
 
-        try:
-            streams = {name: list(source.load(anchor, lazy_load=True)) for name, source in sources.items()}
-        except AnchorFetchError as e:
-            log.debug("No usable data for anchor %s, skipping: %s", anchor.stem, e)
-            return
+    def preprocess(self, raw: dict[LayerName, GeoRaster]) -> dict[LayerName, GeoRaster] | GeoStack | GeoRaster:
+        """Derive the final layers from the fetched ones.
 
-        reference_name = max(streams, key=lambda name: len(streams[name]))
-        downloaded: dict[int, GeoTile] = {}
-
-        for ref_tile in streams[reference_name]:
-            raw = {reference_name: ref_tile}
-            for name, tiles in streams.items():
-                if name == reference_name:
-                    continue
-                match = next((t for t in tiles if t.start <= ref_tile.start <= t.end), None)
-                if match is None:
-                    break
-                raw[name] = match
-            else:
-                try:
-                    for name, tile in raw.items():
-                        if id(tile) not in downloaded:
-                            downloaded[id(tile)] = download(
-                                tile, max_nodata_fraction=sources[name].max_nodata_fraction
-                            )
-                except IOError as e:
-                    log.debug("Sample not usable, skipping: %s", e)
-                    continue
-                yield {name: downloaded[id(tile)] for name, tile in raw.items()}
-
-    def ingest(self, anchor: GeoAnchor) -> Iterator[GeoStack]:
-        """Every sample one raw anchor becomes.
-
-        Built on `fetch()` — same skip-on-empty/skip-on-misalignment
-        behavior. `preprocess()` runs once per composed sample; only its
-        own `AnchorFetchError` is treated as skip-not-crash, anything else
-        propagates. `self.context()` runs here too, once, on the same
-        preprocessed tiles — its result rides on the yielded `GeoStack` as
-        `.context` (see there), computed exactly once no matter how many
-        times that `GeoStack` gets rendered/saved/reloaded afterward.
+        Pixel math and metadata, no I/O. Keep every operation chunk-local —
+        elementwise, or windowed with a bounded halo — so the result stays
+        lazy and the surface never has to fit in memory.
 
         Args:
-            anchor: Raw anchor, e.g. straight off an `AnchorSource`.
+            raw: Layers `fetch()` loaded, keyed by source name.
+
+        Returns:
+            What this pipeline ingests — a dict whose first key anchors the
+            stack, a GeoStack whose own reference layer is already set, or a
+            single GeoRaster written as a plain raster store. Default:
+            passthrough.
+        """
+        return raw
+
+    def ingest(self, anchor: GeoAnchor) -> GeoStack | GeoRaster:
+        """Fetch and preprocess one anchor.
+
+        Args:
+            anchor: Anchor to ingest.
+
+        Returns:
+            Lazy GeoStack of the final layers, or the single GeoRaster
+            `preprocess` returned. No pixel has been read.
+
+        Raises:
+            ValueError: `preprocess` returned an empty mapping, or layers
+                whose geoboxes disagree.
+        """
+        result = self.preprocess(self.fetch(anchor))
+        if isinstance(result, (GeoRaster, GeoStack)):
+            return result
+        return GeoStack(result, reference_layer=next(iter(result), None))
+
+    def windows(self, anchor: GeoAnchor, **tiles: Unpack[TileOptions]) -> Iterator[GeoTileStack]:
+        """Ingest one anchor and cut it into model windows.
+
+        Args:
+            anchor: Anchor to ingest.
+            **tiles: Cutting options — see `TileOptions`.
 
         Yields:
-            One `GeoStack` per aligned, preprocessed sample.
+            One GeoTileStack per window. A `preprocess` that returned one
+            bare raster is packed under `DEFAULT_LAYER` first, so every
+            window is layer-keyed whatever the pipeline produced. Lazy —
+            no pixel is read here.
+
+        Raises:
+            ValueError: `time` was given and the reference layer is timeless,
+                or a layer has no step over some time window.
         """
-        for raw in self.fetch(anchor):
-            try:
-                tiles = self.preprocess(raw)
-                context = self.context(tiles)
-                stack = GeoStack(**tiles)
-                yield stack.with_context(context) if context else stack
-            except AnchorFetchError as e:
-                log.debug("Sample not usable, skipping: %s", e)
-                continue
+        surface = self.ingest(anchor)
+        if isinstance(surface, GeoRaster):
+            surface = GeoStack({DEFAULT_LAYER: surface})
+        yield from surface.tiles(**tiles)
 
     def ingest_to_tensor(
         self,
         anchor: GeoAnchor,
         *,
-        sel_bands: dict[str, list[str]] | None = None,
-        dtype_override: dict[str, torch.dtype] | None = None,
-    ) -> Iterator[dict[str, Any]]:
-        """Ingest one anchor, yielding rendered tensor samples without saving.
+        batch_size: int = 1,
+        bands: dict[LayerName, list[str]] | None = None,
+        drop_last: bool = False,
+        **tiles: Unpack[TileOptions],
+    ) -> Iterator[TensorSample]:
+        """Ingest one anchor straight into batches a model can read.
 
-        For predicting/streaming straight from a live source — no disk
-        round trip. Same one-anchor contract as `ingest` — looping over many
-        anchors is the caller's own plain loop around this, not this
-        method's job (see class docstring). Plain generator, not a Dataset:
-        wrap the caller's loop in a one-off IterableDataset if a DataLoader
-        needs one (and shard by `torch.utils.data.get_worker_info()` there
-        if using `num_workers>1`, since this generator itself has no
-        worker-awareness). Built on `ingest` — same
-        bucketing/reducing/stacking, same skip-on-empty-bucket behavior,
-        same `self.context` (see there) already baked into each yielded
-        `GeoStack` before this renders it.
+        The prediction path — no store is written and no DataLoader is
+        needed. Pixels are read one batch at a time, so a surface far larger
+        than memory streams through.
 
         Args:
-            anchor: Raw anchor, e.g. straight off an `AnchorSource`.
-            sel_bands: Layer name to band names to keep. Default keeps all
-                bands each tile carries.
-            dtype_override: Layer name to torch dtype to cast that layer's
-                tensor to. Default keeps the tensor's ingested dtype.
+            anchor: Anchor to ingest.
+            batch_size: Windows collated into each batch, and read in one
+                dask pass — larger batches share more chunk reads.
+            bands: Per layer, band names to keep in that order. A layer
+                absent here keeps every band.
+            drop_last: True discards a trailing batch smaller than
+                `batch_size`, as a DataLoader would.
+            **tiles: Cutting options — see `TileOptions`.
 
         Yields:
-            Tensor dict per sample, rendered via `GeoStack.to_tensor`.
+            {
+                "layers": {
+                    "<layer>": torch.Tensor,  # (batch, band, y, x) or (batch, time, band, y, x)
+                },
+                "anchor": [GeoAnchor],  # one per window, in batch order
+                "model_context": {
+                    "<key>": torch.Tensor | list | str | None,
+                },
+            }
+
+        Raises:
+            ValueError: `batch_size` isn't positive, `time` was given and the
+                reference layer is timeless, or a layer has a time gap.
+
+        Examples:
+            >>> for batch in Pipeline().ingest_to_tensor(anchor, tile_size_px=512, batch_size=8):
+            ...     logits = model(batch["layers"]["image"])
         """
-        for stack in self.ingest(anchor):
-            yield stack.to_tensor(sel_bands, dtype_override)
+        from geosave_engine.geodata.datasets import stack_samples
+        from geosave_engine.geodata.spatial import read_windows, tensor_context
+
+        if batch_size < 1:
+            raise ValueError(f"batch_size must be positive, got {batch_size}")
+        for group in batched(self.windows(anchor, **tiles), batch_size):
+            if drop_last and len(group) < batch_size:
+                return
+            # one dask pass over the whole batch, so windows sharing a chunk read it once
+            pixels = read_windows(list(group), bands)
+            samples = [
+                {
+                    "layers": {name: torch.from_numpy(array) for name, array in read.items()},
+                    "anchor": window.anchor,
+                    "model_context": tensor_context(window.model_context),
+                }
+                for window, read in zip(group, pixels, strict=True)
+            ]
+            yield cast("TensorSample", stack_samples(samples))
+
+    def ingest_to_litdata(
+        self,
+        anchor: GeoAnchor,
+        store: LitDataStore,
+        *,
+        write_mode: Literal["append", "overwrite"] | None = None,
+        read_batch: int = 16,
+        **tiles: Unpack[TileOptions],
+    ) -> Path | str:
+        """Ingest one anchor and pack its windows into a litdata store.
+
+        The dataset path — every window becomes one training sample, keyed by
+        layer, carrying the georeference numpy loses. Takes a built store, not
+        a path, so one store grows across many anchors under one locked config.
+
+        Args:
+            anchor: Anchor to ingest.
+            store: Store to write into, already configured.
+            write_mode: None raises if the store path already holds one,
+                `"append"` grows it, `"overwrite"` replaces it. Named apart
+                from `TileOptions`' own `mode`, which is the tiler's.
+            read_batch: Windows a worker reads in one Dask pass. Larger
+                batches collapse more shared chunk reads, at more memory
+                held per worker.
+            **tiles: Cutting options — see `TileOptions`.
+
+        Returns:
+            The store root.
+
+        Raises:
+            ValueError: This anchor yielded no window, or a layer is named
+                `"geo"`/`"model_context"`, which a sample reserves.
+
+        Examples:
+            >>> store = LitDataStore("data/train", chunk_bytes="64MB")
+            >>> for anchor in anchors:
+            ...     Pipeline().ingest_to_litdata(anchor, store, tile_size_px=512, write_mode="append")
+        """
+        from geosave_engine.geodata.datastore.litdata import batch_to_samples
+
+        if read_batch < 1:
+            raise ValueError(f"read_batch must be positive, got {read_batch}")
+        batches = [list(group) for group in batched(self.windows(anchor, **tiles), read_batch)]
+        if not batches:
+            raise ValueError(f"no window cut from {anchor.stem} — nothing to write")
+        return store.write(batches, fn=batch_to_samples, mode=write_mode)
+
+    def ingest_to_zarr(
+        self,
+        anchor: GeoAnchor,
+        root: str | Path,
+        *,
+        chunk_px: int | None = 512,
+        progress: bool = True,
+        **options: Unpack[ZarrOptions],
+    ) -> Path:
+        """Ingest one anchor and write it, the point every pixel is finally read.
+
+        A GeoStack writes one zarr group per layer, every layer computing
+        together; a single GeoRaster writes the store root, readable by
+        anything that reads Zarr.
+
+        Args:
+            anchor: Anchor to ingest.
+            root: Directory the store is written under. Its name comes from
+                the result's own `anchor.stem`, so re-ingesting an anchor
+                overwrites rather than duplicates.
+            chunk_px: Spatial (y/x) chunk side length. `time` is never split.
+            progress: Show a dask progress bar while pixels compute.
+            **options: Passed to `xarray.Dataset.to_zarr` — see `ZarrOptions`.
+
+        Returns:
+            Written store path.
+        """
+        result = self.ingest(anchor)
+        path = Path(root) / f"{result.anchor.stem}.zarr"
+        return result.to_zarr(path, chunk_px=chunk_px, progress=progress, **options)

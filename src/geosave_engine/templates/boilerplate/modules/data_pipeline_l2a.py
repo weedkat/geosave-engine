@@ -1,9 +1,8 @@
 from __future__ import annotations
 
 import numpy as np
-import torch
 
-from geosave_engine.geodata.spatial import GeoTile
+from geosave_engine.geodata.spatial import GeoRaster
 from geosave_engine.geodata.features import compute_scl_mask
 from geosave_engine.geodata.pipeline import GeoPipeline
 from geosave_engine.geodata.stac import StacClient
@@ -49,71 +48,64 @@ class Pipeline(GeoPipeline):
         self.client = StacClient.planetary_computer()
 
     def sources(self) -> dict[str, StacSource]:
-        # temporal_slots=1 because dynamicworld dataset is per scene
+        # groupby="time" keeps every acquisition its own step — DynamicWorld is per scene.
         return {
-            "sentinel_2_l2a": self.client.source(
-                "sentinel-2-l2a", bands=L2A_BANDS, max_nodata_fraction=0.1, temporal_slots=1
+            "sentinel_2_l2a": self.client.source("sentinel-2-l2a").set_config(
+                bands=L2A_BANDS,
+                groupby="time",
             )
         }
 
-    def preprocess(self, raw: dict[str, GeoTile]) -> dict[str, GeoTile]:
+    def preprocess(self, raw: dict[str, GeoRaster]) -> dict[str, GeoRaster]:
         s2 = raw["sentinel_2_l2a"]
-        # temporal_slots=1 on the source (see `sources` above) — exactly one
-        # scene per sample, so drop straight to (band, y, x)
+        # one scene per sample (see `sources` above), so drop straight to (band, y, x)
         ds = s2.data.isel(time=0)
 
-        scl = ds.sel(band="SCL").values.astype(np.uint8)
+        scl = ds.sel(band="SCL").astype(np.uint8)
         mask = compute_scl_mask(scl).astype(np.uint8)
 
-        s2_tile = s2.rebase(
-            data=s2.data.sel(band=L2A_SPECTRAL_BANDS),
-            metadata={"description": f"Sentinel-2 L2A surface reflectance ({len(L2A_SPECTRAL_BANDS)} bands)"},
-            plot_meta={"rgb_bands": ("B04", "B03", "B02")},
+        s2_layer = s2.anchor.to_raster(
+            ds.sel(band=L2A_SPECTRAL_BANDS),
+            attrs=s2.attrs.rebase(
+                tags={
+                    **s2.tags,
+                    "description": f"Sentinel-2 L2A surface reflectance ({len(L2A_SPECTRAL_BANDS)} bands)",
+                },
+                render={"rgb_bands": ("B04", "B03", "B02")},
+            ),
         )
 
-        scl_tile = s2.to_geotile(scl).rebase(
-            metadata={"description": "Sentinel-2 L2A Scene Classification Layer (Sen2Cor)"},
-            plot_meta={"class_map": SCL_CLASS_MAP, "color_map": SCL_COLOR_MAP},
+        scl_layer = s2.anchor.to_raster(
+            scl,
+            bands=["SCL"],
+            attrs=s2.attrs.rebase(
+                tags={
+                    **s2.tags,
+                    "description": "Sentinel-2 L2A Scene Classification Layer (Sen2Cor)",
+                },
+                render={"rgb_bands": None, "class_map": SCL_CLASS_MAP, "color_map": SCL_COLOR_MAP},
+            ),
         )
 
-        cloud_mask_tile = s2.to_geotile(mask).rebase(
-            metadata={"description": "Cloud/shadow/invalid mask from Scene Classification Layer (SCL)"},
-            plot_meta={"class_map": {0: "clear", 1: "cloud/shadow/invalid"}, "color_map": {0: "#FFFFFF", 1: "#000000"}},
+        cloud_mask_layer = s2.anchor.to_raster(
+            mask,
+            bands=["cloud_mask"],
+            attrs=s2.attrs.rebase(
+                tags={
+                    **s2.tags,
+                    "description": "Cloud/shadow/invalid mask from Scene Classification Layer (SCL)",
+                },
+                render={
+                    "rgb_bands": None,
+                    "class_map": {0: "clear", 1: "cloud/shadow/invalid"},
+                    "color_map": {0: "#FFFFFF", 1: "#000000"},
+                },
+            ),
         )
 
+        # first key anchors the stack `ingest` builds
         return {
-            "sentinel_2_l2a": s2_tile,
-            "scl": scl_tile,
-            "cloud_mask": cloud_mask_tile,
-        }
-
-    def context(self, tiles: dict[str, GeoTile]) -> dict[str, torch.Tensor]:
-        """PrithviTL's + Clay's raw forward() inputs for this sample.
-
-        Keys mirror real forward() param names: `temporal_coords`/
-        `location_coords` for `PrithviTL.forward_pyramid`, `time`/
-        `latlon` for `Clay.forward`. Clay doesn't require these as ctx
-        keys, so they sit unused in a Clay chain — harmless, `ContextChain`
-        only pulls what a stage's own forward declares.
-
-        Args:
-            tiles: Layer name to GeoTile map — same sample `preprocess` built.
-
-        Returns:
-            {
-                "temporal_coords": (1, 2) float32, (year, day_of_year), 0-indexed,
-                "location_coords": (2,) float32, (lat, lon) degrees,
-                "time": (2,) float32, raw (iso_week, hour),
-                "latlon": (2,) float32, raw (lat, lon) degrees,
-            }
-        """
-        tile = tiles["sentinel_2_l2a"]
-        lon, lat = tile.centroid
-        acquired = tile.times[0]
-        day_of_year = acquired.timetuple().tm_yday - 1  # tm_yday is 1-indexed; Prithvi wants 0-indexed
-        return {
-            "temporal_coords": torch.tensor([[acquired.year, day_of_year]], dtype=torch.float32), # (1, 2)
-            "location_coords": torch.tensor([lat, lon], dtype=torch.float32), # (2,)
-            "time": torch.tensor([acquired.isocalendar().week, acquired.hour], dtype=torch.float32), # (2,)
-            "latlon": torch.tensor([lat, lon], dtype=torch.float32), # (2,)
+            "sentinel_2_l2a": s2_layer,
+            "scl": scl_layer,
+            "cloud_mask": cloud_mask_layer,
         }

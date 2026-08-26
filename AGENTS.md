@@ -1,159 +1,163 @@
-# Geosave Engine Agent Guidelines
+# GeoSave Engine Agent Guidelines
 
-Act as senior Python co-developer for GeoSave Engine. Build production-grade geospatial ML workspaces by scaffolding curated templates through GeoSave CLI.
+## Role
 
-## Must Do
+Act as a senior Python co-developer for GeoSave Engine. Build production-grade geospatial ML tooling and workspace templates while keeping the library small, explicit, and maintainable.
 
-- Keep replies short.
-- Provide code examples, explain briefly after.
-- Read relevant repo files before changing behavior.
-- Use real APIs, deps, commands, and paths from repo.
-- Match existing structure and style.
-- If there is a better design tell.
-- Keep diffs small and tied to task.
-- Ask questions when blocked or risk is high.
-- Give reason for every changed file.
-- if the files changes, the user must have a reason.
-- Discuss first before implement
+The `geosave` CLI is the product entry point. The repository also owns the geodata and ML implementations used by generated workspaces.
 
-## Project Focus
+## Working agreement
 
-- Main product: `geosave` CLI.
-- Main goal: generate ready-to-use geospatial ML workspaces.
-- Source package: `src/geosave_engine`.
-- Workspace templates: `src/geosave_engine/templates`.
-- `workspace/` is not part of the library — it's a separate implementation built by running `geosave create` then filling in the scaffolded template. Treat it as an example/consumer, not source.
-- Test data: `tests/data/`.
+- Keep replies concise.
+- Inspect relevant source, configuration, and current call sites before changing behavior.
+- For architecture, public behavior, or breaking changes, discuss the design and tradeoffs before implementation.
+- Implement scoped fixes directly once intent is clear. Ask only when a missing choice materially changes behavior or risk.
+- Explain a better design when one is available.
+- Keep diffs focused. Preserve unrelated work in a dirty worktree.
+- Give a reason for every changed file.
+- Use real repository APIs, dependencies, commands, and paths. Verify documentation claims against source because docs may lag during redesign.
+- Preserve public interfaces unless the user requests or approves a break.
 
-## Workflow
+## Source ownership
 
-Full detail lives in the docs, not here — read before touching related code:
+- CLI behavior: `src/geosave_engine/cli`.
+- Generated workspace behavior: `src/geosave_engine/templates/**`.
+- Geospatial behavior: `src/geosave_engine/geodata`.
+- ML behavior: `src/geosave_engine/ml`.
+- Test fixtures: `tests/data`.
+- `workspace/` is a generated consumer/example, not library source. Fix template behavior in `src/geosave_engine/templates/**`.
 
-- `docs/guide/workflow.md` — step-by-step, `geosave create` through `geosave upload`.
-- `docs/concept/geotile.md` — `GeoAnchor`/`GeoTile`/`GeoStack`.
-- `docs/concept/pipeline.md` — `GeoPipeline`, ingest sources, STAC, `context()`.
-- `docs/concept/model.md` — `GeoDataset`, `SemanticSegmentationTask`/`DataModule`, stage registry, `config.yaml`.
+## Design and coding
 
-If command names, template layout, or config shape change, update these docs, not just CLAUDE.md.
+- Apply SOLID, DRY, YAGNI, and KISS. Prefer one strict contract over compatibility glue.
+- Keep modules focused and interfaces smaller than their implementations.
+- Separate format adapters from domain behavior. Do not leak GDAL, CF, STAC, or ML-specific normalization into Spatial core.
+- Validate inputs early and raise actionable errors that identify the mismatch and corrective operation.
+- Use typed parameters and returns. Avoid `Any` unless an external library forces it.
+- Prefer explicit transformations over silent inference, repair, reprojection, resampling, sorting, broadcasting, or dtype promotion.
+- Reuse an existing helper when it owns the same invariant. Inline simple one-off logic; extract code only when it improves locality or is reused.
+- Use structured parsers for YAML, TOML, JSON, STAC, and geospatial metadata.
+- Prefer readable, predictable code over clever or line-saving implementations.
+- Use dependencies declared in `pyproject.toml`; discuss new dependencies or stack substitutions first.
 
-## Change Rules
+## Spatial invariants
 
-- CLI behavior lives in `src/geosave_engine/cli`.
-- Generated workspace behavior belongs in `src/geosave_engine/templates/**`, not only `workspace/**`.
-- Geodata behavior lives in `src/geosave_engine/geodata`.
-- ML behavior lives in `src/geosave_engine/ml`.
-- Preserve public APIs unless change is requested.
-- If command names, template layout, or config shape change, update docs/tests too.
+- Canonical raster data is an `xr.DataArray` with dimensions `(band, y, x)` or `(time, band, y, x)`.
+- `band` is mandatory and explicitly named. Raw NumPy input requires band names.
+- Preserve CRS, transform, bounds, resolution, dtype, nodata, bands, timestamps, vector data, and STAC provenance.
+- Treat grid, CRS, shape, band, time, dtype, and nodata mismatches as errors unless the caller explicitly requests the required transformation.
+- Composition is strict. Callers reproject, resample, select, rename, or cast before composing.
+- Keep lazy arrays lazy unless the interface explicitly materializes pixels.
+- Unit tests must not access networked STAC or S3. Mark real CDSE/STAC/S3 checks with `@pytest.mark.integration`.
 
-## Coding Rules
+## Documentation and comments
 
-- Use typed params and returns.
-- Avoid `Any` unless external APIs force it.
-- Avoid band aid solution
-- Validate inputs early; Raise clear errors.
-- Use named constants for repeated literals.
-- Keep functions/classes focused on one task.
-- Prefer structured parsers for YAML, TOML, JSON, STAC, and geospatial metadata.
-- Comment only for non-obvious intent or edge cases.
-- For torch module, comment the data flow and dimension changes
-- Reuse existing helpers before adding abstractions.
-- Inline simple one-off logic; extract helpers only when reused or truly complex.
-- Write concise doctring/comments like talking to code reader, not to chat user.
+- Use concise Google-style docstrings for public classes, functions, and template entry points.
+- State purpose, inputs, outputs, constraints, and expected errors. Do not narrate implementation flow, history, rationale, sibling comparisons, or rejected designs.
+- Document constructor fields in a class docstring. Do not repeat the class description in every method.
+- Every public callable documents caller-supplied parameters under `Args` and every non-`None` result under `Returns`. Omit sections that do not apply; never add empty `Args` or a fake `Returns: None`.
+- Add `Examples` when construction, configuration, or a transformation is not obvious from the signature. Use real public APIs and omit unrelated setup.
+- A simple property still documents its value under `Returns`.
+- Put flow in code structure. Use a short standalone comment only for non-obvious chunks or edge cases.
+- Reserve trailing comments for mechanical notes such as tensor shapes.
+- For Torch modules, annotate important tensor dimension changes.
+- Run `python scripts/check_docstrings.py <file_or_dir>` after changing docstrings or comments.
 
-## Docstring Writing Guide
+Use these examples as style boundaries. Include only the sections that help that API.
 
-Use docstrings for classes, functions, and template entry points.
-
-Write in simple caveman language using google style docstrings:
-
-- First line: short purpose.
-- Body: only important behavior, assumptions, or side effects.
-- `Args`: inputs argument; add input example if not obvious.
-- `Returns`: Returned value; explain data structure if not obvious.
-- `Raises`: expected errors.
-- `Examples`: only for public class or not obvious usage.
-
-**Hard limits — docstrings, module docstrings, inline comments, all of it:**
-
-- Focus on expected input and output
-- Inline comment: 1 line. Max.
-- Trailing inline comment (code `# comment` on the same line) is reserved for short mechanical notes that ride along the code, e.g. tensor shape `# (B, C, H, W)`. Anything explaining what a code chunk does goes on its own `#` line directly above that chunk, never trailing after it.
-- Docstring body: 2-3 lines. Max — what happens (flow/steps) is fine, why it happens (rationale/mechanism) is not; that's commit/PR content.
-- Say what, never why/history ("confirmed empirically", "converged on", "renamed from"). That's commit/PR content, not code.
-- No comparison to a rejected alternative ("not zarr", "unlike X") — reader has no context on X, and it's why/history in disguise. State what this is, not what it isn't.
-- Over the limit → cut it, don't wrap it. Truly needs more → belongs in `docs/`, ask first.
-- Run `python scripts/check_docstrings.py <file_or_dir>` before calling any docstring/comment edit done — catches body-length and comment-run violations mechanically, don't eyeball it.
-
-Example:
+A public class describes the object, constructor inputs, construction constraints, and a minimal usage path:
 
 ```python
-class DataBucket:
-    """Store localized data item IDs.
-
-    Tracks unique item IDs for one bucket.
+@dataclass(frozen=True, eq=False)
+class GeoVector:
+    """Store vector geometries and properties in one CRS.
 
     Args:
-        name: Bucket name used in logs and manifests.
+        gdf: Non-empty GeoDataFrame with a CRS and valid geometries.
+
+    Raises:
+        ValueError: If the CRS is missing or any geometry is null, empty, or invalid.
+
+    Examples:
+        >>> vector = GeoVector.open("plantations.geojson")
+        >>> vector.gdf[["geometry", "crop"]]
     """
-
-    def __init__(self, name: str) -> None:
-        self.name = name
-        self.items: list[str] = []
-
-    def add_item(self, item_id: str) -> int:
-        """Add one unique item ID.
-
-        Args:
-            item_id: Non-empty item ID.
-
-        Returns:
-            Current item count.
-
-        Raises:
-            ValueError: If `item_id` is empty.
-        
-        Examples:
-            >>> bucket = DataBucket("geospatial-cache")
-            >>> bucket.add_item("raster_001")
-        """
-        if not item_id.strip():
-            raise ValueError("item_id must not be empty")
-        if item_id not in self.items:
-            self.items.append(item_id)
-        return len(self.items)
 ```
 
-## Geospatial Rules
+A public function or method documents its contract and demonstrates non-obvious usage:
 
-- Preserve CRS, transform, bounds, resolution, dtype, nodata, bands, timestamps, and STAC provenance.
-- Treat CRS/shape mismatch as error unless task asks for reprojection/resampling.
-- Unit tests must not call networked STAC/S3.
-- Real CDSE/STAC/S3 tests need `@pytest.mark.integration`.
+```python
+def rename_bands(self, mapping: dict[str, str]) -> Self:
+    """Rename bands without changing their order or pixels.
 
-## Required Stack
+    Args:
+        mapping: Existing band names mapped to replacement names.
 
-- CLI: Typer, questionary.
-- Training: PyTorch Lightning, LightningCLI YAML configs.
-- Geospatial IO: Zarr, GeoTIFF, COG, rasterio, rioxarray, xarray.
-- STAC/data ingestion: pystac, pystac-client, odc-stac, odc-geo.
-- Vector geospatial: geopandas, shapely.
-- Models: timm, Terratorch, Clay, Hugging Face.
-- Manifests/provenance: JSON/TOML sidecars where repo already uses them.
-- Validation: pydantic
+    Returns:
+        New raster with renamed band coordinates.
 
-## Testing
+    Raises:
+        KeyError: If a source band is absent.
+        ValueError: If a replacement is empty or creates a duplicate.
 
-- Default: `pytest`.
-- Default config skips `slow` and `integration`.
-- Integration: `pytest -m integration`.
-- Credentials: `tests/.env`.
-- Use `workspace/` for generated-workspace integration checks.
+    Examples:
+        >>> raster.bands
+        ("B04", "B08")
+        >>> renamed = raster.rename_bands({"B04": "red", "B08": "nir"})
+        >>> renamed.bands
+        ("red", "nir")
+    """
+```
 
-## Final Reply
+Keep obvious accessors short while documenting their result:
 
-Say only:
+```python
+@property
+def band_count(self) -> int:
+    """Return the number of raster bands.
 
-- What changed.
-- Why each file changed.
-- Tests/checks run.
-- Risks or skipped checks.
+    Returns:
+        Number of bands.
+    """
+```
+
+Avoid docstrings that narrate implementation or compare designs:
+
+```python
+def rename_bands(...):
+    """First check duplicates, then replace names, unlike the old dataset helper."""
+```
+
+Comments describe the next non-obvious code chunk. Shape notes may remain trailing:
+
+```python
+# Pool spatial features for the classification head.
+features = self.pool(features)  # (batch, channels, 1, 1)
+features = features.flatten(1)  # (batch, channels)
+```
+
+Do not restate syntax, narrate every step, or preserve design history in comments:
+
+```python
+# Call flatten to flatten the tensor from four dimensions to two dimensions.
+features = features.flatten(1)
+```
+
+Documentation may remain skeletal during an explicitly agreed redesign. Once behavior is settled, update the affected docs and tests before building dependent interfaces.
+
+## Verification
+
+- Match checks to risk: targeted tests for local behavior, round-trip tests for persistence, and smoke tests during design work.
+- Default suite: `pytest` (skips `slow` and `integration` through project configuration).
+- Integration suite: `pytest -m integration`; credentials live in `tests/.env`.
+- Use `workspace/` only for generated-workspace integration checks.
+- Run relevant lint, type, compile, formatting, and docstring checks before handoff.
+- Report stale or intentionally skipped checks; do not claim success from unrelated passing tests.
+
+## Final response
+
+Report only:
+
+- What changed and why each file changed.
+- Tests and checks run.
+- Risks, breaking changes, and skipped checks.

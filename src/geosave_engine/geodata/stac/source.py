@@ -1,84 +1,81 @@
+"""StacSource: one STAC collection loaded onto an anchor's grid. See StacSource for details."""
 from __future__ import annotations
 
 import copy
-import logging
-import os
-import sys
-import tempfile
 import warnings
-from calendar import monthrange
 from dataclasses import replace
 from datetime import datetime as dt
-from datetime import timedelta
-from typing import Any, Iterator, Literal, Protocol, Self, TypedDict
+from typing import Any, Callable, Literal, NotRequired, Protocol, Self, Sequence, TypedDict, Unpack
 
-import numpy as np
 import pystac
-import rasterio
+import rioxarray  # noqa: F401 — registers .rio accessor on xr.DataArray
 import xarray as xr
-from dask.diagnostics.progress import ProgressBar
 from odc.stac import load as odc_load
-from tenacity import retry, retry_if_exception_type, stop_after_attempt, wait_exponential
+from pydantic import BaseModel, ConfigDict, Field, field_validator
 
 from geosave_engine.geodata.errors import AnchorFetchError
-from geosave_engine.geodata.spatial import GeoAnchor, GeoTag, GeoTile
-from geosave_engine.geodata.utils.datetime import DateRange
+from geosave_engine.geodata.extensions import StacItemRecord
+from geosave_engine.geodata.spatial import GeoAnchor, GeoRaster
+from geosave_engine.geodata.utils.array import cf_to_da
+from geosave_engine.utils.fn import UNSET, Unset
 
 from .query import StacQuery
-
-logger = logging.getLogger(__name__)
+from .records import parse_items, select_release
 
 Bands = list[str] | tuple[str, ...]
+Resampling = str | dict[str, str]
 
-# rasterio only raises Python exceptions for GDAL CE_Failure. JP2OpenJPEG
-# truncated/corrupt tile reads (usually a flaky network read) are emitted as
-# CE_Warning instead — never raise, GDAL just fills the tile with
-# partial/zero data and moves on. Two message variants seen in practice for
-# the same underlying truncated-stream failure: "opj_get_decoded_tile()
-# failed" and "Stream too short". Neither reaches Python's "rasterio._err"
-# logger — rasterio only bridges GDAL errors to that logger for a narrow set
-# of operations it explicitly wraps (dataset open, etc); this particular
-# warning comes from deep inside GDAL's block-cache/driver machinery during a
-# windowed read, a path rasterio never wraps, so it falls through to GDAL's
-# own default handler — a raw write to the process's real stderr file
-# descriptor, never through Python logging at all (confirmed empirically:
-# a logging.Handler on "rasterio._err" sees nothing for this exact failure,
-# even single-threaded). Only reliable way to see it is the OS-level stderr
-# stream itself.
-_GDAL_DECODE_FAILURE_MARKERS = ("opj_get_decoded_tile", "Stream too short")
+# Options this class owns — through load_kwargs they'd contradict the anchor's grid or a named field.
+_NAMED_LOAD_KWARGS = frozenset(
+    {
+        "bands",
+        "bbox",
+        "chunks",
+        "crs",
+        "dtype",
+        "fail_on_error",
+        "geobox",
+        "groupby",
+        "nodata",
+        "patch_url",
+        "resampling",
+        "resolution",
+    }
+)
 
 
-class _StderrCapture:
-    """Redirect the process's real stderr (fd 2) into a buffer for the block's duration.
+def _default_chunks() -> dict[str, int | Literal["auto"]]:
+    """Default spatial Dask chunks.
 
-    Replays the captured bytes to the real stderr afterward, so anything
-    that wrote there (e.g. dask's own `ProgressBar`) still ends up visible —
-    just as one lump when the block ends, instead of scrolling live. Needed
-    because GDAL's default error handler writes some driver-level warnings
-    (see `_GDAL_DECODE_FAILURE_MARKERS` above) straight to the OS stderr file
-    descriptor, bypassing Python's `logging` entirely — no `logging.Handler`
-    can see them, regardless of thread or logger name.
+    Returns:
+        `{"x": 1024, "y": 1024}` — the read unit every window is cut out of.
     """
+    return {"x": 1024, "y": 1024}
 
-    def __init__(self) -> None:
-        self.text = ""
 
-    def __enter__(self) -> "_StderrCapture":
-        sys.stderr.flush()
-        self._saved_fd = os.dup(2)
-        self._tmp = tempfile.TemporaryFile(mode="w+b")
-        os.dup2(self._tmp.fileno(), 2)
-        return self
+def _warn_unbucketed(collection: str, records: Sequence[StacItemRecord]) -> None:
+    """Warn when a collection's own bucketing is about to read as single days.
 
-    def __exit__(self, *exc_info: object) -> None:
-        sys.stderr.flush()
-        os.dup2(self._saved_fd, 2)
-        os.close(self._saved_fd)
-        self._tmp.seek(0)
-        captured = self._tmp.read()
-        self._tmp.close()
-        os.write(2, captured)
-        self.text = captured.decode("utf-8", errors="replace")
+    A collection dating items by validity range has already bucketed them —
+    an annual map, a 16-day composite. Nothing here infers a cadence from
+    that, so the steps bucket as days until the caller resamples.
+
+    Args:
+        collection: Collection being loaded, named in the warning.
+        records: Parsed records for this load.
+    """
+    spans = [(record.start_datetime, record.end_datetime) for record in records]
+    if not spans or any(start is None or end is None for start, end in spans):
+        return
+    days = sorted({round((end - start).total_seconds() / 86_400) for start, end in spans})  # type: ignore[operator]
+    if days[0] < 1:
+        return
+    covered = f"{days[0]}" if len(days) == 1 else f"{days[0]}\u2013{days[-1]}"
+    warnings.warn(
+        f"{collection!r} items declare {covered}-day validity ranges, but these steps bucket as "
+        "single days — call resample_time() to bucket them",
+        stacklevel=3,
+    )
 
 
 class SearchClient(Protocol):
@@ -87,77 +84,108 @@ class SearchClient(Protocol):
     def search(self, query: StacQuery | dict[str, Any]) -> list[pystac.Item]: ...
 
 
-TemporalGranularity = Literal["scene", "day", "month", "year"]
-TemporalReduce = Literal["first", "last", "median", "mean"]
+class StacSourceConfig(BaseModel):
+    """odc-stac load tuning for one StacSource.
+
+    Args:
+        bands: Band names to load. None loads whatever the matched items declare.
+        resampling: Resampling passed to odc-stac. None keeps its
+            asset-level default; a mapping selects per band.
+        groupby: How odc-stac groups scenes along the time axis.
+        chunks: Dask chunk sizes for the spatial dims. None loads eagerly,
+            a real mode of its own rather than a missing default.
+        dtype: Output dtype passed to odc-stac. None keeps each collection's own.
+        nodata: Nodata value passed to odc-stac, paired with `dtype` — e.g.
+            `-9999` for HLS. None uses each asset's own declared nodata.
+        fail_on_error: False skips a scene odc-stac fails to read instead of raising.
+        release: Which single release to keep when a collection republishes
+            one product over time — "latest" the newest, "nearest" the one
+            closest to the anchor's window. Either searches every date
+            rather than the anchor's window. None keeps every matched item,
+            the normal case for an observation series.
+        properties: Extension property keys to carry in each provenance
+            record, keyed as STAC publishes them. None reads
+            `DEFAULT_PROPERTIES`; spread it to add to them rather than
+            replace, e.g. `[*DEFAULT_PROPERTIES, "s2:processing_baseline"]`.
+        patch_url: Rewrite each asset's URL right before odc-stac reads it —
+            e.g. re-sign, or redirect a moved bucket. None reads them as published.
+        load_kwargs: Extra odc-stac `load()` kwargs this model doesn't name
+            (e.g. `stac_cfg`, `fuse_func`), merged in as-is.
+
+    Raises:
+        ValueError: `load_kwargs` sets an option a named field already owns.
+    """
+
+    model_config = ConfigDict(frozen=True)
+
+    bands: Bands | None = None
+    resampling: Resampling | None = None
+    groupby: Literal["solar_day", "id", "time"] = "solar_day"
+    chunks: dict[str, int | Literal["auto"]] | None = Field(default_factory=_default_chunks)
+    dtype: str | None = None
+    nodata: float | None = None
+    fail_on_error: bool = True
+    release: Literal["latest", "nearest"] | None = None
+    properties: list[str] | None = None
+    patch_url: Callable[[str], str] | None = None
+    load_kwargs: dict[str, Any] = Field(default_factory=dict)
+
+    @field_validator("load_kwargs")
+    @classmethod
+    def _validate_load_kwargs(cls, values: dict[str, Any]) -> dict[str, Any]:
+        """Reject options already represented by named config fields.
+
+        Args:
+            values: The `load_kwargs` mapping being validated.
+
+        Returns:
+            The mapping unchanged.
+
+        Raises:
+            ValueError: A key collides with a named field or with the anchor's grid.
+        """
+        collision = set(values) & _NAMED_LOAD_KWARGS
+        if collision:
+            raise ValueError(f"load_kwargs duplicates named option(s) {sorted(collision)}")
+        return values
 
 
-class StacSourceArgs(TypedDict, total=False):
-    """Constructor kwargs for StacSource, used with Unpack in client.source() overloads."""
+class ConfigChanges(TypedDict):
+    """Keyword form of `StacSourceConfig`, every field optional.
 
-    bands: Bands
-    filter: str | None
-    max_nodata_fraction: float
-    resampling: str
-    groupby: Literal["solar_day", "id", "time"]
-    chunks: dict[str, int | Any] | None
-    dtype: str
-    temporal_granularity: TemporalGranularity
-    temporal_reduce: TemporalReduce
-    temporal_slots: int
-    temporal_strides: int | None
-    temporal_fallback: bool
+    Holds exactly `StacSourceConfig`'s own field names and types so
+    `set_config` keeps typed keywords without restating their defaults.
+    """
+
+    bands: NotRequired[Bands | None]
+    resampling: NotRequired[Resampling | None]
+    groupby: NotRequired[Literal["solar_day", "id", "time"]]
+    chunks: NotRequired[dict[str, int | Literal["auto"]] | None]
+    dtype: NotRequired[str | None]
+    nodata: NotRequired[float | None]
+    fail_on_error: NotRequired[bool]
+    release: NotRequired[Literal["latest", "nearest"] | None]
+    properties: NotRequired[list[str] | None]
+    patch_url: NotRequired[Callable[[str], str] | None]
+    load_kwargs: NotRequired[dict[str, Any]]
 
 
 class StacSource:
-    """Generic satellite data source. Owns its own temporal bucketing end to end.
+    """One STAC collection, loaded onto an anchor's own grid.
 
-    `load()` yields one already-shaped, still-lazy GeoTile per final sample
-    this source's own anchor window produces — search happens once, then
-    the tile is split into `temporal_granularity` windows, each reduced to
-    one time step (`temporal_reduce`, `temporal_fallback`), then grouped
-    `temporal_slots` at a time, `temporal_strides` apart. Caller downloads
-    (`download`, module-level below) when it actually needs pixels. No
-    cross-source coordination: two sources in the same `GeoPipeline` each
-    run this independently, off their own real data and their own config.
+    Loads pixels and records which items they came from, exactly as the
+    provider publishes them — no radiometric scaling. Time bucketing and
+    windowing are the caller's own steps on the returned raster.
 
     Args:
         client: STAC client used to search for items.
-        collection: STAC collection identifier (as returned by `client.get_collections()`).
-        bands: Band names to load for every anchor.
-        filter: CQL2 text filter applied to every anchor's search (e.g.
-            `"eo:cloud_cover <= 10"`) — anchor-independent, so it survives
-            unchanged through every per-anchor `load()` search.
-        max_nodata_fraction: Reject a bucket where nodata fraction exceeds this value.
-        resampling: Resampling method passed to odc-stac.
-        groupby: How odc-stac groups scenes along the time axis.
-        chunks: Dask chunk sizes for spatial dimensions.
-        dtype: Output dtype passed to odc-stac. Default `"int16"` — most
-            collections carry digital-number/reflectance-scaled ints, and
-            signed covers nodata conventions like HLS's `-9999` that
-            overflow an unsigned type. Override for a collection whose
-            real value range needs it, e.g. `"uint16"` for Landsat C2 L2
-            surface reflectance (0-65535).
-        temporal_granularity: What one yielded sample's time axis is
-            bucketed by. `"scene"`: one bucket per real matched
-            acquisition — this source's own timestamps, no calendar math.
-            `"day"`/`"month"`/`"year"`: calendar buckets instead, which can
-            span more than one real scene each.
-        temporal_reduce: How to collapse a bucket with more than one real
-            scene down to exactly one time step.
-        temporal_slots: How many consecutive buckets stack into one
-            yielded sample's time dimension. `1` (default): each bucket is
-            its own sample.
-        temporal_strides: How many buckets apart consecutive yielded samples
-            start — the window's stride. `None` (default): equals
-            `temporal_slots`, i.e. non-overlapping samples. Set lower than
-            `temporal_slots` for overlapping/sliding-window samples (e.g.
-            `temporal_slots=4, temporal_strides=1` for a dense sliding
-            4-step sequence). A trailing window shorter than
-            `temporal_slots` is dropped, not padded.
-        temporal_fallback: Allow substituting the nearest real scene (by
-            absolute time distance, ignoring the bucket window entirely)
-            when a bucket has none of its own. Default False — an empty
-            bucket is skipped rather than silently using stale data.
+        collection: STAC collection identifier.
+        config: Load tuning. None takes every default.
+
+    Examples:
+        >>> source = client.source("sentinel-2-l2a").set_config(bands=["B04", "B08"])
+        >>> monthly = source.load(anchor).resample_time("MS", "median")
+        >>> windows = list(monthly.time_windows(4, stride=1))
     """
 
     def __init__(
@@ -165,35 +193,86 @@ class StacSource:
         client: SearchClient,
         *,
         collection: str,
-        bands: Bands | None = None,
-        filter: str | None = None,
-        max_nodata_fraction: float = 0.0,
-        resampling: str = "bilinear",
-        groupby: Literal["solar_day", "id", "time"] = "solar_day",
-        chunks: dict[str, int | Any] | None = None,
-        dtype: str = "int16",
-        temporal_granularity: TemporalGranularity = "scene",
-        temporal_reduce: TemporalReduce = "median",
-        temporal_slots: int = 1,
-        temporal_strides: int | None = None,
-        temporal_fallback: bool = False,
+        config: StacSourceConfig | None = None,
     ) -> None:
         self.client = client
         self.collection = collection
-        self.bands = bands
-        self.max_nodata_fraction = max_nodata_fraction
-        self.resampling = resampling
-        self.groupby = groupby
-        self.chunks: dict[str, int | Any] = chunks if chunks is not None else {"x": 1024, "y": 1024}
-        self.dtype = dtype
-        self.temporal_granularity = temporal_granularity
-        self.temporal_reduce = temporal_reduce
-        self.temporal_slots = temporal_slots
-        self.temporal_strides = temporal_strides if temporal_strides is not None else temporal_slots
-        self.temporal_fallback = temporal_fallback
         self.query: StacQuery = StacQuery(collections=[collection])
-        if filter is not None:
-            self.query = self.query.with_filter(filter, inplace=True)
+        self.config = config if config is not None else StacSourceConfig()
+
+    def __repr__(self) -> str:
+        query = {"filter": self.query.filter, "max_items": self.query.max_items, "limit": self.query.limit}
+        lines = "\n".join(f"  {key}: {value!r}" for key, value in {**query, **self.config.model_dump()}.items())
+        return f"{type(self).__name__}\n  collection: {self.collection!r}\n{lines}"
+
+    def set_config(self, *, inplace: bool = False, **changes: Unpack[ConfigChanges]) -> Self:
+        """Change load tuning. Only the fields named actually change.
+
+        Args:
+            inplace: Mutate self and return it. Default leaves self
+                untouched and returns a copy carrying the changes.
+            **changes: Any `StacSourceConfig` field.
+
+        Returns:
+            Self if `inplace`, otherwise a new StacSource.
+
+        Raises:
+            ValidationError: A value doesn't fit its field.
+
+        Examples:
+            >>> source = source.set_config(bands=["B04", "B08"], groupby="time")
+        """
+        target = self if inplace else copy.copy(self)
+        if changes:
+            # constructor, not model_copy — a bad value raises here rather than deep inside load()
+            target.config = StacSourceConfig(**{**self.config.model_dump(), **changes})
+        return target
+
+    def set_query(
+        self,
+        *,
+        inplace: bool = False,
+        filter: str | Unset = UNSET,
+        datetime: dt | str | tuple[dt, dt] | None | Unset = UNSET,
+        max_items: int | None | Unset = UNSET,
+        limit: int | None | Unset = UNSET,
+    ) -> Self:
+        """Change how this source searches.
+
+        Args:
+            inplace: Mutate self and return it. Default leaves self
+                untouched and returns a copy carrying the changes.
+            filter: CQL2 text merged into the existing filter with `and`
+                (e.g. `"eo:cloud_cover <= 10"`). Every call adds another
+                clause; there is no way to clear one already set.
+            datetime: Search window this source uses instead of the
+                anchor's — for a collection whose items are dated outside
+                the window you are loading, such as a DEM or a fixed-vintage
+                land cover. None searches the anchor's own window.
+            max_items: Maximum matched items returned across all pages.
+                None removes the client-side cap.
+            limit: STAC server page-size hint. None uses the server's own.
+
+        Returns:
+            Self if `inplace`, otherwise a new StacSource.
+
+        Raises:
+            ValueError: `filter` isn't valid CQL2 text.
+
+        Examples:
+            >>> source = source.set_query(filter="eo:cloud_cover <= 10", max_items=200)
+            >>> dem = client.source("cop-dem-glo-30").set_query(datetime="2021-01-01/2021-12-31")
+        """
+        target = self if inplace else copy.copy(self)
+        if not isinstance(filter, Unset):
+            target.query = target.query.set_filter(filter)
+        if not isinstance(datetime, Unset):
+            target.query = replace(target.query, datetime=datetime)
+        if not isinstance(max_items, Unset):
+            target.query = replace(target.query, max_items=max_items)
+        if not isinstance(limit, Unset):
+            target.query = replace(target.query, limit=limit)
+        return target
 
     def get_bands_metadata(self) -> dict[str, Any]:
         """Fetch asset metadata for this source's collection.
@@ -202,287 +281,101 @@ class StacSource:
             `{band_name: asset.extra_fields}` for one example item. Empty
             dict if the collection has no items yet.
         """
-        query = StacQuery(collections=[self.collection], max_items=1)
-        items = self.client.search(query)
+        items = self.client.search(StacQuery(collections=[self.collection], max_items=1))
         if not items:
             warnings.warn(f"No items found when fetching bands metadata for {self.collection!r}")
             return {}
         return {name: asset.extra_fields for name, asset in items[0].assets.items()}
 
-    def get_metadata(self) -> dict[str, Any]:
+    def get_stac_metadata(self) -> dict[str, Any]:
         """Fetch full STAC item metadata for this source's collection.
 
         Returns:
             `item.to_dict()` for one example item — properties, assets,
-            geometry, etc. Everything available to build a CQL2 filter
-            (e.g. `properties["eo:cloud_cover"]`). Empty dict if the
-            collection has no items yet.
+            geometry, everything available to build a CQL2 filter. Empty
+            dict if the collection has no items yet.
         """
-        query = StacQuery(collections=[self.collection], max_items=1)
-        items = self.client.search(query)
+        items = self.client.search(StacQuery(collections=[self.collection], max_items=1))
         if not items:
             warnings.warn(f"No items found when fetching metadata for {self.collection!r}")
             return {}
         return items[0].to_dict()
 
-    def set_bands(self, bands: Bands, inplace: bool = False) -> Self:
-        """Set the bands to load for this source.
+    def load(self, anchor: GeoAnchor) -> GeoRaster:
+        """Read this collection over one anchor, whole.
 
         Args:
-            bands: List of band names to load.
-            inplace: Mutate self and return it. Default leaves self untouched,
-                returns a copy with the new bands instead.
+            anchor: Reference geobox and datetime window.
 
         Returns:
-            Self (mutated) if `inplace`, otherwise a new `StacSource`.
-        """
-        target = self if inplace else copy.copy(self)
-        target.bands = bands
-        return target
-
-    def set_filter(self, filter: str, inplace: bool = False) -> Self:
-        """Merge a CQL2 text filter into this source's own query.
-
-        Applies to every anchor this source loads from here on — see
-        `StacQuery.with_filter` for how it merges with any filter already set.
-
-        Args:
-            filter: CQL2 text filter expression, e.g. `"eo:cloud_cover <= 10"`.
-            inplace: Mutate self and return it. Default leaves self untouched,
-                returns a copy with the merged filter instead.
-
-        Returns:
-            Self (mutated) if `inplace`, otherwise a new `StacSource`.
-        """
-        target = self if inplace else copy.copy(self)
-        target.query = target.query.with_filter(filter, inplace=inplace)
-        return target
-
-    def load(self, anchor: GeoAnchor, lazy_load: bool = False) -> Iterator[GeoTile]:
-        """Every final sample this source's own anchor window produces.
-
-        Searches once, builds one lazy multi-scene GeoTile, then patches it
-        (`_patch_time_window`), reduces each patch (`_reduce_tile`), and
-        groups `temporal_slots` reduced patches — `temporal_strides` apart
-        — into each final sample (`_stack_steps`). All three stay lazy, no
-        compute.
-
-        Args:
-            anchor: Reference bbox, geobox, and datetime window.
-            lazy_load: Default False — downloads (`download`, module-level
-                below) each sample before yielding it. True: yields still-
-                lazy tiles instead, caller downloads itself once a sample
-                is actually going to be used (e.g. `GeoPipeline.fetch`,
-                which discards samples that fail to align across sources —
-                lazy avoids paying for a download that gets thrown away).
-
-        Yields:
-            GeoTile, `(time=temporal_slots, band, y, x)` — computed, or
-            still lazy if `lazy_load`.
+            Lazy GeoRaster on `anchor.geobox`, dims `(time, band, y, x)`,
+            carrying a `StacProvenance` over every matched item. Its own
+            time span is the anchor's, or — when this source searches its
+            own window — the span of what actually matched. Call
+            `resample_time` and `time_windows` on it to reach model inputs.
 
         Raises:
-            AnchorFetchError: Nothing matched anchor's bbox/datetime window,
-                or fewer usable time buckets turned up than `temporal_slots`
-                needs — raised rather than silently yielding zero samples.
+            AnchorFetchError: Nothing matched the searched bbox and datetime
+                window, or a matched item declares no usable datetime.
+            ValueError: `anchor` is timeless and this source declares no
+                `datetime` of its own, or the collection returned a CF
+                dataset this library can't read.
+
+        Examples:
+            >>> raster = source.load(anchor)
+            >>> raster.stac.items[0].properties["eo:cloud_cover"]
+            4.2
         """
-        start, end = anchor.start, anchor.end
-        query = replace(
-            self.query,
-            bbox=anchor.wgs84_bbox,
-            datetime=(start, end),
-        )
+        config = self.config
+        # an edition is chosen across dates, so neither it nor an explicit datetime reads the anchor's window
+        own_window = self.query.datetime is not None or config.release is not None
+        window = self.query.datetime
+        if not own_window:
+            if anchor.timespan is None:
+                raise ValueError(
+                    "StacSource.load() needs a dated anchor, or a source searching its own dates — "
+                    "set_query(datetime=...) or set_config(release=...)"
+                )
+            start, end = anchor.start, anchor.end
+            assert start is not None and end is not None
+            window = (start, end)
+
+        query = replace(self.query, bbox=anchor.geographic_bounds, datetime=window)
         items = self.client.search(query)
         if not items:
             raise AnchorFetchError(
-                f"{self.collection!r}: no scenes matched anchor bbox/datetime window "
-                f"(anchor at {anchor.centroid}, window {start}–{end})"
+                f"{self.collection!r}: no scenes matched the searched bbox/datetime window "
+                f"(anchor at {anchor.geographic_centroid}, window {window})"
             )
 
-        ds: xr.Dataset = odc_load(
-            items,
-            geobox=anchor.geobox,
-            bands=self.bands,
-            resampling=self.resampling,
-            chunks=self.chunks,
-            dtype=self.dtype,
-            groupby=self.groupby,
+        if config.release is not None:
+            items = select_release(items, config.release, anchor.timespan)
+
+        odc_kwargs: dict[str, Any] = dict(
+            bands=config.bands,
+            resampling=config.resampling,
+            chunks=config.chunks,
+            dtype=config.dtype,
+            nodata=config.nodata,
+            fail_on_error=config.fail_on_error,
+            groupby=config.groupby,
+            patch_url=config.patch_url,
+            **config.load_kwargs,
         )
-        da = ds.to_array(dim="band").transpose("time", "band", "y", "x")
-        tile = GeoTile(
-            geobox=anchor.geobox, data=da, geotag=GeoTag(datetime=anchor.datetime, polygon=anchor.polygon)
-        ).rebase(stac=items)
+        ds: xr.Dataset = odc_load(items, geobox=anchor.geobox, **odc_kwargs)
 
-        buckets: list[GeoTile] = []
-        for window_start, window_end in self._patch_time_window(tile):
-            try:
-                buckets.append(self._reduce_tile(tile, window_start, window_end))
-            except AnchorFetchError as e:
-                logger.debug("No usable scene for a time patch, skipping: %s", e)
-                continue
+        try:
+            da = cf_to_da(ds)
+        except ValueError as e:
+            raise ValueError(f"{self.collection!r} returned an incompatible CF dataset: {e}") from e
 
-        slots = self.temporal_slots
-        if len(buckets) < slots:
-            raise AnchorFetchError(
-                f"{self.collection!r}: only {len(buckets)} usable time bucket(s) in anchor "
-                f"window {start}–{end}, need temporal_slots={slots} "
-                f"(anchor at {anchor.centroid})"
-            )
-        for i in range(0, len(buckets) - slots + 1, self.temporal_strides):
-            stacked = self._stack_steps(buckets[i : i + slots])
-            if lazy_load:
-                yield stacked
-            else:
-                yield download(stacked, max_nodata_fraction=self.max_nodata_fraction)
+        # config.nodata is an explicit override for whatever the adapter read off the assets
+        if config.nodata is not None:
+            da = da.rio.write_nodata(config.nodata, inplace=True)
 
-    def _patch_time_window(self, tile: GeoTile) -> list[DateRange]:
-        """Split tile's own datetime window into temporal_granularity patches.
-
-        `"scene"`: one patch per tile's own real timestamp, no calendar
-        math. `"day"`/`"month"`/`"year"`: consecutive calendar patches
-        spanning tile's own start..end.
-
-        Args:
-            tile: This source's own lazily fetched tile.
-
-        Returns:
-            One `(start, end)` per patch, chronological.
-        """
-        if self.temporal_granularity == "scene":
-            # Not tile.times — that truncates to whole seconds, and a point
-            # window needs to exact-match tile.data.time.values (full
-            # precision) in _reduce_tile's mask, or real sub-second
-            # acquisition timestamps never match their own window.
-            times = [v.astype("datetime64[us]").item() for v in tile.data.time.values]
-            return [(t, t) for t in times]
-
-        unit = self.temporal_granularity
-        patches: list[DateRange] = []
-        patch_start = tile.start
-        while patch_start <= tile.end:
-            if unit == "day":
-                patch_end = patch_start + timedelta(days=1) - timedelta(microseconds=1)
-            elif unit == "month":
-                last_day = monthrange(patch_start.year, patch_start.month)[1]
-                patch_end = patch_start.replace(
-                    day=last_day, hour=23, minute=59, second=59, microsecond=999999
-                )
-            else:  # "year"
-                patch_end = patch_start.replace(
-                    month=12, day=31, hour=23, minute=59, second=59, microsecond=999999
-                )
-            patches.append((patch_start, min(patch_end, tile.end)))
-            patch_start = patch_end + timedelta(microseconds=1)
-        return patches
-
-    def _reduce_tile(self, tile: GeoTile, start: dt, end: dt) -> GeoTile:
-        """Collapse tile's data to exactly one time step within [start, end]. Still lazy.
-
-        Pure — no compute, no I/O. Result stays lazy through `load()` too —
-        whoever calls `load()` downloads it, once it's actually needed.
-
-        Args:
-            tile: This source's own lazily fetched tile, still lazy.
-            start: Patch window start (inclusive).
-            end: Patch window end (inclusive).
-
-        Returns:
-            New GeoTile rebased onto `(start, end)`, data always `(time=1,
-            band, y, x)` — standardized shape, never squeezed away. Still
-            dask-backed. The one remaining time coordinate is the matched
-            scene's real acquisition timestamp when exactly one scene
-            survives reduction (`temporal_reduce="first"`/`"last"`, or only
-            one scene fell in the window to begin with) — `median`/`mean`
-            fold several real scenes into one, so those get labeled with
-            the bucket's own `start` instead, there being no single real
-            timestamp left to attribute the pixels to.
-
-        Raises:
-            AnchorFetchError: No scene in window, and `temporal_fallback` is off.
-        """
-        time_values = tile.data.time.values
-        mask = (time_values >= np.datetime64(start)) & (time_values <= np.datetime64(end))
-
-        if mask.any():
-            matched = tile.data.isel(time=mask)
-        elif self.temporal_fallback:
-            window_mid = np.datetime64(start) + (np.datetime64(end) - np.datetime64(start)) / 2
-            nearest_idx = np.abs(time_values - window_mid).argmin()
-            matched = tile.data.isel(time=[nearest_idx])
-        else:
-            raise AnchorFetchError(f"{self.collection!r}: no scene in window {start}–{end}")
-
-        if matched.sizes["time"] == 1:
-            reduced = matched
-        elif self.temporal_reduce == "first":
-            reduced = matched.isel(time=[0])
-        elif self.temporal_reduce == "last":
-            reduced = matched.isel(time=[-1])
-        elif self.temporal_reduce == "median":
-            # No single real scene left to attribute a timestamp to — label
-            # with the bucket's own start, same synthetic marker "mean" uses.
-            reduced = matched.median(dim="time").expand_dims("time").assign_coords(time=[np.datetime64(start)])
-        else:  # "mean"
-            reduced = matched.mean(dim="time").expand_dims("time").assign_coords(time=[np.datetime64(start)])
-
-        return tile.rebase(datetime=(start, end), data=reduced)
-
-    def _stack_steps(self, chunk: list[GeoTile]) -> GeoTile:
-        """Concatenate temporal_slots resolved tiles into one final sample.
-
-        Args:
-            chunk: `temporal_slots` resolved tiles (each already `(time=1,
-                band, y, x)`), consecutive in time.
-
-        Returns:
-            GeoTile, `(time=len(chunk), band, y, x)`.
-        """
-        span_start, span_end = chunk[0].start, chunk[-1].end
-        stacked_data = xr.concat([bucket.data for bucket in chunk], dim="time")
-        return chunk[0].rebase(datetime=(span_start, span_end), data=stacked_data)
-
-
-@retry(
-    stop=stop_after_attempt(3),
-    wait=wait_exponential(min=1, max=10),
-    retry=retry_if_exception_type((IOError, OSError, ValueError)),
-)
-def download(tile: GeoTile, *, max_nodata_fraction: float = 0.0) -> GeoTile:
-    """Compute a lazy GeoTile's data. Retries on GDAL decode failure or excess nodata.
-
-    Doesn't care how many time steps tile carries — pure compute step, no
-    STAC/collection knowledge. A GDAL tile-decode warning and an
-    over-threshold nodata fraction are both treated as possibly-transient
-    bad reads, so both retried up to 3 times before giving up as genuinely
-    unusable.
-
-    Args:
-        tile: Lazy (dask-backed) GeoTile, any time length.
-        max_nodata_fraction: Give up (after retries) if computed nodata
-            fraction exceeds this.
-
-    Returns:
-        New GeoTile, same shape, computed (in-memory) data.
-
-    Raises:
-        IOError: GDAL logged a tile decode failure, or nodata fraction
-            exceeded max_nodata_fraction — after 3 retries.
-    """
-    logger.info("Downloading tile")
-    stderr_capture = _StderrCapture()
-    # GDAL's own retry for a dropped/truncated remote byte-range read (the usual
-    # cause of the decode failures above) — fixes most occurrences at the source,
-    # inside GDAL's /vsicurl//vsis3/ layer, before a truncated read ever reaches
-    # the JP2 decoder. _GDAL_DECODE_FAILURE_MARKERS + this function's own check
-    # below is just the fallback for whatever still slips through.
-    with rasterio.Env(GDAL_HTTP_MAX_RETRY="3", GDAL_HTTP_RETRY_DELAY="1"), stderr_capture:
-        with ProgressBar():
-            computed = tile.data.compute()
-    matched = next((m for m in _GDAL_DECODE_FAILURE_MARKERS if m in stderr_capture.text), None)
-    if matched is not None:
-        raise IOError(f"GDAL tile decode failed — stderr matched {matched!r}")
-
-    nodata_fraction = computed.isnull().mean().item()
-    if nodata_fraction > max_nodata_fraction:
-        raise IOError(f"nodata fraction {nodata_fraction:.3f} exceeds max {max_nodata_fraction}")
-
-    return tile.rebase(data=computed)
+        records = parse_items(items, config.properties)
+        _warn_unbucketed(self.collection, records.items)
+        # a source searching its own window returns steps the anchor's span doesn't cover, so let them date it
+        attached = anchor.rebase(timespan=None) if own_window else anchor
+        # same anchor-attach path prediction output goes through — validates the geobox, stamps the header
+        return attached.to_raster(da).rebase(stac={"items": records.items})

@@ -5,7 +5,7 @@ import torch.nn as nn
 import torch.nn.functional as F
 
 from geosave_engine.ml.registry import register_model
-from geosave_engine.ml.models.contract import model_context
+from geosave_engine.ml.models.contract import chain_step
 
 
 @register_model('head', 'dense')
@@ -75,7 +75,7 @@ class DenseHead(nn.Module):
         """Map ``(B, in_channels, H, W)`` -> ``(B, num_classes, H, W)``."""
         return self.layers(x)
 
-    @model_context(head=True)
+    @chain_step(head=True)
     def forward_logits(self, feature_map: torch.Tensor) -> torch.Tensor:
         """Project feature map to per-pixel logits, resized to encoder_input_size if given.
 

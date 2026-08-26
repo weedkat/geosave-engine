@@ -6,8 +6,8 @@ import networkx as nx
 import torch
 import torch.nn as nn
 
-def _model_context_methods(module: nn.Module) -> list[str]:
-    """Every @model_context method name declared on one module (MRO-collapsed).
+def _chain_step_methods(module: nn.Module) -> list[str]:
+    """Every @chain_step method name declared on one module (MRO-collapsed).
 
     A module may declare more than one — e.g. several alternate accepted
     shapes from upstream. Which one actually gets used is resolved by
@@ -22,7 +22,7 @@ def _model_context_methods(module: nn.Module) -> list[str]:
     methods: list[str] = []
     for klass in reversed(type(module).__mro__):
         for name, val in vars(klass).items():
-            if callable(val) and getattr(val, '_is_model_context', False) and name not in methods:
+            if callable(val) and getattr(val, '_is_chain_step', False) and name not in methods:
                 methods.append(name)
     return methods
 
@@ -32,7 +32,7 @@ def _build_graph(modules: list[nn.Module]) -> nx.DiGraph:
 
     Two node kinds: key nodes (``(name, type)`` tuples, e.g.
     ``('image', torch.Tensor)``) and method nodes (``(module, method_name)``
-    tuples). Every module's every ``@model_context`` method becomes one
+    tuples). Every module's every ``@chain_step`` method becomes one
     method node, wired ``key -> method`` for each of its ``requires`` and
     ``method -> key`` for each of its ``provides``. Nothing here checks
     whether a `requires` key is ever actually produced by anything — that's
@@ -60,14 +60,14 @@ def _build_graph(modules: list[nn.Module]) -> nx.DiGraph:
         ``name``, ``type``.
 
     Raises:
-        TypeError: A module has no `@model_context` method at all.
+        TypeError: A module has no `@chain_step` method at all.
     """
     graph = nx.DiGraph()
 
     for module in modules:
-        names = _model_context_methods(module)
+        names = _chain_step_methods(module)
         if not names:
-            raise TypeError(f"{type(module).__name__}: no @model_context method found.")
+            raise TypeError(f"{type(module).__name__}: no @chain_step method found.")
 
         for name in names:
             method = getattr(module, name)
@@ -86,7 +86,7 @@ def _build_graph(modules: list[nn.Module]) -> nx.DiGraph:
 
 
 def _solve_dag(graph: nx.DiGraph) -> nx.DiGraph:
-    """Prune `graph` down to exactly one @model_context method per module.
+    """Prune `graph` down to exactly one @chain_step method per module.
 
     `graph` may hold several candidate methods per module; walk it by
     `nx.topological_generations` (networkx's Kahn's algorithm) and keep
@@ -159,12 +159,12 @@ def _graph_to_chain(graph: nx.DiGraph) -> list[tuple[nn.Module, str]]:
 
 
 class ContextChain(nn.Module):
-    """nn.Module that wires submodules together via their @model_context methods.
+    """nn.Module that wires submodules together via their @chain_step methods.
 
     Takes named (or auto-named) modules, registers each as a named submodule,
     then resolves call order from the modules themselves — not from argument
     order. `_build_graph` builds a bipartite key/method dependency graph from
-    every module's `@model_context` method(s) (``requires -> method``,
+    every module's `@chain_step` method(s) (``requires -> method``,
     ``method -> provides``); `_solve_dag` walks it by
     `nx.topological_generations` (Kahn's algorithm) to pick exactly one method
     per module — raising if more than one of a module's candidate methods
@@ -172,7 +172,7 @@ class ContextChain(nn.Module):
     from the graph alone); `_graph_to_chain` linearizes the resolved graph
     into the order `forward` calls modules in.
 
-    A module offering several `@model_context` methods (alternate accepted
+    A module offering several `@chain_step` methods (alternate accepted
     input shapes) is fine — whichever one's `requires` the graph can satisfy
     gets picked automatically. Branching (independent modules each consuming
     caller-supplied input directly) and merging (a later module requiring
@@ -199,7 +199,7 @@ class ContextChain(nn.Module):
     Raises:
         ValueError: A positional arg's auto-generated name (``stage_N``)
             collides with an explicit keyword name.
-        TypeError: A module has no `@model_context` method at all, or more
+        TypeError: A module has no `@chain_step` method at all, or more
             than one of a module's candidate methods becomes ready in the
             same DAG generation (see `_solve_dag`).
         nx.NetworkXUnfeasible: The requires/provides graph has a cycle — no

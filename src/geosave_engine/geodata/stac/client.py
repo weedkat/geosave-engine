@@ -1,19 +1,15 @@
 from __future__ import annotations
 
-from typing import TYPE_CHECKING, Any, Iterable
+from typing import Any, Iterable
 
 import pystac
 import planetary_computer
 from pystac_client import Client
 from pystac_client.stac_api_io import StacApiIO
-from typing_extensions import Unpack
 from urllib3.util import Retry
 
 from .query import StacQuery
 from .source import StacSource
-
-if TYPE_CHECKING:
-    from .source import StacSourceArgs
 
 
 class StacClient:
@@ -115,24 +111,25 @@ class StacClient:
                 f"Call get_collections() to see what is available."
             )
 
-    def source(self, collection: str, **kwargs: Unpack[StacSourceArgs]) -> StacSource:
+    def source(self, collection: str) -> StacSource:
         """Create a source for a STAC collection on this client.
 
-        Validates that the collection exists on this endpoint before returning.
-        StacSource always returns raw values as the provider publishes them — no
-        radiometric scaling. Apply scale/offset as an explicit pipeline step.
+        Every load field starts at StacSource's own default; call
+        `set_config()` on the result to change them.
 
         Args:
             collection: STAC collection ID. Discover via `get_collections()`.
-            **kwargs: Forwarded to `StacSource.__init__` — see `StacSourceArgs`.
+
+        Returns:
+            Source for `collection` on this client.
 
         Raises:
             ValueError: If `collection` does not exist on this endpoint.
 
         Examples:
             >>> cdse = StacClient.cdse()
-            >>> src = cdse.source("sentinel-2-l1c", bands=["B02", "B03", "B04"], max_nodata_fraction=0.1)
-            >>> tiles = src.load(anchor)
+            >>> src = cdse.source("sentinel-2-l1c").set_config(bands=["B02", "B03", "B04"])
+            >>> raster = src.load(anchor)
         """
         self.validate_collection(collection)
-        return StacSource(self, collection=collection, **kwargs)
+        return StacSource(self, collection=collection)

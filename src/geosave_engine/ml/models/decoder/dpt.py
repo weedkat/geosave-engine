@@ -5,7 +5,7 @@ import torch.nn.functional as F
 from typing import Literal
 
 from geosave_engine.ml.registry import register_model
-from geosave_engine.ml.models.contract import model_context
+from geosave_engine.ml.models.contract import chain_step
 
 
 class _ReadoutProjectBlock(nn.Module):
@@ -246,7 +246,7 @@ class DPT(nn.Module):
         assert fused is not None, "Fusion blocks should produce a fused output"
         return fused
 
-    @model_context()
+    @chain_step()
     def forward_feature_map(self, pyramid: list, prefix_tokens: list) -> tuple[torch.Tensor]:
         """Fuse multi-scale ViT features into a single dense map.
 

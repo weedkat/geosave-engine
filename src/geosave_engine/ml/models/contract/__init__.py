@@ -1,9 +1,9 @@
 from .normalization import Normalization
-from .context import model_context
+from .context import chain_step
 from .chain import ContextChain
 
 __all__ = [
     "ContextChain",
     "Normalization",
-    "model_context",
+    "chain_step",
 ]

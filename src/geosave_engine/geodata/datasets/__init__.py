@@ -1,20 +1,15 @@
-"""PyTorch dataset classes over complete, standalone samples.
+"""PyTorch dataset classes over ingested surfaces, one sample per window.
 
-Two kinds, both index-based (no string key/join layer): `StackDataset`
-reads raw `GeoStack` zarr directly off disk; `StoreDataset` reads a packed
-`SampleStore`. A dataset here always renders a complete sample on its
-own — combine sources upstream (e.g. into one `SampleStore`) instead of
-downstream. Custom formats not covered by either: write your own
-`torch.utils.data.Dataset`.
-
-ML-input only — samples are keyed and materialized whole for training/inference.
-For windowed access to a big raster (serving/viewing), see geodata.datastore instead.
+`RasterDataset` reads standalone raster files, `StackDataset` this library's
+own multi-layer zarr stores, `StoreDataset` a packed `LitDataStore`.
 """
-from .stack import StackDataset
-from .store import StoreDataset
+from .litdata import StoreDataset
+from .raster import RasterDataset
 from .samplers import stack_samples
+from .stack import StackDataset
 
 __all__ = [
+    "RasterDataset",
     "StackDataset",
     "StoreDataset",
     "stack_samples",

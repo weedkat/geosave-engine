@@ -1,14 +1,9 @@
-from .spatial import AnchorDatetime, GeoAnchor, GeoStack, GeoTag, GeoTile
-from .pipeline import GeoPipeline
-from .stac import StacClient, StacQuery
+# pipeline/ and stac/ still use the pre-redesign GeoTile API — not re-exported until redesigned.
+from .spatial import GeoAnchor, GeoTile, GeoStack, GeoRaster
 
 __all__ = [
-    "AnchorDatetime",
     "GeoAnchor",
-    "GeoPipeline",
-    "GeoStack",
-    "GeoTag",
     "GeoTile",
-    "StacClient",
-    "StacQuery",
+    "GeoStack",
+    "GeoRaster",
 ]

@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import numpy as np
 import torch
 import torch.nn as nn
 
@@ -7,8 +8,10 @@ from typing import cast
 from terratorch.models.backbones.prithvi_mae import PrithviViT
 from terratorch.registry import BACKBONE_REGISTRY
 
+from geosave_engine.geodata.spatial import GeoAnchor
 from geosave_engine.ml.registry import register_model
-from geosave_engine.ml.models.contract import model_context
+from geosave_engine.ml.models.geo_context import lat_lon, year_day_of_year
+from geosave_engine.ml.models.contract import chain_step
 
 # From terratorch.models.backbones.prithvi_vit — HLS S30 DN scale (reflectance x 10000).
 # terratorch never attaches these to the model itself (PrithviViT.__init__ takes no
@@ -27,7 +30,7 @@ class Prithvi(nn.Module):
     Non-temporal-location variants only — `forward_pyramid` takes just `image`.
     For a `_tl` variant (real time/location conditioning), use
     `PrithviTemporalLocation` instead. Kept as two separate classes rather than
-    one class with two `@model_context` methods on `forward_pyramid`: both
+    one class with two `@chain_step` methods on `forward_pyramid`: both
     methods would only ever depend on externally-supplied keys, so
     `ContextChain` can't tell them apart by DAG depth — they'd always land in
     the same generation and hit the "ambiguous" error. One method per class
@@ -167,7 +170,7 @@ class Prithvi(nn.Module):
         # out_indices-sliced, spatially-reshaped version used by the actual pipeline.
         return self.model(x, temporal_coords=None, location_coords=None)
 
-    @model_context()
+    @chain_step()
     def forward_pyramid(self, image: torch.Tensor) -> tuple[list, list]:
         """Extract multi-scale intermediate features from the ViT.
 
@@ -195,8 +198,8 @@ class Prithvi(nn.Module):
 class PrithviTL(Prithvi):
     """A Prithvi-EO ViT model conditioned on real time/location, HLS band stats attached.
 
-    The `_tl` variants only — `forward_pyramid` here takes `temporal_coords`/
-    `location_coords` too, and actually uses them (`coords_encoding=["time",
+    The `_tl` variants only — `forward_pyramid` here also takes `anchor`/
+    `temporal_coords`/`location_coords`, and actually uses them (`coords_encoding=["time",
     "location"]` is baked into every one of `MODEL_NAMES` below). Everything else
     (`__init__`, `forward`) is shared with `Prithvi` — see its docstring for why
     this is a separate class rather than a second method on the same one.
@@ -239,17 +242,48 @@ class PrithviTL(Prithvi):
             vpt_dropout=vpt_dropout,
         )
 
-    @model_context()
+    @staticmethod
+    def model_context(anchor: GeoAnchor) -> dict[str, np.ndarray]:
+        """This window's own temporal_coords/location_coords, Prithvi's own forward_pyramid input shape.
+
+        Pure geometry/time math — no `PrithviTL` instance needed, safe to call at
+        ingest time or per live inference request. Numpy so the context
+        serializes — `to_sample` tensorizes at this dtype.
+
+        Args:
+            anchor: Window to derive from. One row of `temporal_coords` per
+                step its header records, which is the frame count Prithvi reads.
+
+        Returns:
+            {
+                "temporal_coords": (steps, 2) float32 — (year, day-of-year) per step, day-of-year 0-indexed,
+                "location_coords": (2,) float32 — (lat, lon) degrees, one per window,
+            }
+        """
+        lat, lon = lat_lon(anchor)
+        return {
+            "temporal_coords": year_day_of_year(anchor),
+            "location_coords": np.array([lat, lon], dtype="float32"),
+        }
+
+    @chain_step()
     def forward_pyramid(
         self,
         image: torch.Tensor,
-        temporal_coords: torch.Tensor,
-        location_coords: torch.Tensor,
+        anchor: list[GeoAnchor] | None = None,
+        temporal_coords: torch.Tensor | None = None,
+        location_coords: torch.Tensor | None = None,
     ) -> tuple[list, list]:
         """Extract multi-scale intermediate features, conditioned on time/location.
 
+        temporal_coords/location_coords given directly are used as-is;
+        either left unset derives from anchor instead — see `model_context`.
+
         Args:
             image: (B, C, H, W) input tensor.
+            anchor: This batch's own `"anchor"` list (`batch["anchor"]`), one
+                GeoAnchor per sample. Only needed when
+                temporal_coords/location_coords aren't both given.
             temporal_coords: (B, num_frames, 2) float32 — (year, day-of-year) per
                 frame, day-of-year 0-indexed (Jan 1st = 0), real calendar values,
                 not normalized.
@@ -259,6 +293,9 @@ class PrithviTL(Prithvi):
             (pyramid, prefix_tokens) — list of per-level (B, C, H, W) feature
             maps, list of per-level (B, 1, C) CLS tokens.
 
+        Raises:
+            ValueError: temporal_coords or location_coords is unset and anchor is None.
+
         Examples:
             >>> ctx = {
             ...     'image': image,  # (B, 6, H, W)
@@ -267,6 +304,17 @@ class PrithviTL(Prithvi):
             ... }
             >>> out = PrithviTL().forward_pyramid(ctx)
         """
+        if temporal_coords is None or location_coords is None:
+            if anchor is None:
+                raise ValueError('forward_pyramid: anchor is required when temporal_coords/location_coords are not both given')
+            if temporal_coords is None:
+                # one frame per anchor: a bare anchor carries a span, not the steps a tile would
+                stacked = np.stack([year_day_of_year(a) for a in anchor])
+                temporal_coords = torch.as_tensor(stacked).to(image.device)
+            if location_coords is None:
+                stacked = np.stack([np.array(lat_lon(a), dtype="float32") for a in anchor])
+                location_coords = torch.as_tensor(stacked).to(image.device)
+
         features = self.model.forward_features(  # list[depth] of (B, 1+N_patches, embed_dim), CLS at idx 0 # type: ignore
             image, temporal_coords=temporal_coords, location_coords=location_coords
         )

@@ -1,105 +1,149 @@
-"""StackDataset: PyTorch dataset over GeoStack zarr stores discovered under a root.
-
-See docs/concept/model.md for the settled design this implements.
-"""
+"""StackDataset: PyTorch dataset over GeoStack zarr stores. See StackDataset for details."""
 from __future__ import annotations
 
+import warnings
 from pathlib import Path
-from typing import Any
+from typing import TYPE_CHECKING, Sequence
 
-import pandas as pd
 import torch
 from torch.utils.data import Dataset
 
-from geosave_engine.geodata.spatial.stack import GeoStack
-from geosave_engine.geodata.utils.datastore import sample_to_row
+from geosave_engine.geodata.spatial import (
+    ContextFn,
+    GeoTileStack,
+    GeoStack,
+    LayerName,
+    TensorSample,
+    TimeWindow,
+)
 
-LayerName = str
+if TYPE_CHECKING:
+    from geosave_engine.geodata.extensions import TilerMode
+
+# A zarr store keeps one directory per group, so its layers are readable without opening it.
+STORE_SUFFIX = ".zarr"
 
 
-class StackDataset(Dataset):
-    """PyTorch dataset over GeoStack zarr stores discovered under root.
+class StackDataset(Dataset[TensorSample]):
+    """PyTorch dataset over ingested GeoStack stores, one sample per tile.
 
-    Discovers every `*.zarr` store anywhere under `root` — any depth, so
-    anchor stores can be grouped into whatever nested layout makes sense.
-    Each store holds one Zarr group per layer (written by `GeoStack.to_zarr`).
-    A layer group can be missing from some/all anchors; an anchor store is
-    only included if it carries every layer in `required_layers` (None
-    means no requirement) — anchors that pass keep every layer they carry,
-    not just the required ones.
-
-    Every discovered anchor is opened once here with `load_data=False`
-    (header-only — geobox/datetime read from attrs, no pixels touched) and
-    cached, so building the index over a large `root` is cheap; `render`
-    reuses the cached `GeoStack` and only then materializes pixels.
+    An ingested store holds a whole anchor's surface, so leave `tile_size_px`
+    unset only when every store is already sample-sized. A store this
+    configuration can't cut is warned about and skipped.
 
     Args:
-        root: Workspace root directory with one subdirectory per anchor.
-        required_layers: Layer names to require. None includes every
-            anchor folder found, whatever layers it has.
-        sel_bands: Layer name to band names to keep; default is all bands.
-        dtype_override: Layer name to torch dtype to cast that layer's tensor to.
+        root: Directory holding `.zarr` stores, searched recursively.
+        sel_bands: Layer name to band names to keep, in that order. A layer
+            absent here keeps every band.
+        dtype_override: Layer name to torch dtype to cast to. A layer absent
+            here keeps its stored dtype.
+        layers: Layer names to keep from every store. None keeps all.
+        required_layers: A store missing any of these is left out of the
+            index. Read from the store's own group directories, so no store
+            is opened to decide.
+        tile_size_px: Window side length in pixels. None uses the shorter
+            axis, so each store yields one whole-surface sample.
+        stride_px: Distance between window origins. None = `tile_size_px`.
+        overlap: Forwarded to the tiler. Wins over `stride_px`.
+        mode: How a trailing window's overhang is filled — "reflect",
+            "edge", or "constant", which needs a declared nodata.
+        vector: True gives each sample the reference layer's features,
+            filtered to the window.
+        time: `(length, stride)` in reference-layer steps, or a bare length.
+            Windows are cut on the reference layer alone; every other timed
+            layer keeps the steps whose buckets overlap that window, and
+            timeless layers ride along whole.
+        name: Extra text folded into each cut's derived `group_id`.
+        context_fn: Called once per window while the index is built; its
+            result becomes that sample's `model_context`.
+
+    Raises:
+        ValueError: `root` isn't a directory, or no store under it qualifies.
+
+    Examples:
+        >>> dataset = StackDataset("data/train", layers=["image", "label"], tile_size_px=512)
+        >>> dataset[0]["layers"].keys()
+        dict_keys(['image', 'label'])
     """
 
     def __init__(
         self,
         root: str | Path,
-        *,
-        required_layers: list[LayerName] | None = None,
         sel_bands: dict[LayerName, list[str]] | None = None,
         dtype_override: dict[LayerName, torch.dtype] | None = None,
+        *,
+        layers: Sequence[LayerName] | None = None,
+        required_layers: Sequence[LayerName] | None = None,
+        tile_size_px: int | None = None,
+        stride_px: int | None = None,
+        overlap: int | float | tuple[int, int] | None = None,
+        mode: TilerMode = "reflect",
+        vector: bool = True,
+        time: TimeWindow | None = None,
+        name: str | None = None,
+        context_fn: ContextFn | None = None,
     ) -> None:
         self.root = Path(root)
+        if not self.root.is_dir():
+            raise ValueError(f"StackDataset needs a directory of {STORE_SUFFIX} stores, got {self.root}")
+
         self.sel_bands = sel_bands
         self.dtype_override = dtype_override
+        self.layers = None if layers is None else list(layers)
+        self.required_layers = list(required_layers or self.layers or ())
 
-        required = set(required_layers) if required_layers else set()
-        samples: list[tuple[Path, GeoStack]] = []
-        for path in sorted(self.root.rglob("*.zarr")):
-            stack = GeoStack.from_zarr(path, load_data=False)
-            if required <= set(stack.tiles):
-                samples.append((path, stack))
-        self._samples = samples
+        self.samples: list[GeoTileStack] = []
+        for path in sorted(self.root.rglob(f"*{STORE_SUFFIX}")):
+            if not all((path / layer).is_dir() for layer in self.required_layers):
+                continue
+            try:
+                stack = GeoStack.open(path)
+                if self.layers is not None:
+                    stack = stack.select(*self.layers)
+                self.samples.extend(
+                    stack.tiles(
+                        tile_size_px=tile_size_px,
+                        stride_px=stride_px,
+                        overlap=overlap,
+                        mode=mode,
+                        vector=vector,
+                        time=time,
+                        name=name,
+                        context_fn=context_fn,
+                    )
+                )
+            except (ValueError, KeyError) as error:
+                warnings.warn(f"skipping {path}: {type(error).__name__}: {error}", stacklevel=2)
+        if not self.samples:
+            raise ValueError(
+                f"no {STORE_SUFFIX} store under {self.root} carries layers {self.required_layers}"
+                if self.required_layers
+                else f"no {STORE_SUFFIX} store under {self.root} yielded a sample"
+            )
+
+    def __repr__(self) -> str:
+        return f"{type(self).__name__}({self.root}, samples={len(self)}, layers={self.layers})"
 
     def __len__(self) -> int:
-        return len(self._samples)
+        """Number of samples in the index.
 
-    def render(self, index: int) -> dict[str, Any]:
-        """Render one sample. Lazily loads and caches the `GeoStack` at `index`.
+        Returns:
+            How many samples this dataset serves.
+        """
+        return len(self.samples)
+
+    def __getitem__(self, index: int) -> TensorSample:
+        """Read one window into a tensor sample.
 
         Args:
-            index: Row position in this dataset.
+            index: Position in the index.
 
         Returns:
-            Tensor dict keyed by each layer's raw name, plus `"geobox"`/
-            `"geotags"`/the loaded `GeoStack`'s own `context` keys.
+            `{"layers": ..., "anchor": ..., "model_context": ...}`, as
+            `GeoTileStack.to_tensor` builds it.
+
+        Raises:
+            KeyError: `sel_bands` or `dtype_override` names something this
+                store doesn't carry.
         """
-        _, stack = self._samples[index]
-        return stack.to_tensor(self.sel_bands, self.dtype_override)
-
-    def __getitem__(self, index: int) -> dict[str, Any]:
-        return self.render(index)
-
-    def to_row(self, index: int) -> dict[str, Any]:
-        """Manifest row for `index` — renders the sample, drops its arrays.
-
-        Args:
-            index: Row position in this dataset.
-
-        Returns:
-            `{"index": ..., "path": ..., "geobox": ..., "geotags": ...}`,
-            plus any `context` keys — same shape as `StoreDataset.to_row`.
-        """
-        path, _ = self._samples[index]
-        row = sample_to_row(self.render(index), index)
-        row["path"] = str(path.relative_to(self.root))
-        return row
-
-    def to_pandas(self) -> pd.DataFrame:
-        """Snapshot every sample's `to_row` into one table.
-
-        Returns:
-            DataFrame, one row per sample, flattened (e.g. "geotags_rgb_bands").
-        """
-        rows = [self.to_row(i) for i in range(len(self))]
-        return pd.json_normalize(rows, sep="_")
+        return self.samples[index].to_sample(bands=self.sel_bands, dtype=self.dtype_override)

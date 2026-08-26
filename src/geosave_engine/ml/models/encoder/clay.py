@@ -1,12 +1,15 @@
 from __future__ import annotations
 
+import numpy as np
 import torch
 import torch.nn as nn
 from huggingface_hub import hf_hub_download
 from terratorch.models.backbones.clay_v15.model import Encoder
 
+from geosave_engine.geodata.spatial import GeoAnchor
 from geosave_engine.ml.registry import register_model
-from geosave_engine.ml.models.contract import model_context
+from geosave_engine.ml.models.geo_context import lat_lon, week_hour
+from geosave_engine.ml.models.contract import chain_step
 
 # Only 'clay_v15_large' has a published checkpoint (verified: made-with-clay/Clay
 # HF repo has exactly one file, v1.5/clay-v1.5.ckpt; rslearn's own Clay port
@@ -317,15 +320,42 @@ class Clay(nn.Module):
         b, _, dim = x.shape  # (B, L, D)
         return x.transpose(1, 2).reshape(b, dim, self.grid, self.grid)  # (B, L, D) -> (B, D, L) -> (B, D, H, W)
 
-    @model_context()
-    def forward_pyramid(self, image: torch.Tensor) -> tuple[list, list]:
+    @staticmethod
+    def model_context(anchor: GeoAnchor) -> dict[str, np.ndarray]:
+        """This window's own time/latlon, Clay's own forward_pyramid input shape.
+
+        Pure geometry/time math — no `Clay` instance needed. Values are raw, not
+        yet sin/cos-encoded (`forward`'s `_normalize_time`/`_normalize_latlon` do that),
+        and numpy so the context serializes — `to_sample` tensorizes at this dtype.
+
+        Args:
+            anchor: Window to derive from. One row of `time` per step its
+                header records.
+
+        Returns:
+            {
+                "time": (steps, 2) float32 — raw (iso_week, hour) per step,
+                "latlon": (2,) float32 — raw (lat, lon) degrees, one per window,
+            }
+        """
+        lat, lon = lat_lon(anchor)
+        return {
+            "time": week_hour(anchor),
+            "latlon": np.array([lat, lon], dtype="float32"),
+        }
+
+    @chain_step()
+    def forward_pyramid(
+        self,
+        image: torch.Tensor,
+        anchor: list[GeoAnchor] | None = None,
+        time: torch.Tensor | None = None,
+        latlon: torch.Tensor | None = None,
+    ) -> tuple[list, list]:
         """Extract multi-scale intermediate features from the ViT.
 
-        No `time`/`latlon` input (unlike `PrithviTL`'s `temporal_coords`/
-        `location_coords`) — every `@model_context` param becomes a mandatory
-        ctx key (see `context.py`), so adding them here would force every
-        `ContextChain` caller to supply them. Calls `self.forward(image)`
-        (its `time`/`latlon`/`gsd`/`waves` defaults apply) under the hooks
+        latlon/time left unset with anchor given derive from it — see
+        `model_context`. Calls `self.forward(image, ...)` under the hooks
         below instead of rebuilding the datacube by hand.
 
         `Transformer.forward` (clay_v15/backbone.py) is a plain block loop —
@@ -339,11 +369,29 @@ class Clay(nn.Module):
 
         Args:
             image: (B, C, H, W) input tensor, C == this instance's `in_channels`.
+            anchor: This batch's own `"anchor"` list (`batch["anchor"]`), one
+                GeoAnchor per sample. Only used to derive time/latlon when
+                either isn't given directly.
+            time: (B, 2) float32 — raw `(iso_week, hour)`. `None` derives
+                it from anchor if given, else keeps `forward()`'s own "no
+                time signal" default.
+            latlon: (B, 2) float32 — raw `(lat, lon)` in degrees. `None`
+                derives it from anchor if given, else keeps `forward()`'s
+                own "no location signal" default.
 
         Returns:
             (pyramid, prefix_tokens) — list of per-level (B, D, H, W) feature
             maps, list of per-level (B, 1, D) CLS tokens.
         """
+        if anchor is not None and (time is None or latlon is None):
+            if latlon is None:
+                stacked = np.stack([np.array(lat_lon(a), dtype="float32") for a in anchor])
+                latlon = torch.as_tensor(stacked).to(image.device)
+            if time is None:
+                # one row per anchor: a bare anchor carries a span, not the steps a tile would
+                stacked = np.stack([week_hour(a)[0] for a in anchor])
+                time = torch.as_tensor(stacked).to(image.device)
+
         target_modules = {self.encoder.transformer.layers[i][1]: i for i in self.out_indices} #type: ignore
         captured: dict[int, torch.Tensor] = {}
 
@@ -352,7 +400,7 @@ class Clay(nn.Module):
 
         hooks = [module.register_forward_hook(hook) for module in target_modules]
         try:
-            self.forward(image)  # (B, 1+L, D) per hooked block, discarded -- hooks captured what we need
+            self.forward(image, time=time, latlon=latlon)  # (B, 1+L, D) per hooked block, discarded -- hooks captured what we need
         finally:
             for h in hooks:
                 h.remove()

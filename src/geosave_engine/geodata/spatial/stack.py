@@ -1,375 +1,399 @@
-"""GeoStack: the collection counterpart to GeoTile. See GeoStack for details."""
+"""GeoStack: named raster layers over one surface. See GeoStack for details."""
 from __future__ import annotations
 
-import json
-
-import odc.geo.xr  # noqa: F401 — registers .odc accessor on xr.DataArray/Dataset
-import torch
-import zarr
-import numpy as np
-
-from dataclasses import dataclass, field
+from collections.abc import Mapping
 from pathlib import Path
-from typing import TYPE_CHECKING, Any
-from typing_extensions import Unpack
-from odc.geo.geobox import GeoBox
+from typing import TYPE_CHECKING, Any, Iterator, Self, Unpack, cast
 
-from geosave_engine.geodata.spatial.anchor import _geobox_to_dict
-from geosave_engine.geodata.spatial.tile import GeoTile, _write_stac
-from geosave_engine.geodata.spatial.ops import align_spatial
-from geosave_engine.geodata.utils.geodata import da_to_ds
-from geosave_engine.geodata.utils.zarr import to_zarr
+from ._stack import LayerName, _SpatialStack
+from geosave_engine.geodata.utils.io import to_zarr
+
+from .raster import GeoRaster
+from .tile import GeoTile
+
+# GeoStack's own stack-level header key — unrelated to any layer's own extension namespaces.
+_STACK_HEADER_KEY = "geosave"
+
+# Where a store root records which layer the stack was anchored on, and the order they were written in.
+REFERENCE_KEY = "reference_layer"
+LAYERS_KEY = "layers"
 
 if TYPE_CHECKING:
-    from matplotlib.figure import Figure
-    from geosave_engine.geodata.utils.geovis import PlotKwargs
+    from odc.geo.geobox import GeoBox
 
-LayerName = str
+    from geosave_engine.geodata.extensions import TilerMode
+    from geosave_engine.geodata.utils.io import ZarrOptions
 
-# to_tensor()/to_numpy() flatten context straight into the sample dict
-# alongside layer tensors — these names must stay free for context to land
-# on, not get silently overwritten by (or overwrite) real sample data.
-_RESERVED_SAMPLE_KEYS = frozenset({"geobox", "geotags"})
+    from .tile_stack import GeoTileStack
+    from .context import ContextFn
 
-# JSON has no tensor type -- a context value that's a torch.Tensor (the
-# common case, e.g. temporal_coords) marks itself this way going in, so
-# _context_from_json knows to rebuild a Tensor and not just hand back a
-# plain nested list. Anything else round-trips as whatever plain JSON gave back.
-_TENSOR_MARKER = "__tensor__"
+# Reference-layer steps per window and how far apart windows start; a bare length strides by itself.
+TimeWindow = int | tuple[int, int]
 
 
-def _check_context_collision(context: dict[str, Any], layer_names: dict[str, GeoTile]) -> None:
-    """Raise if a context key would clobber (or get clobbered by) a layer or a reserved sample key.
+def _span_key(stack: GeoStack) -> str:
+    """Text naming the span a stack's timed layers cover together.
 
     Args:
-        context: Candidate `GeoStack.context`.
-        layer_names: This stack's own `tiles` (only the keys matter).
-
-    Raises:
-        ValueError: A context key collides with a layer name or `"geobox"`/`"geotags"`.
-    """
-    collision = set(context) & (set(layer_names) | _RESERVED_SAMPLE_KEYS)
-    if collision:
-        raise ValueError(
-            f"context key(s) {collision} collide with a layer name or a reserved "
-            f"sample key {sorted(_RESERVED_SAMPLE_KEYS)} — to_tensor()/to_numpy() "
-            "flatten context into the same dict, rename the context key(s)"
-        )
-
-
-def _context_to_json(context: dict[str, Any]) -> str:
-    """GeoStack.context -> JSON string for a to_zarr root attr.
-
-    Args:
-        context: JSON-serializable values; a `torch.Tensor` value is flattened
-            via `.tolist()` and tagged so `_context_from_json` rebuilds it.
+        stack: Stack to read, timed layers or not.
 
     Returns:
-        JSON-encoded `{key: value}`.
+        `"<start>/<end>"` over every timed layer, empty when none has time.
     """
-    def encode(value: Any) -> Any:
-        if isinstance(value, torch.Tensor):
-            return {_TENSOR_MARKER: True, "dtype": str(value.dtype).removeprefix("torch."), "data": value.tolist()}
-        return value
-
-    return json.dumps({key: encode(value) for key, value in context.items()})
+    spans = [layer.timespan for layer in stack.values() if layer.timespan is not None]
+    if not spans:
+        return ""
+    return f"{min(start for start, _ in spans).isoformat()}/{max(end for _, end in spans).isoformat()}"
 
 
-def _context_from_json(raw: str | None) -> dict[str, Any]:
-    """Reverse of `_context_to_json` — rebuilds `torch.Tensor` values the marker tags.
+class GeoStack(_SpatialStack[GeoRaster]):
+    """Named raster layers over one surface — any size, pixels not fully in memory.
+
+    Groups sources a model reads together, e.g. Sentinel-2 with a DEM. Layers
+    must already share one geobox; align them with `GeoRaster.reproject_like`.
 
     Args:
-        raw: `from_zarr`'s root attr read, `None` if `to_zarr` never wrote one.
-
-    Returns:
-        `{key: value}` — a marked value comes back as a `torch.Tensor`
-        (original dtype), anything else comes back exactly as JSON gave it.
-    """
-    if raw is None:
-        return {}
-
-    def decode(value: Any) -> Any:
-        if isinstance(value, dict) and value.get(_TENSOR_MARKER):
-            return torch.tensor(value["data"], dtype=getattr(torch, value["dtype"]))
-        return value
-
-    return {key: decode(value) for key, value in json.loads(raw).items()}
-
-
-@dataclass(frozen=True, kw_only=True)
-class GeoStack:
-    """Named group of GeoTiles for one anchor — the collection counterpart to GeoTile.
-
-    GeoTile is one raster; GeoStack is the named set of them that make
-    up one training or inference sample, all sharing one anchor. Carries
-    no schema of its own — each tile already describes itself. Immutable —
-    build a new GeoStack instead of adding layers onto an existing one.
-
-    Args:
-        *args: Positional `GeoTile`s, auto-named `layer_0`, `layer_1`, ...
-            A nested `GeoStack` flattens in under its own layer names instead,
-            its own `context` (if any) carried forward too.
-        **tiles: Layer name to GeoTile. Auto-aligned to their common
-            spatial intersection via `align_spatial()` when there's more than one.
+        base: Layers this stack starts from — a mapping, or another GeoStack
+            to extend with derived layers. None starts empty.
+        reference_layer: Layer whose anchor is this stack's own identity —
+            grid, time span, features, attrs. None keeps `base`'s when it is
+            a GeoStack, else uses the first layer.
+        **layers: `name=raster`, on the reference layer's exact geobox. A
+            name already in `base` replaces that layer.
 
     Raises:
-        ValueError: Two positional args (including a flattened `GeoStack`'s
-            own layers) produce the same name, a positional arg's name
-            collides with a keyword name, or an inherited `context` key
-            collides with a layer name or a reserved sample key
-            (`"geobox"`/`"geotags"`).
+        ValueError: No layer across `base` and `layers`, `reference_layer`
+            names none, or a layer's geobox differs from the reference's.
+        TypeError: A layer isn't a GeoRaster.
 
     Examples:
-        >>> stack = GeoStack(sentinel_2_l1c=s2_tile, cloud_mask=mask_tile)
-        >>> stack.to_zarr("data/train/13.0000E_52.0000N_5kmx5km_20240115_10m.zarr")
-        >>> sample = stack.to_tensor()
-        >>> combined = GeoStack(stack, ndvi=ndvi_tile)  # flattens stack's own layers in
-        >>> combined = combined.with_context({"temporal_coords": t})  # attach context
+        >>> stack = GeoStack(image=s2, dem=dem.reproject_like(s2))
+        >>> stack = GeoStack({"image": s2, "dem": dem})
+        >>> stack = GeoStack(ingested, dynamicworld=label)
     """
 
-    tiles: dict[LayerName, GeoTile]
-    geobox: GeoBox = field(init=False)
-    context: dict[str, Any] = field(default_factory=dict)
+    LAYER_TYPE = GeoRaster
 
-    def __init__(self, *args: GeoTile | GeoStack, **tiles: GeoTile) -> None:
-        positional: dict[LayerName, GeoTile] = {}
-        layer_index = 0
-        inherited_context: dict[str, Any] = {}
-        for arg in args:
-            new_layers = arg.tiles if isinstance(arg, GeoStack) else {f"layer_{layer_index}": arg}
-            if isinstance(arg, GeoStack):
-                inherited_context.update(arg.context)
-            else:
-                layer_index += 1
-            collision = set(positional) & set(new_layers)
-            if collision:
-                raise ValueError(f"layer name(s) {collision} collide across positional args — rename or don't mix")
-            positional.update(new_layers)
+    def __init__(
+        self,
+        base: Mapping[LayerName, GeoRaster] | None = None,
+        /,
+        *,
+        reference_layer: LayerName | None = None,
+        **layers: GeoRaster,
+    ) -> None:
+        merged: dict[LayerName, GeoRaster] = dict(base) if base is not None else {}
+        merged.update(layers)
+        if reference_layer is None and isinstance(base, GeoStack):
+            reference_layer = base.reference_layer
+        super().__init__(merged, reference_layer=reference_layer)
 
-        collision = set(positional) & set(tiles)
-        if collision:
-            raise ValueError(
-                f"positional arg name(s) {collision} collide with explicit "
-                "keyword name(s) — rename the keyword or don't mix"
-            )
-        named = {**positional, **tiles}
-        aligned = dict(zip(named.keys(), align_spatial(*named.values()))) if len(named) > 1 else named
-        _check_context_collision(inherited_context, aligned)
-
-        object.__setattr__(self, "tiles", aligned)
-        object.__setattr__(self, "geobox", next(iter(aligned.values())).geobox)
-        object.__setattr__(self, "context", inherited_context)
-
-    def with_context(self, context: dict[str, Any]) -> "GeoStack":
-        """New GeoStack, same tiles/geobox, context replaced (not merged).
-
-        The only way to attach/replace context — deliberately not a
-        constructor kwarg: mixing a specifically-typed keyword in with
-        `**tiles: GeoTile`'s open-ended splat is exactly what forced a
-        `# type: ignore` at every `GeoStack(**some_dict)` call site (a
-        literal layer named `"context"` would misroute to it). Splitting
-        it into its own method removes that class of call site entirely.
+    def _rebuild(self, layers: Mapping[LayerName, GeoRaster], *, reference_layer: LayerName | None = None) -> Self:
+        """Build a GeoStack over replacement layers.
 
         Args:
-            context: Extra per-sample values not tied to any one layer (e.g.
-                `temporal_coords`/`location_coords` a `GeoPipeline.context()`
-                derived). JSON-serializable, or a `torch.Tensor` (round-trips
-                through `to_zarr`/`from_zarr` intact either way — see
-                `_context_to_json`). Persisted by `to_zarr`, restored by
-                `from_zarr`, merged into `to_tensor()`/`to_numpy()`'s output.
+            layers: Replacement layers, including the reference layer.
+            reference_layer: Layer to anchor on. None keeps this stack's own.
 
         Returns:
-            A new GeoStack — `tiles`/`geobox` reused as-is, `context` replaced.
+            New GeoStack.
+        """
+        return type(self)(layers, reference_layer=reference_layer or self.reference_layer)
+
+    @classmethod
+    def open(cls, path: str | Path, *, reference_layer: LayerName | None = None) -> Self:
+        """Lazily open a stack store — one zarr group per layer, as `to_zarr` wrote it.
+
+        Args:
+            path: `.zarr` store to open.
+            reference_layer: Layer whose anchor is the stack's. None uses the
+                first group in name order.
+
+        Returns:
+            GeoStack with every group as a layer, in the order `to_zarr`
+            recorded, pixels still on disk, each layer's
+            `<stem>.<layer>.vector.parquet` sidecar read back as its own
+            vector. A store written before layer order was recorded reopens
+            in name order.
 
         Raises:
-            ValueError: A context key collides with a layer name or a
-                reserved sample key (`"geobox"`/`"geotags"`).
+            ValueError: `path` isn't a `.zarr` store, holds no group, its
+                recorded layer order doesn't match its groups, or its groups
+                disagree on their geobox.
+
+        Examples:
+            >>> stack = GeoStack.open("data/train/sample.zarr")
         """
-        _check_context_collision(context, self.tiles)
-        new = object.__new__(type(self))
-        object.__setattr__(new, "tiles", self.tiles)
-        object.__setattr__(new, "geobox", self.geobox)
-        object.__setattr__(new, "context", context)
-        return new
+        import zarr
 
-    def __repr__(self) -> str:
-        blocks = []
-        for name, tile in self.tiles.items():
-            lines = repr(tile).splitlines()[1:]  # drop tile's own "GeoTile" header line
-            indented = "\n".join(f"    {line}" for line in lines)
-            blocks.append(f"    {name}:\n{indented}")
-        layers = "\n".join(blocks)
-        return f"{type(self).__name__}\n  layers:\n{layers}\n  context: {self.context}"
+        path = Path(path)
+        if path.suffix != ".zarr":
+            raise ValueError(f"Expected a .zarr store, got: {path}")
+        root = zarr.open_group(str(path), mode="r")
+        groups = set(root.group_keys())
+        if not groups:
+            raise ValueError(f"no layer groups in {path} — a GeoStack store holds one group per layer")
 
-    def plot(self, cols: int = 4, **kwargs: Unpack[PlotKwargs]) -> tuple[Figure, np.ndarray]:
-        """Plot every layer — thin wrapper, see `geosave_engine.geodata.utils.geovis.plot`.
+        stored = dict(root.attrs).get(_STACK_HEADER_KEY)
+        header = dict(stored) if isinstance(stored, Mapping) else {}
+
+        recorded = header.get(LAYERS_KEY)
+        if isinstance(recorded, (list, tuple)):
+            names = [str(name) for name in recorded]
+            if set(names) != groups:
+                raise ValueError(
+                    f"{path} records layers {names} but holds groups {sorted(groups)} — "
+                    "the store was written or edited by something that disagreed on its layers"
+                )
+        else:
+            names = sorted(groups)
+
+        if reference_layer is None:
+            anchored = header.get(REFERENCE_KEY)
+            reference_layer = anchored if isinstance(anchored, str) else None
+        return cls(
+            {name: GeoRaster.open(path, group=name) for name in names},
+            reference_layer=reference_layer,
+        )
+
+    # --- Windowing ---
+
+    def crop(self, geobox: GeoBox) -> Self:
+        """Cut every layer to a window already on the shared pixel grid.
 
         Args:
-            **kwargs: Forwarded to `geovis.plot` (`cmap`, `class_map`,
-                `color_map`, `rgb_bands`, `cols`, `title`, `show_metadata`).
+            geobox: Window to keep. Must sit fully inside this stack's own
+                geobox and land on its pixel grid.
 
         Returns:
-            `(Figure, ndarray of Axes)`.
+            New GeoStack on `geobox`, same layers, each layer's features
+            filtered to the window and its `tiling` cleared.
+
+        Raises:
+            ValueError: `geobox` isn't on this stack's pixel grid, or isn't
+                fully inside its extent.
         """
-        from geosave_engine.geodata.utils.geovis import plot
+        return self._rebuild({name: raster.crop(geobox) for name, raster in self.items()})
 
-        return plot(self.tiles, cols=cols, **kwargs)
+    def to_sample(self) -> GeoTileStack:
+        """Read this surface as one window — same layers, headers and features.
 
-    def to_zarr(self, path: str | Path, overwrite: bool = True, chunk_px: int | None = None) -> Path:
-        """Write every layer into its own Zarr group inside one store.
+        The inverse of `GeoTileStack.to_stack`, and the point at which a caller
+        asserts these pixels fit in memory. Nothing here checks that.
 
-        STAC provenance, if any, writes alongside as `<layer_name>.stac.json`.
-        `self.context`, if any, writes as one root-level attr — computed once
-        here, `from_zarr` restores it, no per-read recomputation.
+        Returns:
+            GeoTileStack over the same layers, each as a GeoTile.
+        """
+        from .tile_stack import GeoTileStack
+
+        return GeoTileStack(
+            {name: raster.to_tile() for name, raster in self.items()},
+            reference_layer=self.reference_layer,
+        )
+
+    def tiles(
+        self,
+        tile_size_px: int | None = None,
+        stride_px: int | None = None,
+        overlap: int | float | tuple[int, int] | None = None,
+        mode: TilerMode = "reflect",
+        vector: bool = True,
+        *,
+        time: TimeWindow | None = None,
+        name: str | None = None,
+        context_fn: ContextFn | None = None,
+    ) -> Iterator[GeoTileStack]:
+        """Cut every layer into matching square windows, one GeoTileStack per position and time window.
+
+        Every layer of one window carries the reference layer's `tiling`
+        stamp, so predictions off any of them merge through `from_tiles`.
+        Each time window is its own tiling group.
 
         Args:
-            path: Output Zarr store path, must end in `.zarr`.
-            overwrite: False raises instead of replacing an existing group.
-            chunk_px: Spatial (y/x) on-disk chunk side length, same for
-                every layer. None skips chunking.
+            tile_size_px: Window side length in pixels (square), before edge
+                handling. None uses the shorter of the two axes.
+            stride_px: Distance between consecutive window origins. None = tile_size_px.
+            overlap: Forwarded to tiler.Tiler's own overlap kwarg. Wins over
+                `stride_px` when both are given.
+            mode: How a trailing window's overhang is filled — "reflect"
+                mirrors, "edge" repeats, "constant" uses each layer's nodata.
+            vector: True gives each sample the reference layer's features
+                filtered to its window, kept whole. False yields none.
+            time: `(length, stride)` in reference-layer steps, or a bare
+                length. Windows are cut on the reference layer alone; every
+                other timed layer keeps the steps whose own buckets overlap
+                that window, and timeless layers ride along whole. None
+                windows nothing.
+            name: Extra text folded into each cut's derived `group_id`,
+                separating two otherwise identical cuts.
+            context_fn: Called once per window with the reference layer's own
+                anchor, whose header carries that window's bands and steps; its
+                result becomes that sample's `model_context`. None leaves it
+                unset, and an encoder derives its own at forward time.
+
+        Yields:
+            One GeoTileStack per time window and position, window-major: every
+            position of one window before the next window starts, so a
+            stitcher holds one output surface at a time. Positions run
+            row-major. Lazy in, lazy out — no pixel is read here.
+
+        Raises:
+            ValueError: `tile_size_px` isn't positive, `stride_px` isn't
+                positive or is wider than the tile, `mode` is invalid,
+                mode="constant" and a layer declares no nodata, or `time`
+                was given and the reference layer is timeless.
+
+        Examples:
+            >>> for sample in stack.tiles(512, time=(4, 1), context_fn=Clay.model_context):
+            ...     batch = sample.to_tensor()
+        """
+        from .tile_stack import GeoTileStack
+
+        names = list(self)
+        reference_position = names.index(self.reference_layer)
+        for window in self._time_cuts(time):
+            # windows of one surface differ only by span, so the group id needs the span to stay distinct
+            group_name = name if time is None else f"{name or ''}@{_span_key(window)}"
+            cuts = [
+                raster.tiles(
+                    tile_size_px=tile_size_px,
+                    stride_px=stride_px,
+                    overlap=overlap,
+                    mode=mode,
+                    vector=vector if layer == self.reference_layer else False,
+                    name=group_name,
+                )
+                for layer, raster in window.items()
+            ]
+            for tiles in zip(*cuts, strict=True):
+                # the reference's stamp makes every layer one merge group; it already carries it
+                stamp = tiles[reference_position].tiling
+                layers = {
+                    layer: tile
+                    if tile.tiling == stamp
+                    else GeoTile(data=tile.data, anchor=tile.anchor.rebase(tiling=stamp))
+                    for layer, tile in zip(names, tiles, strict=True)
+                }
+                anchored = layers[self.reference_layer]
+                yield GeoTileStack(
+                    layers,
+                    reference_layer=self.reference_layer,
+                    model_context=None if context_fn is None else context_fn(anchored.anchor),
+                )
+
+    def _time_cuts(self, time: TimeWindow | None) -> list[Self]:
+        """This stack cut into one stack per time window.
+
+        The reference layer's steps define each window; every other timed layer
+        keeps the steps whose buckets overlap it. All of them bucket at least as
+        coarsely, so a window a layer has nothing in means a real gap in it.
+
+        Args:
+            time: `(length, stride)` in reference-layer steps, or a bare
+                length. None or empty returns this stack alone.
+
+        Returns:
+            One stack per window, in time order.
+
+        Raises:
+            ValueError: `time` was given and the reference layer has no time
+                dim to window, or a layer has no step over some window.
+        """
+        if not time:
+            return [self]
+
+        reference = self[self.reference_layer]
+        if not reference.has_time:
+            raise ValueError(
+                f"time= windows the reference layer {self.reference_layer!r}, which has no time dim"
+            )
+        length, stride = (time, time) if isinstance(time, int) else time
+
+        cuts: list[Self] = []
+        for window in reference.time_windows(length, stride):
+            span = window.timespan
+            assert span is not None
+            layers: dict[LayerName, GeoRaster] = {}
+            for name, layer in self.items():
+                if name == self.reference_layer:
+                    layers[name] = window
+                elif not layer.has_time:
+                    layers[name] = layer
+                else:
+                    try:
+                        layers[name] = layer.select(time=span)
+                    except ValueError as gap:
+                        raise ValueError(
+                            f"layer {name!r} has no step over {span[0]}–{span[1]}, a window of "
+                            f"reference layer {self.reference_layer!r} — that window would train on "
+                            f"a layer that isn't there; fill the gap or narrow the stack's own span"
+                        ) from gap
+            cuts.append(self._rebuild(layers))
+        return cuts
+
+    # --- Persistence ---
+
+    def to_zarr(
+        self,
+        path: str | Path,
+        chunk_px: int | None = 512,
+        progress: bool = True,
+        **options: Unpack[ZarrOptions],
+    ) -> Path:
+        """Write one CF-compliant Zarr store, one group per layer.
+
+        Every layer's pixels compute together, so layers sharing a source read
+        it once. Each `vector` goes beside the store as `<stem>.<layer>.vector.parquet`,
+        and the root records the reference layer and order, so `open` restores both.
+
+        Args:
+            path: Output `.zarr` store path.
+            chunk_px: Spatial (y/x) chunk side length. `time` is never split.
+            progress: Show a dask progress bar while pixels compute.
+            **options: Passed to `xarray.Dataset.to_zarr` for every layer —
+                see `ZarrOptions`. `group` names the layer and `compute` runs
+                the single pass, so neither may be given.
 
         Returns:
             The written store path.
 
         Raises:
-            ValueError: If path doesn't end in `.zarr`, or overwrite=False
-                and a layer name collides with a group already present.
+            ValueError: `group` or `compute` was given, or an option is one
+                the writer sets itself.
         """
-        path = Path(path)
-        if path.suffix != ".zarr":
-            raise ValueError(f"Expected a .zarr path, got: {path}")
-        if not overwrite and path.exists():
-            collision = set(zarr.open_group(path, mode="r").group_keys()) & set(self.tiles)
-            if collision:
-                raise ValueError(
-                    f"{path} already has group(s) {sorted(collision)} — pass overwrite=True to replace them"
-                )
-        for layer_name, tile in self.tiles.items():
-            tag = tile.geotag.model_dump_json(exclude_none=True)
-            ds = da_to_ds(tile.data).assign_attrs(tag=tag)
-            to_zarr(path, ds, group=layer_name, chunk_px=chunk_px)
-            _write_stac(tile.stac, path, group=layer_name)
-        if self.context:
-            zarr.open_group(path, mode="a").attrs["context"] = _context_to_json(self.context)
-        return path
+        import zarr
+        from dask.base import compute as dask_compute
 
-    @classmethod
-    def from_zarr(
-        cls,
-        path: str | Path,
-        required_layers: list[LayerName] | None = None,
-        load_data: bool = False,
-    ) -> "GeoStack":
-        """Read a Zarr store written by to_zarr() into one GeoStack.
+        from geosave_engine.geodata.utils.array import progress_bar
 
-        A store with no groups loads its root as one `layer_0` layer.
+        clashing = sorted({"group", "compute"} & set(options))
+        if clashing:
+            raise ValueError(
+                f"to_zarr() sets {clashing} itself — 'group' names each layer's own group, and "
+                "'compute' is driven by the single pass that reads shared sources once"
+            )
 
-        Args:
-            path: Store written by to_zarr(), must end in `.zarr`.
-            required_layers: Layer names to require. None loads every layer present.
-            load_data: Materialise all pixels into memory; default lazy.
+        # the adapter, not GeoRaster.to_zarr: only this write defers, so layers share one pass
+        written = Path(path)
+        pending = [
+            to_zarr(
+                written,
+                raster._cf_encoded("json"),
+                vector=None if raster.vector is None else raster.vector.gdf,
+                chunk_px=chunk_px,
+                progress=False,
+                compute=False,
+                # widened: an overload cannot be matched through a TypedDict spread
+                **cast("Any", {**options, "group": name}),
+            )
+            for name, raster in self.items()
+        ]
+        with progress_bar(progress):
+            dask_compute(*pending)
 
-        Returns:
-            GeoStack with one GeoTile per loaded layer, `context` restored
-            from `to_zarr`'s root attr (empty if it never wrote one).
-
-        Raises:
-            ValueError: If path doesn't end in `.zarr`.
-            KeyError: If a name in required_layers isn't present in the store.
-        """
-        path = Path(path)
-        if path.suffix != ".zarr":
-            raise ValueError(f"Expected a .zarr path, got: {path}")
-        root = zarr.open_group(path, mode="r")
-        available = sorted(root.group_keys())
-        if not available:
-            return cls(GeoTile.from_zarr(path, load_data=load_data))
-        names = required_layers if required_layers is not None else available
-        missing = set(names) - set(available)
-        if missing:
-            raise KeyError(f"Layer(s) {sorted(missing)} not found in {path} — available: {available}")
-
-        tiles = {name: GeoTile.from_zarr(path, group=name, load_data=load_data) for name in names}
-        stack = cls(**tiles)
-        raw_context = root.attrs.get("context")
-        context = _context_from_json(raw_context if isinstance(raw_context, str) else None)
-        return stack.with_context(context) if context else stack
-
-    def to_tensor(
-        self,
-        sel_bands: dict[LayerName, list[str]] | None = None,
-        dtype_override: dict[LayerName, torch.dtype] | None = None,
-    ) -> dict[str, Any]:
-        """Render carried tiles as one model sample.
-
-        Args:
-            sel_bands: Layer name to band names to keep. Default keeps all
-                bands the tile carries.
-            dtype_override: Layer name to torch dtype to cast that layer's
-                tensor to. Default keeps the tensor's saved dtype.
-
-        Returns:
-            Tensor dict keyed by layer name, plus `"geobox"` (this stack's
-            one shared geobox, JSON-safe), `"geotags"` (`dict[LayerName,
-            dict]`, one per-layer geotag, JSON-safe — layers can differ in
-            datetime/metadata/polygon even though geobox is shared), and
-            `self.context`'s own keys.
-        """
-        sel_bands = sel_bands or {}
-        dtype_override = dtype_override or {}
-
-        sample: dict[str, Any] = {}
-        for layer_name, tile in self.tiles.items():
-            tensor = tile.to_tensor(sel_bands.get(layer_name))
-            dtype = dtype_override.get(layer_name)
-            if dtype is not None:
-                tensor = tensor.to(dtype)
-            sample[layer_name] = tensor
-
-        sample["geobox"] = _geobox_to_dict(self.geobox)
-        sample["geotags"] = {
-            layer_name: tile.geotag.model_dump(mode="json", exclude_none=True)
-            for layer_name, tile in self.tiles.items()
+        # reference layer and layer order are stack-level facts, so they ride on the store root, not in any group
+        zarr.open_group(str(written), mode="a").attrs[_STACK_HEADER_KEY] = {
+            REFERENCE_KEY: self.reference_layer,
+            LAYERS_KEY: list(self),
         }
-        sample.update(self.context)
-        return sample
-
-    def to_numpy(
-        self,
-        sel_bands: dict[LayerName, list[str]] | None = None,
-        dtype_override: dict[LayerName, np.dtype] | None = None,
-    ) -> dict[str, Any]:
-        """Render carried tiles as one NumPy sample.
-
-        Args:
-            sel_bands: Layer name to band names to keep. Default keeps all
-                bands the tile carries.
-            dtype_override: Layer name to NumPy dtype to cast that layer's
-                array to. Default keeps the array's saved dtype.
-
-        Returns:
-            Array dict keyed by layer name, plus `"geobox"` (this stack's
-            one shared geobox, JSON-safe), `"geotags"` (`dict[LayerName,
-            dict]`, one per-layer geotag, JSON-safe), and `self.context`'s
-            own keys as-is — not cast to array (a `torch.Tensor` context
-            value stays a tensor; this method's array-casting is only for
-            the per-layer image payload it exists for).
-        """
-        sel_bands = sel_bands or {}
-        dtype_override = dtype_override or {}
-
-        sample: dict[str, Any] = {}
-        for layer_name, tile in self.tiles.items():
-            array = tile.to_numpy(sel_bands.get(layer_name))
-            dtype = dtype_override.get(layer_name)
-            if dtype is not None:
-                array = array.astype(dtype)
-            sample[layer_name] = array
-
-        sample["geobox"] = _geobox_to_dict(self.geobox)
-        sample["geotags"] = {
-            layer_name: tile.geotag.model_dump(mode="json", exclude_none=True)
-            for layer_name, tile in self.tiles.items()
-        }
-        sample.update(self.context)
-        return sample
+        return written

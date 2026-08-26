@@ -1,14 +1,4 @@
-"""Fail on docstring/comment bloat CLAUDE.md's Docstring Writing Guide bans.
-
-Mechanical gate, not a style suggestion — run this on any file with a
-touched docstring/comment before calling that work done. Checks:
-  - Docstring body (summary line + blank, up to Args/Returns/Raises/
-    Examples) is at most MAX_BODY_LINES lines.
-  - No run of MAX_COMMENT_LINES+ consecutive standalone "#" comment lines.
-
-Usage: python scripts/check_docstrings.py <file_or_dir> [...]
-Exit 0 if clean, 1 with one finding per line if not.
-"""
+"""Check Python docstrings and comments against AGENTS.md size limits."""
 from __future__ import annotations
 
 import ast

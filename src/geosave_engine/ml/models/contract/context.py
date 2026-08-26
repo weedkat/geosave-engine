@@ -3,6 +3,7 @@ from __future__ import annotations
 import ast
 import inspect
 import textwrap
+import types
 import typing
 from functools import wraps
 from typing import Any
@@ -10,6 +11,22 @@ from typing import Any
 import torch
 
 _SCOPE_NODES = (ast.FunctionDef, ast.AsyncFunctionDef, ast.Lambda, ast.ClassDef)
+
+
+def _strip_optional(hint: type) -> type:
+    """Unwrap `X | None` down to `X`; any other hint passes through unchanged.
+
+    Args:
+        hint: A resolved type hint (from `typing.get_type_hints`).
+
+    Returns:
+        `X` for an `X | None` union of exactly one non-`None` member, else `hint` as-is.
+    """
+    if typing.get_origin(hint) is types.UnionType:
+        members = [arg for arg in typing.get_args(hint) if arg is not type(None)]
+        if len(members) == 1:
+            return members[0]
+    return hint
 
 
 def _direct_returns(node: ast.AST) -> list[ast.Return]:
@@ -129,7 +146,7 @@ def _provides_from_return_type(fn) -> tuple[dict[str, type], bool]:
     return dict(zip(names, arg_types)), is_single
 
 
-def model_context(head: bool = False):
+def chain_step(head: bool = False):
     """Mark a module method as a context-chain step; validate keys and types.
 
     The decorated method takes typed tensor/list params (its real inputs),
@@ -145,6 +162,14 @@ def model_context(head: bool = False):
     ``dict[str, Any]`` between steps; the wrapper this decorator builds
     unpacks it into the typed call, re-packs the method's plain (or
     single-value) return into that dict for ``ContextChain`` to merge in.
+
+    A param with a real default (``x: T | None = None``) is optional —
+    dropped from ``requires``, so ``ContextChain`` never demands it from the
+    caller or the graph. The wrapper still forwards it from ctx when
+    present (type-checked against ``T``, the non-``None`` half of the
+    hint); when absent or ``None`` in ctx, the call omits it and the
+    method's own default runs instead, so the method body decides what to
+    do without it.
 
     ``head=True`` methods are terminal — the chain stops and returns the
     value directly instead of merging it into ctx. Must return
@@ -175,28 +200,31 @@ def model_context(head: bool = False):
             returned value doesn't match what was declared.
 
     Examples:
-        >>> @model_context()
+        >>> @chain_step()
         ... def encode(self, image: torch.Tensor) -> torch.Tensor:
         ...     feature_map = self.encoder(image)
         ...     return feature_map
 
-        >>> @model_context()
+        >>> @chain_step()
         ... def forward_pyramid(self, image: torch.Tensor) -> tuple[list, list]:
         ...     features, prefix_tokens = self.backbone(image)
         ...     return features, prefix_tokens
 
-        >>> @model_context(head=True)
+        >>> @chain_step(head=True)
         ... def forward_logits(self, feature_map: torch.Tensor) -> torch.Tensor:
         ...     return self.head(feature_map)
     """
 
     def decorator(fn):
         hints = typing.get_type_hints(fn)
-        param_names = [name for name in inspect.signature(fn).parameters if name != 'self']
+        sig = inspect.signature(fn)
+        param_names = [name for name in sig.parameters if name != 'self']
         missing_hints = [name for name in param_names if name not in hints]
         if missing_hints:
             raise TypeError(f"{fn.__qualname__}: missing type hint(s) for {missing_hints}")
-        _requires: dict[str, type] = {name: hints[name] for name in param_names}
+        # A param with a real default is optional — excluded from requires below.
+        _optional = {name for name in param_names if sig.parameters[name].default is not inspect.Parameter.empty}
+        _requires: dict[str, type] = {name: hints[name] for name in param_names if name not in _optional}
 
         if head:
             if hints.get('return') is not torch.Tensor:
@@ -235,7 +263,18 @@ def model_context(head: bool = False):
                         f"{expected.__name__}, got {type(ctx[key]).__name__}"
                     )
 
-            result = fn(self, *(ctx[name] for name in param_names))
+            call_kwargs: dict[str, Any] = {name: ctx[name] for name in _requires}
+            for name in _optional:
+                if name in ctx and ctx[name] is not None:
+                    expected = _strip_optional(hints[name])
+                    if not isinstance(ctx[name], expected):
+                        raise TypeError(
+                            f"{type(self).__name__}.{fn.__name__}: ctx['{name}'] expected "
+                            f"{expected.__name__}, got {type(ctx[name]).__name__}"
+                        )
+                    call_kwargs[name] = ctx[name]
+
+            result = fn(self, **call_kwargs)
 
             if head:
                 if not isinstance(result, torch.Tensor):
@@ -261,7 +300,7 @@ def model_context(head: bool = False):
                     )
             return result_dict
 
-        setattr(wrapper, '_is_model_context', True)
+        setattr(wrapper, '_is_chain_step', True)
         setattr(wrapper, '_requires', _requires)
         setattr(wrapper, '_provides', _provides)
         return wrapper

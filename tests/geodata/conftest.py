@@ -8,24 +8,28 @@ from typing import Any, Sequence
 
 import pytest
 
-from geosave_engine.geodata.datastore import SampleStore
-
 
 @pytest.fixture
 def write_sample_store():
-    """Factory: build and write a SampleStore, retrying litdata's own index.json write race.
+    """Factory: build and write a LitDataStore, retrying litdata's own index.json write race.
 
     Observed directly in this environment (not a guess) — optimize()'s
     background index.json write occasionally hasn't landed yet by the time
     this fixture's own first read runs right after. A real correctness bug
     reproduces on every attempt, not just the first, so a bounded retry here
     doesn't mask one — it only papers over that one known timing gap.
-    """
 
-    def _write(path: str | Path, samples: Sequence[Any], **config: Any) -> SampleStore:
+    Import deferred to call time — datastore/xcube.py currently imports a
+    module path that doesn't exist (geosave_engine.geodata.spatial.ops),
+    unrelated pre-existing breakage that shouldn't block every geodata test's
+    collection just because this one fixture is unused.
+    """
+    from geosave_engine.geodata.datastore import LitDataStore
+
+    def _write(path: str | Path, samples: Sequence[Any], **config: Any) -> LitDataStore:
         last_err: ValueError | None = None
         for _ in range(3):
-            store = SampleStore(str(path), **config)
+            store = LitDataStore(str(path), **config)
             store.write(samples)
             try:
                 len(store)

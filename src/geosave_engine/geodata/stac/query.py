@@ -1,17 +1,16 @@
-from typing import Any
 import dataclasses
 from dataclasses import dataclass
 from datetime import datetime as dt
-from typing import TypeVar
+from typing import Any, Literal, TypeVar
 
 from cql2 import Expr
 
-from geosave_engine.geodata.utils.crs import validate_bbox
+from geosave_engine.geodata.utils.spatial.crs import validate_bbox
 
 T = TypeVar("T", bound="StacQuery")
 SortBy = list[dict[str, str]] | dict[str, str] | str
 
-@dataclass
+@dataclass(frozen=True)
 class StacQuery:
     """STAC search parameters for a single catalog query.
 
@@ -24,7 +23,7 @@ class StacQuery:
         max_items: Client-side max items to return.
         limit: Server-side page size hint.
         query: Legacy STAC query extension filters.
-        filter: CQL2-JSON filter expression; build with ``with_filter`` from CQL2 text.
+        filter: CQL2-JSON filter expression; build with ``set_filter`` from CQL2 text.
         fields: Item fields to include or exclude.
         sortby: Sort order — string, dict, or list of ``{"field": ..., "direction": ...}``.
     """
@@ -41,9 +40,15 @@ class StacQuery:
     fields: list[str] | None = None
     sortby: SortBy | None = None
 
-    def __post_init__(self):
-        """Validate bbox is valid WGS84."""
+    def __post_init__(self) -> None:
+        """Validate spatial bounds and search limits."""
         validate_bbox(self.bbox)
+        if not self.collections:
+            raise ValueError("StacQuery needs at least one collection")
+        if self.max_items is not None and self.max_items < 1:
+            raise ValueError(f"max_items must be positive, got {self.max_items}")
+        if self.limit is not None and self.limit < 1:
+            raise ValueError(f"limit must be positive, got {self.limit}")
 
     def to_search_params(self) -> dict[str, Any]:
         """Build pystac-client search kwargs. Strips ``None`` values.
@@ -67,36 +72,42 @@ class StacQuery:
         }
         return {k: v for k, v in params.items() if v is not None}
 
-    def with_filter(self: T, expr: str, inplace: bool = False) -> T:
+    def set_filter(self: T, expr: str) -> T:
         """Merge CQL2 text filter expression into existing filter.
 
         Wraps both expressions in ``and`` if filter already exists.
 
         Args:
             expr: CQL2 text filter expression.
-            inplace: Mutate self and return it. Default leaves self untouched,
-                returns a copy with the merged filter instead.
-        
+
+        Returns:
+            New StacQuery, filter merged — self stays untouched.
+
         Example:
             >>> query = StacQuery(collections=["sentinel-2-l2a"])
-            >>> query = query.with_filter("eo:cloud_cover <= 10")
+            >>> query = query.set_filter("eo:cloud_cover <= 10")
         """
         parsed = Expr(expr).to_json()
+        merged = parsed if self.filter is None else {"op": "and", "args": [self.filter, parsed]}
+        return dataclasses.replace(self, filter=merged)
 
-        if inplace:
-            self.filter = parsed
-            return self
-        return dataclasses.replace(self, filter=parsed)
-
-    def with_sortby(self: T, field: str, direction: str = "asc", inplace: bool = False) -> T:
+    def set_sortby(self: T, field: str, direction: Literal["asc", "desc"] = "asc") -> T:
         """Append a sort field to existing sort order.
 
         Args:
             field: STAC item property name to sort by.
             direction: ``'asc'`` or ``'desc'``.
-            inplace: Mutate self and return it. Default leaves self untouched,
-                returns a copy with the appended sort field instead.
+
+        Returns:
+            New StacQuery, sort field appended — self stays untouched.
+
+        Raises:
+            ValueError: `field` is empty or `direction` is invalid.
         """
+        if not field:
+            raise ValueError("sortby field cannot be empty")
+        if direction not in ("asc", "desc"):
+            raise ValueError(f"sortby direction must be 'asc' or 'desc', got {direction!r}")
         new_sort = {"field": field, "direction": direction}
         if self.sortby is None:
             new_sortby = [new_sort]
@@ -107,9 +118,6 @@ class StacQuery:
         else:
             new_sortby = [parse_sortby(self.sortby), new_sort]
 
-        if inplace:
-            self.sortby = new_sortby
-            return self
         return dataclasses.replace(self, sortby=new_sortby)
 
 def parse_sortby(sortby: str) -> dict[str, str]:

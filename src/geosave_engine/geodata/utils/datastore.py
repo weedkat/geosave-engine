@@ -1,6 +1,6 @@
-"""Path/config plumbing for SampleStore — kept out of sample.py so that file is just the class.
+"""Path/config plumbing for LitDataStore — kept out of sample.py so that file is just the class.
 
-Nothing here is public API; SampleStore is the only caller.
+Nothing here is public API; LitDataStore is the only caller.
 """
 from __future__ import annotations
 
@@ -8,6 +8,7 @@ import json
 import os
 import warnings
 from pathlib import Path
+from collections.abc import Iterator
 from typing import Any, Callable
 
 import numpy as np
@@ -15,9 +16,15 @@ import torch
 
 Sample = dict[str, Any]
 
+# Top-level sample fields a window's own layers must not collide with.
+GEO_KEY = "geo"
+CONTEXT_KEY = "model_context"
+REFERENCE_KEY = "reference_layer"
+RESERVED_KEYS = frozenset({GEO_KEY, CONTEXT_KEY, REFERENCE_KEY})
+
 # litdata's own index.json persists exactly these under its "config" key —
 # they're what actually determines whether a store's chunks stay decodable
-# across writes. Everything else in SampleStoreConfig (num_workers, verbose,
+# across writes. Everything else in LitDataStoreConfig (num_workers, verbose,
 # storage_options, ...) is an execution/credentials knob that can freely
 # differ between writes, so it's neither locked nor written to the sidecar.
 INTEGRITY_FIELDS = frozenset({"chunk_size", "chunk_bytes", "compression", "encryption", "item_loader"})
@@ -56,7 +63,7 @@ def sample_to_row(sample: Sample, index: int) -> dict[str, Any]:
     """One decoded sample's non-array fields, for a manifest table row.
 
     Drops any array/tensor value (the pixel payload) — used by both
-    SampleStore.to_parquet and StoreDataset.to_pandas so the two build
+    LitDataStore.to_parquet and StoreDataset.to_pandas so the two build
     identical rows.
 
     Args:
@@ -80,6 +87,33 @@ def checked(item: Any, fn: Callable[[Any], Sample], expected_fields: frozenset[s
             f"sample fields {sorted(got_fields)} don't match this store's locked fields {sorted(expected_fields)}"
         )
     return sample
+
+
+def checked_iter(
+    item: Any,
+    fn: Callable[[Any], Iterator[Sample]],
+    expected_fields: frozenset[str],
+) -> Iterator[Sample]:
+    """Run a generator fn, enforcing the locked field set on every sample it yields.
+
+    Args:
+        item: One input, which `fn` expands into several samples.
+        fn: Generator serializer.
+        expected_fields: Field set this store locked at its first write.
+
+    Yields:
+        Each sample `fn` produced, unchanged.
+
+    Raises:
+        ValueError: A sample's field set differs from the store's own.
+    """
+    for sample in fn(item):
+        got_fields = frozenset(sample)
+        if got_fields != expected_fields:
+            raise ValueError(
+                f"sample fields {sorted(got_fields)} don't match this store's locked fields {sorted(expected_fields)}"
+            )
+        yield sample
 
 
 def parse_hf_bucket_path(path: str) -> tuple[str, str]:
@@ -161,8 +195,8 @@ def normalize_path(
     AWS credentials look reachable anywhere.
 
     Args:
-        path: As given to SampleStore().
-        storage_options: As given in SampleStoreConfig, if any.
+        path: As given to LitDataStore().
+        storage_options: As given in LitDataStoreConfig, if any.
 
     Returns:
         (path litdata should use, storage_options litdata should use).

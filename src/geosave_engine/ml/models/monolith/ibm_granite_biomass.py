@@ -6,7 +6,7 @@ from huggingface_hub import hf_hub_download
 from terratorch.datasets.utils import HLSBands
 from terratorch.tasks import PixelwiseRegressionTask
 
-from geosave_engine.ml.models.contract import model_context
+from geosave_engine.ml.models.contract import chain_step
 from geosave_engine.ml.registry import register_model
 
 _REPO_ID = "ibm-granite/granite-geospatial-biomass"
@@ -99,6 +99,6 @@ class GraniteGeospatialBiomass(nn.Module):
         """
         return self.model(image).output
 
-    @model_context(head=True)
+    @chain_step(head=True)
     def forward_logits(self, image: torch.Tensor) -> torch.Tensor:
         return self.forward(image)

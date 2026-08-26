@@ -4,12 +4,14 @@ import logging
 from pathlib import Path
 from typing import Any, Literal
 
+import numpy as np
 import torch
 import torch.nn as nn
 from lightning import LightningDataModule, LightningModule
 from lightning.pytorch.callbacks import Callback
 from lightning.pytorch.utilities.types import OptimizerLRScheduler
 from litdata import StreamingDataLoader
+from tiler import Merger, Tiler
 from torch.utils.data import DataLoader, Dataset
 
 from geosave_engine.geodata.datasets import StackDataset, StoreDataset, stack_samples
@@ -17,7 +19,6 @@ from geosave_engine.geodata.datasets.stack import LayerName
 from geosave_engine.ml.callbacks.prediction_logger import DensePredictionLogger
 from geosave_engine.ml.callbacks.threshold_calibrator import ThresholdCalibrator
 from geosave_engine.ml.registry import build_loss, build_model, build_optimizer, build_scheduler
-from geosave_engine.ml.inference.sliding_window import split_patches, stitch_patches
 from geosave_engine.ml.inference.thresholding import apply_thresholds
 from geosave_engine.ml.metrics.semantic_segmentation import SemanticSegmentationMetrics
 from geosave_engine.ml.models.contract import ContextChain
@@ -48,9 +49,9 @@ class SemanticSegmentationTask(LightningModule):
     Owns model construction, forward pass, sliding-window inference,
     postprocessing, and training. Fully usable via YAML, no subclassing needed.
 
-    Batch keys default to ``image``/``label``/``mask``/``context`` but are
-    configurable (``image_key``/``label_key``/``mask_key``) to match your
-    StackDataset's own layer names.
+    Batch layer keys default to ``image``/``label``/``mask`` but are
+    configurable (``image_key``/``label_key``/``mask_key``); ``model_context``
+    is read as-is, not configurable — see `_extract_model_context`.
 
     For custom training loops, write an independent LightningModule
     instead — this class does not expect to be subclassed.
@@ -59,7 +60,7 @@ class SemanticSegmentationTask(LightningModule):
         - Chain: ``stages={'encoder': ..., 'decoder': ..., 'head': ...}`` — each
           value a registry key or nn.Module class, built in dict order.
         - Monolith: ``stages={'model': ...}`` — a single nn.Module with one
-          ``@model_context`` method. Same code path as the chain, just one
+          ``@chain_step`` method. Same code path as the chain, just one
           entry — no separate monolith concept.
 
     Args:
@@ -84,7 +85,7 @@ class SemanticSegmentationTask(LightningModule):
         mean_norm: Per-channel normalization mean. Overrides model attribute.
         std_norm: Per-channel normalization std. Overrides model attribute.
         overlap_ratio: Sliding-window patch overlap fraction.
-        pad_size: Reflect-padding added on each side before sliding window.
+        sliding_batch_size: Tiles per forward() call in forward_sliding().
         config: Stage name to that stage's own constructor kwargs (e.g. ``{'encoder': {...}}``).
         loss: Loss function registry key (e.g. ``"CELoss"``).
         optimizer: Optimizer registry key (e.g. ``"AdamW"``).
@@ -141,7 +142,7 @@ class SemanticSegmentationTask(LightningModule):
         mean_norm: list[float] | None = None,
         std_norm: list[float] | None = None,
         overlap_ratio: float = 0.5,
-        pad_size: int = 64,
+        sliding_batch_size: int = 8,
         config: dict | None = None,
         loss: str = 'CELoss',
         optimizer: str = 'AdamW',
@@ -176,7 +177,7 @@ class SemanticSegmentationTask(LightningModule):
         self.mean_norm = mean_norm
         self.std_norm = std_norm
         self.overlap_ratio = overlap_ratio
-        self.pad_size = pad_size
+        self.sliding_batch_size = sliding_batch_size
         self.config = config or {}
 
         self.loss_name = loss
@@ -310,11 +311,11 @@ class SemanticSegmentationTask(LightningModule):
         Args:
             image: ``[B, C, H, W]`` float image tensor, exactly `input_size`.
             **ctx: Extra per-model context (e.g. `temporal_coords=...`,
-                `location_coords=...` — usually built by `_extract_context`
-                from a `pipeline.context()`-supplied batch, not passed by
-                hand), forwarded to the model chain unchanged. Only consumed
-                by whichever stage's `@model_context` method actually names
-                the key — unused keys sit in the chain's ctx dict untouched.
+                `location_coords=...` — usually built by `_extract_model_context`
+                from a pipeline's own precomputed `model_context()`, not
+                passed by hand), forwarded to the model chain unchanged.
+                Only consumed by whichever stage's `@chain_step` method
+                actually names the key — unused keys sit in the chain's ctx dict untouched.
 
         Returns:
             ``[B, num_classes, H, W]`` logits.
@@ -342,10 +343,38 @@ class SemanticSegmentationTask(LightningModule):
             ``[B, num_classes, H, W]`` logits at full input resolution.
         """
         context = context or {}
-        patches = split_patches(image, self.input_size, self.overlap_ratio, self.pad_size)
-        predictions = [self(patch, **context) for patch in patches]
-        original_shape = (image.shape[-2], image.shape[-1])
-        return stitch_patches(predictions, original_shape, self.input_size, self.overlap_ratio, self.pad_size)
+        grid_h, grid_w = self.input_size
+        batch, channels, height, width = image.shape
+        # merge_tiler has no channel axis (Merger's own logits= kwarg covers it) — same height/width/grid/overlap either way.
+        input_tiler = Tiler(
+            data_shape=(channels, height, width),
+            tile_shape=(channels, grid_h, grid_w),
+            channel_dimension=0,
+            overlap=self.overlap_ratio,
+            mode='reflect',
+        )
+        merge_tiler = Tiler(data_shape=(height, width), tile_shape=(grid_h, grid_w), overlap=self.overlap_ratio, mode='reflect')
+        if len(merge_tiler) == 0:
+            raise ValueError(f'image [{height}, {width}] is smaller than input_size {self.input_size} — nothing to tile')
+
+        # Every sample's tiles flattened into one pool — forward() batches span samples too, not just one at a time.
+        samples = image.detach().cpu().numpy()
+        n_tiles = len(merge_tiler)
+        flat_tiles = [input_tiler.get_tile(samples[b], tile_id) for b in range(batch) for tile_id in range(n_tiles)]
+        flat_index = [(b, tile_id) for b in range(batch) for tile_id in range(n_tiles)]
+
+        mergers = [Merger(merge_tiler, window='hann', logits=self.num_classes) for _ in range(batch)]
+        with torch.no_grad():
+            for start in range(0, len(flat_tiles), self.sliding_batch_size):
+                idx_chunk = flat_index[start:start + self.sliding_batch_size]
+                chunk = np.stack(flat_tiles[start:start + self.sliding_batch_size])
+                # context is indexed by the original image batch — idx_chunk re-selects each tile's own row.
+                chunk_context = {key: torch.stack([value[b] for b, _ in idx_chunk]) for key, value in context.items()}
+                predictions = self(torch.from_numpy(chunk).to(image.device), **chunk_context).detach().cpu().numpy()
+                for (b, tile_id), prediction in zip(idx_chunk, predictions):
+                    mergers[b].add(tile_id, prediction)
+        outputs = [merger.merge(unpad=True) for merger in mergers]
+        return torch.from_numpy(np.stack(outputs)).to(device=image.device, dtype=torch.float32)
 
     def postprocess(
         self,
@@ -396,34 +425,30 @@ class SemanticSegmentationTask(LightningModule):
     # Training / validation / test / predict
     # ------------------------------------------------------------------
 
-    def _extract_context(self, batch: dict[str, Any]) -> dict[str, Any]:
-        """Every batch key besides image/label/mask/geobox/geotags — the ingested `GeoStack.context`.
+    def _extract_model_context(self, batch: dict[str, Any]) -> dict[str, Any]:
+        """This batch's own `"model_context"` key — the ingested `GeoStack.model_context`.
 
-        `image_key`/`label_key`/`mask_key` are this task's own tensors,
-        `"geobox"`/`"geotags"` are `GeoStack.to_tensor`'s always-present
-        identity keys (see `docs/concept/model.md`) — none of these five
-        are model context. Everything else in `batch` came from the
-        pipeline's own `context()` override (e.g. `temporal_coords`/
-        `location_coords`), computed once at ingest time and already baked
-        into every saved `StackDataset` sample — nothing to configure here.
+        Computed once at ingest time by the pipeline's own `model_context()`
+        override (e.g. `temporal_coords`/`location_coords`) and already
+        baked into every saved `StackDataset` sample — nothing to
+        configure here.
 
         Args:
             batch: One `DataLoader` batch, as `stack_samples` produces it.
 
         Returns:
-            Extra keys to forward into `self(image, **context)` — `{}` if
-            the ingesting pipeline's `context()` returned none.
+            Extra keys to forward into `self(image, **model_context)` — `{}`
+            if the ingesting pipeline's `model_context()` returned none.
         """
-        exclude = {self.image_key, self.label_key, self.mask_key, 'geobox', 'geotags'}
-        return {key: value for key, value in batch.items() if key not in exclude}
+        return dict(batch.get('model_context') or {})
 
     def training_step(self, batch: dict[str, Any], batch_idx: int) -> torch.Tensor:
-        image, label = batch[self.image_key], batch[self.label_key]
-        context = self._extract_context(batch)
+        image, label = batch['layers'][self.image_key], batch['layers'][self.label_key]
+        model_context = self._extract_model_context(batch)
         image, label = self.augmenter(image, label)
         label = label.squeeze(1) # (B, 1, H, W) → (B, H, W)
 
-        logits = self(image, **context)
+        logits = self(image, **model_context)
         loss = self.loss_fn(logits, label)
 
         self.train_metrics.update(logits, label)
@@ -435,11 +460,11 @@ class SemanticSegmentationTask(LightningModule):
     def validation_step(
         self, batch: dict[str, Any], batch_idx: int, dataloader_idx: int = 0
     ) -> dict[str, torch.Tensor]:
-        image, label = batch[self.image_key], batch[self.label_key]
-        context = self._extract_context(batch)
+        image, label = batch['layers'][self.image_key], batch['layers'][self.label_key]
+        model_context = self._extract_model_context(batch)
         label = label.squeeze(1) # (B, 1, H, W) → (B, H, W)
 
-        logits = self.forward_sliding(image, context)
+        logits = self.forward_sliding(image, model_context)
         loss = self.loss_fn(logits, label)
 
         self.val_metrics.update(logits, label)
@@ -454,11 +479,11 @@ class SemanticSegmentationTask(LightningModule):
     def test_step(
         self, batch: dict[str, Any], batch_idx: int, dataloader_idx: int = 0
     ) -> dict[str, torch.Tensor]:
-        image, label = batch[self.image_key], batch[self.label_key]
-        context = self._extract_context(batch)
+        image, label = batch['layers'][self.image_key], batch['layers'][self.label_key]
+        model_context = self._extract_model_context(batch)
         label = label.squeeze(1) # (B, 1, H, W) → (B, H, W)
 
-        logits = self.forward_sliding(image, context)
+        logits = self.forward_sliding(image, model_context)
 
         self.test_metrics.update(logits, label)
         self.log_dict(self.test_metrics, on_step=False, on_epoch=True, prog_bar=False)
@@ -471,13 +496,13 @@ class SemanticSegmentationTask(LightningModule):
         batch_idx: int,
         dataloader_idx: int = 0,
     ) -> dict[str, torch.Tensor]:
-        image = batch[self.image_key]
-        context = self._extract_context(batch)
-        mask = batch.get(self.mask_key)
+        image = batch['layers'][self.image_key]
+        model_context = self._extract_model_context(batch)
+        mask = batch['layers'].get(self.mask_key)
         if mask is not None:
             mask = mask.squeeze(1) # (B, 1, H, W) → (B, H, W)
 
-        preds, max_probs = self.predict(image, context, mask=mask)
+        preds, max_probs = self.predict(image, model_context, mask=mask)
         return {"pred": preds, "proba": max_probs}
 
 
@@ -507,7 +532,7 @@ class SemanticSegmentationDataModule(LightningDataModule):
         predict_root: StackDataset directory for the predict split. Required
             for ``predict``.
         dataset: `"stack"` (raw `GeoStack` zarr, via `StackDataset`) or
-            `"store"` (packed `SampleStore`, via `StoreDataset`) — or pass a
+            `"store"` (packed `LitDataStore`, via `StoreDataset`) — or pass a
             `Dataset` class directly for anything outside those two.
         dataset_kwargs: Extra kwargs forwarded to `dataset`'s constructor —
             e.g. `required_layers` for `StackDataset`, `cache_dir`/`shuffle`

@@ -1,7 +1,23 @@
 from __future__ import annotations
 
 import inspect
+from enum import Enum, auto
 from typing import Any
+
+
+class Unset(Enum):
+    """Sentinel type — a not-passed keyword argument, distinct from an explicit None.
+
+    Enum, not a plain object instance — an `is not UNSET` check only
+    narrows a `X | None | Unset` union down to `X | None` when the
+    checker can prove `UNSET`'s own type is a single-member Literal,
+    which enum identity gets and a bare object() singleton doesn't.
+    """
+
+    TOKEN = auto()
+
+
+UNSET = Unset.TOKEN
 
 
 def filter_kwargs(cls: type, kwargs: dict[str, Any]) -> dict[str, Any]:

@@ -1,21 +1,22 @@
 import numpy as np
+import xarray as xr
 
 # =============================================================================
 # 1. VEGETATION & CANOPY INDICES
 # =============================================================================
 
-def compute_ndvi(nir: np.ndarray, red: np.ndarray, eps: float = 1e-6) -> np.ndarray:
+def compute_ndvi(nir: xr.DataArray, red: xr.DataArray, eps: float = 1e-6) -> xr.DataArray:
     """Normalized Difference Vegetation Index.
 
     Sentinel-2: nir=B08, red=B04. Output range [-1, 1].
 
     Args:
-        nir: (H, W) float32 near-infrared reflectance.
-        red: (H, W) float32 red reflectance.
+        nir: (y, x) near-infrared reflectance.
+        red: (y, x) red reflectance.
         eps: Small value to avoid division by zero.
 
     Returns:
-        (H, W) float32 NDVI values in [-1, 1].
+        (y, x) NDVI values in [-1, 1].
     """
     nir = nir.astype(np.float32)
     red = red.astype(np.float32)
@@ -23,23 +24,23 @@ def compute_ndvi(nir: np.ndarray, red: np.ndarray, eps: float = 1e-6) -> np.ndar
 
 
 def compute_evi(
-    nir: np.ndarray,
-    red: np.ndarray,
-    blue: np.ndarray,
+    nir: xr.DataArray,
+    red: xr.DataArray,
+    blue: xr.DataArray,
     g: float = 2.5,
     c1: float = 6.0,
     c2: float = 7.5,
     L: float = 1.0,
     eps: float = 1e-6
-) -> np.ndarray:
+) -> xr.DataArray:
     """Enhanced Vegetation Index.
 
     Sentinel-2: nir=B08, red=B04, blue=B02.
 
     Args:
-        nir: (H, W) float32 near-infrared reflectance.
-        red: (H, W) float32 red reflectance.
-        blue: (H, W) float32 blue reflectance.
+        nir: (y, x) near-infrared reflectance.
+        red: (y, x) red reflectance.
+        blue: (y, x) blue reflectance.
         g: Gain factor (default 2.5).
         c1: Aerosol resistance red coefficient (default 6.0).
         c2: Aerosol resistance blue coefficient (default 7.5).
@@ -47,7 +48,7 @@ def compute_evi(
         eps: Small value to avoid division by zero.
 
     Returns:
-        (H, W) float32 EVI values.
+        (y, x) EVI values.
     """
     nir = nir.astype(np.float32)
     red = red.astype(np.float32)
@@ -58,27 +59,27 @@ def compute_evi(
 
 
 def compute_evi2(
-    nir: np.ndarray,
-    red: np.ndarray,
+    nir: xr.DataArray,
+    red: xr.DataArray,
     g: float = 2.5,
     c: float = 2.4,
     L: float = 1.0,
     eps: float = 1e-6
-) -> np.ndarray:
+) -> xr.DataArray:
     """Two-Band Enhanced Vegetation Index (Does not require Blue band).
 
     Sentinel-2: nir=B08, red=B04. High performance over atmospheric noise.
 
     Args:
-        nir: (H, W) float32 near-infrared reflectance.
-        red: (H, W) float32 red reflectance.
+        nir: (y, x) near-infrared reflectance.
+        red: (y, x) red reflectance.
         g: Gain factor (default 2.5).
         c: Red coefficient (default 2.4).
         L: Canopy background adjustment factor (default 1.0).
         eps: Small value to avoid division by zero.
 
     Returns:
-        (H, W) float32 EVI2 values.
+        (y, x) EVI2 values.
     """
     nir = nir.astype(np.float32)
     red = red.astype(np.float32)
@@ -86,40 +87,40 @@ def compute_evi2(
 
 
 def compute_savi(
-    nir: np.ndarray,
-    red: np.ndarray,
+    nir: xr.DataArray,
+    red: xr.DataArray,
     L: float = 0.5,
     eps: float = 1e-6
-) -> np.ndarray:
+) -> xr.DataArray:
     """Soil-Adjusted Vegetation Index.
 
     Sentinel-2: nir=B08, red=B04.
 
     Args:
-        nir: (H, W) float32 near-infrared reflectance.
-        red: (H, W) float32 red reflectance.
+        nir: (y, x) near-infrared reflectance.
+        red: (y, x) red reflectance.
         L: Soil brightness correction factor (default 0.5).
         eps: Small value to avoid division by zero.
 
     Returns:
-        (H, W) float32 SAVI values.
+        (y, x) SAVI values.
     """
     nir = nir.astype(np.float32)
     red = red.astype(np.float32)
     return ((nir - red) / (nir + red + L + eps)) * (1.0 + L)
 
 
-def compute_msavi2(nir: np.ndarray, red: np.ndarray) -> np.ndarray:
+def compute_msavi2(nir: xr.DataArray, red: xr.DataArray) -> xr.DataArray:
     """Modified Soil-Adjusted Vegetation Index 2 (Self-adjusting soil factor).
 
     Sentinel-2: nir=B08, red=B04.
 
     Args:
-        nir: (H, W) float32 near-infrared reflectance.
-        red: (H, W) float32 red reflectance.
+        nir: (y, x) near-infrared reflectance.
+        red: (y, x) red reflectance.
 
     Returns:
-        (H, W) float32 MSAVI2 values.
+        (y, x) MSAVI2 values.
     """
     nir = nir.astype(np.float32)
     red = red.astype(np.float32)
@@ -132,21 +133,21 @@ def compute_msavi2(nir: np.ndarray, red: np.ndarray) -> np.ndarray:
 
 
 def compute_ndre(
-    nir: np.ndarray,
-    red_edge: np.ndarray,
+    nir: xr.DataArray,
+    red_edge: xr.DataArray,
     eps: float = 1e-6
-) -> np.ndarray:
+) -> xr.DataArray:
     """Normalized Difference Red Edge Index (Chlorophyll & nitrogen sensing).
 
     Sentinel-2: nir=B08, red_edge=B05 (or B06/B07).
 
     Args:
-        nir: (H, W) float32 near-infrared reflectance.
-        red_edge: (H, W) float32 red-edge reflectance.
+        nir: (y, x) near-infrared reflectance.
+        red_edge: (y, x) red-edge reflectance.
         eps: Small value to avoid division by zero.
 
     Returns:
-        (H, W) float32 NDRE values in [-1, 1].
+        (y, x) NDRE values in [-1, 1].
     """
     nir = nir.astype(np.float32)
     red_edge = red_edge.astype(np.float32)
@@ -158,25 +159,25 @@ def compute_ndre(
 # =============================================================================
 
 def compute_bsi(
-    swir1: np.ndarray,
-    red: np.ndarray,
-    nir: np.ndarray,
-    blue: np.ndarray,
+    swir1: xr.DataArray,
+    red: xr.DataArray,
+    nir: xr.DataArray,
+    blue: xr.DataArray,
     eps: float = 1e-6
-) -> np.ndarray:
+) -> xr.DataArray:
     """Bare Soil Index (Differentiates bare soil from vegetation/urban).
 
     Sentinel-2: swir1=B11, red=B04, nir=B08, blue=B02. Output range [-1, 1].
 
     Args:
-        swir1: (H, W) float32 short-wave infrared 1 reflectance.
-        red: (H, W) float32 red reflectance.
-        nir: (H, W) float32 near-infrared reflectance.
-        blue: (H, W) float32 blue reflectance.
+        swir1: (y, x) short-wave infrared 1 reflectance.
+        red: (y, x) red reflectance.
+        nir: (y, x) near-infrared reflectance.
+        blue: (y, x) blue reflectance.
         eps: Small value to avoid division by zero.
 
     Returns:
-        (H, W) float32 BSI values in [-1, 1].
+        (y, x) BSI values in [-1, 1].
     """
     swir1 = swir1.astype(np.float32)
     red = red.astype(np.float32)
@@ -189,21 +190,21 @@ def compute_bsi(
 
 
 def compute_ndbi(
-    swir1: np.ndarray,
-    nir: np.ndarray,
+    swir1: xr.DataArray,
+    nir: xr.DataArray,
     eps: float = 1e-6
-) -> np.ndarray:
+) -> xr.DataArray:
     """Normalized Difference Built-Up Index.
 
     Sentinel-2: swir1=B11, nir=B08. Output range [-1, 1].
 
     Args:
-        swir1: (H, W) float32 short-wave infrared 1 reflectance.
-        nir: (H, W) float32 near-infrared reflectance.
+        swir1: (y, x) short-wave infrared 1 reflectance.
+        nir: (y, x) near-infrared reflectance.
         eps: Small value to avoid division by zero.
 
     Returns:
-        (H, W) float32 NDBI values in [-1, 1].
+        (y, x) NDBI values in [-1, 1].
     """
     swir1 = swir1.astype(np.float32)
     nir = nir.astype(np.float32)
@@ -215,21 +216,21 @@ def compute_ndbi(
 # =============================================================================
 
 def compute_ndwi(
-    green: np.ndarray,
-    nir: np.ndarray,
+    green: xr.DataArray,
+    nir: xr.DataArray,
     eps: float = 1e-6
-) -> np.ndarray:
+) -> xr.DataArray:
     """Normalized Difference Water Index (McFeeters).
 
     Sentinel-2: green=B03, nir=B08.
 
     Args:
-        green: (H, W) float32 green reflectance.
-        nir: (H, W) float32 near-infrared reflectance.
+        green: (y, x) green reflectance.
+        nir: (y, x) near-infrared reflectance.
         eps: Small value to avoid division by zero.
 
     Returns:
-        (H, W) float32 NDWI values in [-1, 1].
+        (y, x) NDWI values in [-1, 1].
     """
     green = green.astype(np.float32)
     nir = nir.astype(np.float32)
@@ -237,21 +238,21 @@ def compute_ndwi(
 
 
 def compute_mndwi(
-    green: np.ndarray,
-    swir1: np.ndarray,
+    green: xr.DataArray,
+    swir1: xr.DataArray,
     eps: float = 1e-6
-) -> np.ndarray:
+) -> xr.DataArray:
     """Modified Normalized Difference Water Index (Xu - suppresses urban noise).
 
     Sentinel-2: green=B03, swir1=B11.
 
     Args:
-        green: (H, W) float32 green reflectance.
-        swir1: (H, W) float32 short-wave infrared 1 reflectance.
+        green: (y, x) green reflectance.
+        swir1: (y, x) short-wave infrared 1 reflectance.
         eps: Small value to avoid division by zero.
 
     Returns:
-        (H, W) float32 MNDWI values in [-1, 1].
+        (y, x) MNDWI values in [-1, 1].
     """
     green = green.astype(np.float32)
     swir1 = swir1.astype(np.float32)
@@ -259,21 +260,21 @@ def compute_mndwi(
 
 
 def compute_ndci(
-    red_edge: np.ndarray,
-    red: np.ndarray,
+    red_edge: xr.DataArray,
+    red: xr.DataArray,
     eps: float = 1e-6
-) -> np.ndarray:
+) -> xr.DataArray:
     """Normalized Difference Chlorophyll Index (Water quality & algae blooms).
 
     Sentinel-2: red_edge=B05, red=B04. Designed specifically for water bodies.
 
     Args:
-        red_edge: (H, W) float32 red-edge 1 reflectance.
-        red: (H, W) float32 red reflectance.
+        red_edge: (y, x) red-edge 1 reflectance.
+        red: (y, x) red reflectance.
         eps: Small value to avoid division by zero.
 
     Returns:
-        (H, W) float32 NDCI values in [-1, 1].
+        (y, x) NDCI values in [-1, 1].
     """
     red_edge = red_edge.astype(np.float32)
     red = red.astype(np.float32)
@@ -281,21 +282,21 @@ def compute_ndci(
 
 
 def compute_ndmi(
-    nir: np.ndarray,
-    swir1: np.ndarray,
+    nir: xr.DataArray,
+    swir1: xr.DataArray,
     eps: float = 1e-6
-) -> np.ndarray:
+) -> xr.DataArray:
     """Normalized Difference Moisture Index (Canopy water content).
 
     Sentinel-2: nir=B08, swir1=B11.
 
     Args:
-        nir: (H, W) float32 near-infrared reflectance.
-        swir1: (H, W) float32 short-wave infrared 1 reflectance.
+        nir: (y, x) near-infrared reflectance.
+        swir1: (y, x) short-wave infrared 1 reflectance.
         eps: Small value to avoid division by zero.
 
     Returns:
-        (H, W) float32 NDMI values in [-1, 1].
+        (y, x) NDMI values in [-1, 1].
     """
     nir = nir.astype(np.float32)
     swir1 = swir1.astype(np.float32)
@@ -307,21 +308,21 @@ def compute_ndmi(
 # =============================================================================
 
 def compute_nbr(
-    nir: np.ndarray,
-    swir2: np.ndarray,
+    nir: xr.DataArray,
+    swir2: xr.DataArray,
     eps: float = 1e-6
-) -> np.ndarray:
+) -> xr.DataArray:
     """Normalized Burn Ratio.
 
     Sentinel-2: nir=B08, swir2=B12.
 
     Args:
-        nir: (H, W) float32 near-infrared reflectance.
-        swir2: (H, W) float32 short-wave infrared 2 reflectance.
+        nir: (y, x) near-infrared reflectance.
+        swir2: (y, x) short-wave infrared 2 reflectance.
         eps: Small value to avoid division by zero.
 
     Returns:
-        (H, W) float32 NBR values in [-1, 1].
+        (y, x) NBR values in [-1, 1].
     """
     nir = nir.astype(np.float32)
     swir2 = swir2.astype(np.float32)
@@ -329,21 +330,21 @@ def compute_nbr(
 
 
 def compute_ndsi(
-    green: np.ndarray,
-    swir1: np.ndarray,
+    green: xr.DataArray,
+    swir1: xr.DataArray,
     eps: float = 1e-6
-) -> np.ndarray:
+) -> xr.DataArray:
     """Normalized Difference Snow Index.
 
     Sentinel-2: green=B03, swir1=B11.
 
     Args:
-        green: (H, W) float32 green reflectance.
-        swir1: (H, W) float32 short-wave infrared 1 reflectance.
+        green: (y, x) green reflectance.
+        swir1: (y, x) short-wave infrared 1 reflectance.
         eps: Small value to avoid division by zero.
 
     Returns:
-        (H, W) float32 NDSI values in [-1, 1].
+        (y, x) NDSI values in [-1, 1].
     """
     green = green.astype(np.float32)
     swir1 = swir1.astype(np.float32)

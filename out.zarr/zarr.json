@@ -1,0 +1,14 @@
+{
+  "attributes": {
+    "geosave": {
+      "reference_layer": "image",
+      "layers": [
+        "image",
+        "ndvi",
+        "sum"
+      ]
+    }
+  },
+  "zarr_format": 3,
+  "node_type": "group"
+}

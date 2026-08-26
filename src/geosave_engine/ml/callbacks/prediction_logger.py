@@ -11,7 +11,7 @@ from matplotlib import pyplot as plt
 from matplotlib.patches import Patch
 
 from geosave_engine.utils import colorize
-from geosave_engine.geodata.utils.geovis import fig_to_array
+from geosave_engine.geodata.viz import fig_to_array
 
 
 class DensePredictionLogger(Callback):

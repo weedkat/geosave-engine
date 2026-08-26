@@ -1,33 +1,63 @@
+"""build_shadow_mask: project cloud pixels onto their shadow footprint. See build_shadow_mask."""
+from __future__ import annotations
+
 import numpy as np
+import xarray as xr
+
+from geosave_engine.geodata.utils.array import map_overlap
 
 
 def build_shadow_mask(
-    cloud_mask: np.ndarray,
+    cloud_mask: xr.DataArray,
     sun_azimuth_deg: float,
     *,
     resolution: int = 10,
     shadow_distance_m: float = 500,
-) -> np.ndarray:
+) -> xr.DataArray:
     """Project cloud pixels downwind to approximate the shadow footprint.
 
-    Shifts cloud_mask in the direction opposite to the sun azimuth for up to
-    shadow_distance_m meters. Each offset step is one pixel at the given resolution.
+    Shifts `cloud_mask` opposite the sun azimuth for up to
+    `shadow_distance_m`, one pixel per step.
 
     Args:
-        cloud_mask: (H, W) bool array of detected cloud pixels.
-        sun_azimuth_deg: Sun azimuth in degrees (clockwise from north).
-        resolution: Pixel size in meters (default 10 m for Sentinel-2).
+        cloud_mask: (y, x) array of detected cloud pixels.
+        sun_azimuth_deg: Sun azimuth in degrees, clockwise from north.
+        resolution: Pixel size in meters.
         shadow_distance_m: Maximum shadow projection distance in meters.
 
     Returns:
-        (H, W) bool mask — True where shadow is estimated.
+        (y, x) bool mask, True where shadow is estimated, lazy when
+        `cloud_mask` is.
+    """
+    # a cloud up to this many pixels away casts into this chunk, so the halo has to reach that far
+    depth = round(shadow_distance_m / resolution)
+    return map_overlap(
+        _shadow_block,
+        cloud_mask,
+        depth=depth,
+        dtype="bool",
+        boundary=False,
+        sun_azimuth_deg=sun_azimuth_deg,
+        steps=depth,
+    )
+
+
+def _shadow_block(cloud_mask: np.ndarray, *, sun_azimuth_deg: float, steps: int) -> np.ndarray:
+    """Project one block's clouds along the shadow direction.
+
+    Args:
+        cloud_mask: Cloud block.
+        sun_azimuth_deg: Sun azimuth in degrees, clockwise from north.
+        steps: Pixels to project.
+
+    Returns:
+        Bool shadow block.
     """
     az_rad = np.radians(sun_azimuth_deg)
     col_step = -np.sin(az_rad)
     row_step = np.cos(az_rad)
 
-    n_steps = round(shadow_distance_m / resolution)
-    offsets = {(round(row_step * s), round(col_step * s)) for s in range(1, n_steps + 1)}
+    offsets = {(round(row_step * s), round(col_step * s)) for s in range(1, steps + 1)}
     offsets.discard((0, 0))
 
     shadow = np.zeros(cloud_mask.shape, dtype=bool)

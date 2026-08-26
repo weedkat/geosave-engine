@@ -7,7 +7,7 @@ from typing import cast, Literal
 from timm.models.eva import Eva
 
 from geosave_engine.ml.registry import register_model
-from geosave_engine.ml.models.contract import model_context
+from geosave_engine.ml.models.contract import chain_step
 
 # out_indices are even quarters of each model's block depth:
 #   depth=12 (S, S+, B) -> [2, 5, 8, 11]
@@ -150,7 +150,7 @@ class DINOv3(nn.Module):
         """
         return self.model(x, rope=rope, attn_mask=attn_mask, is_causal=is_causal)
 
-    @model_context()
+    @chain_step()
     def forward_pyramid(self, image: torch.Tensor) -> tuple[list, list]:
         """Extract multi-scale intermediate features from the ViT.
 

@@ -5,7 +5,7 @@ import torch.nn as nn
 import torch.nn.functional as F
 
 from geosave_engine.ml.registry import register_model
-from geosave_engine.ml.models.contract import model_context
+from geosave_engine.ml.models.contract import chain_step
 
 
 class _ChannelProject(nn.Module):
@@ -209,7 +209,7 @@ class Unet(nn.Module):
 
         return x
 
-    @model_context()
+    @chain_step()
     def forward_feature_map(self, pyramid: list) -> tuple[torch.Tensor]:
         """Fuse multi-scale pyramid into a single dense feature map.
 
