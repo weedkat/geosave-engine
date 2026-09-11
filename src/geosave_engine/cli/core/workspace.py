@@ -8,17 +8,18 @@ from .templates import common_dir, task_dir
 
 _REQUIRED_DIRS = frozenset(
     (
-        "artifacts", 
-        "configs", 
-        "data", 
-        "logs", 
+        "artifacts",
+        "configs",
+        "data",
+        "logs",
         "modules",
-        "notebooks", 
+        "notebooks",
         "predictions",
         "scripts",
     )
 )
 _EXCLUDE = frozenset(("__pycache__", ".ipynb_checkpoints", "description.txt"))
+
 
 def create_workspace(root, task=None, method=None) -> None:
     """Create directories and copy files for one workspace.
@@ -34,16 +35,17 @@ def create_workspace(root, task=None, method=None) -> None:
     safe_copy(common_dir(), root, exclude=_EXCLUDE)
 
     if task and method:
-
         method_dir = task_dir() / task / method
 
         safe_copy(method_dir, root, exclude=_EXCLUDE)
 
+
 class Workspace:
     """Load or create one GeoSave workspace."""
+
     def __init__(self, root: Path | str) -> None:
         self.root = Path(root).resolve()
-        
+
     @property
     def root(self) -> Path:
         return self._root

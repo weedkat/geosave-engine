@@ -7,10 +7,6 @@ from lightning.pytorch.cli import LightningArgumentParser, LightningCLI
 
 ARTIFACTS_ROOT = "artifacts"
 DEFAULT_MODEL_NAME = "model"
-PREDICTION_WRITER_CLASS_PATHS = (
-    "geosave_engine.ml.callbacks.TilePredictionWriter",
-    "geosave_engine.ml.callbacks.DensePredictionWriter",
-)
 
 
 class GeosaveCLI(LightningCLI):
@@ -66,31 +62,14 @@ class GeosaveCLI(LightningCLI):
             if default["class_path"] not in existing:
                 callbacks.append(default)
 
-        self._fill_prediction_writer_model_name(cfg, callbacks)
-
-    def _fill_prediction_writer_model_name(self, cfg, callbacks: list) -> None:
-        """Back-fill a user-declared TilePredictionWriter/DensePredictionWriter's required model_name.
-
-        Neither callback is ever auto-added — the user opts in by listing one
-        (or both) under trainer.callbacks (output_dir is deployment-specific, no
-        sensible default). Once one's there, its model_name comes from the same
-        top-level `model_name:` key loggers/artifacts already use — one source of
-        truth, not a second value to remember to set. An explicit
-        `init_args.model_name` already present is left untouched. A custom
-        `BasePredictionWriter` subclass outside these two isn't matched here —
-        it must set model_name itself.
-        """
-        model_name = getattr(cfg, "model_name", DEFAULT_MODEL_NAME) or DEFAULT_MODEL_NAME
-        for cb in callbacks:
-            if isinstance(cb, dict) and cb.get("class_path") in PREDICTION_WRITER_CLASS_PATHS:
-                cb.setdefault("init_args", {}).setdefault("model_name", model_name)
-
     def _apply_default_loggers(self) -> None:
         cfg = self._subcommand_config()
         if getattr(cfg.trainer, "logger", None) not in (None, True):
             return  # user supplied a logger config — respect it entirely
 
-        model_name = getattr(cfg, "model_name", DEFAULT_MODEL_NAME) or DEFAULT_MODEL_NAME
+        model_name = (
+            getattr(cfg, "model_name", DEFAULT_MODEL_NAME) or DEFAULT_MODEL_NAME
+        )
         loggers = [
             {
                 "class_path": "lightning.pytorch.loggers.TensorBoardLogger",

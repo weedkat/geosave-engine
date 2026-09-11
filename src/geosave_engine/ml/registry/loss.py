@@ -7,8 +7,8 @@ from geosave_engine.ml.loss import ProbOhemCrossEntropy2d
 from geosave_engine.ml.registry.base import builder
 
 LOSSES = {
-    'CELoss': CrossEntropyLoss,
-    'OHEMLoss': ProbOhemCrossEntropy2d,
+    "CELoss": CrossEntropyLoss,
+    "OHEMLoss": ProbOhemCrossEntropy2d,
 }
 
 

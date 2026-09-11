@@ -9,17 +9,21 @@ def templates_dir() -> Path:
     """Return bundled workspace template directory."""
     return Path(__file__).parents[2] / "templates"
 
+
 def common_dir() -> Path:
     """Return bundled files copied into every workspace."""
     return templates_dir() / "common"
+
 
 def task_dir() -> Path:
     """Return bundled task template directory."""
     return templates_dir() / "tasks"
 
+
 def boilerplate_dir() -> Path:
     """Return bundled component template directory."""
     return templates_dir() / "boilerplate"
+
 
 def get_template(root: Path, include_file: bool = False) -> dict[str, list[str]]:
     """Return a dictionary of tasks and their methods."""
@@ -33,12 +37,14 @@ def get_template(root: Path, include_file: bool = False) -> dict[str, list[str]]
                     templates.setdefault(path.name, []).append(item.name)
                 elif include_file and item.is_file():
                     templates.setdefault(path.name, []).append(item.name)
-                    
+
     return templates
+
 
 def get_tasks() -> dict[str, list[str]]:
     """Return a dictionary of tasks and their methods."""
     return get_template(task_dir())
+
 
 def get_boilerplate() -> dict[str, list[str]]:
     """Return a dictionary of boilerplate and their files."""

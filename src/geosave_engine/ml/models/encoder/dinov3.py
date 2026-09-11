@@ -1,4 +1,3 @@
-
 import timm
 import torch
 import torch.nn as nn
@@ -15,48 +14,49 @@ from geosave_engine.ml.models.contract import chain_step
 #   depth=32 (H+)       -> [7, 15, 23, 31]
 #   depth=40 (7B)       -> [9, 19, 29, 39]
 TIMM_MODELS: dict[str, dict] = {
-    'vit_small_patch16_dinov3.lvd1689m':            {'out_indices': (2, 5, 8, 11)},
-    'vit_small_patch16_dinov3_qkvb.lvd1689m':       {'out_indices': (2, 5, 8, 11)},
-    'vit_small_plus_patch16_dinov3.lvd1689m':       {'out_indices': (2, 5, 8, 11)},
-    'vit_small_plus_patch16_dinov3_qkvb.lvd1689m':  {'out_indices': (2, 5, 8, 11)},
-    'vit_base_patch16_dinov3.lvd1689m':             {'out_indices': (2, 5, 8, 11)},
-    'vit_base_patch16_dinov3_qkvb.lvd1689m':        {'out_indices': (2, 5, 8, 11)},
-    'vit_large_patch16_dinov3.lvd1689m':            {'out_indices': (5, 11, 17, 23)},
-    'vit_large_patch16_dinov3_qkvb.lvd1689m':       {'out_indices': (5, 11, 17, 23)},
-    'vit_large_patch16_dinov3.sat493m':             {'out_indices': (5, 11, 17, 23)},
-    'vit_large_patch16_dinov3_qkvb.sat493m':        {'out_indices': (5, 11, 17, 23)},
-    'vit_huge_plus_patch16_dinov3.lvd1689m':        {'out_indices': (7, 15, 23, 31)},
-    'vit_huge_plus_patch16_dinov3_qkvb.lvd1689m':   {'out_indices': (7, 15, 23, 31)},
-    'vit_7b_patch16_dinov3.lvd1689m':               {'out_indices': (9, 19, 29, 39)},
-    'vit_7b_patch16_dinov3.sat493m':                {'out_indices': (9, 19, 29, 39)},
+    "vit_small_patch16_dinov3.lvd1689m": {"out_indices": (2, 5, 8, 11)},
+    "vit_small_patch16_dinov3_qkvb.lvd1689m": {"out_indices": (2, 5, 8, 11)},
+    "vit_small_plus_patch16_dinov3.lvd1689m": {"out_indices": (2, 5, 8, 11)},
+    "vit_small_plus_patch16_dinov3_qkvb.lvd1689m": {"out_indices": (2, 5, 8, 11)},
+    "vit_base_patch16_dinov3.lvd1689m": {"out_indices": (2, 5, 8, 11)},
+    "vit_base_patch16_dinov3_qkvb.lvd1689m": {"out_indices": (2, 5, 8, 11)},
+    "vit_large_patch16_dinov3.lvd1689m": {"out_indices": (5, 11, 17, 23)},
+    "vit_large_patch16_dinov3_qkvb.lvd1689m": {"out_indices": (5, 11, 17, 23)},
+    "vit_large_patch16_dinov3.sat493m": {"out_indices": (5, 11, 17, 23)},
+    "vit_large_patch16_dinov3_qkvb.sat493m": {"out_indices": (5, 11, 17, 23)},
+    "vit_huge_plus_patch16_dinov3.lvd1689m": {"out_indices": (7, 15, 23, 31)},
+    "vit_huge_plus_patch16_dinov3_qkvb.lvd1689m": {"out_indices": (7, 15, 23, 31)},
+    "vit_7b_patch16_dinov3.lvd1689m": {"out_indices": (9, 19, 29, 39)},
+    "vit_7b_patch16_dinov3.sat493m": {"out_indices": (9, 19, 29, 39)},
 }
 
 TimmModelName = Literal[
-    'vit_small_patch16_dinov3.lvd1689m',
-    'vit_small_patch16_dinov3_qkvb.lvd1689m',
-    'vit_small_plus_patch16_dinov3.lvd1689m',
-    'vit_small_plus_patch16_dinov3_qkvb.lvd1689m',
-    'vit_base_patch16_dinov3.lvd1689m',
-    'vit_base_patch16_dinov3_qkvb.lvd1689m',
-    'vit_large_patch16_dinov3.lvd1689m',
-    'vit_large_patch16_dinov3_qkvb.lvd1689m',
-    'vit_large_patch16_dinov3.sat493m',
-    'vit_large_patch16_dinov3_qkvb.sat493m',
-    'vit_huge_plus_patch16_dinov3.lvd1689m',
-    'vit_huge_plus_patch16_dinov3_qkvb.lvd1689m',
-    'vit_7b_patch16_dinov3.lvd1689m',
-    'vit_7b_patch16_dinov3.sat493m',
+    "vit_small_patch16_dinov3.lvd1689m",
+    "vit_small_patch16_dinov3_qkvb.lvd1689m",
+    "vit_small_plus_patch16_dinov3.lvd1689m",
+    "vit_small_plus_patch16_dinov3_qkvb.lvd1689m",
+    "vit_base_patch16_dinov3.lvd1689m",
+    "vit_base_patch16_dinov3_qkvb.lvd1689m",
+    "vit_large_patch16_dinov3.lvd1689m",
+    "vit_large_patch16_dinov3_qkvb.lvd1689m",
+    "vit_large_patch16_dinov3.sat493m",
+    "vit_large_patch16_dinov3_qkvb.sat493m",
+    "vit_huge_plus_patch16_dinov3.lvd1689m",
+    "vit_huge_plus_patch16_dinov3_qkvb.lvd1689m",
+    "vit_7b_patch16_dinov3.lvd1689m",
+    "vit_7b_patch16_dinov3.sat493m",
 ]
 
 
-@register_model('encoder', 'dinov3')
+@register_model("encoder", "dinov3")
 class DINOv3(nn.Module):
     """A DINOv3 model with ImageNet normalization stats attached."""
+
     MODEL_NAMES = TIMM_MODELS
 
     def __init__(
         self,
-        model_name: TimmModelName = 'vit_base_patch16_dinov3.lvd1689m',
+        model_name: TimmModelName = "vit_base_patch16_dinov3.lvd1689m",
         pretrained: bool = True,
         in_channels: int = 3,
         input_size: int | tuple[int, int] = 224,
@@ -115,15 +115,17 @@ class DINOv3(nn.Module):
         )
         self.model = cast(Eva, model)
 
-        self.out_indices: list[int] = out_indices or list(TIMM_MODELS[model_name]['out_indices'])
+        self.out_indices: list[int] = out_indices or list(
+            TIMM_MODELS[model_name]["out_indices"]
+        )
 
         # Extract channel dimensions and spatial strides dynamically from the timm model
         feature_info: list = self.model.feature_info
         self.out_channels: list[int] = [
-            int(feature_info[i]['num_chs']) for i in self.out_indices
+            int(feature_info[i]["num_chs"]) for i in self.out_indices
         ]
-        self.output_strides: list[int] = [ # [16, 16, 16, 16]
-            int(feature_info[i]['reduction']) for i in self.out_indices
+        self.output_strides: list[int] = [  # [16, 16, 16, 16]
+            int(feature_info[i]["reduction"]) for i in self.out_indices
         ]
 
         self.input_size = input_size
@@ -131,11 +133,11 @@ class DINOv3(nn.Module):
         self.img_std = [0.229, 0.224, 0.225]
 
     def forward(
-            self,
-            x,
-            rope: torch.Tensor | None = None,
-            attn_mask: torch.Tensor | None = None,
-            is_causal: bool = False,
+        self,
+        x,
+        rope: torch.Tensor | None = None,
+        attn_mask: torch.Tensor | None = None,
+        is_causal: bool = False,
     ):
         """Forward pass for the attention module.
 
@@ -166,8 +168,7 @@ class DINOv3(nn.Module):
             indices=self.out_indices,
             intermediates_only=True,
             return_prefix_tokens=True,
-            output_fmt='NCHW',
+            output_fmt="NCHW",
         )
         pyramid, prefix_tokens = map(list, zip(*pairs))
         return pyramid, prefix_tokens
-

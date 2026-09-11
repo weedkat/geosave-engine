@@ -1,48 +1,272 @@
-# Session Handoff — GeoHeader / GeoExtension unification
+# Core module sweep — session summary
 
-Session collapsed `GeoAttrs` (pydantic model, mixed dedicated fields + open plugin bag) into `GeoHeader` (plain dataclass, one field, every namespace a `GeoExtension`). Fundamental layer only — `extensions/`, `spatial/header.py`, `spatial/anchor.py`, `spatial/_array.py`. All tested, all passing. `spatial/raster.py`/`mosaic.py`/`stack.py`/`stitch.py` **not** touched beyond mechanical import fixes, confirmed broken — see §3.
-
-Full writeup with hook-contract table and construction-flow diagram: `docs/concept/geoheader.md`.
-
----
-
-## 1. What changed
-
-**`GeoAttrs` → `GeoHeader`.** Not pydantic — plain `@dataclass(frozen=True)`, one field: `extensions: dict[str, GeoExtension]`. `start_datetime`/`end_datetime`, `tags`, `tiling`, `timespec` no longer dedicated fields — each real registered `GeoExtension` subclass (`TimeSpan`, `Tags`, `TilingInfo`, `TimeSpec`) living in same dict as `render`/`stac`. No special-cased fields left anywhere in header.
-
-**One hook contract, five methods, on every `GeoExtension`:** `decode(value)`, `check(data)`, `combine(values)`, `encode()`, `SETTABLE`. Each defaults sensibly; subclass overrides only where semantics differ (full matrix in doc). `check(data)` — was `validate_against_data`, renamed: collided with real inherited `pydantic.BaseModel.validate` classmethod (deprecated v1 API, still present), different signature/return type, genuine LSP violation caught by type checker, not style nit.
-
-**`GeoHeader(extensions, data=data)`** — `InitVar`-based constructor. Positional dict construction works (`GeoHeader({"tags": {...}})`). When `data` given, every namespace's `check(data)` runs during construction — no separate `.revalidate()` call needed. Idempotent: twice on already-consistent pair = no-op both times. `_SpatialArray.__post_init__` now calls this once; no more inline per-namespace loop.
-
-**Eager stamp.** Every `_SpatialArray` construction (every transform — `rebase`, `crop`, `reproject`, etc. all end in `dataclasses.replace()`, reruns `__post_init__`) writes `encode_attrs(data.attrs, anchor.header, "json")` back onto `data.attrs`. Reason: caller reading `.data` directly (interop, plotting, `xr.concat` outside library) used to see empty dict — `.attrs` carried no header in memory, only stamped at disk write. Now `data.attrs` always mirrors `anchor.header`, recomputed fresh each time (not incrementally patched), so direct external mutation of returned dict still silently diverges on next read — accepted, same "consenting adults" limitation as mutating array off nominally-frozen object.
-
-**Per-namespace on-disk encoding.** No more single reserved `"geosave"` key holding one opaque blob. Every namespace present gets own top-level attrs key — `data.attrs["tags"]`, `data.attrs["render"]`, etc. — nested dict for JSON-capable stores (zarr), one JSON string for text-only (GDAL/netCDF). Tradeoff accepted, not fixed: unregistered/stale namespace data now indistinguishable from coincidental foreign attr on decode; old design could warn on that, new one can't.
-
-**`SETTABLE` guard.** `TimeSpec.SETTABLE = False` only one. `GeoHeader.rebase()` rejects with one clear message. Fixes two bugs: known misleading `GeoAnchor.rebase(timespec=...)` → `UnknownExtensionError` (old design, `_RESERVED_NAMESPACES` conflated "can't register" with "can't set"), and new one found this session — `GeoRaster.rebase(timespec=...)` silently succeeding by leaking through `**extensions` into `_SpatialArray._rebase`'s own explicit param. `_with_timespec` (private) is sanctioned bypass — only `resample_time`/`concat` reach it.
-
-**Renames.** `attrs` field/property → `header`, on both `GeoAnchor` and `_SpatialArray` (collided with xarray's own `.attrs` dict — two different things, same name, sibling objects). `GeoAnchor.time` property and `rebase(time=...)`/`from_bbox(time=...)`/`from_coordinate`/`from_vector`/`from_geometry` kwarg → `timespan`, matching `TimeSpan`'s name; `TimeSpan.NAMESPACE` renamed `"time"` → `"timespan"` (changes on-disk key). **Not done, deliberately deferred:** `_SpatialArray.time`/`.start`/`.end` (the `GeoRaster`/`GeoTile`-level property names) still say `.time`. `explore(time=...)` (pick one instant) and `data.isel(time=...)` (xarray's own dim name) unrelated, correctly untouched.
+Sweeping `geodata/core` for bugs and stale code, module by module. `anchor`,
+`array`, and `vector` were frozen before this session. **This session settled
+`GeoRaster` (`core/raster.py`).** Next up is `GeoStack` (`core/stack.py`).
 
 ---
 
-## 2. Tests
+## READ THIS FIRST: 51 tests fail on purpose
 
-New `tests/geodata/spatial/test_header.py` — 28 tests + 1 perf guard (`@pytest.mark.slow`), all pass. Covers: `rebase()` merge/replace/drop/`SETTABLE` semantics, positional construction, `combine()` per extension (`TimeSpec` equal-keep/else-None, `TilingInfo`/`TimeSpan` always-None, default equal-or-raise), encode/decode round-trip (both encodings, foreign-key survival, empty-namespace omission), `check()` hook end-to-end through real `GeoAnchor.to_geotile()` construction, idempotency, `timespan` rename. `conftest.py`'s `make_anchor` needed one line fixed (`rebase(time=...)` → `rebase(timespan=...)`) — would break every fixture-dependent test otherwise.
+```
+51 failed, 227 passed
+  41  tests/geodata/transform/test_time.py
+   5  tests/geodata/transform/test_grid.py
+   4  tests/geodata/test_stack.py
+   1  tests/geodata/test_core_smoke.py
+```
 
-1000 `GeoTile` constructions (2 extensions each, eager stamp included): **~2.5ms/construction**, no perf red flag from eager-stamp change.
+**Every one traces to a single deleted property.** `GeoRaster.categorical` was
+removed as flawed (see Decisions). Its three callers all live in `transform/`,
+which is a **dead module pending rework** — the user's explicit instruction was
+to delete from core and *let transform break* rather than patch it.
+
+```
+src/geosave_engine/geodata/transform/time.py:194: AttributeError:
+    'GeoRaster' object has no attribute 'categorical'
+```
+
+The 4 `test_stack.py` and 1 `test_core_smoke.py` failures are **not** stack or
+core defects — those tests build fixtures by calling `transform.time.resample`,
+so they inherit the breakage. Core-only run is green:
+
+```bash
+pytest tests/geodata tests/ml -q --ignore=tests/geodata/transform
+# 151 passed
+```
+
+Use that as the working check until transform is reworked.
 
 ---
 
-## 3. Confirmed broken — `spatial/raster.py` (not fixed this session)
+## Ground rules established this session
 
-Full `tests/geodata/spatial/` suite: **141 failed, 62 passed, 23 errors.** Root cause one bug, not scattered regressions: `GeoRaster.rebase()` (raster.py, still pre-refactor signature — explicit `tags=`/`tiling=` params) unconditionally forwards those params — even at `UNSET` default — into `_SpatialArray._rebase()`, which no longer declares `tags=`/`tiling=` at all. They land in `_rebase`'s `**extensions`, get forwarded again into `GeoAnchor.rebase(**extensions)`, land in *its* `**extensions` too, and `GeoHeader.rebase()` tries `{**current.model_dump(), **UNSET}` — `TypeError`, `UNSET` isn't a mapping. Every test using `make_raster()` fixture hits this, since `make_raster` always calls `.rebase(nodata=...)`. `GeoRaster.rebase()` needs signature brought in line with `GeoAnchor.rebase()`/`_SpatialArray._rebase()` (drop `tags=`/`tiling=`, rename `time=` → `timespan=`) before anything downstream usable.
-
-Also broken, not yet reached: `open()`/`_write_tiff()`/`_cf_encoded()` (old `HEADER_KEY`/`GeoAttrs` references), and once fixed, `_concat_band()`/`GeoMosaic.result()` need switch from public `.rebase()` to `._rebase()` + pop `timespec` for private bypass — same pattern `_concat_time()` already needs, since `combine_extensions`/`GeoHeader.combine` folds `timespec` uniformly and `SETTABLE` guard rejects it through public path.
+- **`transform/` is dead.** Treat it as stubs to be rewritten. Do **not** patch
+  it to keep core clean — let it break. (I violated this once by adding a helper
+  to `transform/variables.py`; it was reverted.)
+- **`stitcher.py` is shelved** pending the tiling redesign, but keep its tests
+  passing so real regressions stay visible.
+- **Names come from the package, the wrapped library, or the domain** — never
+  invented to fill a gap. Fix a vague name with a *truer* word, not a longer one.
+- **Don't add API for one caller.** Prefer deleting over moving/wrapping.
+- **Measure before claiming.** Several "obvious" fixes were wrong until measured.
 
 ---
 
-## 4. Open for next session
+## What changed
 
-1. **Fix `spatial/raster.py`.** Bring `GeoRaster.rebase()` in line with new `GeoAnchor.rebase()`/`_SpatialArray._rebase()` shape, fix `open()`/write paths to use `GeoHeader`/`encode_attrs`/`decode_attrs` new signatures, fix `_concat_time`/`_concat_band`/`GeoMosaic.result()` per §3. Same for `mosaic.py`/`stack.py`/`stitch.py`.
-2. **`Tags.combine()`** has no override — composing rasters with differing tags will raise (default equal-or-raise) once composition wired back up, vs today's silent first-wins. Undecided: accept raise, or add dict-union override.
-3. **`TimeSpan.from_input`** bespoke method, not part of five-hook contract every other extension follows. Tentative: promote to formal hook, default = defer to `decode`, since no other extension needs real translation logic.
-4. **`_SpatialArray.time`/`.start`/`.end`** → `.timespan`/`.start`/`.end`, property-name half of rename `GeoAnchor` already got. Trivial, deliberately deferred, touches existing tests (`raster.time` assertions) still passing under old name.
+### `core/raster.py` (1216 → 1205 lines)
+
+**Model IO — `to_array` / `to_numpy` / `to_tensor` / `_stacked`**
+
+- Deduplicated into one private `_stacked(var_names, dtype)` that owns the whole
+  contract: absent names, empty selection, band-axis collision, grid coverage,
+  axis agreement, dtype agreement, layout.
+- **Fixed silent data loss:** `to_array` destroyed the Dataset's own attrs.
+  It called `attrs.combine([ds[n] for n in names])` — a *cross-object* join — to
+  do an *intra-object* one, then `stamp`ed the result over everything. ACDD
+  `title`/`institution` vanished on the way to `to_cog`. Now it merges only the
+  selected variables' namespaces onto the root that `Dataset.to_array()` already
+  preserves. Side effect: **1390 µs → 634 µs**.
+- **Fixed silent broadcast:** a variable with no `y`/`x` (e.g. `sun_elevation`
+  with dims `('time',)`) was broadcast across every pixel and stacked as a band.
+  The old check compared only *non-grid* dims, so `('time',)` vs `('time',)`
+  matched. Now `ungridded` variables are refused.
+- **Fixed `IndexError`:** `to_array([])` / `to_numpy([])` / `to_tensor([])` died
+  on `var_names[0]` with `tuple index out of range`. Now an actionable error.
+- **Unified dtype:** `to_array` silently promoted mixed dtypes (measurably lossy:
+  `int64(2**53+1)` + float32 → `2**53`) while `to_numpy` refused the same input.
+  Both now refuse and both accept `dtype=`.
+- **Fixed `to_tensor` dead end:** on mixed dtypes it raised "pass dtype=", but its
+  `dtype` is torch-side and never reached `to_numpy`, so the advice was
+  unfollowable. Now forwards the numpy equivalent; `bfloat16` (no numpy
+  counterpart) stacks as float32 and narrows.
+- **Layout changed** — see Decisions.
+
+**Readers**
+
+- `timespan` 262 → 90 µs, `categorical` 167 → 75 µs. Both parsed all 10
+  registered models across every variable and coord to read **one** model off
+  **one** of them.
+- `categorical` **deleted** (see Decisions).
+- `times` **kept** — zero internal callers, but it's public API and returns
+  `None` for timeless data, which is what lets `timespan` compose with it.
+
+**Attrs writers**
+
+- `write_nodata` collapsed to a single `rebase` call after `Packing` gained the
+  mirror. Both fill-value constants (`_FillValue`, `nodata`) are now gone from
+  raster.py entirely.
+- `write_crs`, `rebase` — inspected, unchanged. See Non-defects.
+
+**`plot`**
+
+- Three near-identical `draw(...)` calls → one. The chain now resolves *which
+  variables*; *how to draw* happens once after it.
+- Dropped two redundant `isinstance` checks — `.get(Model)` is overloaded to
+  return `Model | None`, so they guarded a narrowing the type already gives.
+- `Legend` now read from the variable's own namespace, not the stacked array's
+  root (one namespace instead of a full header read).
+
+**Misc**
+
+- Deleted dead `pbar` param, a no-op `cast`, and `_leading_dims` (a helper whose
+  name asserted a position it never checked).
+- Fixed stale doctest `tile_id` → `tile_index`.
+- `to_cog` was constructing *both* layouts on every call to use one.
+
+### `attrs/models/packing.py` — `nodata` mirror
+
+`Packing` now owns **both** spellings and keeps them in sync, modelled on
+`Legend._sync_flags`:
+
+```python
+Packing(fill_value=0)   -> {'_FillValue': 0, 'nodata': 0}
+Packing(nodata=9)       -> {'_FillValue': 9, 'nodata': 9}   # reads odc-only sources
+Packing(fill_value=None)-> {'_FillValue': None, 'nodata': None}   # rebase pops both
+{'_FillValue':0,'nodata':9} -> ValidationError
+```
+
+**Why:** odc reads `nodata` *before* `_FillValue`
+(`NODATA_ATTRIBUTES = ("nodata", "_FillValue")`). With both present and
+disagreeing, `odc` saw 9 while `Packing.fill_value` said 0 — so `crop(mask=True)`
+filled with the wrong value. The divergence is now unrepresentable.
+
+**Gotcha:** the recursion guards must use `values_agree`, not `!=`. `nan != nan`
+is always true, so a NaN fill re-assigns forever under `validate_assignment=True`
+(`RecursionError`). `Legend._sync_flags`'s odd-looking `if x != y:` guards are
+the same defence — they are load-bearing, not stylistic.
+
+### `attrs/xarray.py` — `read()`
+
+Was building a whole `DataArray` per coordinate just to read its `.attrs` dict.
+Now reads the `Variable` mapping: **8.7× cheaper** on Dataset, **12.6×** on
+DataArray, identical output. Helps every attrs read in the library.
+
+Note: the *write* path (`rebase`/`stamp`) still uses `obj[name]` deliberately —
+`Variable.copy(deep=False)` shares the attrs **dict object**, so rebinding
+(`.attrs = {...}`) is safe but mutating (`.attrs.pop(...)`) leaks into the
+caller's Dataset.
+
+### `band` vocabulary (4 files)
+
+One spelling now, `BAND_DIMENSION` in `core/array.py`:
+
+| was | |
+|---|---|
+| `BAND_DIMENSION` in io/gdal (12 uses: gdal, geotiff, layout) | the incumbent name |
+| `_VARIABLE_DIMENSION` in core/raster (4) | → imported |
+| `_CHANNEL_DIMENSION` in core/array (1) | → renamed |
+| bare `"band"` ×3 in viz/plot | → imported |
+
+Home is `core/array.py` because it already owns `UNPLACED_DIMENSIONS`,
+`_CRS_COORDINATE`, `_TIME_COORDINATE`. Layering verified: `io/dispatch.py`
+already imports `core.vector` at module level, and `core/array.py` reaches io and
+viz only lazily inside methods. Also removed a re-export chain — geotiff and
+layout were getting the constant via `from .gdal import`.
+
+### Other files
+
+- `core/stitcher.py` — `_close` unflattened band-first; fixed for the new layout.
+- `core/stack.py`, `core/array.py` — layout docstrings; `colorize` moveaxis.
+- `tests/geodata/test_model_io.py` (3), `tests/geodata/attrs/test_header_stamping.py` (2)
+  — assertions updated to deliberate new behaviour, not worked around.
+
+---
+
+## Decisions (please don't re-litigate)
+
+**Model-input layout is now `(*axes, band, y, x)`, i.e. torchgeo's `[T, C, H, W]`.**
+Previously `(band, *axes, y, x)`. torchgeo — the project's declared ML dependency
+— uses `[T, C, H, W]` across ~12 dataset modules. `nn.Conv3d` does require
+`(N, C, D, H, W)` (verified: `(N,T,C,H,W)` raises), but that's a *model-boundary*
+concern fixed by one `permute`, which is exactly why torchgeo ships datasets the
+other way. Timeless rasters are unchanged at `(band, y, x)`.
+
+**`GeoRaster.categorical` deleted.** All three callers wanted a *guard*
+("would this kernel blend class codes?"), not a reader, and it smuggled a dtype
+validation into attribute access — firing on every read, far from the `rebase`
+that wrote the bad `Legend`. A user wanting classes already has
+`ds.gs.attrs.data_vars[name].get(Legend).class_map`.
+
+**`to_cog` meaning two things is fine.** `GeoRaster.to_cog` takes a `Layout` and
+returns `None`; `GeoArray.to_cog` takes a path and returns `Path`. Different
+input structures need different mechanisms; both produce COGs.
+
+**`times` stays.** Zero internal callers is weak evidence for a *public* reader.
+
+---
+
+## Open items
+
+**Two decisions for the user:**
+
+1. **The Legend-on-float check has no home.** Deleting `categorical` removed the
+   refusal of a `class_map` on a non-integer variable. The check was real; its
+   right home is validation *when a Legend is written* (`rebase` or `Legend`),
+   not a reader. No test covered it.
+2. **`encoding["grid_mapping"]` is dropped by `to_array`.** The `spatial_ref`
+   coord survives and the geobox resolves, so odc is fine, but the CF pointer
+   dangles — and `raster.py`'s module docstring cites it as part of what "placed"
+   means.
+
+**Frozen until `transform/` is reworked:**
+
+- 7 delegating methods (`reproject`, `resample`, `interpolate`, `rename_vars`,
+  `tile`, `time_window`) + `crop`. Their `cast("Dataset", ...)` calls are
+  **debt markers, not narrowing** — the transform functions under-declare their
+  return as `xr.Dataset`. When transform is rewritten, annotate it `-> Dataset`
+  and the casts delete themselves.
+- `crop` does its odc call **inline** while the other seven delegate.
+- 3 dangling `GeoRaster.categorical` call sites (`grid.py:229`, `time.py:194`,
+  `time.py:300`).
+- `odc.reproject` re-stamps `nodata` alongside `_FillValue` (`_xr_interop.py:1003`)
+  and float-coerces both. No longer a correctness bug now that `Packing` mirrors
+  them, but still worth handling.
+- The three duplicated `_declared_fill` helpers (transform/tiles, transform/grid,
+  stitcher) are now redundant — `Packing.fill_value` answers for either spelling.
+
+**Elsewhere:**
+
+- `core/__init__.py` re-exports `StitchWindow` from `.stitcher`, which doesn't
+  define it (it lives in `attrs.models.tiling` and is *also* exported from
+  `attrs`). Two public paths, one type.
+- `Tiling.count`, `.padded_shape`, `.bounds`, `.tiles()`, `.merger()` have **zero
+  call sites** anywhere — behaviour added ahead of a consumer. The stitcher was
+  the intended consumer and doesn't use them.
+
+---
+
+## Non-defects (checked, leave alone)
+
+- **`GeoRaster.rebase`'s `if inplace:` branch is correct**, not a pass-through
+  pretending to be logic. mypy confirms a bare `bool` matches neither
+  `Literal[True]` nor `Literal[False]`, so the branch narrows to a literal per
+  call. Collapsing it would force a cast.
+- **`to_tensor`'s `torch.empty(0, dtype=...).numpy()` probe** is a capability
+  query, not swallowed error handling. Measured at 0.5% of the smallest realistic
+  call, and it's fixed cost against pixel-proportional work.
+- **xarray's own stacking is not the bottleneck.** Hand-rolled `np.stack` was
+  *slower* in 2 of 3 measured cases; memory copy dominates.
+
+---
+
+## Next: `GeoStack` (`core/stack.py`, 539 lines)
+
+Flagged in the original sweep, not yet investigated in depth:
+
+- `insert` vs `merge` — does `insert` earn its place? Both duplicate the grid
+  check, and `stack()` already builds. Deleting it removes ~33 lines.
+- `stack()` names a local `anchor` for a Dataset — `GeoAnchor` is a domain type
+  in the same package.
+- `_GRID_MAPPING_COORDINATE = "spatial_ref"` duplicates `core/array.py`'s
+  `_CRS_COORDINATE`. Same collapse as `BAND_DIMENSION`.
+- `stack()` picks `time_bnds` from the *first* group that has one — arbitrary.
+- `_cast_for[T]` — 14-line generic helper used twice for
+  `dtype.get(group) if Mapping else dtype`.
+- Its `cast(...)` calls are the same species as raster's; most should dissolve
+  when transform is annotated.
+
+Expect the same pattern that held all session: **every vague name had a real bug
+behind it.** `carried` → silent pixel broadcast. `names[0]` → `IndexError`. The
+`stamp` call → destroyed Dataset attrs.

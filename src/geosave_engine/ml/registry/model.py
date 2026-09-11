@@ -35,6 +35,7 @@ def register_model(stage: str, name: str):
         >>> @register_model('encoder', 'dinov3')
         ... class DINOv3(nn.Module): ...
     """
+
     def decorator(cls: type[nn.Module]) -> type[nn.Module]:
         key = name.upper()
         existing = MODEL_REGISTRY.get(stage, {}).get(key)
@@ -45,6 +46,7 @@ def register_model(stage: str, name: str):
             )
         MODEL_REGISTRY.setdefault(stage, {})[key] = cls
         return cls
+
     return decorator
 
 
@@ -97,7 +99,7 @@ def list_models(stage: str | None = None) -> dict[str, list[str]]:
 
 
 def _stage_kwargs(cls: type[nn.Module], built: dict[str, nn.Module]) -> dict[str, Any]:
-    """Look for ``'{stage}_{attr}'`` pattern on cls.__init__ parameters, 
+    """Look for ``'{stage}_{attr}'`` pattern on cls.__init__ parameters,
         and if ``built[stage]`` exists, pull that attribute's value.
 
     Args:
@@ -113,7 +115,7 @@ def _stage_kwargs(cls: type[nn.Module], built: dict[str, nn.Module]) -> dict[str
     """
     resolved: dict[str, Any] = {}
     for param in inspect.signature(cls.__init__).parameters:
-        stage, _, attr = param.partition('_')
+        stage, _, attr = param.partition("_")
         if stage not in built or not attr:
             continue
         if not hasattr(built[stage], attr):
@@ -170,5 +172,5 @@ def build_model(
             raise TypeError(f"building '{stage}' ({cls.__name__}) failed: {e}") from e
 
     first_stage = next(iter(built))
-    setattr(built[first_stage], 'is_entry', True)
+    setattr(built[first_stage], "is_entry", True)
     return ContextChain(**built)

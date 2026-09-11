@@ -9,6 +9,7 @@ The `geosave` CLI is the product entry point. The repository also owns the geoda
 ## Working agreement
 
 - Keep replies concise.
+- Lead with the code. Show the example first, then explain it. Do not describe a design in prose before showing what it looks like.
 - Inspect relevant source, configuration, and current call sites before changing behavior.
 - For architecture, public behavior, or breaking changes, discuss the design and tradeoffs before implementation.
 - Implement scoped fixes directly once intent is clear. Ask only when a missing choice materially changes behavior or risk.
@@ -17,38 +18,54 @@ The `geosave` CLI is the product entry point. The repository also owns the geoda
 - Give a reason for every changed file.
 - Use real repository APIs, dependencies, commands, and paths. Verify documentation claims against source because docs may lag during redesign.
 - Preserve public interfaces unless the user requests or approves a break.
+- If a design is rejected, agree on the problem first, then write code.
 
-## Source ownership
+## Project structure
 
-- CLI behavior: `src/geosave_engine/cli`.
-- Generated workspace behavior: `src/geosave_engine/templates/**`.
-- Geospatial behavior: `src/geosave_engine/geodata`.
-- ML behavior: `src/geosave_engine/ml`.
-- Test fixtures: `tests/data`.
-- `workspace/` is a generated consumer/example, not library source. Fix template behavior in `src/geosave_engine/templates/**`.
+- `src/geosave_engine/cli`: the `geosave` command, command handlers, prompts,
+  and workspace creation.
+- `src/geosave_engine/geodata`: geospatial domain code. Its subpackages cover
+  core objects, transforms, metadata, I/O, STAC, sensors, datasets, pipelines,
+  utilities, and visualization.
+- `src/geosave_engine/ml`: training and inference code: models, tasks,
+  callbacks, losses, metrics, optimizers, registries, and ML transforms.
+- `src/geosave_engine/templates`: source for generated workspaces and task
+  templates. `workspace/` is a generated consumer/example, never library source.
+- `src/geosave_engine/infra`: deployment and infrastructure support.
+- `src/geosave_engine/utils`: utilities shared outside one domain package.
+- `tests/`: mirrors package behavior; reusable fixtures and sample inputs live
+  under `tests/data`.
+
+## Changing existing code
+
+Fix the cause, not the symptom.
+
+- Find the cause before writing anything. Read how the thing really works, and settle claims with a grep or a short probe rather than from memory.
+- Ask whether the code should exist before improving it. Deleting beats moving, wrapping, or renaming it.
+- Offer two or three shapes and say what each costs. Do not defend your first idea.
+- Prefer the shape that removes the most. Patches add code, real fixes delete it, and a new class or helper must remove more than it adds. Judge the whole change, not single statements.
+- Ignore what the existing code cost to write. Its shape is not a reason to keep it. Rewrite the wrong part instead of building around it.
+- Tests passing is not done. Ask separately whether the structure and names read correctly to someone new.
 
 ## Design and coding
 
 - Apply SOLID, DRY, YAGNI, and KISS. Prefer one strict contract over compatibility glue.
 - Keep modules focused and interfaces smaller than their implementations.
-- Separate format adapters from domain behavior. Do not leak GDAL, CF, STAC, or ML-specific normalization into Spatial core.
 - Validate inputs early and raise actionable errors that identify the mismatch and corrective operation.
 - Use typed parameters and returns. Avoid `Any` unless an external library forces it.
 - Prefer explicit transformations over silent inference, repair, reprojection, resampling, sorting, broadcasting, or dtype promotion.
 - Reuse an existing helper when it owns the same invariant. Inline simple one-off logic; extract code only when it improves locality or is reused.
+- Optimize for reader understanding and safe maintenance, not the fewest lines. Write a plain loop rather than a comprehension that needs more than one line or hides a conditional, and never compress control flow to save lines.
+- Name a value for what it is, not for what happened to it; Fix a vague name with a truer word, not a longer one, taking the vocabulary from the domain.
+- Every name must come from somewhere: the domain, the library being wrapped, or a word this package already uses. A name you made up to fill a gap is usually vague. A word taken from a docstring is not a domain term.
+- Use one word per idea across the package. Two words for one idea, or one word for two ideas, is a bug to fix.
+- Name a parameter after what it holds. Explain the wider idea in the docstring instead of inventing a group noun for it.
+- Use a dataclass or value object when a multi-part domain value needs named fields. Do not use anonymous tuples or parallel mappings where they obscure meaning.
+- A private helper must name a real invariant or remove meaningful repetition. Keep domain-shaped orchestration close to the caller.
+- Resolve static-type errors through accurate contracts and concrete narrowing. Do not suppress them with `Any`, broad casts, or an unresolved generic type variable.
 - Use structured parsers for YAML, TOML, JSON, STAC, and geospatial metadata.
-- Prefer readable, predictable code over clever or line-saving implementations.
 - Use dependencies declared in `pyproject.toml`; discuss new dependencies or stack substitutions first.
-
-## Spatial invariants
-
-- Canonical raster data is an `xr.DataArray` with dimensions `(band, y, x)` or `(time, band, y, x)`.
-- `band` is mandatory and explicitly named. Raw NumPy input requires band names.
-- Preserve CRS, transform, bounds, resolution, dtype, nodata, bands, timestamps, vector data, and STAC provenance.
-- Treat grid, CRS, shape, band, time, dtype, and nodata mismatches as errors unless the caller explicitly requests the required transformation.
-- Composition is strict. Callers reproject, resample, select, rename, or cast before composing.
-- Keep lazy arrays lazy unless the interface explicitly materializes pixels.
-- Unit tests must not access networked STAC or S3. Mark real CDSE/STAC/S3 checks with `@pytest.mark.integration`.
+- Look for existing code before writing new code.
 
 ## Documentation and comments
 
@@ -87,24 +104,24 @@ class GeoVector:
 A public function or method documents its contract and demonstrates non-obvious usage:
 
 ```python
-def rename_bands(self, mapping: dict[str, str]) -> Self:
-    """Rename bands without changing their order or pixels.
+def rename_vars(self, mapping: dict[str, str]) -> xr.Dataset:
+    """Rename data variables without changing their order or pixels.
 
     Args:
-        mapping: Existing band names mapped to replacement names.
+        mapping: Existing variable names mapped to replacement names.
 
     Returns:
-        New raster with renamed band coordinates.
+        New Dataset with renamed data variables.
 
     Raises:
-        KeyError: If a source band is absent.
+        KeyError: If a source variable is absent.
         ValueError: If a replacement is empty or creates a duplicate.
 
     Examples:
-        >>> raster.bands
+        >>> ds.gs.variables
         ("B04", "B08")
-        >>> renamed = raster.rename_bands({"B04": "red", "B08": "nir"})
-        >>> renamed.bands
+        >>> renamed = ds.gs.rename_vars({"B04": "red", "B08": "nir"})
+        >>> renamed.gs.variables
         ("red", "nir")
     """
 ```
@@ -113,12 +130,8 @@ Keep obvious accessors short while documenting their result:
 
 ```python
 @property
-def band_count(self) -> int:
-    """Return the number of raster bands.
-
-    Returns:
-        Number of bands.
-    """
+def variable_count(self) -> int:
+    """Return the number of data variables."""
 ```
 
 Avoid docstrings that narrate implementation or compare designs:

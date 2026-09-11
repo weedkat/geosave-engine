@@ -1,166 +1,220 @@
-"""CF-compliant Zarr I/O for xr.Dataset."""
+"""Open and write raster Datasets and raster-stack DataTrees as Zarr."""
+
 from __future__ import annotations
 
+from collections.abc import Hashable, Mapping, Sequence
 from pathlib import Path
-from typing import TYPE_CHECKING, Any, Literal, Unpack, cast, overload
+from typing import TYPE_CHECKING, Any, TypedDict, Unpack, Literal, cast, overload
 
 import xarray as xr
+from xarray.core.types import T_Chunks
 
-import geopandas as gpd
 
 if TYPE_CHECKING:
+    from os import PathLike
+
     from dask.delayed import Delayed
 
-from ..array import cf_to_da, progress_bar
-from .options import ZarrOptions, check_options
-from .vector import write_sidecar
+    from geosave_engine.geodata import Dataset, DataTree
 
-# Options to_zarr sets itself, and the named parameter that sets each.
-_OWNED_ZARR = {"store": "path", "compute": "compute"}
-# Options that would break the store this writer maintains.
-_BLOCKED_ZARR = {
-    "zarr_version": "a deprecated alias of zarr_format, which would silently disagree with it",
-    "consolidated": "derived from zarr_format, so overriding it can make the store unreadable "
-                    "by the very readers that format targets",
-    "mode": "a stack stamps its layer order on the store root after writing each group; "
-            "any mode but a fresh write can leave that root disagreeing with the groups",
-    "append_dim": "the header's array spec and time span describe the pre-append array, "
-                  "so appending leaves them stale against their own pixels",
-    "region": "a region write needs the store to already exist at full extent, and the vector "
-              "sidecar is whole-store — write regions through a method that owns both",
-}
+type ZarrChunkSpec = T_Chunks
+
+_STORE_SUFFIX = ".zarr"
+_STORE_ZARR_FORMAT = 3
+
+
+class ZarrOpenOptions(TypedDict, total=False):
+    """Optional xarray behavior supported when opening Zarr.
+
+    CF decoding options are absent because disabling them drops `spatial_ref`,
+    the time axis, or the spatial index.
+    """
+
+    synchronizer: Any
+    drop_variables: str | Sequence[str]
+    consolidated: bool | None
+    overwrite_encoded_chunks: bool
+    chunk_store: Any
+    storage_options: Mapping[str, Any]
+    decode_timedelta: bool | None
+    use_zarr_fill_value_as_mask: bool | None
+    chunked_array_type: str | None
+    from_array_kwargs: dict[str, Any] | None
+
+
+class ZarrWriteOptions(TypedDict, total=False):
+    """Optional xarray behavior supported when writing Zarr.
+
+    Layout options are absent on purpose: `group`, `zarr_format`, and
+    `write_inherited_coords` decide the store's shape, which the store version
+    fixes. `region` is absent because this writer fixes `mode`, which it forbids.
+    """
+
+    encoding: Mapping[Hashable, Mapping[str, Any]] | Mapping[str, Any]
+    # compute: bool
+    consolidated: bool | None
+    safe_chunks: bool
+    align_chunks: bool
+    write_empty_chunks: bool | None
+    chunkmanager_store_kwargs: dict[str, Any] | None
+    synchronizer: Any
+
+
+def read(
+    source: str | PathLike[str],
+    *,
+    group: str | None = None,
+    chunks: ZarrChunkSpec = None,
+    mask_and_scale: bool = False,
+    **open_options: Unpack[ZarrOpenOptions],
+) -> Dataset:
+    """Open one Zarr group of a GeoSave store as a raster Dataset.
+
+    Args:
+        source: Local Zarr path or URI.
+        group: Group to open, or None for the root.
+        chunks: Chunk configuration for the opened arrays.
+        mask_and_scale: Decode CF packing to physical values instead of
+            returning stored digital numbers.
+        **open_options: Supported `xarray.open_zarr` options.
+
+    Returns:
+        Profile raster Dataset, carrying stored digital numbers unless
+        `mask_and_scale` asked for physical values.
+
+    Raises:
+        ValueError: The store cannot be read, carries no GeoSave signature, or
+            declares an incompatible store version.
+
+    Examples:
+        >>> raster = read("scene.zarr")
+        >>> raster.red.dtype
+        dtype('uint16')
+    """
+    options: dict[str, Any] = dict(open_options)
+    options.setdefault("consolidated", False)
+    # A grid mapping variable is a coordinate; the CF default leaves it a data variable.
+    options.setdefault("decode_coords", "all")
+    opened = xr.open_dataset(
+        source,
+        engine="zarr",
+        group=group,
+        chunks=chunks,
+        mask_and_scale=mask_and_scale,
+        **options,
+    )
+    return cast("Dataset", opened)
+
+
+def read_stack(
+    source: str | PathLike[str],
+    *,
+    chunks: ZarrChunkSpec = None,
+    mask_and_scale: bool = False,
+    **open_options: Unpack[ZarrOpenOptions],
+) -> DataTree:
+    """Open a Zarr hierarchy as a raster-stack DataTree.
+
+    Args:
+        source: Local Zarr path or URI.
+        chunks: Chunk configuration for the opened arrays.
+        mask_and_scale: Decode CF packing to physical values instead of
+            returning stored digital numbers.
+        **open_options: Supported `xarray.open_datatree` options.
+
+    Returns:
+        DataTree whose every leaf is a raster Dataset.
+
+    Raises:
+        ValueError: The store cannot be read, carries no GeoSave signature, or
+            declares an incompatible store version.
+
+    Examples:
+        >>> read_stack("scene.zarr").gs.groups
+        ('dem', 'sentinel-2-l2a')
+    """
+    options: dict[str, Any] = dict(open_options)
+    options.setdefault("consolidated", False)
+    # A grid mapping variable is a coordinate; the CF default leaves it a data variable.
+    options.setdefault("decode_coords", "all")
+    opened = xr.open_datatree(
+        source,
+        engine="zarr",
+        chunks=chunks,
+        mask_and_scale=mask_and_scale,
+        **options,
+    )
+    return cast("DataTree", opened)
 
 
 @overload
-def to_zarr(
-    path: str | Path,
-    ds: xr.Dataset,
-    vector: gpd.GeoDataFrame | None = ...,
-    chunk_px: int | None = ...,
-    progress: bool = ...,
-    compute: Literal[True] = ...,
-    **options: Unpack[ZarrOptions],
+def write(
+    raster_or_stack: xr.Dataset | xr.DataTree,
+    destination: str | PathLike[str],
+    *,
+    compute: Literal[True] = True,
+    overwrite: bool = False,
+    **write_options: Unpack[ZarrWriteOptions],
 ) -> Path: ...
 
 
 @overload
-def to_zarr(
-    path: str | Path,
-    ds: xr.Dataset,
-    vector: gpd.GeoDataFrame | None = ...,
-    chunk_px: int | None = ...,
-    progress: bool = ...,
+def write(
+    raster_or_stack: xr.Dataset | xr.DataTree,
+    destination: str | PathLike[str],
     *,
     compute: Literal[False],
-    **options: Unpack[ZarrOptions],
+    overwrite: bool = False,
+    **write_options: Unpack[ZarrWriteOptions],
 ) -> Delayed: ...
 
 
-def to_zarr(
-    path: str | Path,
-    ds: xr.Dataset,
-    vector: gpd.GeoDataFrame | None = None,
-    chunk_px: int | None = 512,
-    progress: bool = True,
+def write(
+    raster_or_stack: xr.Dataset | xr.DataTree,
+    destination: str | PathLike[str],
+    *,
     compute: bool = True,
-    **options: Unpack[ZarrOptions],
+    overwrite: bool = False,
+    **write_options: Unpack[ZarrWriteOptions],
 ) -> Path | Delayed:
-    """Write a CF-compliant Zarr store/group, e.g.::
-
-        <path>/[<group>/]
-          B02, B03         one variable per band, (y, x) or (time, y, x)
-          spatial_ref      CRS coordinate
+    """Write a raster to a GeoSave Zarr store.
 
     Args:
-        path: Output Zarr store path.
-        ds: Dataset already in CF form. Its `.attrs` are written as they
-            stand, so unsupported values must already be encoded.
-        chunk_px: Spatial (y/x) chunk side length, applied with `ds.chunk()`
-            before writing. `time` is never split. None leaves ds as it is.
-        vector: Features to write to this store's sidecar. None removes a
-            stale one, so the sidecar always matches the pixels.
-        progress: Show a dask progress bar while the pixels compute.
-            No-op if they're already in memory or `compute` is False.
-        compute: False defers the pixel writes and returns the pending write
-            instead of the path, so several of them run under one
-            `dask.compute` and share the tasks their sources have in common.
-            Structure, attrs and sidecar are written either way.
-        **options: How the store is written — group, chunking, spec version,
-            encoding, and anything else xarray takes. See `ZarrOptions`.
+        raster_or_stack: Profile raster Dataset.
+        destination: Output path ending in `.zarr`.
+        overwrite: Replace an existing destination when true.
+        **write_options: Supported xarray Zarr write options.
 
     Returns:
-        The written store path, or the pending pixel write when `compute`
-        is False — the caller computes it to finish the store.
+        Destination path, or xarray's delayed write when `compute=False`.
 
     Raises:
-        ValueError: `path` doesn't end in `.zarr`, or an option in `options`
-            is one this writer sets itself or cannot forward.
-        TypeError: `ds` is not a Dataset.
-    """
-    # group and zarr_format are read here and still forwarded to xarray as its own
-    group, zarr_format = options.get("group"), options.get("zarr_format", 3)
-    check_options(options, owned=_OWNED_ZARR, blocked=_BLOCKED_ZARR, writer="to_zarr")
-    
-    path = Path(path)
-    if path.suffix != ".zarr":
-        raise ValueError(f"Expected a .zarr path, got: {path}")
-    path.parent.mkdir(parents=True, exist_ok=True)
-
-    if not isinstance(ds, xr.Dataset):
-        raise TypeError(f"Zarr writer requires a CF Dataset, got {type(ds).__name__}")
-
-    encoding: Any = options.get("encoding")
-    if chunk_px is not None:
-        chunked = [name for name, spec in (encoding or {}).items() if "chunks" in spec]
-        if chunked:
-            raise ValueError(
-                f"encoding sets chunks for {chunked}, which chunk_px already sets — "
-                "pass chunk_px=None to chunk through encoding instead"
-            )
-        chunks = {d: chunk_px for d in ("y", "x") if d in ds.dims}
-        if "time" in ds.dims:
-            chunks["time"] = -1
-        ds = ds.chunk(chunks)
-    # to_zarr overloads on compute's literal, and no overload matches through a TypedDict spread
-    forwarded = cast("dict[str, Any]", options)
-    if not compute:
-        deferred = ds.to_zarr(path, mode="w", consolidated=zarr_format == 2, compute=False, **forwarded)
-        write_sidecar(path, vector, group)
-        return deferred
-    
-    with progress_bar(progress):
-        ds.to_zarr(path, mode="w", consolidated=zarr_format == 2, compute=True, **forwarded)
-    write_sidecar(path, vector, group)
-    return path
-
-
-def from_zarr(path: str | Path, group: str | None = None) -> xr.DataArray:
-    """Open a Zarr store/group as a canonical lazy array.
-
-    Args:
-        path: Store to open.
-        group: Zarr group to read; None reads the store root.
-
-    Returns:
-        Canonical, dask-backed Spatial array with encoded attrs unchanged.
-
-    Raises:
-        ValueError: `path` doesn't end in `.zarr`.
+        FileExistsError: The destination exists and overwrite is false.
+        NotImplementedError: `raster_or_stack` is a DataTree.
+        TypeError: `raster_or_stack` is neither a Dataset nor a DataTree.
+        ValueError: The destination does not end in `.zarr`.
 
     Examples:
-        >>> from_zarr("data/train/13.0000E_52.0000N_5kmx5km_10m.zarr", group="sentinel_2_l1c/0")
-        >>> from_zarr("data/train/13.0000E_52.0000N_5kmx5km_10m.zarr")  # group=None reads the root
+        >>> write(raster, "scene.zarr")
+        PosixPath('scene.zarr')
     """
-    path = Path(path)
-    if path.suffix != ".zarr":
-        raise ValueError(f"Expected a .zarr path, got: {path}")
-    # mask_and_scale would swap nodata for NaN and upcast an int raster to float — rioxarray defaults it off too
-    return cf_to_da(
-        xr.open_zarr(
-            path,
-            group=group,
-            decode_coords="all",
-            mask_and_scale=False,
-            consolidated=False,
+    if not isinstance(raster_or_stack, xr.Dataset | xr.DataTree):
+        raise TypeError(
+            f"raster_or_stack must be an xarray Dataset or DataTree, got "
+            f"{type(raster_or_stack).__name__}"
         )
+
+    path = Path(destination)
+    if path.suffix != _STORE_SUFFIX:
+        raise ValueError(f"destination {path.name!r} must end in {_STORE_SUFFIX!r}")
+
+    options: dict[str, Any] = dict(write_options)
+    options.setdefault("consolidated", False)
+    written = raster_or_stack.to_zarr(
+        path,
+        mode="w" if overwrite else "w-",
+        zarr_format=_STORE_ZARR_FORMAT,
+        compute=compute,
+        **options,
     )
+    return path if compute else written

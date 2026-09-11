@@ -14,7 +14,9 @@ SCHEDULERS = {
 }
 
 
-def build_scheduler(name: str, optimizer: Optimizer, config: dict, registry: dict = SCHEDULERS) -> LRScheduler:
+def build_scheduler(
+    name: str, optimizer: Optimizer, config: dict, registry: dict = SCHEDULERS
+) -> LRScheduler:
     """Build LR scheduler by name from registry.
 
     Args:

@@ -36,10 +36,14 @@ def make(
         )
 
     if boilerplate not in boilerplates:
-        raise typer.BadParameter(f"Boilerplate '{boilerplate}' is not a valid boilerplate.")
+        raise typer.BadParameter(
+            f"Boilerplate '{boilerplate}' is not a valid boilerplate."
+        )
 
     if filename not in boilerplates[boilerplate]:
-        raise typer.BadParameter(f"File '{filename}' is not a valid file for boilerplate '{boilerplate}'.")
+        raise typer.BadParameter(
+            f"File '{filename}' is not a valid file for boilerplate '{boilerplate}'."
+        )
 
     src_path = boilerplate_dir() / boilerplate / filename
     dest_path = workspace.root / boilerplate / filename

@@ -13,7 +13,13 @@ def default(
     weight_decay: float = 0.0,
     **kwargs,
 ) -> torch.optim.RMSprop:
-    return torch.optim.RMSprop(model.parameters(), lr=lr, momentum=momentum, weight_decay=weight_decay, **kwargs)
+    return torch.optim.RMSprop(
+        model.parameters(),
+        lr=lr,
+        momentum=momentum,
+        weight_decay=weight_decay,
+        **kwargs,
+    )
 
 
 def split(
@@ -41,4 +47,6 @@ def freeze_encoder(
     **kwargs,
 ) -> torch.optim.RMSprop:
     trainable = freeze_backbone(model)
-    return torch.optim.RMSprop(trainable, lr=lr, momentum=momentum, weight_decay=weight_decay, **kwargs)
+    return torch.optim.RMSprop(
+        trainable, lr=lr, momentum=momentum, weight_decay=weight_decay, **kwargs
+    )

@@ -4,6 +4,7 @@ Physical sensor knowledge (what a STAC collection's bands mean), not tied
 to any one model — data lives in `sensors.yaml` next to this file, loaded
 once at import.
 """
+
 from __future__ import annotations
 
 from pathlib import Path
@@ -28,7 +29,9 @@ def _get_sensor(sensor: str) -> dict:
         ValueError: `sensor` not in `SENSOR_METADATA`.
     """
     if sensor not in SENSOR_METADATA:
-        raise ValueError(f"{sensor!r} not in SENSOR_METADATA; must be one of {list(SENSOR_METADATA)}")
+        raise ValueError(
+            f"{sensor!r} not in SENSOR_METADATA; must be one of {list(SENSOR_METADATA)}"
+        )
     return SENSOR_METADATA[sensor]
 
 
@@ -138,10 +141,8 @@ def band_std(sensor: str, bands: list[str]) -> list[float]:
 def band_gsd(sensor: str, bands: list[str]) -> list[float]:
     """Per-band real ground sample distance (m), in order.
 
-    Real per-band override where a sensor's bands have genuinely different
-    native resolution (e.g. Sentinel-2's 10m/20m bands, MODIS's 250m/500m
-    bands) — falls back to the sensor's own default (`sensor_gsd`) for any
-    band without one.
+    A band without an override uses the sensor's default ground sample
+    distance.
 
     Args:
         sensor: key of `SENSOR_METADATA`.

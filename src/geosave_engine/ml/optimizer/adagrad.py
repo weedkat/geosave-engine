@@ -13,7 +13,13 @@ def default(
     weight_decay: float = 0.0,
     **kwargs,
 ) -> torch.optim.Adagrad:
-    return torch.optim.Adagrad(model.parameters(), lr=lr, lr_decay=lr_decay, weight_decay=weight_decay, **kwargs)
+    return torch.optim.Adagrad(
+        model.parameters(),
+        lr=lr,
+        lr_decay=lr_decay,
+        weight_decay=weight_decay,
+        **kwargs,
+    )
 
 
 def freeze_encoder(
@@ -24,4 +30,6 @@ def freeze_encoder(
     **kwargs,
 ) -> torch.optim.Adagrad:
     trainable = freeze_backbone(model)
-    return torch.optim.Adagrad(trainable, lr=lr, lr_decay=lr_decay, weight_decay=weight_decay, **kwargs)
+    return torch.optim.Adagrad(
+        trainable, lr=lr, lr_decay=lr_decay, weight_decay=weight_decay, **kwargs
+    )

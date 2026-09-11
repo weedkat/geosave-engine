@@ -58,6 +58,8 @@ def method_builder(name: str, config: dict, registry: dict):
     entry = reg[key]
     if not hasattr(entry, method):
         available = [m for m in dir(entry) if not m.startswith("_")]
-        raise ValueError(f"Unknown method '{method}' on '{raw_key}'. Available: {available}")
+        raise ValueError(
+            f"Unknown method '{method}' on '{raw_key}'. Available: {available}"
+        )
 
     return getattr(entry, method)(**config)

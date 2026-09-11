@@ -5,7 +5,10 @@ from typing import Any, Callable, Mapping
 import torch
 from lightning.pytorch import LightningModule, Trainer
 from lightning.pytorch.callbacks import Callback
-from torchmetrics.functional.classification import multiclass_f1_score, multiclass_jaccard_index
+from torchmetrics.functional.classification import (
+    multiclass_f1_score,
+    multiclass_jaccard_index,
+)
 
 from geosave_engine.ml.inference.thresholding import softmax_argmax
 
@@ -55,7 +58,8 @@ def _sweep(
             score = metric_fn(
                 adjusted,
                 labels_r,
-                num_classes=num_classes + 1,  # +1 for abstain/ignore slot at index num_classes
+                num_classes=num_classes
+                + 1,  # +1 for abstain/ignore slot at index num_classes
                 average="macro",
                 ignore_index=num_classes,
             ).item()
@@ -117,10 +121,14 @@ class ThresholdCalibrator(Callback):
     ) -> None:
         super().__init__()
         if metric not in _METRIC_FNS:
-            raise ValueError(f"metric must be one of {list(_METRIC_FNS)}, got {metric!r}")
+            raise ValueError(
+                f"metric must be one of {list(_METRIC_FNS)}, got {metric!r}"
+            )
         self.num_classes = num_classes
         self.ignore_index = ignore_index
-        self._threshold_range = torch.linspace(threshold_begin, threshold_end, threshold_steps)
+        self._threshold_range = torch.linspace(
+            threshold_begin, threshold_end, threshold_steps
+        )
         self._metric_fn = _METRIC_FNS[metric]
         self._preds: list[torch.Tensor] = []
         self._max_probs: list[torch.Tensor] = []
@@ -155,7 +163,7 @@ class ThresholdCalibrator(Callback):
                 f"{type(self).__name__} expects validation_step to return "
                 f"a {{'logits': ..., 'label': ...}} dict, got {type(outputs).__name__}."
             )
-        logits, label = outputs.get('logits'), outputs.get('label')
+        logits, label = outputs.get("logits"), outputs.get("label")
         if not (isinstance(logits, torch.Tensor) and isinstance(label, torch.Tensor)):
             raise TypeError(
                 f"{type(self).__name__} expects outputs['logits']/['label'] to be tensors, "
@@ -169,7 +177,7 @@ class ThresholdCalibrator(Callback):
     def on_validation_end(self, trainer: Trainer, pl_module: LightningModule) -> None:
         if not self._is_last_epoch(trainer) or not self._preds:
             return
-        class_thresholds = getattr(pl_module, 'class_thresholds', None)
+        class_thresholds = getattr(pl_module, "class_thresholds", None)
         if not isinstance(class_thresholds, torch.Tensor):
             raise TypeError(
                 f"{type(self).__name__} expects pl_module.class_thresholds to be a "
@@ -182,8 +190,13 @@ class ThresholdCalibrator(Callback):
         all_labels = torch.cat(self._labels).view(-1)
 
         new_thresholds = _sweep(
-            all_preds, all_max_probs, all_labels,
-            self.num_classes, self.ignore_index, self._threshold_range, self._metric_fn,
+            all_preds,
+            all_max_probs,
+            all_labels,
+            self.num_classes,
+            self.ignore_index,
+            self._threshold_range,
+            self._metric_fn,
         )
         class_thresholds.copy_(new_thresholds.to(pl_module.device))
         self._preds.clear()

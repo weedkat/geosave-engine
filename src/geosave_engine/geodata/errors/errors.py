@@ -1,9 +1,4 @@
-"""Shared exception types for geodata source/pipeline fetch failures.
-
-Lives at the ``geodata`` package root — both ``geodata.stac`` (raises) and
-``geodata.pipeline`` (documents/catches) depend on it, and neither of those
-should depend on the other just for an exception type.
-"""
+"""Shared geodata exception and warning types."""
 
 
 class AnchorFetchError(RuntimeError):
@@ -18,5 +13,29 @@ class TileDecodeError(TileDownloadError, OSError):
     """GDAL logged a tile decode failure (truncated/corrupt byte-range read) — transient, safe to retry."""
 
 
-class UnknownExtensionError(ValueError):
-    """An attr used a namespace no GeoExtension subclass has registered — import its module first."""
+class GeoSaveWarning(UserWarning):
+    """Base for data GeoSave accepted despite it lacking something.
+
+    Escalate the whole family to errors with
+    `warnings.simplefilter("error", GeoSaveWarning)`.
+    """
+
+
+class MissingCRSWarning(GeoSaveWarning):
+    """Opened raster declares no CRS, so ground-referenced operations will raise."""
+
+
+class UnreferencedGridWarning(GeoSaveWarning):
+    """Opened raster is indexed in pixels, carrying no transform onto any ground."""
+
+
+class DroppedAttrsWarning(GeoSaveWarning):
+    """Joined rasters did not state an attr alike, so the result states nothing."""
+
+
+class DroppedBucketsWarning(GeoSaveWarning):
+    """A resample bucket covered no observation, so it was dropped from the axis."""
+
+
+class UnmatchedBucketsWarning(GeoSaveWarning):
+    """A broadcast source bucket matched no target label, so it was left out of the result."""

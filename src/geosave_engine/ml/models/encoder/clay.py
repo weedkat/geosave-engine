@@ -1,14 +1,11 @@
 from __future__ import annotations
 
-import numpy as np
 import torch
 import torch.nn as nn
 from huggingface_hub import hf_hub_download
 from terratorch.models.backbones.clay_v15.model import Encoder
 
-from geosave_engine.geodata.spatial import GeoAnchor
 from geosave_engine.ml.registry import register_model
-from geosave_engine.ml.models.geo_context import lat_lon, week_hour
 from geosave_engine.ml.models.contract import chain_step
 
 # Only 'clay_v15_large' has a published checkpoint (verified: made-with-clay/Clay
@@ -16,7 +13,10 @@ from geosave_engine.ml.models.contract import chain_step
 # skips the smaller sizes for the same reason) -- tiny/small/base stay in
 # MODEL_NAMES as real architectures to train from scratch, just absent here.
 MODEL_SOURCE: dict[str, dict[str, str]] = {
-    'clay_v15_large': {'repo_id': 'made-with-clay/Clay', 'filename': 'v1.5/clay-v1.5.ckpt'},
+    "clay_v15_large": {
+        "repo_id": "made-with-clay/Clay",
+        "filename": "v1.5/clay-v1.5.ckpt",
+    },
 }
 
 # Real ckpt (downloaded + inspected once, then deleted -- see build_clay) is a
@@ -25,7 +25,7 @@ MODEL_SOURCE: dict[str, dict[str, str]] = {
 # "model.<submodule>." prefixes. Stripping "model.encoder." gives exactly
 # Encoder.named_parameters()'s own names -- confirmed 1:1 (265/265) against a
 # real clay_v15_large Encoder, so build_clay loads with strict=True.
-_STATE_DICT_ENCODER_PREFIX: str = 'model.encoder.'
+_STATE_DICT_ENCODER_PREFIX: str = "model.encoder."
 
 # Encoder-only subset of terratorch's clay_mae_{tiny,small,base,large} kwargs
 # (clay_v15/model.py) -- copied by hand, not read off those factories: calling
@@ -38,10 +38,38 @@ _STATE_DICT_ENCODER_PREFIX: str = 'model.encoder.'
 # weights, kept here anyway since they're legitimate skeletons to train from
 # scratch. `pretrained=True` is only meaningful for 'clay_v15_large'.
 MODEL_NAMES: dict[str, dict] = {
-    'clay_v15_tiny':  {'dim': 192,  'depth': 6,  'heads': 4,  'dim_head': 48, 'mlp_ratio': 2, 'patch_size': 8},
-    'clay_v15_small': {'dim': 384,  'depth': 6,  'heads': 6,  'dim_head': 64, 'mlp_ratio': 2, 'patch_size': 8},
-    'clay_v15_base':  {'dim': 768,  'depth': 12, 'heads': 12, 'dim_head': 64, 'mlp_ratio': 4, 'patch_size': 8},
-    'clay_v15_large': {'dim': 1024, 'depth': 24, 'heads': 16, 'dim_head': 64, 'mlp_ratio': 4, 'patch_size': 8},
+    "clay_v15_tiny": {
+        "dim": 192,
+        "depth": 6,
+        "heads": 4,
+        "dim_head": 48,
+        "mlp_ratio": 2,
+        "patch_size": 8,
+    },
+    "clay_v15_small": {
+        "dim": 384,
+        "depth": 6,
+        "heads": 6,
+        "dim_head": 64,
+        "mlp_ratio": 2,
+        "patch_size": 8,
+    },
+    "clay_v15_base": {
+        "dim": 768,
+        "depth": 12,
+        "heads": 12,
+        "dim_head": 64,
+        "mlp_ratio": 4,
+        "patch_size": 8,
+    },
+    "clay_v15_large": {
+        "dim": 1024,
+        "depth": 24,
+        "heads": 16,
+        "dim_head": 64,
+        "mlp_ratio": 4,
+        "patch_size": 8,
+    },
 }
 
 
@@ -61,7 +89,13 @@ def _normalize_time(time: torch.Tensor) -> torch.Tensor:
     week_angle = time[:, 0] * (2 * torch.pi / _WEEK_PERIOD)
     hour_angle = time[:, 1] * (2 * torch.pi / _HOUR_PERIOD)
     return torch.stack(
-        [torch.sin(week_angle), torch.cos(week_angle), torch.sin(hour_angle), torch.cos(hour_angle)], dim=-1
+        [
+            torch.sin(week_angle),
+            torch.cos(week_angle),
+            torch.sin(hour_angle),
+            torch.cos(hour_angle),
+        ],
+        dim=-1,
     )
 
 
@@ -76,7 +110,9 @@ def _normalize_latlon(latlon: torch.Tensor) -> torch.Tensor:
     """
     radians = latlon * (torch.pi / 180.0)
     lat, lon = radians[:, 0], radians[:, 1]
-    return torch.stack([torch.sin(lat), torch.cos(lat), torch.sin(lon), torch.cos(lon)], dim=-1)
+    return torch.stack(
+        [torch.sin(lat), torch.cos(lat), torch.sin(lon), torch.cos(lon)], dim=-1
+    )
 
 
 def default_out_indices(depth: int) -> list[int]:
@@ -129,22 +165,24 @@ def build_clay(
     spec = MODEL_NAMES[model_name]
     encoder = Encoder(
         mask_ratio=0.0,
-        patch_size=spec['patch_size'],
+        patch_size=spec["patch_size"],
         shuffle=False,
-        dim=spec['dim'],
-        depth=spec['depth'],
-        heads=spec['heads'],
-        dim_head=spec['dim_head'],
-        mlp_ratio=spec['mlp_ratio'],
+        dim=spec["dim"],
+        depth=spec["depth"],
+        heads=spec["heads"],
+        dim_head=spec["dim_head"],
+        mlp_ratio=spec["mlp_ratio"],
     )
 
     if pretrained:
         source = MODEL_SOURCE[model_name]
-        path = checkpoint_path or hf_hub_download(repo_id=source['repo_id'], filename=source['filename'])
-        ckpt = torch.load(path, map_location='cpu', weights_only=True)
+        path = checkpoint_path or hf_hub_download(
+            repo_id=source["repo_id"], filename=source["filename"]
+        )
+        ckpt = torch.load(path, map_location="cpu", weights_only=True)
         state_dict = {
             name.removeprefix(_STATE_DICT_ENCODER_PREFIX): param
-            for name, param in ckpt['state_dict'].items()
+            for name, param in ckpt["state_dict"].items()
             if name.startswith(_STATE_DICT_ENCODER_PREFIX)
         }
         encoder.load_state_dict(state_dict)
@@ -152,7 +190,7 @@ def build_clay(
     return encoder
 
 
-@register_model('encoder', 'clay')
+@register_model("encoder", "clay")
 class Clay(nn.Module):
     """Clay v1.5 ViT encoder, wavelength-conditioned per band.
 
@@ -186,7 +224,7 @@ class Clay(nn.Module):
     def __init__(
         self,
         *,
-        model_name: str = 'clay_v15_large',
+        model_name: str = "clay_v15_large",
         in_channels: int,
         input_size: int | tuple[int, int] = 224,
         waves: list[float],
@@ -228,26 +266,36 @@ class Clay(nn.Module):
         """
         super().__init__()
         if len(waves) != in_channels:
-            raise ValueError(f"waves must have {in_channels} values (in_channels), got {len(waves)}")
+            raise ValueError(
+                f"waves must have {in_channels} values (in_channels), got {len(waves)}"
+            )
 
-        height, width = (input_size, input_size) if isinstance(input_size, int) else input_size
+        height, width = (
+            (input_size, input_size) if isinstance(input_size, int) else input_size
+        )
         if height != width:
             raise ValueError(f"input_size must be square, got {height}x{width}")
 
-        self.encoder = build_clay(model_name, pretrained=pretrained, checkpoint_path=checkpoint_path)
+        self.encoder = build_clay(
+            model_name, pretrained=pretrained, checkpoint_path=checkpoint_path
+        )
 
         dim: int = self.encoder.dim
         patch_size: int = self.encoder.patch_size
         depth: int = len(self.encoder.transformer.layers)
 
         if height % patch_size != 0:
-            raise ValueError(f"input_size {height} not evenly divisible by {model_name}'s patch_size {patch_size}")
+            raise ValueError(
+                f"input_size {height} not evenly divisible by {model_name}'s patch_size {patch_size}"
+            )
         self.grid = height // patch_size
 
-        self.out_indices = list(out_indices) if out_indices is not None else default_out_indices(depth)
+        self.out_indices = (
+            list(out_indices) if out_indices is not None else default_out_indices(depth)
+        )
 
-        self.register_buffer('waves', torch.tensor(waves, dtype=torch.float32))
-        self.register_buffer('gsd', torch.tensor(float(gsd)))
+        self.register_buffer("waves", torch.tensor(waves, dtype=torch.float32))
+        self.register_buffer("gsd", torch.tensor(float(gsd)))
 
         self.out_channels: list[int] = [dim] * len(self.out_indices)
         self.output_strides: list[int] = [patch_size] * len(self.out_indices)
@@ -292,19 +340,27 @@ class Clay(nn.Module):
             >>> encoded, *_ = clay.forward(image, time=time, latlon=latlon)
         """
         batch_size = image.shape[0]
-        time = _normalize_time(time) if time is not None else torch.zeros(batch_size, 4, device=image.device, dtype=image.dtype)
-        latlon = _normalize_latlon(latlon) if latlon is not None else torch.zeros(batch_size, 4, device=image.device, dtype=image.dtype)
+        time = (
+            _normalize_time(time)
+            if time is not None
+            else torch.zeros(batch_size, 4, device=image.device, dtype=image.dtype)
+        )
+        latlon = (
+            _normalize_latlon(latlon)
+            if latlon is not None
+            else torch.zeros(batch_size, 4, device=image.device, dtype=image.dtype)
+        )
         if gsd is None:
             gsd = self.gsd
         if waves is None:
             waves = self.waves
 
         datacube = {
-            'pixels': image,  # (B, C, H, W)
-            'time': time,  # (B, 4)
-            'latlon': latlon,  # (B, 4)
-            'gsd': gsd,  # scalar
-            'waves': waves,  # (C,)
+            "pixels": image,  # (B, C, H, W)
+            "time": time,  # (B, 4)
+            "latlon": latlon,  # (B, 4)
+            "gsd": gsd,  # scalar
+            "waves": waves,  # (C,)
         }
         return self.encoder(datacube)
 
@@ -318,45 +374,21 @@ class Clay(nn.Module):
             (B, D, H, W) spatial feature map.
         """
         b, _, dim = x.shape  # (B, L, D)
-        return x.transpose(1, 2).reshape(b, dim, self.grid, self.grid)  # (B, L, D) -> (B, D, L) -> (B, D, H, W)
-
-    @staticmethod
-    def model_context(anchor: GeoAnchor) -> dict[str, np.ndarray]:
-        """This window's own time/latlon, Clay's own forward_pyramid input shape.
-
-        Pure geometry/time math — no `Clay` instance needed. Values are raw, not
-        yet sin/cos-encoded (`forward`'s `_normalize_time`/`_normalize_latlon` do that),
-        and numpy so the context serializes — `to_sample` tensorizes at this dtype.
-
-        Args:
-            anchor: Window to derive from. One row of `time` per step its
-                header records.
-
-        Returns:
-            {
-                "time": (steps, 2) float32 — raw (iso_week, hour) per step,
-                "latlon": (2,) float32 — raw (lat, lon) degrees, one per window,
-            }
-        """
-        lat, lon = lat_lon(anchor)
-        return {
-            "time": week_hour(anchor),
-            "latlon": np.array([lat, lon], dtype="float32"),
-        }
+        return x.transpose(1, 2).reshape(
+            b, dim, self.grid, self.grid
+        )  # (B, L, D) -> (B, D, L) -> (B, D, H, W)
 
     @chain_step()
     def forward_pyramid(
         self,
         image: torch.Tensor,
-        anchor: list[GeoAnchor] | None = None,
         time: torch.Tensor | None = None,
         latlon: torch.Tensor | None = None,
     ) -> tuple[list, list]:
         """Extract multi-scale intermediate features from the ViT.
 
-        latlon/time left unset with anchor given derive from it — see
-        `model_context`. Calls `self.forward(image, ...)` under the hooks
-        below instead of rebuilding the datacube by hand.
+        Calls `self.forward(image, ...)` under the hooks below instead of
+        rebuilding the datacube by hand.
 
         `Transformer.forward` (clay_v15/backbone.py) is a plain block loop —
         only the final block's output leaves the module, nothing intermediate
@@ -369,44 +401,39 @@ class Clay(nn.Module):
 
         Args:
             image: (B, C, H, W) input tensor, C == this instance's `in_channels`.
-            anchor: This batch's own `"anchor"` list (`batch["anchor"]`), one
-                GeoAnchor per sample. Only used to derive time/latlon when
-                either isn't given directly.
-            time: (B, 2) float32 — raw `(iso_week, hour)`. `None` derives
-                it from anchor if given, else keeps `forward()`'s own "no
-                time signal" default.
-            latlon: (B, 2) float32 — raw `(lat, lon)` in degrees. `None`
-                derives it from anchor if given, else keeps `forward()`'s
-                own "no location signal" default.
+            time: (B, 2) float32 raw `(iso_week, hour)`, or None for no time signal.
+            latlon: (B, 2) float32 raw `(lat, lon)` degrees, or None for no location signal.
 
         Returns:
             (pyramid, prefix_tokens) — list of per-level (B, D, H, W) feature
             maps, list of per-level (B, 1, D) CLS tokens.
         """
-        if anchor is not None and (time is None or latlon is None):
-            if latlon is None:
-                stacked = np.stack([np.array(lat_lon(a), dtype="float32") for a in anchor])
-                latlon = torch.as_tensor(stacked).to(image.device)
-            if time is None:
-                # one row per anchor: a bare anchor carries a span, not the steps a tile would
-                stacked = np.stack([week_hour(a)[0] for a in anchor])
-                time = torch.as_tensor(stacked).to(image.device)
-
-        target_modules = {self.encoder.transformer.layers[i][1]: i for i in self.out_indices} #type: ignore
+        target_modules = {
+            self.encoder.transformer.layers[i][1]: i for i in self.out_indices
+        }  # type: ignore
         captured: dict[int, torch.Tensor] = {}
 
-        def hook(module: nn.Module, hook_input: tuple, hook_output: torch.Tensor) -> None:
-            captured[target_modules[module]] = hook_input[0] + hook_output  # ff(x) + x, true post-residual value
+        def hook(
+            module: nn.Module, hook_input: tuple, hook_output: torch.Tensor
+        ) -> None:
+            captured[target_modules[module]] = (
+                hook_input[0] + hook_output
+            )  # ff(x) + x, true post-residual value
 
         hooks = [module.register_forward_hook(hook) for module in target_modules]
         try:
-            self.forward(image, time=time, latlon=latlon)  # (B, 1+L, D) per hooked block, discarded -- hooks captured what we need
+            self.forward(
+                image, time=time, latlon=latlon
+            )  # (B, 1+L, D) per hooked block, discarded -- hooks captured what we need
         finally:
             for h in hooks:
                 h.remove()
 
-        features = [captured[i] for i in self.out_indices]  # list[len(out_indices)] of (B, 1+L, D), CLS at idx 0
+        features = [
+            captured[i] for i in self.out_indices
+        ]  # list[len(out_indices)] of (B, 1+L, D), CLS at idx 0
         prefix_tokens = [f[:, :1, :] for f in features]  # list of (B, 1, D) -- CLS only
-        pyramid = [self._tokens_to_spatial(f[:, 1:, :]) for f in features]  # list of (B, D, H, W)
+        pyramid = [
+            self._tokens_to_spatial(f[:, 1:, :]) for f in features
+        ]  # list of (B, D, H, W)
         return pyramid, prefix_tokens
-

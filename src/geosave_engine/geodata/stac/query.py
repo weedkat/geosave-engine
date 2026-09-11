@@ -1,60 +1,71 @@
+"""Search parameters for one STAC catalog query."""
+
+from __future__ import annotations
+
 import dataclasses
 from dataclasses import dataclass
 from datetime import datetime as dt
-from typing import Any, Literal, TypeVar
+from typing import Any, Self
 
 from cql2 import Expr
 
-from geosave_engine.geodata.utils.spatial.crs import validate_bbox
+from geosave_engine.geodata.utils.geo.crs import validate_wgs84_bbox
 
-T = TypeVar("T", bound="StacQuery")
-SortBy = list[dict[str, str]] | dict[str, str] | str
 
 @dataclass(frozen=True)
 class StacQuery:
-    """STAC search parameters for a single catalog query.
+    """Parameters for a single STAC search.
 
     Args:
-        collections: STAC collection IDs to search.
-        ids: Filter by specific item IDs.
-        bbox: WGS84 bounding box ``(min_lon, min_lat, max_lon, max_lat)``.
-        intersects: GeoJSON geometry to spatially intersect.
-        datetime: Single datetime, ISO string, or ``(start, end)`` tuple.
-        max_items: Client-side max items to return.
-        limit: Server-side page size hint.
-        query: Legacy STAC query extension filters.
-        filter: CQL2-JSON filter expression; build with ``set_filter`` from CQL2 text.
-        fields: Item fields to include or exclude.
-        sortby: Sort order — string, dict, or list of ``{"field": ..., "direction": ...}``.
+        collections: Collection IDs to search. At least one.
+        ids: Item IDs to fetch directly, bypassing spatial and temporal
+            narrowing. At least one when given.
+        bbox: WGS84 bounding box `(min_lon, min_lat, max_lon, max_lat)`.
+        intersects: GeoJSON geometry to intersect.
+        datetime: Instant, ISO 8601 string, or `(start, end)` range.
+        filter: CQL2-JSON filter. Build it with `set_filter`.
+        sortby: Sort keys in STAC POST form, each
+            `{"field": <path>, "direction": "asc" | "desc"}`. Build it with
+            `sort_by`.
+        max_items: Client-side cap on items returned.
+        limit: Server page-size hint.
+
+    Raises:
+        ValueError: `collections` is empty, `ids` is given but empty, `bbox`
+            is not a valid WGS84 box, or `max_items` or `limit` is below one.
     """
 
     collections: list[str]
-    ids: list[str] | None = None
     bbox: tuple[float, float, float, float] | None = None
     intersects: dict[str, Any] | None = None
     datetime: dt | str | tuple[dt, dt] | None = None
+    filter: dict[str, Any] | None = None
     max_items: int | None = None
     limit: int | None = None
-    query: dict[str, Any] | None = None
-    filter: dict[str, Any] | None = None
-    fields: list[str] | None = None
-    sortby: SortBy | None = None
+    ids: list[str] | None = None
+    sortby: list[dict[str, str]] | None = None
 
     def __post_init__(self) -> None:
-        """Validate spatial bounds and search limits."""
-        validate_bbox(self.bbox)
+        """Check the collections, bounds, and limits.
+
+        Raises:
+            ValueError: A field is empty, malformed, or below one.
+        """
+        validate_wgs84_bbox(self.bbox)
         if not self.collections:
             raise ValueError("StacQuery needs at least one collection")
+        if self.ids is not None and not self.ids:
+            raise ValueError("ids is set but empty; pass at least one item ID or None")
         if self.max_items is not None and self.max_items < 1:
             raise ValueError(f"max_items must be positive, got {self.max_items}")
         if self.limit is not None and self.limit < 1:
             raise ValueError(f"limit must be positive, got {self.limit}")
 
     def to_search_params(self) -> dict[str, Any]:
-        """Build pystac-client search kwargs. Strips ``None`` values.
+        """Build the keyword arguments pystac-client's search takes.
 
         Returns:
-            Dict of search params ready to pass to ``Client.search(**params)``.
+            Search parameters, unset ones omitted.
         """
         params = {
             "collections": self.collections,
@@ -62,80 +73,68 @@ class StacQuery:
             "bbox": self.bbox,
             "intersects": self.intersects,
             "datetime": self.datetime,
-            "max_items": self.max_items,
-            "limit": self.limit,
-            "query": self.query,
             "filter": self.filter,
             "filter_lang": "cql2-json" if self.filter is not None else None,
-            "fields": self.fields,
             "sortby": self.sortby,
+            "max_items": self.max_items,
+            "limit": self.limit,
         }
-        return {k: v for k, v in params.items() if v is not None}
+        return {key: value for key, value in params.items() if value is not None}
 
-    def set_filter(self: T, expr: str) -> T:
-        """Merge CQL2 text filter expression into existing filter.
+    def set_filter(self, expr: str) -> Self:
+        """Add a CQL2 text expression to the filter.
 
-        Wraps both expressions in ``and`` if filter already exists.
-
-        Args:
-            expr: CQL2 text filter expression.
-
-        Returns:
-            New StacQuery, filter merged — self stays untouched.
-
-        Example:
-            >>> query = StacQuery(collections=["sentinel-2-l2a"])
-            >>> query = query.set_filter("eo:cloud_cover <= 10")
-        """
-        parsed = Expr(expr).to_json()
-        merged = parsed if self.filter is None else {"op": "and", "args": [self.filter, parsed]}
-        return dataclasses.replace(self, filter=merged)
-
-    def set_sortby(self: T, field: str, direction: Literal["asc", "desc"] = "asc") -> T:
-        """Append a sort field to existing sort order.
+        An existing filter is kept and joined with `and`.
 
         Args:
-            field: STAC item property name to sort by.
-            direction: ``'asc'`` or ``'desc'``.
+            expr: CQL2 text, e.g. `"eo:cloud_cover <= 10"`.
 
         Returns:
-            New StacQuery, sort field appended — self stays untouched.
+            New query carrying the merged filter.
 
         Raises:
-            ValueError: `field` is empty or `direction` is invalid.
+            ValueError: `expr` is not valid CQL2 text.
+
+        Examples:
+            >>> query = StacQuery(collections=["sentinel-2-l2a"]).set_filter("eo:cloud_cover <= 10")
         """
-        if not field:
-            raise ValueError("sortby field cannot be empty")
-        if direction not in ("asc", "desc"):
-            raise ValueError(f"sortby direction must be 'asc' or 'desc', got {direction!r}")
-        new_sort = {"field": field, "direction": direction}
-        if self.sortby is None:
-            new_sortby = [new_sort]
-        elif isinstance(self.sortby, list):
-            new_sortby = [*self.sortby, new_sort]
-        elif isinstance(self.sortby, dict):
-            new_sortby = [self.sortby, new_sort]
-        else:
-            new_sortby = [parse_sortby(self.sortby), new_sort]
+        parsed = Expr(expr).to_json()
+        merged = (
+            parsed
+            if self.filter is None
+            else {"op": "and", "args": [self.filter, parsed]}
+        )
+        return dataclasses.replace(self, filter=merged)
 
-        return dataclasses.replace(self, sortby=new_sortby)
+    def sort_by(self, *fields: str) -> Self:
+        """Set the sort order, replacing any order already set.
 
-def parse_sortby(sortby: str) -> dict[str, str]:
-    """Convert pystac-client sort string to STAC sort dict."""
-    direction = "asc"
+        Args:
+            fields: Field paths in priority order, each optionally prefixed
+                `-` for descending or `+` for ascending. Property fields need
+                the `properties.` prefix, e.g. `"-properties.eo:cloud_cover"`,
+                `"+id"`.
 
-    if sortby.startswith("-"):
-        direction = "desc"
-        field = sortby[1:]
-    elif sortby.startswith("+"):
-        field = sortby[1:]
-    else:
-        field = sortby
+        Returns:
+            New query carrying the sort order.
 
-    if not field:
-        raise ValueError("sortby field cannot be empty")
+        Raises:
+            ValueError: No fields given, or a field name is empty after the
+                sign.
 
-    return {
-        "field": field,
-        "direction": direction,
-    }
+        Examples:
+            >>> query = StacQuery(collections=["sentinel-2-l2a"]).sort_by(
+            ...     "-properties.eo:cloud_cover"
+            ... )
+        """
+        if not fields:
+            raise ValueError("sort_by needs at least one field")
+        keys: list[dict[str, str]] = []
+        for field in fields:
+            signed = field[:1] in ("+", "-")
+            path = field[1:] if signed else field
+            if not path:
+                raise ValueError(f"sort field {field!r} has no name after the sign")
+            direction = "desc" if field[:1] == "-" else "asc"
+            keys.append({"field": path, "direction": direction})
+        return dataclasses.replace(self, sortby=keys)

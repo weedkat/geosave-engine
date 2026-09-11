@@ -1,9 +1,11 @@
+"""STAC catalog client."""
+
 from __future__ import annotations
 
-from typing import Any, Iterable
+from typing import Any
 
-import pystac
 import planetary_computer
+import pystac
 from pystac_client import Client
 from pystac_client.stac_api_io import StacApiIO
 from urllib3.util import Retry
@@ -11,125 +13,129 @@ from urllib3.util import Retry
 from .query import StacQuery
 from .source import StacSource
 
+CDSE_URL = "https://stac.dataspace.copernicus.eu/v1/"
+PLANETARY_COMPUTER_URL = "https://planetarycomputer.microsoft.com/api/stac/v1/"
+ELEMENT84_URL = "https://earth-search.aws.element84.com/v1/"
+
 
 class StacClient:
-    """STAC catalog client with search and typed source construction.
+    """Search one STAC catalog and build sources on it.
 
-    Use classmethods to connect to a provider:
+    Args:
+        client: Open pystac-client session.
 
     Examples:
-        >>> cdse = StacClient.cdse()
-        >>> pc   = StacClient.planetary_computer()
-        >>> e84  = StacClient.element84()
+        >>> client = StacClient.cdse()
+        >>> source = client.source("sentinel-2-l2a")
     """
 
-    def __init__(self, client: Client, cache: Client | None = None) -> None:
-        self._client = client
-        self._cache = cache
-        self._collections: set[str] | None = None
-        retry_strategy = Retry(
-            total=5,
-            backoff_factor=1,
-            status_forcelist=[502, 503, 504],
-            allowed_methods=["GET", "POST"],
-        )
-        self._client._stac_io = StacApiIO(max_retries=retry_strategy)
+    def __init__(self, client: Client) -> None:
+        """Bind the session and set its retry policy.
 
-    # ---------------------------------------------------------------- connect
+        Args:
+            client: Open pystac-client session.
+        """
+        self._client = client
+        self._collections: dict[str, pystac.Collection] = {}
+        self._client._stac_io = StacApiIO(
+            max_retries=Retry(
+                total=5,
+                backoff_factor=1,
+                status_forcelist=[502, 503, 504],
+                allowed_methods=["GET", "POST"],
+            )
+        )
 
     @classmethod
     def cdse(cls) -> StacClient:
-        """Connect to Copernicus Data Space Ecosystem STAC API."""
-        return cls(Client.open("https://stac.dataspace.copernicus.eu/v1/"))
+        """Connect to the Copernicus Data Space Ecosystem catalog.
+
+        Returns:
+            Client for the CDSE STAC API.
+        """
+        return cls(Client.open(CDSE_URL))
 
     @classmethod
     def planetary_computer(cls) -> StacClient:
-        """Connect to Microsoft Planetary Computer STAC API (signed assets)."""
-        return cls(Client.open(
-            "https://planetarycomputer.microsoft.com/api/stac/v1/",
-            modifier=planetary_computer.sign_inplace,
-        ))
+        """Connect to the Microsoft Planetary Computer catalog, signing assets.
+
+        Returns:
+            Client for the Planetary Computer STAC API.
+        """
+        return cls(
+            Client.open(
+                PLANETARY_COMPUTER_URL, modifier=planetary_computer.sign_inplace
+            )
+        )
 
     @classmethod
     def element84(cls) -> StacClient:
-        """Connect to Element84 Earth Search (AWS) STAC API."""
-        return cls(Client.open("https://earth-search.aws.element84.com/v1/"))
+        """Connect to the Element84 Earth Search catalog.
 
-    # ---------------------------------------------------------------- search
+        Returns:
+            Client for the Earth Search STAC API.
+        """
+        return cls(Client.open(ELEMENT84_URL))
 
     def search(self, query: StacQuery | dict[str, Any]) -> list[pystac.Item]:
-        """Run search and return all matching items.
+        """Run one search to completion.
 
         Args:
-            query: ``StacQuery`` or raw pystac-client search params dict.
+            query: Query object, or raw pystac-client search parameters.
 
         Returns:
-            List of matching ``pystac.Item`` objects.
+            Every matching item.
         """
-        if isinstance(query, StacQuery):
-            query = query.to_search_params()
-
-        return list(self._client.search(**query).items())
-
-    def search_iter(self, query: StacQuery | dict[str, Any]) -> Iterable[pystac.Item]:
-        """Run search and yield items lazily, page by page.
-
-        Args:
-            query: ``StacQuery`` or raw pystac-client search params dict.
-
-        Returns:
-            Generator of ``pystac.Item`` objects.
-        """
-        if isinstance(query, StacQuery):
-            query = query.to_search_params()
-        yield from self._client.search(**query).items()
-
-    def get_collections(self) -> list[pystac.Collection]:
-        """Return all collections available on this catalog."""
-        return list(self._client.get_collections())
-
-    # ---------------------------------------------------------------- source
+        params = query.to_search_params() if isinstance(query, StacQuery) else query
+        return list(self._client.search(**params).items())
 
     def collections(self) -> set[str]:
-        """STAC collection IDs available on this endpoint, memoized after first call."""
-        if self._collections is None:
-            self._collections = {c.id for c in self.get_collections()}
-        return self._collections
-
-    def validate_collection(self, collection: str) -> None:
-        """Raise if `collection` doesn't exist on this endpoint.
-
-        Args:
-            collection: STAC collection ID to check.
-
-        Raises:
-            ValueError: If `collection` isn't in `collections()`.
-        """
-        if collection not in self.collections():
-            raise ValueError(
-                f"Collection {collection!r} not found on this STAC endpoint. "
-                f"Call get_collections() to see what is available."
-            )
-
-    def source(self, collection: str) -> StacSource:
-        """Create a source for a STAC collection on this client.
-
-        Every load field starts at StacSource's own default; call
-        `set_config()` on the result to change them.
-
-        Args:
-            collection: STAC collection ID. Discover via `get_collections()`.
+        """Name the collections this catalog offers.
 
         Returns:
-            Source for `collection` on this client.
+            Collection IDs.
+        """
+        return {collection.id for collection in self._client.get_collections()}
+
+    def collection(self, collection: str) -> pystac.Collection:
+        """Fetch one collection, reusing it after the first read.
+
+        Args:
+            collection: Collection ID.
+
+        Returns:
+            The collection as the catalog publishes it.
 
         Raises:
-            ValueError: If `collection` does not exist on this endpoint.
+            ValueError: `collection` is not on this catalog.
+        """
+        if collection not in self._collections:
+            found = self._client.get_collection(collection)
+            if found is None:
+                raise ValueError(
+                    f"collection {collection!r} not found on this STAC endpoint; "
+                    f"call collections() to see what is available"
+                )
+            self._collections[collection] = found
+        return self._collections[collection]
+
+    def source(self, collection: str) -> StacSource:
+        """Build a source for one collection on this catalog.
+
+        The source starts on every default. Narrow it with `set_config` and
+        `set_query`.
+
+        Args:
+            collection: Collection ID. Discover them with `collections`.
+
+        Returns:
+            Source for `collection`.
+
+        Raises:
+            ValueError: `collection` is not on this catalog.
 
         Examples:
-            >>> cdse = StacClient.cdse()
-            >>> src = cdse.source("sentinel-2-l1c").set_config(bands=["B02", "B03", "B04"])
-            >>> raster = src.load(anchor)
+            >>> source = client.source("sentinel-2-l1c").set_config(bands=["B02"])
         """
-        self.validate_collection(collection)
+        self.collection(collection)
         return StacSource(self, collection=collection)

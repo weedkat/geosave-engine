@@ -4,6 +4,7 @@ geosave_engine.ml.registry.model.MODEL_REGISTRY — no per-file import to
 remember. build_model imports this package lazily before any registry
 lookup — see registry.model._resolve_stage_cls.
 """
+
 from __future__ import annotations
 
 import importlib

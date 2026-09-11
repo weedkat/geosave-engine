@@ -1,11 +1,12 @@
-"""Datetime range parsing, and the time-axis bucketing a raster is read through."""
+"""Datetime ranges and raster time-axis bucketing."""
+
 from __future__ import annotations
 
 import re
 from datetime import datetime as dt
 from datetime import timedelta, timezone
 from functools import lru_cache
-from typing import Literal
+from typing import Literal, cast
 
 import pandas as pd
 from pandas.tseries.frequencies import to_offset
@@ -40,6 +41,25 @@ _STEM_DATE_PATTERN = re.compile(
     r"[-_](?P<start>\d{8}(?:T\d{6})?)(?:[-_](?P<end>\d{8}(?:T\d{6})?))?[^/]*$"
 )
 
+
+def _end_anchored(freq: Freq) -> bool:
+    """Whether pandas closes and labels `freq`'s buckets on their trailing edge.
+
+    `"W"`, `"ME"`, `"QE"`, `"YE"` and their business variants anchor to the
+    period end; every other offset anchors to the start.
+
+    Args:
+        freq: Any pandas offset alias, e.g. `"5D"`, `"ME"`.
+
+    Returns:
+        True for a period-end offset.
+
+    Raises:
+        ValueError: pandas doesn't know `freq`.
+    """
+    return to_offset(freq_offset(freq)).rule_code.split("-")[0] in _END_ANCHORED
+
+
 def edge_rules(
     alias: str,
     closed: Literal["left", "right"] | None,
@@ -61,9 +81,7 @@ def edge_rules(
     Raises:
         ValueError: pandas doesn't know `alias`.
     """
-    side: Literal["left", "right"] = (
-        "right" if to_offset(alias).rule_code.split("-")[0] in _END_ANCHORED else "left"
-    )
+    side: Literal["left", "right"] = "right" if _end_anchored(alias) else "left"
     return closed or side, label or side
 
 
@@ -73,18 +91,24 @@ def bucket_labels(
     *,
     closed: Literal["left", "right"] | None = None,
     label: Literal["left", "right"] | None = None,
+    origin: str | dt | None = None,
+    offset: str | timedelta | None = None,
 ) -> pd.DatetimeIndex:
     """Every bucket label one window covers at one cadence.
 
     The grid comes from the window alone, so two rasters aligned to the same
-    window and cadence land on identical labels no matter what either one
-    observed.
+    window, cadence, and origin land on identical labels no matter what
+    either one observed.
 
     Args:
         window: Inclusive `(start, end)` the grid spans.
         freq: Any pandas offset alias, e.g. `"5D"`, `"MS"`.
         closed: Which bucket edge is inclusive. None takes pandas' default.
         label: Which bucket edge labels the bucket. None takes pandas' default.
+        origin: Timestamp the edge grid is phased from. None phases it from
+            `window`'s own start — pass a `resample` call's own recorded
+            origin to reproduce its exact grid instead.
+        offset: Shift added on top of `origin`.
 
     Returns:
         Bucket labels in ascending order, one per bucket the window covers.
@@ -102,7 +126,15 @@ def bucket_labels(
     alias = freq_offset(freq)
     closed, label = edge_rules(alias, closed, label)
     edges = pd.Series(0, index=pd.DatetimeIndex([start, end]))
-    return edges.resample(alias, closed=closed, label=label, origin=start).count().index
+    bucketed = edges.resample(
+        alias,
+        closed=closed,
+        label=label,
+        origin=start if origin is None else origin,
+        offset=offset,
+    ).count()
+    # Resampling a DatetimeIndex buckets it, but pandas types the result as Index.
+    return cast("pd.DatetimeIndex", bucketed.index)
 
 
 def naive_utc(value: dt) -> dt:
@@ -115,11 +147,15 @@ def naive_utc(value: dt) -> dt:
         The same instant, tz-naive — comparable against a `time` coord's own
         labels, which numpy holds without a timezone.
     """
-    return value.astimezone(timezone.utc).replace(tzinfo=None) if value.tzinfo is not None else value
+    return (
+        value.astimezone(timezone.utc).replace(tzinfo=None)
+        if value.tzinfo is not None
+        else value
+    )
 
 
 def _parse_timezone(raw: str | None) -> timezone | None:
-    """"Z" -> UTC; "+02:00" / "+0200" -> that offset; None -> None."""
+    """ "Z" -> UTC; "+02:00" / "+0200" -> that offset; None -> None."""
     if raw is None:
         return None
     if raw == "Z":
@@ -147,12 +183,25 @@ def _parse_daterange(value: str) -> DateRange:
     second = int(match.group("second") or 0)
     fraction = match.group("fraction")
     microsecond = round(float(fraction) * 1_000_000) if fraction else 0
-    start = dt(year, month, day, hour, minute, second, microsecond, tzinfo=_parse_timezone(match.group("timezone")))
+    start = dt(
+        year,
+        month,
+        day,
+        hour,
+        minute,
+        second,
+        microsecond,
+        tzinfo=_parse_timezone(match.group("timezone")),
+    )
 
     if match.group("month") is None:
         end = start.replace(year=year + 1)
     elif match.group("day") is None:
-        next_month = start.replace(year=year + 1, month=1) if month == 12 else start.replace(month=month + 1)
+        next_month = (
+            start.replace(year=year + 1, month=1)
+            if month == 12
+            else start.replace(month=month + 1)
+        )
         end = next_month
     elif match.group("hour") is None:
         end = start + timedelta(days=1)
@@ -164,7 +213,7 @@ def _parse_daterange(value: str) -> DateRange:
         end = start + timedelta(seconds=1)
     else:
         fraction_digits = len(fraction) - 1  # includes the leading "."
-        end = start + timedelta(microseconds=10 ** (6 - fraction_digits)) 
+        end = start + timedelta(microseconds=10 ** (6 - fraction_digits))
 
     return start, end - timedelta(microseconds=1)
 
@@ -209,9 +258,11 @@ def freq_offset(freq: Freq) -> str:
         ValueError: pandas doesn't know `freq`.
     """
     try:
-        return to_offset(freq).freqstr  # type: ignore[union-attr] — to_offset only returns None for None input
+        return to_offset(freq).freqstr  # type: ignore[union-attr]
     except ValueError as e:
-        raise ValueError(f"Unknown freq {freq!r} — needs a pandas offset alias, e.g. 'D', '5D', 'ME'") from e
+        raise ValueError(
+            f"Unknown freq {freq!r} — needs a pandas offset alias, e.g. 'D', '5D', 'ME'"
+        ) from e
 
 
 @lru_cache(maxsize=None)
@@ -289,7 +340,9 @@ def extract_stem_dates(stem: str, pattern: re.Pattern[str] = _STEM_DATE_PATTERN)
     """
     match = pattern.search(stem)
     if match is None:
-        raise ValueError(f"Filename doesn't match date pattern {pattern.pattern!r}: {stem!r}")
+        raise ValueError(
+            f"Filename doesn't match date pattern {pattern.pattern!r}: {stem!r}"
+        )
     start, end = match.group("start"), match.group("end")
     return start if end is None else f"{start}/{end}"
 
@@ -297,8 +350,13 @@ def extract_stem_dates(stem: str, pattern: re.Pattern[str] = _STEM_DATE_PATTERN)
 def _compact_token(value: dt, depth: int) -> str:
     """Compact token for `value`, keeping fields up to `depth` (1=year .. 7=microsecond)."""
     parts = [
-        f"{value.year:04d}", f"{value.month:02d}", f"{value.day:02d}",
-        f"T{value.hour:02d}", f"{value.minute:02d}", f"{value.second:02d}", f".{value.microsecond:06d}",
+        f"{value.year:04d}",
+        f"{value.month:02d}",
+        f"{value.day:02d}",
+        f"T{value.hour:02d}",
+        f"{value.minute:02d}",
+        f"{value.second:02d}",
+        f".{value.microsecond:06d}",
     ]
     return "".join(parts[:depth])
 
@@ -309,6 +367,50 @@ def _min_depth(value: dt, side: int) -> int:
         if _parse_daterange(_compact_token(value, depth))[side] == value:
             return depth
     return 7
+
+
+def format_instant(value: dt) -> str:
+    """Compact filename token for one instant — inverse of `parse_instant`.
+
+    Args:
+        value: Instant at whole-second precision.
+
+    Returns:
+        Token shaped `YYYYMMDDTHHMMSS`.
+
+    Raises:
+        ValueError: `value` carries sub-second precision, which neither a
+            filename nor a GeoTIFF datetime tag holds.
+
+    Examples:
+        >>> format_instant(dt(2025, 6, 1, 10, 30, 31))
+        '20250601T103031'
+    """
+    if value.microsecond:
+        raise ValueError(
+            f"{value} carries sub-second precision, which a filename and "
+            f"TIFFTAG_DATETIME both round away; resample the time axis first"
+        )
+    return _compact_token(value, 6)
+
+
+def parse_instant(token: str) -> dt:
+    """Instant one compact filename token names — inverse of `format_instant`.
+
+    Args:
+        token: Token shaped `YYYYMMDDTHHMMSS`, or a coarser compact prefix.
+
+    Returns:
+        The instant the token opens on.
+
+    Raises:
+        ValueError: `token` is not a compact datetime.
+
+    Examples:
+        >>> parse_instant("20250601T103031")
+        datetime.datetime(2025, 6, 1, 10, 30, 31)
+    """
+    return parse_daterange(token)[0]
 
 
 def format_stem_dates(value: DateRange) -> str:

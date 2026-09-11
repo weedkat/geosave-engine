@@ -15,4 +15,6 @@ def pytest_configure(config):
 @pytest.fixture
 def dw_tif_path() -> Path:
     """Path to the DynamicWorld anchor used as a real test fixture."""
-    return Path(__file__).parent / "data" / "dw_-22.7491991582_15.9791703445-20190223.tif"
+    return (
+        Path(__file__).parent / "data" / "dw_-22.7491991582_15.9791703445-20190223.tif"
+    )

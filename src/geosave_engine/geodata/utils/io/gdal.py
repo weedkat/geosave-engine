@@ -1,95 +1,115 @@
-"""configure_gdal: process-wide GDAL/AWS/OpenMP read tuning. See configure_gdal."""
+"""Read one GDAL-supported raster file into a banded DataArray."""
+
 from __future__ import annotations
 
-import os
-from typing import Literal
+from typing import TYPE_CHECKING, Any, TypedDict, Unpack, cast
 
-from geosave_engine.utils.fn import UNSET, Unset
+import rioxarray  # noqa: F401  — registers the .rio accessor
+import xarray as xr
+
+from geosave_engine.geodata.core.array import BAND_DIMENSION
+
+from geosave_engine.geodata.attrs import GeoTIFFTags, read as read_attrs
+
+if TYPE_CHECKING:
+    from collections.abc import Sequence
+    from os import PathLike
+
+    from geosave_engine.geodata import DataArray
 
 
-def _bool_env(value: bool | Unset) -> str | Unset:
-    """True/False to GDAL's own "TRUE"/"FALSE" config-option spelling. UNSET passes through.
+_BAND_DESCRIPTIONS = "long_name"
+
+
+class RasterioOpenOptions(TypedDict, total=False):
+    """Optional rioxarray behavior supported when reading one raster."""
+
+    parse_coordinates: bool | None
+    cache: bool | None
+    lock: Any
+    decode_times: bool
+    decode_timedelta: bool | None
+    rasterio_open_options: dict[str, Any]
+
+
+def read(
+    source: str | PathLike[str],
+    *,
+    band_names: Sequence[str] | None = None,
+    overview_level: int | None = None,
+    chunks: Any = None,
+    mask_and_scale: bool = False,
+    **open_options: Unpack[RasterioOpenOptions],
+) -> DataArray:
+    """Read any GDAL-readable raster as one `(band, y, x)` array.
+
+    The `band` coordinate holds the file's GDAL band descriptions where it
+    names them, and rasterio's indexes where it does not. Tags stay in the
+    array's attrs, ``TIFFTAG_DATETIME`` also becoming `time`.
 
     Args:
-        value: Flag to spell, or UNSET.
+        source: Local path or URI to a raster GDAL can open.
+        band_names: Names replacing the file's own descriptions, in band
+            order.
+        overview_level: Zero-based overview level, or None for full
+            resolution.
+        chunks: Chunk configuration for the opened array.
+        mask_and_scale: Decode CF packing to physical values instead of
+            returning stored digital numbers.
+        **open_options: Supported rioxarray and rasterio open options.
 
     Returns:
-        `"TRUE"`, `"FALSE"`, or UNSET unchanged.
-    """
-    return value if value is UNSET else ("TRUE" if value else "FALSE")
+        Array shaped `(band, y, x)`.
 
-
-def configure_gdal(
-    *,
-    aws_no_sign_request: bool | Unset = UNSET,
-    aws_access_key_id: str | Unset = UNSET,
-    aws_secret_access_key: str | Unset = UNSET,
-    aws_session_token: str | Unset = UNSET,
-    aws_default_region: str | Unset = UNSET,
-    gdal_disable_readdir_on_open: bool | Unset = UNSET,
-    gdal_http_max_retry: int | Unset = UNSET,
-    gdal_http_retry_delay: float | Unset = UNSET,
-    gdal_http_merge_consecutive_ranges: bool | Unset = UNSET,
-    gdal_num_threads: int | Literal["ALL_CPUS"] | Unset = UNSET,
-    cpl_vsil_curl_allowed_extensions: list[str] | Unset = UNSET,
-    vsi_cache: bool | Unset = UNSET,
-    vsi_cache_size: int | Unset = UNSET,
-    omp_num_threads: int | Unset = UNSET,
-) -> None:
-    """Set the GDAL/AWS/OpenMP environment variables remote raster reads use.
-
-    Every argument is a real OS environment variable, process-global once
-    set. Call once at start-up, before anything opens a remote asset.
-
-    Args:
-        aws_no_sign_request: True skips AWS request signing — public buckets, no credentials needed.
-        aws_access_key_id: S3 access key, paired with aws_secret_access_key.
-        aws_secret_access_key: S3 secret key, paired with aws_access_key_id.
-        aws_session_token: Temporary S3 session token (STS-issued credentials).
-        aws_default_region: S3 bucket region, when not inferable from the endpoint.
-        gdal_disable_readdir_on_open: True skips GDAL's directory listing
-            before opening one remote file — faster on stores where that
-            listing is slow or blocked.
-        gdal_http_max_retry: HTTP retry attempts on a transient read
-            failure. GDAL's own default is 0 (no retry).
-        gdal_http_retry_delay: Seconds between HTTP retry attempts. GDAL's own default is 30.
-        gdal_http_merge_consecutive_ranges: True merges adjacent byte-range
-            reads into one HTTP call. GDAL's own default is True.
-        gdal_num_threads: Worker threads for GDAL's own multithreaded ops
-            (e.g. warp/resample) — an integer, or `"ALL_CPUS"`.
-        cpl_vsil_curl_allowed_extensions: Restrict remote directory
-            listing/sniffing to these file extensions (e.g. `[".tif",
-            ".jp2"]`) — faster on stores that can't list efficiently.
-        vsi_cache: True enables GDAL's in-memory block cache for remote reads.
-        vsi_cache_size: `vsi_cache`'s own cache size in bytes. GDAL's own default is 25MB.
-        omp_num_threads: Worker threads for OpenMP-linked codecs (e.g. some
-            JP2 decoders). Only takes effect if set before whatever first
-            initializes that codec's own thread pool — setting it later in
-            a long-running process may do nothing.
+    Raises:
+        ValueError: The file cannot be read, holds subdatasets, or
+            `band_names` does not match the band count.
 
     Examples:
-        >>> configure_gdal(aws_no_sign_request=True, gdal_http_max_retry=3)
+        >>> read("scene.tif").band.values
+        array(['B04', 'B08'], dtype=object)
     """
-    values: dict[str, str | Unset] = {
-        "AWS_NO_SIGN_REQUEST": _bool_env(aws_no_sign_request),
-        "AWS_ACCESS_KEY_ID": aws_access_key_id,
-        "AWS_SECRET_ACCESS_KEY": aws_secret_access_key,
-        "AWS_SESSION_TOKEN": aws_session_token,
-        "AWS_DEFAULT_REGION": aws_default_region,
-        "GDAL_DISABLE_READDIR_ON_OPEN": _bool_env(gdal_disable_readdir_on_open),
-        "GDAL_HTTP_MAX_RETRY": gdal_http_max_retry if gdal_http_max_retry is UNSET else str(gdal_http_max_retry),
-        "GDAL_HTTP_RETRY_DELAY": gdal_http_retry_delay if gdal_http_retry_delay is UNSET else str(gdal_http_retry_delay),
-        "GDAL_HTTP_MERGE_CONSECUTIVE_RANGES": _bool_env(gdal_http_merge_consecutive_ranges),
-        "GDAL_NUM_THREADS": gdal_num_threads if gdal_num_threads is UNSET else str(gdal_num_threads),
-        "CPL_VSIL_CURL_ALLOWED_EXTENSIONS": (
-            cpl_vsil_curl_allowed_extensions
-            if cpl_vsil_curl_allowed_extensions is UNSET
-            else ",".join(cpl_vsil_curl_allowed_extensions)
-        ),
-        "VSI_CACHE": _bool_env(vsi_cache),
-        "VSI_CACHE_SIZE": vsi_cache_size if vsi_cache_size is UNSET else str(vsi_cache_size),
-        "OMP_NUM_THREADS": omp_num_threads if omp_num_threads is UNSET else str(omp_num_threads),
-    }
-    for key, value in values.items():
-        if value is not UNSET:
-            os.environ[key] = value
+    options: dict[str, Any] = dict(open_options)
+    if overview_level is not None:
+        options["overview_level"] = overview_level
+
+    opened = rioxarray.open_rasterio(
+        source, chunks=chunks, mask_and_scale=mask_and_scale, **options
+    )
+    if isinstance(opened, list):
+        raise ValueError(
+            f"{source} holds subdatasets; open one of them by its own URI instead"
+        )
+    if isinstance(opened, xr.Dataset):
+        raise ValueError(
+            f"{source} opened as a Dataset rather than a banded raster; open it "
+            f"with the reader for its own format"
+        )
+
+    count = opened.sizes.get(BAND_DIMENSION)
+    if band_names is not None:
+        if len(band_names) != count:
+            raise ValueError(
+                f"band_names names {len(band_names)} bands but {source} carries "
+                f"{count}; name every band exactly once, in band order"
+            )
+        opened = opened.assign_coords(
+            {BAND_DIMENSION: [str(name) for name in band_names]}
+        )
+        opened.attrs.pop(_BAND_DESCRIPTIONS, None)
+    else:
+        # A file naming every band labels them; the rest keep rasterio's indexes.
+        described = opened.attrs.get(_BAND_DESCRIPTIONS)
+        descriptions = (described,) if isinstance(described, str) else described or ()
+        if count is not None and len(descriptions) == count and all(descriptions):
+            opened = opened.assign_coords(
+                {BAND_DIMENSION: [str(name) for name in descriptions]}
+            )
+            opened.attrs.pop(_BAND_DESCRIPTIONS, None)
+
+    # The tag model reads the instant GDAL spells its own way.
+    tags = read_attrs(opened).root.get(GeoTIFFTags)
+    if isinstance(tags, GeoTIFFTags) and tags.TIFFTAG_DATETIME is not None:
+        opened = opened.assign_coords(time=tags.TIFFTAG_DATETIME)
+
+    return cast("DataArray", opened)

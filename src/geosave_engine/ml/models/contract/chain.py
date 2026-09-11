@@ -6,6 +6,7 @@ import networkx as nx
 import torch
 import torch.nn as nn
 
+
 def _chain_step_methods(module: nn.Module) -> list[str]:
     """Every @chain_step method name declared on one module (MRO-collapsed).
 
@@ -22,7 +23,11 @@ def _chain_step_methods(module: nn.Module) -> list[str]:
     methods: list[str] = []
     for klass in reversed(type(module).__mro__):
         for name, val in vars(klass).items():
-            if callable(val) and getattr(val, '_is_chain_step', False) and name not in methods:
+            if (
+                callable(val)
+                and getattr(val, "_is_chain_step", False)
+                and name not in methods
+            ):
                 methods.append(name)
     return methods
 
@@ -71,16 +76,16 @@ def _build_graph(modules: list[nn.Module]) -> nx.DiGraph:
 
         for name in names:
             method = getattr(module, name)
-            requires: dict[str, type] = getattr(method, '_requires', {})
-            provides: dict[str, type] = getattr(method, '_provides', {})
+            requires: dict[str, type] = getattr(method, "_requires", {})
+            provides: dict[str, type] = getattr(method, "_provides", {})
             node = (module, name)
-            graph.add_node(node, kind='method', requires=requires, provides=provides)
+            graph.add_node(node, kind="method", requires=requires, provides=provides)
 
             for key, expected in requires.items():
-                graph.add_node((key, expected), kind='key', name=key, type=expected)
+                graph.add_node((key, expected), kind="key", name=key, type=expected)
                 graph.add_edge((key, expected), node)
             for key, expected in provides.items():
-                graph.add_node((key, expected), kind='key', name=key, type=expected)
+                graph.add_node((key, expected), kind="key", name=key, type=expected)
                 graph.add_edge(node, (key, expected))
     return graph
 
@@ -113,7 +118,7 @@ def _solve_dag(graph: nx.DiGraph) -> nx.DiGraph:
     for generation in nx.topological_generations(graph):
         methods_by_module: dict[nn.Module, list[tuple[nn.Module, str]]] = {}
         for node in generation:
-            if graph.nodes[node]['kind'] != 'method':
+            if graph.nodes[node]["kind"] != "method":
                 continue
             module, _ = node
             if module in chosen:
@@ -131,7 +136,7 @@ def _solve_dag(graph: nx.DiGraph) -> nx.DiGraph:
     chosen_nodes = set(chosen.values())
     key_nodes: set[tuple[str, type]] = set()
     for node in chosen_nodes:
-        for mapping in (graph.nodes[node]['requires'], graph.nodes[node]['provides']):
+        for mapping in (graph.nodes[node]["requires"], graph.nodes[node]["provides"]):
             for name, expected in mapping.items():
                 key_nodes.add((name, expected))
 
@@ -155,7 +160,11 @@ def _graph_to_chain(graph: nx.DiGraph) -> list[tuple[nn.Module, str]]:
         (module, method_name) pairs, in the order `ContextChain.forward`
         should call them.
     """
-    return [node for node in nx.topological_sort(graph) if graph.nodes[node]['kind'] == 'method']
+    return [
+        node
+        for node in nx.topological_sort(graph)
+        if graph.nodes[node]["kind"] == "method"
+    ]
 
 
 class ContextChain(nn.Module):
@@ -236,21 +245,33 @@ class ContextChain(nn.Module):
         # step's actual returned value's type to know whether it just ran a head.
         module_to_name = {module: name for name, module in named.items()}
         self._chain: list[tuple[nn.Module, str, str, bool]] = [
-            (module, method_name, module_to_name[module], not self._dag.nodes[(module, method_name)]['provides'])
+            (
+                module,
+                method_name,
+                module_to_name[module],
+                not self._dag.nodes[(module, method_name)]["provides"],
+            )
             for module, method_name in _graph_to_chain(self._dag)
         ]
 
     def __repr__(self) -> str:
         """Required keys + resolved data flow, combined with nn.Module's own child-module tree."""
+
         def sig(types: dict[str, type]) -> str:
-            return ", ".join(f"{key}: {getattr(t, '__name__', t)}" for key, t in types.items())
+            return ", ".join(
+                f"{key}: {getattr(t, '__name__', t)}" for key, t in types.items()
+            )
 
         lines = [f"required_keys: {sig(self.required_keys)}", "", "data flow:"]
         for module, method_name, stage_name, is_head in self._chain:
             method = getattr(module, method_name)
-            requires = sig(getattr(method, '_requires', {}))
-            out = "Tensor" if is_head else f"{{{sig(getattr(method, '_provides', {}))}}}"
-            lines.append(f"  {stage_name}: {type(module).__name__}.{method_name}({requires}) -> {out}")
+            requires = sig(getattr(method, "_requires", {}))
+            out = (
+                "Tensor" if is_head else f"{{{sig(getattr(method, '_provides', {}))}}}"
+            )
+            lines.append(
+                f"  {stage_name}: {type(module).__name__}.{method_name}({requires}) -> {out}"
+            )
         flow = "\n".join(lines)
         return f"{flow}\n\n{super().__repr__()}"
 
@@ -269,12 +290,14 @@ class ContextChain(nn.Module):
         """
         first_generation = next(nx.topological_generations(self._dag))
         return {
-            self._dag.nodes[node]['name']: self._dag.nodes[node]['type']
+            self._dag.nodes[node]["name"]: self._dag.nodes[node]["type"]
             for node in first_generation
-            if self._dag.nodes[node]['kind'] == 'key'
+            if self._dag.nodes[node]["kind"] == "key"
         }
 
-    def _resolve_ctx(self, args: tuple[Any, ...], kwargs: dict[str, Any]) -> dict[str, Any]:
+    def _resolve_ctx(
+        self, args: tuple[Any, ...], kwargs: dict[str, Any]
+    ) -> dict[str, Any]:
         """Turn forward()/summary()'s positional+keyword args into one ctx dict.
 
         Args:
@@ -302,7 +325,9 @@ class ContextChain(nn.Module):
             )
         return {**positional, **kwargs}
 
-    def forward(self, *args: Any, **kwargs: Any) -> dict[str, Any] | dict[str, torch.Tensor] | torch.Tensor:
+    def forward(
+        self, *args: Any, **kwargs: Any
+    ) -> dict[str, Any] | dict[str, torch.Tensor] | torch.Tensor:
         """Run the resolved chain. Required keys can be positional, keyword, or both.
 
         Positional args map onto `required_keys` in that fixed order (the

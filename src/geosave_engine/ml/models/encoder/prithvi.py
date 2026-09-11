@@ -1,6 +1,5 @@
 from __future__ import annotations
 
-import numpy as np
 import torch
 import torch.nn as nn
 
@@ -8,9 +7,7 @@ from typing import cast
 from terratorch.models.backbones.prithvi_mae import PrithviViT
 from terratorch.registry import BACKBONE_REGISTRY
 
-from geosave_engine.geodata.spatial import GeoAnchor
 from geosave_engine.ml.registry import register_model
-from geosave_engine.ml.models.geo_context import lat_lon, year_day_of_year
 from geosave_engine.ml.models.contract import chain_step
 
 # From terratorch.models.backbones.prithvi_vit — HLS S30 DN scale (reflectance x 10000).
@@ -20,10 +17,10 @@ _V1_MEAN = [775.0, 1081.0, 1229.0, 2497.0, 2204.0, 1611.0]
 _V1_STD = [1282.0, 1270.0, 1399.0, 1368.0, 1292.0, 1155.0]
 _V2_MEAN = [1087.0, 1342.0, 1433.0, 2734.0, 1958.0, 1363.0]
 _V2_STD = [2248.0, 2179.0, 2178.0, 1850.0, 1242.0, 1049.0]
-_V1_VARIANTS = frozenset({'prithvi_eo_v1_100'})
+_V1_VARIANTS = frozenset({"prithvi_eo_v1_100"})
 
 
-@register_model('encoder', 'prithvi')
+@register_model("encoder", "prithvi")
 class Prithvi(nn.Module):
     """A Prithvi-EO ViT model with band normalization stats attached.
 
@@ -42,14 +39,14 @@ class Prithvi(nn.Module):
     # as dinov3.py): depth=12 -> [2,5,8,11], depth=24 -> [5,11,17,23], depth=32 -> [7,15,23,31].
     # prithvi_eo_tiny excluded: no public checkpoint, architecture-only debug variant.
     MODEL_NAMES: dict[str, dict] = {
-        'prithvi_eo_v1_100': {'out_indices': (2, 5, 8, 11)},
-        'prithvi_eo_v2_300': {'out_indices': (5, 11, 17, 23)},
-        'prithvi_eo_v2_600': {'out_indices': (7, 15, 23, 31)},
+        "prithvi_eo_v1_100": {"out_indices": (2, 5, 8, 11)},
+        "prithvi_eo_v2_300": {"out_indices": (5, 11, 17, 23)},
+        "prithvi_eo_v2_600": {"out_indices": (7, 15, 23, 31)},
     }
 
     def __init__(
         self,
-        model_name: str = 'prithvi_eo_v2_300',
+        model_name: str = "prithvi_eo_v2_300",
         pretrained: bool = False,
         in_channels: int = 6,
         input_size: int | tuple[int, int] = 224,
@@ -113,7 +110,11 @@ class Prithvi(nn.Module):
 
         # explicit annotation: nn.Module.__setattr__'s stub type (Tensor | Module) would
         # otherwise override inference for every later self.out_indices read.
-        self.out_indices: list[int] = out_indices if out_indices is not None else list(model_names[model_name]['out_indices'])
+        self.out_indices: list[int] = (
+            out_indices
+            if out_indices is not None
+            else list(model_names[model_name]["out_indices"])
+        )
         # bands=None -> terratorch assumes the pretrained 6-band HLS S30 order itself
         # (prithvi_vit.py: "model_bands is None -> model_bands = pretrained_bands").
         # Any other in_channels needs an explicit same-length list; plain ints carry
@@ -139,12 +140,16 @@ class Prithvi(nn.Module):
 
         # ViT: same embed_dim/spatial stride at every block, unlike a CNN's per-stage
         # channel growth + downsampling — still indexed per out_index for robustness.
-        self.out_channels: list[int] = [self.model.out_channels[i] for i in self.out_indices]
+        self.out_channels: list[int] = [
+            self.model.out_channels[i] for i in self.out_indices
+        ]
         model_patch_size = self.model.patch_embed.patch_size  # (t, h, w)
         self.output_strides: list[int] = [model_patch_size[-1]] * len(self.out_indices)
 
         self.input_size = input_size
-        mean, std = (_V1_MEAN, _V1_STD) if model_name in _V1_VARIANTS else (_V2_MEAN, _V2_STD)
+        mean, std = (
+            (_V1_MEAN, _V1_STD) if model_name in _V1_VARIANTS else (_V2_MEAN, _V2_STD)
+        )
         self.img_mean = mean
         self.img_std = std
 
@@ -156,7 +161,7 @@ class Prithvi(nn.Module):
 
         Args:
             x: Input tensor of shape (batch_size, in_chans, height, width).
-            
+
         Returns:
             List of per-`out_indices` token tensors, each (B, 1 + N_patches, embed_dim)
             — CLS token at index 0.
@@ -187,14 +192,22 @@ class Prithvi(nn.Module):
             (pyramid, prefix_tokens) — list of per-level (B, C, H, W) feature
             maps, list of per-level (B, 1, C) CLS tokens.
         """
-        features = self.model.forward_features(image)  # list[depth] of (B, 1+N_patches, embed_dim), CLS at idx 0
-        features = [features[i] for i in self.out_indices]  # list[len(out_indices)] of (B, 1+N_patches, embed_dim)
-        prefix_tokens = [f[:, :1, :] for f in features]  # list[len(out_indices)] of (B, 1, embed_dim) -- CLS only
-        pyramid = self.model.prepare_features_for_image_model(features)  # list of (B, embed_dim, H/patch, W/patch)
+        features = self.model.forward_features(
+            image
+        )  # list[depth] of (B, 1+N_patches, embed_dim), CLS at idx 0
+        features = [
+            features[i] for i in self.out_indices
+        ]  # list[len(out_indices)] of (B, 1+N_patches, embed_dim)
+        prefix_tokens = [
+            f[:, :1, :] for f in features
+        ]  # list[len(out_indices)] of (B, 1, embed_dim) -- CLS only
+        pyramid = self.model.prepare_features_for_image_model(
+            features
+        )  # list of (B, embed_dim, H/patch, W/patch)
         return pyramid, prefix_tokens
 
 
-@register_model('encoder', 'prithvi_tl')
+@register_model("encoder", "prithvi_tl")
 class PrithviTL(Prithvi):
     """A Prithvi-EO ViT model conditioned on real time/location, HLS band stats attached.
 
@@ -206,15 +219,15 @@ class PrithviTL(Prithvi):
     """
 
     MODEL_NAMES: dict[str, dict] = {
-        'prithvi_eo_v2_tiny_tl': {'out_indices': (2, 5, 8, 11)},
-        'prithvi_eo_v2_100_tl':  {'out_indices': (2, 5, 8, 11)},
-        'prithvi_eo_v2_300_tl':  {'out_indices': (5, 11, 17, 23)},
-        'prithvi_eo_v2_600_tl':  {'out_indices': (7, 15, 23, 31)},
+        "prithvi_eo_v2_tiny_tl": {"out_indices": (2, 5, 8, 11)},
+        "prithvi_eo_v2_100_tl": {"out_indices": (2, 5, 8, 11)},
+        "prithvi_eo_v2_300_tl": {"out_indices": (5, 11, 17, 23)},
+        "prithvi_eo_v2_600_tl": {"out_indices": (7, 15, 23, 31)},
     }
 
     def __init__(
         self,
-        model_name: str = 'prithvi_eo_v2_300_tl',
+        model_name: str = "prithvi_eo_v2_300_tl",
         pretrained: bool = False,
         in_channels: int = 6,
         input_size: int | tuple[int, int] = 224,
@@ -242,48 +255,17 @@ class PrithviTL(Prithvi):
             vpt_dropout=vpt_dropout,
         )
 
-    @staticmethod
-    def model_context(anchor: GeoAnchor) -> dict[str, np.ndarray]:
-        """This window's own temporal_coords/location_coords, Prithvi's own forward_pyramid input shape.
-
-        Pure geometry/time math — no `PrithviTL` instance needed, safe to call at
-        ingest time or per live inference request. Numpy so the context
-        serializes — `to_sample` tensorizes at this dtype.
-
-        Args:
-            anchor: Window to derive from. One row of `temporal_coords` per
-                step its header records, which is the frame count Prithvi reads.
-
-        Returns:
-            {
-                "temporal_coords": (steps, 2) float32 — (year, day-of-year) per step, day-of-year 0-indexed,
-                "location_coords": (2,) float32 — (lat, lon) degrees, one per window,
-            }
-        """
-        lat, lon = lat_lon(anchor)
-        return {
-            "temporal_coords": year_day_of_year(anchor),
-            "location_coords": np.array([lat, lon], dtype="float32"),
-        }
-
     @chain_step()
     def forward_pyramid(
         self,
         image: torch.Tensor,
-        anchor: list[GeoAnchor] | None = None,
-        temporal_coords: torch.Tensor | None = None,
-        location_coords: torch.Tensor | None = None,
+        temporal_coords: torch.Tensor,
+        location_coords: torch.Tensor,
     ) -> tuple[list, list]:
         """Extract multi-scale intermediate features, conditioned on time/location.
 
-        temporal_coords/location_coords given directly are used as-is;
-        either left unset derives from anchor instead — see `model_context`.
-
         Args:
             image: (B, C, H, W) input tensor.
-            anchor: This batch's own `"anchor"` list (`batch["anchor"]`), one
-                GeoAnchor per sample. Only needed when
-                temporal_coords/location_coords aren't both given.
             temporal_coords: (B, num_frames, 2) float32 — (year, day-of-year) per
                 frame, day-of-year 0-indexed (Jan 1st = 0), real calendar values,
                 not normalized.
@@ -293,9 +275,6 @@ class PrithviTL(Prithvi):
             (pyramid, prefix_tokens) — list of per-level (B, C, H, W) feature
             maps, list of per-level (B, 1, C) CLS tokens.
 
-        Raises:
-            ValueError: temporal_coords or location_coords is unset and anchor is None.
-
         Examples:
             >>> ctx = {
             ...     'image': image,  # (B, 6, H, W)
@@ -304,27 +283,20 @@ class PrithviTL(Prithvi):
             ... }
             >>> out = PrithviTL().forward_pyramid(ctx)
         """
-        if temporal_coords is None or location_coords is None:
-            if anchor is None:
-                raise ValueError('forward_pyramid: anchor is required when temporal_coords/location_coords are not both given')
-            if temporal_coords is None:
-                # one frame per anchor: a bare anchor carries a span, not the steps a tile would
-                stacked = np.stack([year_day_of_year(a) for a in anchor])
-                temporal_coords = torch.as_tensor(stacked).to(image.device)
-            if location_coords is None:
-                stacked = np.stack([np.array(lat_lon(a), dtype="float32") for a in anchor])
-                location_coords = torch.as_tensor(stacked).to(image.device)
-
         features = self.model.forward_features(  # list[depth] of (B, 1+N_patches, embed_dim), CLS at idx 0 # type: ignore
             image, temporal_coords=temporal_coords, location_coords=location_coords
         )
         features = [features[i] for i in self.out_indices]  # pyright: ignore[reportGeneralTypeIssues] # list[len(out_indices)] of (B, 1+N_patches, embed_dim)
-        prefix_tokens = [f[:, :1, :] for f in features]  # list[len(out_indices)] of (B, 1, embed_dim) -- CLS only
+        prefix_tokens = [
+            f[:, :1, :] for f in features
+        ]  # list[len(out_indices)] of (B, 1, embed_dim) -- CLS only
         pyramid = self.model.prepare_features_for_image_model(features)  # type: ignore # list of (B, embed_dim, H/patch, W/patch)
         return pyramid, prefix_tokens
 
 
 if __name__ == "__main__":
     from terratorch.registry import TERRATORCH_BACKBONE_REGISTRY
-    
-    print("Models registered in terratorch:", list(TERRATORCH_BACKBONE_REGISTRY._registry))
+
+    print(
+        "Models registered in terratorch:", list(TERRATORCH_BACKBONE_REGISTRY._registry)
+    )

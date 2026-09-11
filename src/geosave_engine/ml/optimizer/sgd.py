@@ -3,7 +3,11 @@ from __future__ import annotations
 import torch
 import torch.nn as nn
 
-from geosave_engine.ml.utils.torch_params import freeze_backbone, split_encoder_decoder, split_no_wd
+from geosave_engine.ml.utils.torch_params import (
+    freeze_backbone,
+    split_encoder_decoder,
+    split_no_wd,
+)
 
 
 def default(
@@ -13,7 +17,13 @@ def default(
     weight_decay: float = 1e-4,
     **kwargs,
 ) -> torch.optim.SGD:
-    return torch.optim.SGD(model.parameters(), lr=lr, momentum=momentum, weight_decay=weight_decay, **kwargs)
+    return torch.optim.SGD(
+        model.parameters(),
+        lr=lr,
+        momentum=momentum,
+        weight_decay=weight_decay,
+        **kwargs,
+    )
 
 
 def split(
@@ -42,7 +52,10 @@ def no_wd(
 ) -> torch.optim.SGD:
     wd, no_wd_params = split_no_wd(model)
     return torch.optim.SGD(
-        [{"params": wd, "weight_decay": weight_decay}, {"params": no_wd_params, "weight_decay": 0.0}],
+        [
+            {"params": wd, "weight_decay": weight_decay},
+            {"params": no_wd_params, "weight_decay": 0.0},
+        ],
         lr=lr,
         momentum=momentum,
         **kwargs,
@@ -57,4 +70,6 @@ def freeze_encoder(
     **kwargs,
 ) -> torch.optim.SGD:
     trainable = freeze_backbone(model)
-    return torch.optim.SGD(trainable, lr=lr, momentum=momentum, weight_decay=weight_decay, **kwargs)
+    return torch.optim.SGD(
+        trainable, lr=lr, momentum=momentum, weight_decay=weight_decay, **kwargs
+    )

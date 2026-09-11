@@ -6,22 +6,16 @@ It generates a ready-to-use boilerplate and applies proven best practices out of
 
 Visit official Documentation : <https://weedkat.github.io/geosave-engine/>
 
-![Plot Screenshot](docs/assets/geostack_plot.png)
-
 ## Features
 
-- **Geospatial data pipeline** — `GeoAnchor`/`GeoTile`/`GeoStack` model
-  location+time, fetched pixels, and multi-layer samples. Pull from a live
-  STAC catalog (Copernicus, Planetary Computer, Element84, or any
-  self-hosted endpoint) or local GeoTIFF, derive layers (cloud masks, NDVI,
-  labels), save to disk as `.zarr` stores or stream straight into
-  prediction with no disk round trip.
-- **Training, config-only** — `SemanticSegmentationTask` +
-  `SemanticSegmentationDataModule` cover plain supervised segmentation
-  entirely from a LightningCLI YAML config, no Python to write. A pipeline's
-  own per-sample context (e.g. a Prithvi/Clay encoder's real acquisition
-  time/location) wires straight in via one config field. Drop to a
-  hand-written `LightningModule` when you need full control.
+- **Geospatial core redesign** — CF-conformant `xr.Dataset` rasters and flat,
+  same-grid `xr.DataTree` stacks use `.gs` accessors and typed persistence
+  adapters for Zarr, netCDF, GeoTIFF/COG, GeoJSON, GeoPackage, and GeoParquet.
+  Transform, tiling, tensor, datastore, and pipeline APIs remain deferred.
+- **DataArray features** — spectral indices and masks consume explicitly
+  ordered band DataArrays and return DataArrays.
+- **Training task** — `SemanticSegmentationTask` provides model construction,
+  training, evaluation, and prediction. Dataset adapter design is pending.
 - **Pretrained model registry** — encoders (DINOv3, Prithvi, Prithvi-TL,
   Clay), decoders (DPT, UNet), heads, selected by registry key, chained
   together automatically, no manual import wiring or hand-glued forward pass.
@@ -74,9 +68,9 @@ step-by-step — explore a pipeline, build a dataset, train, register.
 my-project/
 ├── artifacts/     # checkpoints, logs, saved configs (created by training)
 ├── configs/       # LightningCLI YAML configs
-├── data/          # ingested layers land here
+├── data/          # project datasets
 ├── logs/
-├── modules/       # your pipeline (Path A); data module + lightning module too, if Path B
+├── modules/       # editable project modules
 ├── predictions/
 ├── .env           # CDSE credentials, filled in with placeholders
 ├── geosave.toml   # workspace identity (task/method/catalog), read by the CLI

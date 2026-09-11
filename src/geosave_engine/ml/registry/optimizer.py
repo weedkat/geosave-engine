@@ -12,15 +12,17 @@ import geosave_engine.ml.optimizer.rmsprop as rmsprop
 import geosave_engine.ml.optimizer.adagrad as adagrad
 
 OPTIMIZERS = {
-    'AdamW': adamw,
-    'Adam': adam,
-    'SGD': sgd,
-    'RMSprop': rmsprop,
-    'Adagrad': adagrad,
+    "AdamW": adamw,
+    "Adam": adam,
+    "SGD": sgd,
+    "RMSprop": rmsprop,
+    "Adagrad": adagrad,
 }
 
 
-def build_optimizer(name: str, model: nn.Module, config: dict, registry: dict = OPTIMIZERS) -> Optimizer:
+def build_optimizer(
+    name: str, model: nn.Module, config: dict, registry: dict = OPTIMIZERS
+) -> Optimizer:
     """Build optimizer by name from registry.
 
     Args:

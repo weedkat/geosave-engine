@@ -5,17 +5,19 @@ from pathlib import Path
 import platform
 import tomlkit
 
+
 def get_version() -> str:
     """Extract __version__ from __about__.py at Path(__file__).parents[2]."""
     about_path = Path(__file__).parents[2] / "__about__.py"
-    
+
     if about_path.exists():
         content = about_path.read_text(encoding="utf-8")
         match = re.search(r'__version__\s*=\s*["\']([^"\']+)["\']', content)
         if match:
             return match.group(1)
-            
+
     return "0.1.0"  # Fallback version if file/match is missing
+
 
 def create_toml(
     target_dir: Path,

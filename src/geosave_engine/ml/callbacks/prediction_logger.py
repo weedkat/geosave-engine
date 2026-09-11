@@ -11,7 +11,21 @@ from matplotlib import pyplot as plt
 from matplotlib.patches import Patch
 
 from geosave_engine.utils import colorize
-from geosave_engine.geodata.viz import fig_to_array
+
+
+def _fig_to_array(fig: plt.Figure) -> np.ndarray:
+    """Rasterize a drawn figure into an image array.
+
+    Args:
+        fig: Figure drawn on an Agg-backed canvas.
+
+    Returns:
+        Rendered pixels as uint8, shaped `(height, width, 3)`, alpha dropped
+        because both loggers take three channels.
+    """
+    fig.canvas.draw()
+    rgba = np.asarray(fig.canvas.buffer_rgba())  # (H, W, 4)
+    return rgba[..., :3].copy()  # (H, W, 3)
 
 
 class DensePredictionLogger(Callback):
@@ -56,9 +70,9 @@ class DensePredictionLogger(Callback):
     def _render(self, label: torch.Tensor, preds: torch.Tensor) -> np.ndarray:
         fig, (ax_label, ax_pred) = plt.subplots(1, 2, figsize=(8, 4))
         ax_label.imshow(colorize(label, self.color_map))
-        ax_label.set_title('label', fontsize=10)
+        ax_label.set_title("label", fontsize=10)
         ax_pred.imshow(colorize(preds, self.color_map))
-        ax_pred.set_title('prediction', fontsize=10)
+        ax_pred.set_title("prediction", fontsize=10)
         for ax in (ax_label, ax_pred):
             ax.set_xticks([])
             ax.set_yticks([])
@@ -67,10 +81,12 @@ class DensePredictionLogger(Callback):
             Patch(color=color, label=self.class_map.get(cls, str(cls)))
             for cls, color in sorted(self.color_map.items())
         ]
-        fig.legend(handles=handles, loc="center left", bbox_to_anchor=(0.92, 0.5), fontsize=8)
+        fig.legend(
+            handles=handles, loc="center left", bbox_to_anchor=(0.92, 0.5), fontsize=8
+        )
         fig.tight_layout(rect=(0, 0, 0.9, 1))
 
-        image = fig_to_array(fig)
+        image = _fig_to_array(fig)
         plt.close(fig)
         return image
 
@@ -91,7 +107,7 @@ class DensePredictionLogger(Callback):
                 f"{type(self).__name__} expects validation_step/test_step to return "
                 f"a {{'logits': ..., 'label': ...}} dict, got {type(outputs).__name__}."
             )
-        logits, label = outputs.get('logits'), outputs.get('label')
+        logits, label = outputs.get("logits"), outputs.get("label")
         if not (isinstance(logits, torch.Tensor) and isinstance(label, torch.Tensor)):
             raise TypeError(
                 f"{type(self).__name__} expects outputs['logits']/['label'] to be tensors, "
@@ -110,9 +126,13 @@ class DensePredictionLogger(Callback):
         step = trainer.current_epoch
         for lg in trainer.loggers:
             if isinstance(lg, TensorBoardLogger):
-                lg.experiment.add_image(f'{prefix}/prediction', image, step, dataformats='HWC')
+                lg.experiment.add_image(
+                    f"{prefix}/prediction", image, step, dataformats="HWC"
+                )
             elif isinstance(lg, MLFlowLogger):
-                lg.experiment.log_image(lg.run_id, image, f'{prefix}_prediction_{step}.png')
+                lg.experiment.log_image(
+                    lg.run_id, image, f"{prefix}_prediction_{step}.png"
+                )
 
     def on_validation_batch_end(
         self,
@@ -123,7 +143,7 @@ class DensePredictionLogger(Callback):
         batch_idx: int,
         dataloader_idx: int = 0,
     ) -> None:
-        self._log(trainer, outputs, batch_idx, 'val')
+        self._log(trainer, outputs, batch_idx, "val")
 
     def on_test_batch_end(
         self,
@@ -134,4 +154,4 @@ class DensePredictionLogger(Callback):
         batch_idx: int,
         dataloader_idx: int = 0,
     ) -> None:
-        self._log(trainer, outputs, batch_idx, 'test')
+        self._log(trainer, outputs, batch_idx, "test")

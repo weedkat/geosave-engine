@@ -36,8 +36,12 @@ def apply_thresholds(
     """
     preds, max_probs = softmax_argmax(logits)
 
-    pixel_thresholds = torch.index_select(thresholds, 0, preds.reshape(-1)).view_as(preds)
-    preds = torch.where(max_probs >= pixel_thresholds, preds, preds.new_full((), ignore_index))
+    pixel_thresholds = torch.index_select(thresholds, 0, preds.reshape(-1)).view_as(
+        preds
+    )
+    preds = torch.where(
+        max_probs >= pixel_thresholds, preds, preds.new_full((), ignore_index)
+    )
 
     if mask is not None:
         preds = torch.where(mask.bool(), preds.new_full((), ignore_index), preds)

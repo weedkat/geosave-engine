@@ -1,60 +1,59 @@
-from collections.abc import Callable
+"""Format-specific geodata I/O.
 
-import xarray as xr
+Every format module states `read` and, where the format is writable, `write`.
+Reach for them module-qualified — `zarr.read`, `geotiff.write_cog` — so the
+format is named once and the verb stays the same across all of them.
 
-from .archives import cleanup_zip, extract_zip
-from .gdal import configure_gdal
-from .netcdf import from_netcdf, to_netcdf
-from .options import GeotiffOptions, NetcdfFormat, NetcdfOptions, ZarrOptions
-from .rasterio import BAND_NAME_ATTR, from_rasterio, to_geotiff
-from .vector import (
-    SIDECAR_SUFFIX,
-    VECTOR_SUFFIXES,
-    from_vector,
-    read_sidecar,
-    sidecar_path,
-    to_geoparquet,
-    write_sidecar,
+Examples:
+    >>> from geosave_engine.geodata.utils import io
+    >>> raster = io.zarr.read("scene.zarr", mask_and_scale=True)
+    >>> io.geotiff.write_cog(raster.gs.to_array(), "scene.tif")
+    >>> io.read("scene.zarr")  # by suffix, when the format is not known
+
+The fluent `to_cog`, `to_zarr`, and `to_netcdf` names belong to the `gs`
+accessors, not here.
+"""
+
+from . import gdal, geojson, geopackage, geoparquet, geotiff, layout, netcdf, zarr
+from .dispatch import read
+from .gdal import RasterioOpenOptions
+from .geojson import GeoJSONOpenOptions
+from .geopackage import GeoPackageOpenOptions
+from .geoparquet import GeoParquetOpenOptions
+from .geotiff import (
+    COGWriteOptions,
+    GeoTIFFTags,
+    GeoTIFFWriteOptions,
+    GTiffWriteOptions,
 )
-from .zarr import from_zarr, to_zarr
-
-# Suffixes whose reader takes a `group=`; every other format holds exactly one raster per file.
-GROUPED_SUFFIXES = frozenset({".zarr", ".nc"})
-
-# GeoRaster.open dispatches on this. Supporting a new format means one reader module + one entry here.
-READERS: dict[str, Callable[..., xr.DataArray]] = {
-    ".zarr": from_zarr,
-    ".nc": from_netcdf,
-    ".tif": from_rasterio,
-    ".tiff": from_rasterio,
-    ".cog": from_rasterio,
-    ".png": from_rasterio,
-    ".jpg": from_rasterio,
-    ".jpeg": from_rasterio,
-}
+from .layout import FlatLayout, Layout, NestedLayout, SAFELayout
+from .netcdf import NetCDFOpenOptions, NetCDFWriteOptions
+from .zarr import ZarrOpenOptions, ZarrWriteOptions
 
 __all__ = [
-    "BAND_NAME_ATTR",
-    "GROUPED_SUFFIXES",
-    "READERS",
-    "SIDECAR_SUFFIX",
-    "VECTOR_SUFFIXES",
-    "read_sidecar",
-    "sidecar_path",
-    "write_sidecar",
-    "GeotiffOptions",
-    "NetcdfFormat",
-    "NetcdfOptions",
-    "ZarrOptions",
-    "cleanup_zip",
-    "configure_gdal",
-    "extract_zip",
-    "from_rasterio",
-    "from_netcdf",
-    "from_zarr",
-    "from_vector",
-    "to_geotiff",
-    "to_geoparquet",
-    "to_netcdf",
-    "to_zarr",
+    "COGWriteOptions",
+    "FlatLayout",
+    "GTiffWriteOptions",
+    "GeoJSONOpenOptions",
+    "GeoPackageOpenOptions",
+    "GeoParquetOpenOptions",
+    "GeoTIFFTags",
+    "GeoTIFFWriteOptions",
+    "Layout",
+    "NestedLayout",
+    "NetCDFOpenOptions",
+    "NetCDFWriteOptions",
+    "RasterioOpenOptions",
+    "SAFELayout",
+    "ZarrOpenOptions",
+    "ZarrWriteOptions",
+    "gdal",
+    "geojson",
+    "geopackage",
+    "geoparquet",
+    "geotiff",
+    "layout",
+    "netcdf",
+    "read",
+    "zarr",
 ]

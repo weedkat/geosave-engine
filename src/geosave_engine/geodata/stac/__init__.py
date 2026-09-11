@@ -1,8 +1,10 @@
-from __future__ import annotations
-
 from .client import StacClient
 from .query import StacQuery
-from .records import DEFAULT_PROPERTIES
-from .source import StacSource
+from .source import StacSource, StacSourceConfig
 
-__all__ = ["DEFAULT_PROPERTIES", "StacClient", "StacQuery", "StacSource"]
+__all__ = [
+    "StacClient",
+    "StacQuery",
+    "StacSource",
+    "StacSourceConfig",
+]

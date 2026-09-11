@@ -6,7 +6,16 @@ import torch
 Palette = dict[int, tuple[int, int, int]] | dict[int, str]
 
 
-def _parse_color(color: tuple[int, int, int] | str) -> tuple[int, int, int]:
+def parse_color(color: tuple[int, int, int] | str) -> tuple[int, int, int]:
+    """Read one palette colour as an RGB triple.
+
+    Args:
+        color: ``"#RRGGBB"`` hex string, or an ``(R, G, B)`` triple returned
+            unchanged.
+
+    Returns:
+        ``(R, G, B)`` with each channel in ``[0, 255]``.
+    """
     if isinstance(color, str):
         h = color.lstrip("#")
         return int(h[0:2], 16), int(h[2:4], 16), int(h[4:6], 16)
@@ -40,7 +49,7 @@ def colorize(
     rgb = np.full((h, w, 3), default, dtype=np.uint8)
 
     parsed: dict[int, tuple[int, int, int]] = {
-        idx: _parse_color(color) for idx, color in palette.items()
+        idx: parse_color(color) for idx, color in palette.items()
     }
 
     for idx, color in parsed.items():

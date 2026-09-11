@@ -13,12 +13,14 @@ from ..core.prompts import prompt_required_text, prompt_optional_text, prompt_se
 
 BASE_TASK = "blank"
 
+
 def make_choice(title: str, value: str | None, description: str) -> qu.Choice:
     return qu.Choice(
         title=title,
         value=value,
         description=description,
     )
+
 
 def create(
     name: Annotated[
@@ -34,21 +36,21 @@ def create(
         ),
     ] = None,
     description: Annotated[
-            Optional[str],
-            typer.Option(
-                "-d",
-                "--description",
-                help="A brief description of the workspace.",
-            ),
-        ] = None,
+        Optional[str],
+        typer.Option(
+            "-d",
+            "--description",
+            help="A brief description of the workspace.",
+        ),
+    ] = None,
     task: Annotated[
         Optional[str],
         typer.Option(
             "-t",
             "--task",
             help="The task for the workspace.",
-            ),
-        ] = None,
+        ),
+    ] = None,
     method: Annotated[
         Optional[str],
         typer.Option(
@@ -66,12 +68,14 @@ def create(
         name = prompt_required_text("Enter a name for the workspace:")
 
     if description is None:
-        description = prompt_optional_text("Enter a description for the workspace (optional):")
-    
+        description = prompt_optional_text(
+            "Enter a description for the workspace (optional):"
+        )
+
     if not task:
         choices = [make_choice(BASE_TASK, None, "No task selected.")]
         for task in method_templates:
-            file_txt = (task_dir() / task / "description.txt")
+            file_txt = task_dir() / task / "description.txt"
 
             if file_txt.exists():
                 description = file_txt.read_text().strip()
@@ -88,7 +92,7 @@ def create(
     if not method and task != BASE_TASK:
         choices = []
         for method in method_templates[task]:
-            file_txt = (task_dir() / task / method / "description.txt")
+            file_txt = task_dir() / task / method / "description.txt"
 
             if file_txt.exists():
                 description = file_txt.read_text().strip()
@@ -106,8 +110,9 @@ def create(
         raise typer.BadParameter(f"Task '{task}' is not a valid task.")
 
     if method and method not in method_templates[task]:
-        raise typer.BadParameter(f"Method '{method}' is not a valid method for task '{task}'.")
+        raise typer.BadParameter(
+            f"Method '{method}' is not a valid method for task '{task}'."
+        )
 
     create_workspace(Path.cwd() / name, task, method)
     create_toml(Path.cwd() / name, name, task, method, description)
-

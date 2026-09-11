@@ -7,6 +7,7 @@ from typing import Iterable
 
 class CopyState:
     """Holds mutable state across recursive calls."""
+
     def __init__(self, overwrite_all: bool = False, skip_all: bool = False):
         self.overwrite_all = overwrite_all
         self.skip_all = skip_all

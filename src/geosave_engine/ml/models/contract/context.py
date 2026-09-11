@@ -120,7 +120,7 @@ def _provides_from_return_type(fn) -> tuple[dict[str, type], bool]:
             match the return statement's own value count.
     """
     hints = typing.get_type_hints(fn)
-    return_hint = hints.get('return')
+    return_hint = hints.get("return")
     is_single = typing.get_origin(return_hint) is not tuple
     if is_single:
         if return_hint is None or return_hint is type(None):
@@ -218,16 +218,24 @@ def chain_step(head: bool = False):
     def decorator(fn):
         hints = typing.get_type_hints(fn)
         sig = inspect.signature(fn)
-        param_names = [name for name in sig.parameters if name != 'self']
+        param_names = [name for name in sig.parameters if name != "self"]
         missing_hints = [name for name in param_names if name not in hints]
         if missing_hints:
-            raise TypeError(f"{fn.__qualname__}: missing type hint(s) for {missing_hints}")
+            raise TypeError(
+                f"{fn.__qualname__}: missing type hint(s) for {missing_hints}"
+            )
         # A param with a real default is optional — excluded from requires below.
-        _optional = {name for name in param_names if sig.parameters[name].default is not inspect.Parameter.empty}
-        _requires: dict[str, type] = {name: hints[name] for name in param_names if name not in _optional}
+        _optional = {
+            name
+            for name in param_names
+            if sig.parameters[name].default is not inspect.Parameter.empty
+        }
+        _requires: dict[str, type] = {
+            name: hints[name] for name in param_names if name not in _optional
+        }
 
         if head:
-            if hints.get('return') is not torch.Tensor:
+            if hints.get("return") is not torch.Tensor:
                 raise TypeError(
                     f"{fn.__qualname__}: head=True must return `-> torch.Tensor`, "
                     f"got {hints.get('return')!r}"
@@ -237,7 +245,9 @@ def chain_step(head: bool = False):
         else:
             _provides, _is_single = _provides_from_return_type(fn)
             self_referencing = {
-                name for name, expected in _requires.items() if _provides.get(name) is expected
+                name
+                for name, expected in _requires.items()
+                if _provides.get(name) is expected
             }
             if self_referencing:
                 raise TypeError(
@@ -300,9 +310,9 @@ def chain_step(head: bool = False):
                     )
             return result_dict
 
-        setattr(wrapper, '_is_chain_step', True)
-        setattr(wrapper, '_requires', _requires)
-        setattr(wrapper, '_provides', _provides)
+        setattr(wrapper, "_is_chain_step", True)
+        setattr(wrapper, "_requires", _requires)
+        setattr(wrapper, "_provides", _provides)
         return wrapper
 
     return decorator

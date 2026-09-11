@@ -1,10 +1,11 @@
 """build_shadow_mask: project cloud pixels onto their shadow footprint. See build_shadow_mask."""
+
 from __future__ import annotations
 
 import numpy as np
 import xarray as xr
 
-from geosave_engine.geodata.utils.array import map_overlap
+from ._blocks import map_blocks_with_halo
 
 
 def build_shadow_mask(
@@ -31,7 +32,7 @@ def build_shadow_mask(
     """
     # a cloud up to this many pixels away casts into this chunk, so the halo has to reach that far
     depth = round(shadow_distance_m / resolution)
-    return map_overlap(
+    return map_blocks_with_halo(
         _shadow_block,
         cloud_mask,
         depth=depth,
@@ -42,7 +43,9 @@ def build_shadow_mask(
     )
 
 
-def _shadow_block(cloud_mask: np.ndarray, *, sun_azimuth_deg: float, steps: int) -> np.ndarray:
+def _shadow_block(
+    cloud_mask: np.ndarray, *, sun_azimuth_deg: float, steps: int
+) -> np.ndarray:
     """Project one block's clouds along the shadow direction.
 
     Args:
@@ -62,14 +65,14 @@ def _shadow_block(cloud_mask: np.ndarray, *, sun_azimuth_deg: float, steps: int)
 
     shadow = np.zeros(cloud_mask.shape, dtype=bool)
     for row_off, col_off in offsets:
-        shifted = np.roll(cloud_mask, shift=(row_off, col_off), axis=(0, 1))
+        shifted = np.roll(cloud_mask, shift=(row_off, col_off), axis=(-2, -1))
         if row_off > 0:
-            shifted[:row_off, :] = False
+            shifted[..., :row_off, :] = False
         elif row_off < 0:
-            shifted[row_off:, :] = False
+            shifted[..., row_off:, :] = False
         if col_off > 0:
-            shifted[:, :col_off] = False
+            shifted[..., :col_off] = False
         elif col_off < 0:
-            shifted[:, col_off:] = False
+            shifted[..., col_off:] = False
         shadow |= shifted
     return shadow

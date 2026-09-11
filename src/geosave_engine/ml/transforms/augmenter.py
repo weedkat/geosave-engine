@@ -8,7 +8,9 @@ import kornia.augmentation as K
 from typing import Literal
 
 
-def build_augmentation_pipeline(augmentations: list[dict], size: tuple[int, int] | int) -> list:
+def build_augmentation_pipeline(
+    augmentations: list[dict], size: tuple[int, int] | int
+) -> list:
     """Build list of Kornia augmentation instances from config dicts.
 
     Recursively handles ``AugmentationSequential``. Injects ``size`` into any
@@ -43,19 +45,20 @@ def build_augmentation_pipeline(augmentations: list[dict], size: tuple[int, int]
 
 
 DataKey = Literal[
-    "input",       # Standard image
-    "image",       # Alias for input
-    "mask",        # Spatial mask (segmentation)
-    "bbox",        # Defaults to xyxy (Pascal VOC format)
-    "bbox_xyxy",   # Pascal VOC format
-    "bbox_xywh",   # COCO format
-    "bbox_yolo",   # CUSTOM: YOLO format (intercepted and processed internally)
-    "keypoints",   # 2D point coordinates
-    "class",       # 1D class integer
-    "label"        # Alias for class
+    "input",  # Standard image
+    "image",  # Alias for input
+    "mask",  # Spatial mask (segmentation)
+    "bbox",  # Defaults to xyxy (Pascal VOC format)
+    "bbox_xyxy",  # Pascal VOC format
+    "bbox_xywh",  # COCO format
+    "bbox_yolo",  # CUSTOM: YOLO format (intercepted and processed internally)
+    "keypoints",  # 2D point coordinates
+    "class",  # 1D class integer
+    "label",  # Alias for class
 ]
 
 # (Keep your build_augmentation_pipeline function here)
+
 
 def yolo_to_xyxy(boxes: torch.Tensor, height: int, width: int) -> torch.Tensor:
     """Convert normalized YOLO [cx, cy, w, h] to absolute [x_min, y_min, x_max, y_max]."""
@@ -63,12 +66,12 @@ def yolo_to_xyxy(boxes: torch.Tensor, height: int, width: int) -> torch.Tensor:
     cy = boxes[..., 1] * height
     bw = boxes[..., 2] * width
     bh = boxes[..., 3] * height
-    
+
     x_min = cx - (bw / 2)
     y_min = cy - (bh / 2)
     x_max = cx + (bw / 2)
     y_max = cy + (bh / 2)
-    
+
     return torch.stack([x_min, y_min, x_max, y_max], dim=-1)
 
 
@@ -78,35 +81,35 @@ def xyxy_to_yolo(boxes: torch.Tensor, height: int, width: int) -> torch.Tensor:
     bh = boxes[..., 3] - boxes[..., 1]
     cx = boxes[..., 0] + (bw / 2)
     cy = boxes[..., 1] + (bh / 2)
-    
+
     return torch.stack([cx / width, cy / height, bw / width, bh / height], dim=-1)
 
 
 class ImageAugmenter(torch.nn.Module):
     """Universal stochastic Kornia transforms for training.
-    
-    Dynamically routes inputs based on ``data_keys``. Supports classification, 
-    semantic segmentation, pixel-wise regression, and object detection. Natively 
-    intercepts and processes YOLO-formatted bounding boxes (normalized cx, cy, w, h) 
+
+    Dynamically routes inputs based on ``data_keys``. Supports classification,
+    semantic segmentation, pixel-wise regression, and object detection. Natively
+    intercepts and processes YOLO-formatted bounding boxes (normalized cx, cy, w, h)
     by mapping them to Kornia's absolute coordinates internally.
 
     Args:
-        augmentations: List of augmentation config dicts containing ``"name"`` and 
+        augmentations: List of augmentation config dicts containing ``"name"`` and
             optional ``"init_args"``.
         size: Default spatial size injected into size-aware augmentations.
-        data_keys: List indicating the types of input tensors matching the supported 
-            Kornia keys (e.g., ``"input"``, ``"mask"``, ``"bbox_xywh"``). Use 
-            ``"bbox_yolo"`` for custom YOLO normalized bounding boxes. Defaults to 
+        data_keys: List indicating the types of input tensors matching the supported
+            Kornia keys (e.g., ``"input"``, ``"mask"``, ``"bbox_xywh"``). Use
+            ``"bbox_yolo"`` for custom YOLO normalized bounding boxes. Defaults to
             ``["input"]``.
 
     Raises:
-        ValueError: If ``"bbox_yolo"`` is present in ``data_keys`` but no ``"input"`` 
-            or ``"image"`` key is provided (which is required to fetch spatial 
+        ValueError: If ``"bbox_yolo"`` is present in ``data_keys`` but no ``"input"``
+            or ``"image"`` key is provided (which is required to fetch spatial
             dimensions to un-normalize the bounding boxes).
 
     Returns:
-        The augmented tensors when called. Returns a single ``torch.Tensor`` if 
-        only one argument is passed, otherwise returns a ``tuple`` of tensors in 
+        The augmented tensors when called. Returns a single ``torch.Tensor`` if
+        only one argument is passed, otherwise returns a ``tuple`` of tensors in
         the exact order as specified in ``data_keys``.
 
     Examples:
@@ -117,7 +120,7 @@ class ImageAugmenter(torch.nn.Module):
         **YOLO Object Detection:**
         >>> augmenter = ImageAugmenter(config, size=224, data_keys=["input", "bbox_yolo"])
         >>> img, yolo_boxes = augmenter(img, yolo_boxes)
-        
+
         **Standard Classification:**
         >>> augmenter = ImageAugmenter(config, size=224)
         >>> img = augmenter(img)
@@ -130,23 +133,28 @@ class ImageAugmenter(torch.nn.Module):
         data_keys: list[DataKey] | None = None,
     ) -> None:
         super().__init__()
-        
+
         data_keys = data_keys or ["input"]
         self.yolo_indices = [i for i, k in enumerate(data_keys) if k == "bbox_yolo"]
-        
+
         if self.yolo_indices:
             try:
-                self.img_idx = next(i for i, k in enumerate(data_keys) if k in ("input", "image"))
+                self.img_idx = next(
+                    i for i, k in enumerate(data_keys) if k in ("input", "image")
+                )
             except StopIteration:
-                raise ValueError("Using 'bbox_yolo' requires an 'input' or 'image' tensor in data_keys.")
+                raise ValueError(
+                    "Using 'bbox_yolo' requires an 'input' or 'image' tensor in data_keys."
+                )
 
         # Map custom YOLO keys to Kornia's native xyxy keys
         kornia_keys = ["bbox_xyxy" if k == "bbox_yolo" else k for k in data_keys]
         aug_list = build_augmentation_pipeline(augmentations, size)
-        
+
         self.pipeline: K.AugmentationSequential | None = (
             K.AugmentationSequential(*aug_list, data_keys=kornia_keys)
-            if aug_list else None
+            if aug_list
+            else None
         )
 
     def forward(self, *args: torch.Tensor) -> tuple[torch.Tensor, ...] | torch.Tensor:
@@ -163,7 +171,7 @@ class ImageAugmenter(torch.nn.Module):
         # 1. Pre-process YOLO -> XYXY
         args_list = list(args)
         _, _, h, w = args_list[self.img_idx].shape
-        
+
         for i in self.yolo_indices:
             args_list[i] = yolo_to_xyxy(args_list[i], height=h, width=w)
 
@@ -174,7 +182,7 @@ class ImageAugmenter(torch.nn.Module):
         # Normalize Kornia's output to a mutable list based on input length
         out_list = [out] if len(args) == 1 else list(out)
         _, _, new_h, new_w = out_list[self.img_idx].shape
-        
+
         for i in self.yolo_indices:
             out_list[i] = xyxy_to_yolo(out_list[i], height=new_h, width=new_w)
 

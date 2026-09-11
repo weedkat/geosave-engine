@@ -26,7 +26,8 @@ _BANDS = [
 _MEANS = [547.36707, 898.5121, 1020.9082, 2665.5352, 2340.584, 1610.1407]
 _STDS = [411.4701, 558.54065, 815.94025, 812.4403, 1113.7145, 1067.641]
 
-@register_model('model', 'ibm_granite_biomass')
+
+@register_model("model", "ibm_granite_biomass")
 class GraniteGeospatialBiomass(nn.Module):
     """IBM Granite Geospatial Biomass monolith: Prithvi Swin-B + UperNet + regression head.
 
@@ -52,27 +53,27 @@ class GraniteGeospatialBiomass(nn.Module):
     def __init__(
         self,
         pretrained: bool = True,
-        map_location: str | torch.device = 'cpu',
+        map_location: str | torch.device = "cpu",
     ) -> None:
         super().__init__()
 
         task = PixelwiseRegressionTask(
             # https://huggingface.co/ibm-granite/granite-geospatial-biomass/blob/main/config.yaml
             model_args={
-                'decoder': 'UperNetDecoder',
-                'pretrained': False,
-                'backbone': 'prithvi_swin_B',
-                'backbone_drop_path_rate': 0.3,
-                'decoder_channels': 32,
-                'in_channels': 6,
-                'bands': _BANDS,
-                'num_frames': 1,
-                'head_dropout': 0.16194593880230534,
-                'head_final_act': "torch.nn.ReLU",
-                'head_learned_upscale_layers': 2,
+                "decoder": "UperNetDecoder",
+                "pretrained": False,
+                "backbone": "prithvi_swin_B",
+                "backbone_drop_path_rate": 0.3,
+                "decoder_channels": 32,
+                "in_channels": 6,
+                "bands": _BANDS,
+                "num_frames": 1,
+                "head_dropout": 0.16194593880230534,
+                "head_final_act": "torch.nn.ReLU",
+                "head_learned_upscale_layers": 2,
             },
-            model_factory='PrithviModelFactory',
-            loss='mse',
+            model_factory="PrithviModelFactory",
+            loss="mse",
             ignore_index=-1,
         )
         self.model = task.model
@@ -82,9 +83,9 @@ class GraniteGeospatialBiomass(nn.Module):
             # Lightning checkpoint; weights_only=False required for non-tensor objects in state
             ckpt = torch.load(ckpt_path, map_location=map_location, weights_only=False)
             state = {
-                k.removeprefix('model.'): v
-                for k, v in ckpt['state_dict'].items()
-                if k.startswith('model.')
+                k.removeprefix("model."): v
+                for k, v in ckpt["state_dict"].items()
+                if k.startswith("model.")
             }
             self.model.load_state_dict(state)
 

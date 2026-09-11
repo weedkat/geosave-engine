@@ -10,9 +10,10 @@ from geosave_engine.ml.models.contract import chain_step
 
 class _ChannelProject(nn.Module):
     """
-    Lightweight adapter for CNN/Swin backbones. 
+    Lightweight adapter for CNN/Swin backbones.
     Only aligns channel dimensions; leaves spatial dimensions exactly as they are.
     """
+
     def __init__(self, in_channels: int, out_channels: int):
         super().__init__()
         self.proj = nn.Conv2d(in_channels, out_channels, kernel_size=1)
@@ -30,7 +31,7 @@ class _ChannelProject(nn.Module):
 
 class _Reassemble(nn.Module):
     """
-    The "ViT Adapter" block. Projects a feature map to the correct U-Net channel width 
+    The "ViT Adapter" block. Projects a feature map to the correct U-Net channel width
     and forcefully resamples it to fake a multi-scale pyramid stride.
 
     Args:
@@ -39,7 +40,10 @@ class _Reassemble(nn.Module):
         src_stride: The spatial stride the feature map currently has (e.g., 16 for standard ViT).
         tgt_stride: The spatial stride the U-Net needs at this pyramid level (e.g., 4, 8, 16, or 32).
     """
-    def __init__(self, in_channels: int, out_channels: int, src_stride: int, tgt_stride: int):
+
+    def __init__(
+        self, in_channels: int, out_channels: int, src_stride: int, tgt_stride: int
+    ):
         super().__init__()
         self.proj_in = nn.Conv2d(in_channels, out_channels, kernel_size=1)
 
@@ -77,11 +81,16 @@ class _DoubleConv(nn.Module):
         out_channels: Desired channel dimension of the output.
         use_norm: Whether to apply BatchNorm2d.
     """
+
     def __init__(self, in_channels: int, out_channels: int, use_norm: bool = True):
         super().__init__()
-        self.conv1 = nn.Conv2d(in_channels, out_channels, kernel_size=3, padding=1, bias=not use_norm)
+        self.conv1 = nn.Conv2d(
+            in_channels, out_channels, kernel_size=3, padding=1, bias=not use_norm
+        )
         self.norm1 = nn.BatchNorm2d(out_channels) if use_norm else nn.Identity()
-        self.conv2 = nn.Conv2d(out_channels, out_channels, kernel_size=3, padding=1, bias=not use_norm)
+        self.conv2 = nn.Conv2d(
+            out_channels, out_channels, kernel_size=3, padding=1, bias=not use_norm
+        )
         self.norm2 = nn.BatchNorm2d(out_channels) if use_norm else nn.Identity()
         self.act = nn.ReLU(inplace=True)
 
@@ -89,7 +98,7 @@ class _DoubleConv(nn.Module):
         """
         Args:
             x: (B, in_channels, H, W)
-        
+
         Returns:
             (B, out_channels, H, W)
         """
@@ -108,36 +117,48 @@ class _UpBlock(nn.Module):
         skip_channels: Channel dimension coming horizontally from the encoder (Reassemble block).
         out_channels: Channel dimension to output for the next block.
     """
-    def __init__(self, in_channels: int, skip_channels: int, out_channels: int, use_norm: bool = True):
+
+    def __init__(
+        self,
+        in_channels: int,
+        skip_channels: int,
+        out_channels: int,
+        use_norm: bool = True,
+    ):
         super().__init__()
-        self.conv = _DoubleConv(in_channels + skip_channels, out_channels, use_norm=use_norm)
+        self.conv = _DoubleConv(
+            in_channels + skip_channels, out_channels, use_norm=use_norm
+        )
 
     def forward(self, x: torch.Tensor, skip: torch.Tensor | None) -> torch.Tensor:
         """
         Args:
             x: (B, in_channels, H, W) - Features from the deeper decoder stage.
             skip: (B, skip_channels, 2H, 2W) or None - Finer features from the Reassemble block.
-        
+
         Returns:
             (B, out_channels, 2H, 2W) - Upsampled and fused feature map.
         """
         # (B, in_channels, H, W) -> (B, in_channels, 2H, 2W)
-        target_hw = skip.shape[-2:] if skip is not None else (x.shape[-2] * 2, x.shape[-1] * 2)
-        x = F.interpolate(x, size=target_hw, mode='bilinear', align_corners=False)
-        
+        target_hw = (
+            skip.shape[-2:] if skip is not None else (x.shape[-2] * 2, x.shape[-1] * 2)
+        )
+        x = F.interpolate(x, size=target_hw, mode="bilinear", align_corners=False)
+
         if skip is not None:
             # (B, in_channels, 2H, 2W) + (B, skip_channels, 2H, 2W) -> (B, combined, 2H, 2W)
             x = torch.cat([x, skip], dim=1)
-            
+
         # (B, combined, 2H, 2W) -> (B, out_channels, 2H, 2W)
         return self.conv(x)
 
 
-@register_model('decoder', 'unet')
+@register_model("decoder", "unet")
 class Unet(nn.Module):
     """
     U-Net Decoder with a toggleable `vit_adapter` parameter.
     """
+
     def __init__(
         self,
         encoder_out_channels: list[int],
@@ -148,37 +169,44 @@ class Unet(nn.Module):
     ):
         super().__init__()
         n = len(encoder_out_channels)
-        
+
         # Calculate target channels to align with U-Net skips
         reassemble_channels = [
-            decoder_channels[-(i + 1)] if i < n - 1 else decoder_channels[0] for i in range(n)
+            decoder_channels[-(i + 1)] if i < n - 1 else decoder_channels[0]
+            for i in range(n)
         ]
 
         # --- 1. Encoder Integration (ViT vs CNN routing) ---
         if vit_adapter:
             # Fake Pyramid Generation for ViTs
             target_strides = [2 ** (i + 2) for i in range(n)]
-            self.encoder_adapter = nn.ModuleList([
-                _Reassemble(
-                    in_channels=encoder_out_channels[i],
-                    out_channels=reassemble_channels[i],
-                    src_stride=encoder_output_strides[i],
-                    tgt_stride=target_strides[i],
-                ) for i in range(n)
-            ])
+            self.encoder_adapter = nn.ModuleList(
+                [
+                    _Reassemble(
+                        in_channels=encoder_out_channels[i],
+                        out_channels=reassemble_channels[i],
+                        src_stride=encoder_output_strides[i],
+                        tgt_stride=target_strides[i],
+                    )
+                    for i in range(n)
+                ]
+            )
         else:
             # Lightweight Channel Projection for hierarchical CNNs/Swin
-            self.encoder_adapter = nn.ModuleList([
-                _ChannelProject(
-                    in_channels=encoder_out_channels[i],
-                    out_channels=reassemble_channels[i],
-                ) for i in range(n)
-            ])
+            self.encoder_adapter = nn.ModuleList(
+                [
+                    _ChannelProject(
+                        in_channels=encoder_out_channels[i],
+                        out_channels=reassemble_channels[i],
+                    )
+                    for i in range(n)
+                ]
+            )
 
         # --- 2. Build U-Net UpBlocks ---
         self.up_blocks = nn.ModuleList()
-        in_ch = reassemble_channels[-1] 
-        
+        in_ch = reassemble_channels[-1]
+
         for i in range(n - 1):
             skip_ch = reassemble_channels[n - 2 - i]
             out_ch = decoder_channels[i]
@@ -187,7 +215,10 @@ class Unet(nn.Module):
 
         # --- 3. Final Upsample ---
         self.final_up = _UpBlock(
-            in_channels=in_ch, skip_channels=0, out_channels=decoder_channels[-1], use_norm=use_norm
+            in_channels=in_ch,
+            skip_channels=0,
+            out_channels=decoder_channels[-1],
+            use_norm=use_norm,
         )
 
         self.out_channels = decoder_channels[-1]
@@ -196,7 +227,7 @@ class Unet(nn.Module):
         # Step 1: Route through the correct adapter (Full Reassemble or just Channel Proj)
         # (B, C_in, H_src, W_src) -> (B, reassemble_C, H_tgt, W_tgt)
         pyramid = [block(f) for block, f in zip(self.encoder_adapter, features)]
-        
+
         x = pyramid[-1]
 
         # Step 2: Progressive Upsampling
@@ -220,5 +251,4 @@ class Unet(nn.Module):
             (feature_map,) — (B, out_channels, H, W).
         """
         feature_map = self.forward(pyramid)
-        return feature_map,
-
+        return (feature_map,)

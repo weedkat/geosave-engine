@@ -49,8 +49,14 @@ class Normalize(nn.Module):
                     UserWarning,
                     stacklevel=2,
                 )
-        if mean_norm is not None and std_norm is not None and len(mean_norm) != len(std_norm):
-            raise ValueError(f"mean_norm (len {len(mean_norm)}) and std_norm (len {len(std_norm)}) must match.")
+        if (
+            mean_norm is not None
+            and std_norm is not None
+            and len(mean_norm) != len(std_norm)
+        ):
+            raise ValueError(
+                f"mean_norm (len {len(mean_norm)}) and std_norm (len {len(std_norm)}) must match."
+            )
         self.resize = K.Resize(size) if size is not None else nn.Identity()
         self.normalize: K.Normalize | None = (
             K.Normalize(mean=torch.tensor(mean_norm), std=torch.tensor(std_norm))

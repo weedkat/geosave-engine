@@ -1,381 +1,407 @@
-"""StacSource: one STAC collection loaded onto an anchor's grid. See StacSource for details."""
+"""One STAC collection loaded onto an anchor's grid."""
+
 from __future__ import annotations
 
-import copy
-import warnings
+from collections.abc import Callable, Sequence
 from dataclasses import replace
 from datetime import datetime as dt
-from typing import Any, Callable, Literal, NotRequired, Protocol, Self, Sequence, TypedDict, Unpack
+from typing import TYPE_CHECKING, Any, Literal, Protocol, Self
 
-import pystac
-import rioxarray  # noqa: F401 — registers .rio accessor on xr.DataArray
-import xarray as xr
-from odc.stac import load as odc_load
-from pydantic import BaseModel, ConfigDict, Field, field_validator
+import odc.stac
+from pydantic import BaseModel, ConfigDict, Field
 
+from geosave_engine.geodata.attrs import read_asset_fields
 from geosave_engine.geodata.errors import AnchorFetchError
-from geosave_engine.geodata.extensions import StacItemRecord
-from geosave_engine.geodata.spatial import GeoAnchor, GeoRaster
-from geosave_engine.geodata.utils.array import cf_to_da
-from geosave_engine.utils.fn import UNSET, Unset
 
 from .query import StacQuery
-from .records import parse_items, select_release
+
+from .stamp import StacGroupby, stamp_stac
+
+if TYPE_CHECKING:
+    import pystac
+
+    from geosave_engine.geodata.core import GeoAnchor
+    from geosave_engine.geodata import Dataset
 
 Bands = list[str] | tuple[str, ...]
 Resampling = str | dict[str, str]
-
-# Options this class owns — through load_kwargs they'd contradict the anchor's grid or a named field.
-_NAMED_LOAD_KWARGS = frozenset(
-    {
-        "bands",
-        "bbox",
-        "chunks",
-        "crs",
-        "dtype",
-        "fail_on_error",
-        "geobox",
-        "groupby",
-        "nodata",
-        "patch_url",
-        "resampling",
-        "resolution",
-    }
-)
+ChunkSize = int | Literal["auto"]
 
 
-def _default_chunks() -> dict[str, int | Literal["auto"]]:
-    """Default spatial Dask chunks.
-
-    Returns:
-        `{"x": 1024, "y": 1024}` — the read unit every window is cut out of.
-    """
+def _default_chunks() -> dict[str, ChunkSize]:
+    """Return the default spatial Dask chunks."""
     return {"x": 1024, "y": 1024}
 
 
-def _warn_unbucketed(collection: str, records: Sequence[StacItemRecord]) -> None:
-    """Warn when a collection's own bucketing is about to read as single days.
-
-    A collection dating items by validity range has already bucketed them —
-    an annual map, a 16-day composite. Nothing here infers a cadence from
-    that, so the steps bucket as days until the caller resamples.
-
-    Args:
-        collection: Collection being loaded, named in the warning.
-        records: Parsed records for this load.
-    """
-    spans = [(record.start_datetime, record.end_datetime) for record in records]
-    if not spans or any(start is None or end is None for start, end in spans):
-        return
-    days = sorted({round((end - start).total_seconds() / 86_400) for start, end in spans})  # type: ignore[operator]
-    if days[0] < 1:
-        return
-    covered = f"{days[0]}" if len(days) == 1 else f"{days[0]}\u2013{days[-1]}"
-    warnings.warn(
-        f"{collection!r} items declare {covered}-day validity ranges, but these steps bucket as "
-        "single days — call resample_time() to bucket them",
-        stacklevel=3,
-    )
-
-
 class SearchClient(Protocol):
-    """Structural protocol for any client that can search a STAC catalog."""
+    """Any client that can run a STAC search and read a collection."""
 
     def search(self, query: StacQuery | dict[str, Any]) -> list[pystac.Item]: ...
 
+    def collection(self, collection: str) -> pystac.Collection: ...
+
 
 class StacSourceConfig(BaseModel):
-    """odc-stac load tuning for one StacSource.
+    """How one source loads its pixels.
 
     Args:
-        bands: Band names to load. None loads whatever the matched items declare.
-        resampling: Resampling passed to odc-stac. None keeps its
-            asset-level default; a mapping selects per band.
+        bands: Band names to load. None loads whatever the matched items
+            declare.
         groupby: How odc-stac groups scenes along the time axis.
-        chunks: Dask chunk sizes for the spatial dims. None loads eagerly,
-            a real mode of its own rather than a missing default.
-        dtype: Output dtype passed to odc-stac. None keeps each collection's own.
-        nodata: Nodata value passed to odc-stac, paired with `dtype` — e.g.
-            `-9999` for HLS. None uses each asset's own declared nodata.
-        fail_on_error: False skips a scene odc-stac fails to read instead of raising.
-        release: Which single release to keep when a collection republishes
-            one product over time — "latest" the newest, "nearest" the one
-            closest to the anchor's window. Either searches every date
-            rather than the anchor's window. None keeps every matched item,
-            the normal case for an observation series.
-        properties: Extension property keys to carry in each provenance
-            record, keyed as STAC publishes them. None reads
-            `DEFAULT_PROPERTIES`; spread it to add to them rather than
-            replace, e.g. `[*DEFAULT_PROPERTIES, "s2:processing_baseline"]`.
-        patch_url: Rewrite each asset's URL right before odc-stac reads it —
-            e.g. re-sign, or redirect a moved bucket. None reads them as published.
-        load_kwargs: Extra odc-stac `load()` kwargs this model doesn't name
-            (e.g. `stac_cfg`, `fuse_func`), merged in as-is.
+        chunks: Dask chunk sizes for the spatial dims. None loads eagerly.
+        resampling: Resampling odc-stac applies, one mode or one per band.
+            None keeps each asset's default.
+        dtype: Output dtype. None keeps each collection's own.
+        nodata: Nodata value, paired with `dtype`. None keeps each asset's own.
+        fail_on_error: False skips a scene that fails to read instead of
+            raising.
+        item_properties: Item properties captured per acquisition, e.g.
+            `("platform", "eo:cloud_cover")`. Empty captures identity only;
+            None captures every property each item declares.
+        asset_fields: Asset fields captured onto the variable they describe.
+            Empty captures none; None captures every field each asset declares.
+        stac_cfg: Per-collection band overrides odc-stac applies, correcting
+            nodata, dtype, or asset aliases a catalog publishes wrongly.
+        pool: Reader threads odc-stac uses. None takes its default.
+        progress: Progress bar odc-stac reports reads through. None is silent.
+        patch_url: Called on every asset href before it is read, for a catalog
+            whose URLs need signing at load time.
+        preserve_original_order: True keeps the matched items in search order
+            rather than sorting them by time.
 
-    Raises:
-        ValueError: `load_kwargs` sets an option a named field already owns.
+    Examples:
+        >>> StacSourceConfig(bands=["B04", "B08"], item_properties=None)
     """
 
-    model_config = ConfigDict(frozen=True)
+    model_config = ConfigDict(frozen=True, arbitrary_types_allowed=True, extra="forbid")
 
     bands: Bands | None = None
+    groupby: StacGroupby = "solar_day"
+    chunks: dict[str, ChunkSize] | None = Field(default_factory=_default_chunks)
     resampling: Resampling | None = None
-    groupby: Literal["solar_day", "id", "time"] = "solar_day"
-    chunks: dict[str, int | Literal["auto"]] | None = Field(default_factory=_default_chunks)
     dtype: str | None = None
     nodata: float | None = None
     fail_on_error: bool = True
-    release: Literal["latest", "nearest"] | None = None
-    properties: list[str] | None = None
+    item_properties: tuple[str, ...] | None = ()
+    asset_fields: tuple[str, ...] | None = ()
+    stac_cfg: dict[str, Any] | None = None
+    pool: int | None = None
+    progress: Any | None = None
     patch_url: Callable[[str], str] | None = None
-    load_kwargs: dict[str, Any] = Field(default_factory=dict)
-
-    @field_validator("load_kwargs")
-    @classmethod
-    def _validate_load_kwargs(cls, values: dict[str, Any]) -> dict[str, Any]:
-        """Reject options already represented by named config fields.
-
-        Args:
-            values: The `load_kwargs` mapping being validated.
-
-        Returns:
-            The mapping unchanged.
-
-        Raises:
-            ValueError: A key collides with a named field or with the anchor's grid.
-        """
-        collision = set(values) & _NAMED_LOAD_KWARGS
-        if collision:
-            raise ValueError(f"load_kwargs duplicates named option(s) {sorted(collision)}")
-        return values
+    preserve_original_order: bool = False
 
 
-class ConfigChanges(TypedDict):
-    """Keyword form of `StacSourceConfig`, every field optional.
-
-    Holds exactly `StacSourceConfig`'s own field names and types so
-    `set_config` keeps typed keywords without restating their defaults.
-    """
-
-    bands: NotRequired[Bands | None]
-    resampling: NotRequired[Resampling | None]
-    groupby: NotRequired[Literal["solar_day", "id", "time"]]
-    chunks: NotRequired[dict[str, int | Literal["auto"]] | None]
-    dtype: NotRequired[str | None]
-    nodata: NotRequired[float | None]
-    fail_on_error: NotRequired[bool]
-    release: NotRequired[Literal["latest", "nearest"] | None]
-    properties: NotRequired[list[str] | None]
-    patch_url: NotRequired[Callable[[str], str] | None]
-    load_kwargs: NotRequired[dict[str, Any]]
+_UNSET: Any = object()
 
 
 class StacSource:
     """One STAC collection, loaded onto an anchor's own grid.
 
-    Loads pixels and records which items they came from, exactly as the
-    provider publishes them — no radiometric scaling. Time bucketing and
-    windowing are the caller's own steps on the returned raster.
+    Pixels arrive as the provider published them, with no radiometric scaling.
+    A fresh source loads on every default; narrow it with `set_config` and
+    `set_query` before `load`.
 
     Args:
-        client: STAC client used to search for items.
-        collection: STAC collection identifier.
-        config: Load tuning. None takes every default.
+        client: Client used to search the catalog.
+        collection: Collection ID to load.
 
     Examples:
+        >>> from geosave_engine.geodata import configure_gdal
+        >>> configure_gdal(aws_no_sign_request=True, gdal_http_max_retry=3)
         >>> source = client.source("sentinel-2-l2a").set_config(bands=["B04", "B08"])
-        >>> monthly = source.load(anchor).resample_time("MS", "median")
-        >>> windows = list(monthly.time_windows(4, stride=1))
+        >>> ds = source.load(anchor)
+        >>> ds.gs.attrs.root.get(StacMetadata).properties()
+        ('eo:cloud_cover', 'platform')
     """
 
-    def __init__(
-        self,
-        client: SearchClient,
-        *,
-        collection: str,
-        config: StacSourceConfig | None = None,
-    ) -> None:
-        self.client = client
-        self.collection = collection
-        self.query: StacQuery = StacQuery(collections=[collection])
-        self.config = config if config is not None else StacSourceConfig()
-
-    def __repr__(self) -> str:
-        query = {"filter": self.query.filter, "max_items": self.query.max_items, "limit": self.query.limit}
-        lines = "\n".join(f"  {key}: {value!r}" for key, value in {**query, **self.config.model_dump()}.items())
-        return f"{type(self).__name__}\n  collection: {self.collection!r}\n{lines}"
-
-    def set_config(self, *, inplace: bool = False, **changes: Unpack[ConfigChanges]) -> Self:
-        """Change load tuning. Only the fields named actually change.
+    def __init__(self, client: SearchClient, *, collection: str) -> None:
+        """Bind the client and collection, on default settings.
 
         Args:
-            inplace: Mutate self and return it. Default leaves self
-                untouched and returns a copy carrying the changes.
-            **changes: Any `StacSourceConfig` field.
+            client: Client used to search the catalog.
+            collection: Collection ID to load.
+        """
+        self.client = client
+        self.collection = collection
+        self.config = StacSourceConfig()
+        self.query = StacQuery(collections=[collection])
+
+    def set_config(
+        self,
+        *,
+        bands: Bands | None = _UNSET,
+        groupby: StacGroupby = _UNSET,
+        chunks: dict[str, ChunkSize] | None = _UNSET,
+        resampling: Resampling | None = _UNSET,
+        dtype: str | None = _UNSET,
+        nodata: float | None = _UNSET,
+        fail_on_error: bool = _UNSET,
+        item_properties: Sequence[str] | None = _UNSET,
+        asset_fields: Sequence[str] | None = _UNSET,
+        stac_cfg: dict[str, Any] | None = _UNSET,
+        pool: int | None = _UNSET,
+        progress: Any | None = _UNSET,
+        patch_url: Callable[[str], str] | None = _UNSET,
+        preserve_original_order: bool = _UNSET,
+    ) -> Self:
+        """Merge load settings onto the current config.
+
+        Only the fields passed change; the rest keep their current value. See
+        `StacSourceConfig` for what each field means.
+
+        Args:
+            bands: Band names to load. None loads whatever the matched items
+                declare.
+            groupby: How odc-stac groups scenes along the time axis.
+            chunks: Dask chunk sizes for the spatial dims. None loads eagerly.
+            resampling: Resampling odc-stac applies, one mode or one per band.
+                None keeps each asset's default.
+            dtype: Output dtype. None keeps each collection's own.
+            nodata: Nodata value, paired with `dtype`. None keeps each asset's
+                own.
+            fail_on_error: False skips a scene that fails to read instead of
+                raising.
+            item_properties: Item properties captured per acquisition. Empty
+                captures identity only; None captures every property.
+            asset_fields: Asset fields captured onto the variable they
+                describe. Empty captures none; None captures every field each
+                asset declares.
+            stac_cfg: Per-collection band overrides odc-stac applies.
+            pool: Reader threads odc-stac uses. None takes its default.
+            progress: Progress bar odc-stac reports reads through. None is
+                silent.
+            patch_url: Called on every asset href before it is read.
+            preserve_original_order: True keeps the matched items in search
+                order rather than sorting them by time.
 
         Returns:
-            Self if `inplace`, otherwise a new StacSource.
+            This source, for chaining.
 
         Raises:
-            ValidationError: A value doesn't fit its field.
+            ValidationError: A value does not satisfy `StacSourceConfig`.
 
         Examples:
-            >>> source = source.set_config(bands=["B04", "B08"], groupby="time")
+            >>> source.set_config(bands=["B04", "B08"], groupby="time")
         """
-        target = self if inplace else copy.copy(self)
-        if changes:
-            # constructor, not model_copy — a bad value raises here rather than deep inside load()
-            target.config = StacSourceConfig(**{**self.config.model_dump(), **changes})
-        return target
+        changes: dict[str, Any] = {
+            "bands": bands,
+            "groupby": groupby,
+            "chunks": chunks,
+            "resampling": resampling,
+            "dtype": dtype,
+            "nodata": nodata,
+            "fail_on_error": fail_on_error,
+            "item_properties": item_properties,
+            "asset_fields": asset_fields,
+            "stac_cfg": stac_cfg,
+            "pool": pool,
+            "progress": progress,
+            "patch_url": patch_url,
+            "preserve_original_order": preserve_original_order,
+        }
+        updates = {name: v for name, v in changes.items() if v is not _UNSET}
+        self.config = type(self.config)(**{**self.config.model_dump(), **updates})
+        return self
 
     def set_query(
         self,
         *,
-        inplace: bool = False,
-        filter: str | Unset = UNSET,
-        datetime: dt | str | tuple[dt, dt] | None | Unset = UNSET,
-        max_items: int | None | Unset = UNSET,
-        limit: int | None | Unset = UNSET,
+        bbox: tuple[float, float, float, float] | None = None,
+        intersects: dict[str, Any] | None = None,
+        datetime: dt | str | tuple[dt, dt] | None = None,
+        ids: Sequence[str] | None = None,
+        filter: str | None = None,
+        sortby: Sequence[str] | None = None,
+        max_items: int | None = None,
+        limit: int | None = None,
     ) -> Self:
-        """Change how this source searches.
+        """Replace the search narrowing merged with each anchor's extent.
+
+        Every call rebuilds the query from scratch on this source's own
+        collection.
 
         Args:
-            inplace: Mutate self and return it. Default leaves self
-                untouched and returns a copy carrying the changes.
-            filter: CQL2 text merged into the existing filter with `and`
-                (e.g. `"eo:cloud_cover <= 10"`). Every call adds another
-                clause; there is no way to clear one already set.
-            datetime: Search window this source uses instead of the
-                anchor's — for a collection whose items are dated outside
-                the window you are loading, such as a DEM or a fixed-vintage
-                land cover. None searches the anchor's own window.
-            max_items: Maximum matched items returned across all pages.
-                None removes the client-side cap.
-            limit: STAC server page-size hint. None uses the server's own.
+            bbox: WGS84 bounding box `(min_lon, min_lat, max_lon, max_lat)`.
+            intersects: GeoJSON geometry to intersect.
+            datetime: Instant, ISO 8601 string, or `(start, end)` range.
+            ids: Item IDs to fetch directly, bypassing spatial and temporal
+                narrowing.
+            filter: CQL2 text expression, e.g. `"eo:cloud_cover <= 10"`.
+            sortby: Field paths, each optionally prefixed `-` for descending
+                or `+` for ascending, e.g. `"-properties.eo:cloud_cover"`.
+            max_items: Client-side cap on items returned.
+            limit: Server page-size hint.
 
         Returns:
-            Self if `inplace`, otherwise a new StacSource.
+            This source, for chaining.
 
         Raises:
-            ValueError: `filter` isn't valid CQL2 text.
+            ValueError: `bbox` is not a valid WGS84 box, `filter` is not valid
+                CQL2 text, `sortby` has an empty field name, or `max_items` or
+                `limit` is below one.
 
         Examples:
-            >>> source = source.set_query(filter="eo:cloud_cover <= 10", max_items=200)
-            >>> dem = client.source("cop-dem-glo-30").set_query(datetime="2021-01-01/2021-12-31")
+            >>> source.set_query(
+            ...     filter="eo:cloud_cover <= 10", sortby=["-properties.eo:cloud_cover"]
+            ... )
         """
-        target = self if inplace else copy.copy(self)
-        if not isinstance(filter, Unset):
-            target.query = target.query.set_filter(filter)
-        if not isinstance(datetime, Unset):
-            target.query = replace(target.query, datetime=datetime)
-        if not isinstance(max_items, Unset):
-            target.query = replace(target.query, max_items=max_items)
-        if not isinstance(limit, Unset):
-            target.query = replace(target.query, limit=limit)
-        return target
+        query = StacQuery(
+            collections=[self.collection],
+            bbox=bbox,
+            intersects=intersects,
+            datetime=datetime,
+            ids=list(ids) if ids is not None else None,
+            max_items=max_items,
+            limit=limit,
+        )
+        if filter is not None:
+            query = query.set_filter(filter)
+        if sortby is not None:
+            query = query.sort_by(*sortby)
+        self.query = query
+        return self
 
-    def get_bands_metadata(self) -> dict[str, Any]:
-        """Fetch asset metadata for this source's collection.
+    def __repr__(self) -> str:
+        """Describe the collection and the settings it loads with.
 
         Returns:
-            `{band_name: asset.extra_fields}` for one example item. Empty
-            dict if the collection has no items yet.
+            Multi-line summary of the collection and its config.
         """
-        items = self.client.search(StacQuery(collections=[self.collection], max_items=1))
-        if not items:
-            warnings.warn(f"No items found when fetching bands metadata for {self.collection!r}")
-            return {}
-        return {name: asset.extra_fields for name, asset in items[0].assets.items()}
+        lines = "\n".join(
+            f"  {key}: {value!r}" for key, value in self.config.model_dump().items()
+        )
+        return f"{type(self).__name__}\n  collection: {self.collection!r}\n{lines}"
 
-    def get_stac_metadata(self) -> dict[str, Any]:
-        """Fetch full STAC item metadata for this source's collection.
+    def sample_item(self) -> pystac.Item | None:
+        """Fetch one item from the collection to read its shape.
+
+        Use it to discover asset names and property keys before writing a
+        filter.
 
         Returns:
-            `item.to_dict()` for one example item — properties, assets,
-            geometry, everything available to build a CQL2 filter. Empty
-            dict if the collection has no items yet.
+            One item, or None when the collection is empty.
         """
-        items = self.client.search(StacQuery(collections=[self.collection], max_items=1))
-        if not items:
-            warnings.warn(f"No items found when fetching metadata for {self.collection!r}")
-            return {}
-        return items[0].to_dict()
+        found = self.client.search(
+            StacQuery(collections=[self.collection], max_items=1)
+        )
+        return found[0] if found else None
 
-    def load(self, anchor: GeoAnchor) -> GeoRaster:
-        """Read this collection over one anchor, whole.
+    def list_item_properties(self) -> tuple[str, ...]:
+        """Name the per-acquisition properties this collection publishes.
+
+        These are the names `StacSourceConfig.item_properties` accepts.
+
+        Returns:
+            Property names, sorted. Empty when the collection has no items.
+
+        Examples:
+            >>> [p for p in source.list_item_properties() if "sun" in p]
+            ['view:sun_azimuth', 'view:sun_elevation']
+        """
+        sample = self.sample_item()
+        return () if sample is None else tuple(sorted(sample.properties))
+
+    def list_asset_fields(self) -> tuple[str, ...]:
+        """Name the asset fields this collection publishes.
+
+        These are the names `StacSourceConfig.asset_fields` accepts.
+
+        Returns:
+            Field names, sorted. Empty when the collection has no items.
+
+        Examples:
+            >>> [f for f in source.list_asset_fields() if "wavelength" in f]
+            ['center_wavelength', 'full_width_half_max']
+        """
+        sample = self.sample_item()
+        if sample is None:
+            return ()
+        return tuple(
+            sorted(
+                {
+                    key
+                    for asset in sample.assets.values()
+                    for key in read_asset_fields(asset)
+                }
+            )
+        )
+
+    def load(self, anchor: GeoAnchor) -> Dataset:
+        """Load this collection onto an anchor's grid.
+
+        Collection metadata becomes `ACDD` and the matched items become
+        `StacMetadata`. Each variable carries its own asset's `CFVariable` and
+        `Packing`, so pixels stay the published DN.
 
         Args:
-            anchor: Reference geobox and datetime window.
+            anchor: Grid and datetime window to load.
 
         Returns:
-            Lazy GeoRaster on `anchor.geobox`, dims `(time, band, y, x)`,
-            carrying a `StacProvenance` over every matched item. Its own
-            time span is the anchor's, or — when this source searches its
-            own window — the span of what actually matched. Call
-            `resample_time` and `time_windows` on it to reach model inputs.
+            Dataset on the anchor's exact geobox. Its arrays are
+            Dask-backed unless `chunks=None` was configured.
 
         Raises:
-            AnchorFetchError: Nothing matched the searched bbox and datetime
-                window, or a matched item declares no usable datetime.
-            ValueError: `anchor` is timeless and this source declares no
-                `datetime` of its own, or the collection returned a CF
-                dataset this library can't read.
+            AnchorFetchError: The search matched no items.
+            ValueError: Matched items disagree on one asset's decoding, or the
+                loaded Dataset carries no locatable grid.
 
         Examples:
-            >>> raster = source.load(anchor)
-            >>> raster.stac.items[0].properties["eo:cloud_cover"]
-            4.2
+            >>> ds = source.load(anchor)
+            >>> ds.gs.attrs.root.get(StacMetadata).properties()
+            ('eo:cloud_cover', 'platform')
         """
-        config = self.config
-        # an edition is chosen across dates, so neither it nor an explicit datetime reads the anchor's window
-        own_window = self.query.datetime is not None or config.release is not None
-        window = self.query.datetime
-        if not own_window:
-            if anchor.timespan is None:
-                raise ValueError(
-                    "StacSource.load() needs a dated anchor, or a source searching its own dates — "
-                    "set_query(datetime=...) or set_config(release=...)"
-                )
-            start, end = anchor.start, anchor.end
-            assert start is not None and end is not None
-            window = (start, end)
-
-        query = replace(self.query, bbox=anchor.geographic_bounds, datetime=window)
-        items = self.client.search(query)
-        if not items:
+        matched = self.client.search(self._search_query(anchor))
+        if not matched:
             raise AnchorFetchError(
-                f"{self.collection!r}: no scenes matched the searched bbox/datetime window "
-                f"(anchor at {anchor.geographic_centroid}, window {window})"
+                f"no {self.collection!r} items matched the anchor's extent and window"
             )
 
-        if config.release is not None:
-            items = select_release(items, config.release, anchor.timespan)
-
-        odc_kwargs: dict[str, Any] = dict(
-            bands=config.bands,
-            resampling=config.resampling,
-            chunks=config.chunks,
-            dtype=config.dtype,
-            nodata=config.nodata,
-            fail_on_error=config.fail_on_error,
-            groupby=config.groupby,
-            patch_url=config.patch_url,
-            **config.load_kwargs,
+        data = odc.stac.load(matched, geobox=anchor.geobox, **self._load_options())
+        described = stamp_stac(
+            data,
+            matched,
+            self.client.collection(self.collection),
+            groupby=self.config.groupby,
+            item_properties=self.config.item_properties,
+            asset_fields=self.config.asset_fields,
         )
-        ds: xr.Dataset = odc_load(items, geobox=anchor.geobox, **odc_kwargs)
+        return described.gs.write_crs()
 
-        try:
-            da = cf_to_da(ds)
-        except ValueError as e:
-            raise ValueError(f"{self.collection!r} returned an incompatible CF dataset: {e}") from e
+    def _search_query(self, anchor: GeoAnchor) -> StacQuery:
+        """Narrow this source's search to one anchor.
 
-        # config.nodata is an explicit override for whatever the adapter read off the assets
-        if config.nodata is not None:
-            da = da.rio.write_nodata(config.nodata, inplace=True)
+        The anchor's footprint and window are used unless `query` already
+        pinned a datetime, which a fixed-vintage collection needs.
 
-        records = parse_items(items, config.properties)
-        _warn_unbucketed(self.collection, records.items)
-        # a source searching its own window returns steps the anchor's span doesn't cover, so let them date it
-        attached = anchor.rebase(timespan=None) if own_window else anchor
-        # same anchor-attach path prediction output goes through — validates the geobox, stamps the header
-        return attached.to_raster(da).rebase(stac={"items": records.items})
+        Args:
+            anchor: Grid and datetime window to load.
+
+        Returns:
+            Query narrowed to the anchor.
+        """
+        left, bottom, right, top = anchor.geobox.geographic_extent.boundingbox
+        bbox = (left, bottom, right, top)
+        window = (
+            self.query.datetime if self.query.datetime is not None else anchor.timespan
+        )
+        return replace(self.query, bbox=bbox, datetime=window)
+
+    def _load_options(self) -> dict[str, Any]:
+        """Assemble the keyword arguments odc-stac's load takes.
+
+        Returns:
+            Load settings, excluding the items and the geobox.
+        """
+        options: dict[str, Any] = {
+            "bands": self.config.bands,
+            "groupby": self.config.groupby,
+            "chunks": self.config.chunks,
+            "resampling": self.config.resampling,
+            "fail_on_error": self.config.fail_on_error,
+            "preserve_original_order": self.config.preserve_original_order,
+        }
+        for name in ("dtype", "nodata", "stac_cfg", "pool", "progress", "patch_url"):
+            value = getattr(self.config, name)
+            if value is not None:
+                options[name] = value
+        return options

@@ -8,7 +8,7 @@ from geosave_engine.ml.registry import register_model
 from geosave_engine.ml.models.contract import chain_step
 
 
-@register_model('head', 'dense')
+@register_model("head", "dense")
 class DenseHead(nn.Module):
     """General dense head: optional conv refine -> dropout -> 1x1 projection.
 
@@ -51,17 +51,25 @@ class DenseHead(nn.Module):
         dropout: float = 0.0,
     ):
         super().__init__()
-        resolved_in_channels = in_channels if in_channels is not None else decoder_out_channels
+        resolved_in_channels = (
+            in_channels if in_channels is not None else decoder_out_channels
+        )
         if resolved_in_channels is None:
-            raise ValueError("DenseHead requires 'in_channels' or 'decoder_out_channels'")
+            raise ValueError(
+                "DenseHead requires 'in_channels' or 'decoder_out_channels'"
+            )
         in_channels = resolved_in_channels
         self.encoder_input_size = (
-            (encoder_input_size, encoder_input_size) if isinstance(encoder_input_size, int) else encoder_input_size
+            (encoder_input_size, encoder_input_size)
+            if isinstance(encoder_input_size, int)
+            else encoder_input_size
         )
         layers: list[nn.Module] = []
         if hidden_channels:
             layers += [
-                nn.Conv2d(in_channels, hidden_channels, kernel_size=3, padding=1, bias=False),
+                nn.Conv2d(
+                    in_channels, hidden_channels, kernel_size=3, padding=1, bias=False
+                ),
                 nn.BatchNorm2d(hidden_channels),
                 nn.ReLU(inplace=True),
             ]
@@ -86,6 +94,14 @@ class DenseHead(nn.Module):
             (B, num_classes, H, W) logits tensor.
         """
         logits = self.forward(feature_map)
-        if self.encoder_input_size is not None and logits.shape[-2:] != self.encoder_input_size:
-            logits = F.interpolate(logits, size=self.encoder_input_size, mode='bilinear', align_corners=False)
+        if (
+            self.encoder_input_size is not None
+            and logits.shape[-2:] != self.encoder_input_size
+        ):
+            logits = F.interpolate(
+                logits,
+                size=self.encoder_input_size,
+                mode="bilinear",
+                align_corners=False,
+            )
         return logits
