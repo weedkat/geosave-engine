@@ -54,15 +54,15 @@ class GeoAnchor:
         """Read the coordinate reference system the grid is placed in.
 
         Returns:
-            CRS declared by the geobox.
+            CRS the geobox names.
 
         Raises:
-            ValueError: The geobox declares no CRS, so it is indexed in pixels
+            ValueError: The geobox carries no CRS, so it is indexed in pixels
                 rather than placed on the ground.
         """
         if self.geobox.crs is None:
             raise ValueError(
-                "geobox declares no CRS, so the anchor is not placed on the ground"
+                "geobox carries no CRS, so the anchor is not placed on the ground"
             )
         return self.geobox.crs
 

@@ -14,7 +14,7 @@ _REGISTRY: dict[str, type[AttrsModel]] = {}
 # Attr key (xarray object) mapped to the field that fixed its type, which later ones must match.
 _ATTR_KEY_DEFINITIONS: dict[str, tuple[type[AttrsModel], str]] = {}
 
-# Live views onto the registry, filled as models are declared.
+# Live views onto the registry, filled as models are registered.
 REGISTERED_MODELS: Mapping[str, type[AttrsModel]] = MappingProxyType(_REGISTRY)
 REGISTERED_ATTR_KEYS: KeysView[str] = _ATTR_KEY_DEFINITIONS.keys()
 
@@ -23,11 +23,10 @@ RESERVED_NAMES = frozenset({"target", "inplace"})
 
 
 class AttrsModel(BaseModel):
-    """Define one named group of flat attrs.
+    """One named group of flat attr keys, read and written as typed fields.
 
     Each field reads and writes one key in an xarray attrs mapping: the
-    field's `alias` where it has one, else the field's own name. A model
-    groups the keys one convention writes, not where those keys sit.
+    field's `alias` where it has one, else the field's own name.
 
     Attributes:
         NAME: Stable name, unique in the registry, used as `rebase`'s keyword.
@@ -35,20 +34,17 @@ class AttrsModel(BaseModel):
             filled in at registration.
 
     Args:
-        **fields: Values declared by the concrete model.
+        **fields: Values for the concrete model's own fields.
 
     Raises:
-        ValidationError: A supplied or assigned value does not satisfy its
-            field.
+        ValidationError: A value does not satisfy its field.
 
     Examples:
-        Aliased, because `_FillValue` is the CF spelling:
+        An aliased field writes the alias, because `_FillValue` is the CF
+        spelling; an unaliased one writes its own name:
 
-        >>> Packing(fill_value=0).to_attrs()
-        {'_FillValue': 0}
-
-        Unaliased, because the field name is already the key:
-
+        >>> Nodata(fill_value=0).to_attrs()
+        {'_FillValue': 0, 'nodata': 0}
         >>> Packing(scale_factor=1e-4).to_attrs()
         {'scale_factor': 0.0001}
     """
@@ -68,7 +64,7 @@ class AttrsModel(BaseModel):
         """Register a concrete model after Pydantic builds its fields.
 
         A model needs a unique, unreserved name, at least one field, its own
-        `combine`, and field types matching any other model that already
+        `merge`, and field types matching any other model that already
         writes one of its attr keys.
 
         Args:
@@ -76,9 +72,9 @@ class AttrsModel(BaseModel):
 
         Raises:
             ValueError: The name is empty, reserved, or registered; the model
-                declares no fields or no `combine`; a field splits a
-                validation and serialization alias; or a shared attr key is
-                typed differently from where it was first defined.
+                has no fields or no `merge`; a field splits a validation and
+                serialization alias; or a shared attr key is typed differently
+                from where it was first defined.
         """
         super().__pydantic_init_subclass__(**kwargs)
 
@@ -96,14 +92,14 @@ class AttrsModel(BaseModel):
         if name in _REGISTRY:
             raise ValueError(f"attrs model name {name!r} is already registered")
         if not cls.model_fields:
-            raise ValueError(f"{cls.__name__} must declare at least one attrs field")
+            raise ValueError(f"{cls.__name__} must carry at least one attrs field")
 
-        # combine is abstract, so a model missing it fails at first use; say so at import.
+        # merge is abstract, so a model missing it fails at first use; say so at import.
         if cls.__abstractmethods__:
             raise ValueError(
                 f"{cls.__name__} must implement "
-                f"{sorted(cls.__abstractmethods__)}; every model states its own "
-                f"combine policy"
+                f"{sorted(cls.__abstractmethods__)}; every model writes its own "
+                f"merge policy"
             )
 
         # An alias is the attr key to write; without one the field name is it.
@@ -155,15 +151,22 @@ class AttrsModel(BaseModel):
             _ATTR_KEY_DEFINITIONS.setdefault(attr_key, (cls, field_name))
 
     def to_attrs(self) -> dict[str, Any]:
-        """Read the flat attrs this model states.
+        """Read this model back as a flat attrs mapping.
 
         Values come out JSON-native (datetimes as ISO 8601 strings,
         timedeltas as ISO 8601 durations, dict keys as strings) so every attr
         stays writable to zarr and netCDF.
 
         Returns:
-            Flat attr keys mapped to the value the model states, None where it
-            states the attr is absent. Only explicitly set fields appear.
+            {
+                "<attr key>": its value, None where the field marks the attr
+                    absent,
+            }
+            Only fields that were explicitly set appear.
+
+        Examples:
+            >>> CFVariable(units="1").to_attrs()
+            {'units': '1'}
         """
         return self.model_dump(
             mode="json",
@@ -173,51 +176,51 @@ class AttrsModel(BaseModel):
         )
 
     @classmethod
-    def _combine_fields(
-        cls, sides: Sequence[AttrsModel | None], *, must_agree: Iterable[str]
+    def _merge_fields(
+        cls, models: Sequence[AttrsModel | None], *, must_agree: Iterable[str]
     ) -> tuple[Self, set[str]]:
-        """Keep the fields every side of a join states alike.
+        """Keep the fields every object of a join set to the same value.
 
-        A field the sides state alike survives. One they state differently
-        raises when `must_agree` names it, and otherwise drops to None.
+        A field they set differently raises when `must_agree` names it, and
+        otherwise drops to None.
 
         Args:
-            sides: This model as each side of the join stated it, at least one,
-                None where a side did not state the model at all.
+            models: This model from each joined object, at least one, None
+                where an object carried none.
             must_agree: Field names whose disagreement is an error rather than
                 a drop.
 
         Returns:
-            Model the joined result carries, a dropped field reading as None,
-            and the attr keys those dropped fields write.
+            (model the joined result carries, attr keys the dropped fields
+            write). A dropped field reads as None.
 
         Raises:
-            TypeError: A side holds a different model.
-            ValueError: `sides` is empty, or the sides state a field named by
+            TypeError: An object carries a different model.
+            ValueError: `models` is empty, or the objects set a field named by
                 `must_agree` differently.
         """
-        if not sides:
-            raise ValueError(f"combining {cls.NAME} needs at least one side")
+        if not models:
+            raise ValueError(f"merging {cls.NAME} needs at least one object")
 
-        stated_sides: list[Self] = []
+        present: list[Self] = []
         wrong_types: set[str] = set()
-        for side in sides:
-            if side is None:
+        for model in models:
+            if model is None:
                 continue
-            if isinstance(side, cls):
-                stated_sides.append(side)
+            if isinstance(model, cls):
+                present.append(model)
             else:
-                wrong_types.add(type(side).__name__)
+                wrong_types.add(type(model).__name__)
         if wrong_types:
             raise TypeError(
-                f"combining {cls.NAME} needs {cls.__name__} sides, got "
+                f"merging {cls.NAME} needs {cls.__name__} instances, got "
                 f"{sorted(wrong_types)}"
             )
 
-        # A side not stating the model agrees with nothing, so every field drops.
+        # An object carrying no model agrees with nothing, so every field drops.
         agreed: dict[str, Any] = {}
-        if len(stated_sides) == len(sides):
-            first, *rest = stated_sides
+        if len(present) == len(models):
+            first, *rest = present
             for name in cls.model_fields:
                 value = getattr(first, name)
                 if all(values_agree(getattr(other, name), value) for other in rest):
@@ -227,57 +230,57 @@ class AttrsModel(BaseModel):
         if refused:
             disagreement = []
             for name in refused:
-                stated = [
-                    None if side is None else getattr(side, name) for side in sides
+                per_object = [
+                    None if model is None else getattr(model, name) for model in models
                 ]
-                disagreement.append(f"{name}={stated}")
+                disagreement.append(f"{name}={per_object}")
             raise ValueError(
-                f"sides disagree on {cls.NAME}: {'; '.join(disagreement)}; "
-                f"rebase one side before joining"
+                f"objects disagree on {cls.NAME}: {'; '.join(disagreement)}; "
+                f"rebase one model before joining"
             )
 
-        stated_fields: set[str] = set()
-        for side in stated_sides:
-            stated_fields.update(side.model_fields_set)
+        fields_set: set[str] = set()
+        for model in present:
+            fields_set.update(model.model_fields_set)
 
-        dropped_fields = sorted(stated_fields - agreed.keys())
+        dropped_fields = sorted(fields_set - agreed.keys())
 
         combined: dict[str, Any] = {}
-        # A dropped field states None, clearing the key a side had written.
+        # A dropped field is set to None, clearing the key a model had written.
         for name in dropped_fields:
             if type(None) in get_args(cls.model_fields[name].annotation):
                 combined[name] = None
-        # A field no side stated stays unset, so the result clears nothing.
+        # A field no object set stays unset, so the result clears nothing.
         for name, value in agreed.items():
-            if name in stated_fields:
+            if name in fields_set:
                 combined[name] = value
         return cls(**combined), {cls.attr_keys[name] for name in dropped_fields}
 
     @classmethod
     @abstractmethod
-    def combine(cls, sides: Sequence[AttrsModel | None]) -> tuple[Self, set[str]]:
-        """Combine this model across the sides of a joining transform.
+    def merge(cls, models: Sequence[AttrsModel | None]) -> tuple[Self, set[str]]:
+        """Merge this model across the objects of a joining transform.
 
-        Every model states its own policy — which fields refuse a
-        disagreement, which drop, which accumulate — so there is no default to
-        inherit by accident. `_combine_fields` covers the refuse-or-drop case.
+        Abstract: every model writes its own policy — which fields refuse a
+        disagreement, which drop, which accumulate. `_merge_fields` covers
+        the refuse-or-drop case.
 
         Args:
-            sides: This model as each side of the join stated it, in call
-                order, at least one, None where a side did not state it.
+            models: This model from each joined object, in call order, at
+                least one, None where an object carried none.
 
         Returns:
-            (joined model, dropped attr keys)
+            (merged model, attr keys it could not keep)
 
         Raises:
-            TypeError: A side holds a different model.
-            ValueError: `sides` is empty, or the sides disagree on a field
+            TypeError: An object carries a different model.
+            ValueError: `models` is empty, or the objects disagree on a field
                 this model refuses.
 
         Examples:
-            >>> Packing.combine([Packing(scale_factor=0.0001), Packing()])
+            >>> Packing.merge([Packing(scale_factor=0.0001), Packing()])
             Traceback (most recent call last):
-            ValueError: sides disagree on packing: scale_factor=[0.0001, None]
+            ValueError: objects disagree on packing: scale_factor=[0.0001, None]
         """
 
 
@@ -312,9 +315,7 @@ def resolve_model(model: type[AttrsModel] | str) -> type[AttrsModel]:
 def values_agree(a: object, b: object) -> bool:
     """Whether two attr values are the same, treating two NaNs as equal.
 
-    Plain `==` reads two stated NaNs as disagreeing, since `nan != nan`; NaN is
-    also the only value unequal to itself, so that check doubles as the NaN
-    test.
+    Plain `==` reads two NaNs as disagreeing, since `nan != nan`.
 
     Args:
         a: First value.
@@ -322,12 +323,17 @@ def values_agree(a: object, b: object) -> bool:
 
     Returns:
         True when `a` and `b` are the same value.
+
+    Examples:
+        >>> values_agree(float("nan"), float("nan"))
+        True
     """
+    # NaN is the only value unequal to itself, so that doubles as the NaN test.
     return bool(a == b) or (a != a and b != b)
 
 
 def _has_field_converter(model: type[AttrsModel], field: str) -> bool:
-    """Whether a model declares its own validator or serializer for one field.
+    """Whether a model carries its own validator or serializer for one field.
 
     Args:
         model: Model to inspect.

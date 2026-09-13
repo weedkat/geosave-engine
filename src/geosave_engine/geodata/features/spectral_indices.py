@@ -20,7 +20,7 @@ def compute_ndvi(
         NDVI over the inputs' own grid.
 
     Examples:
-        >>> compute_ndvi(nir=ds.gs["B08"], red=ds.gs["B04"])
+        >>> compute_ndvi(nir=ds["B08"], red=ds["B04"])
     """
     nir, red = nir.astype(np.float32), red.astype(np.float32)
     return (nir - red) / (nir + red + eps)

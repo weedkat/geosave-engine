@@ -1,41 +1,41 @@
-"""Write one banded DataArray as a COG or a plain GeoTIFF.
+"""Write a Dataset as a COG or a plain GeoTIFF, one band per variable.
 
-Tags come from the array's own attrs, so state them with
-`rebase(array, GeoTIFFTags(...))` before writing. Reading is `gdal.read`, which
-opens these files and every other raster GDAL supports.
+Tags come from the Dataset's own attrs, so write them with
+`rebase(ds, GeoTIFFTags(...))` before writing. Each variable's name travels in
+its band's own metadata, which `gdal.read` reads back.
 """
 
 from __future__ import annotations
 
 from pathlib import Path
+from tempfile import TemporaryDirectory
 from typing import TYPE_CHECKING, Any, Literal, TypedDict, Unpack
 
+import rasterio
 import rioxarray  # noqa: F401  — registers the .rio accessor
+from rasterio.enums import ColorInterp
 
-from geosave_engine.geodata.attrs import GeoTIFFTags, read, rebase
+# rasterio ships this as a compiled module, which no type checker can resolve.
+from rasterio.shutil import copy  # type: ignore[import-untyped]  # ty: ignore[unresolved-import]
 
-from geosave_engine.geodata.core.array import BAND_DIMENSION
+from geosave_engine.geodata.attrs import GDALVariable, GeoTIFFTags, read, rebase
+
+from geosave_engine.geodata.core.convention import TIME_COORDINATE
 
 if TYPE_CHECKING:
     from collections.abc import Mapping
     from os import PathLike
 
-    import numpy as np
-    import xarray as xr
+    from geosave_engine.geodata import Dataset
 
 type CreationOptionValue = str | int | float | bool
 
 _FILE_SUFFIXES = (".tif", ".tiff")
-_BAND_DESCRIPTIONS = "long_name"
-_TIME_COORDINATE = "time"
 
 
 class GeoTIFFWriteOptions(TypedDict, total=False):
-    """Optional rioxarray and GDAL behavior shared by both TIFF writers."""
+    """GDAL creation options both TIFF drivers support."""
 
-    dtype: str | np.dtype[Any] | None
-    windowed: bool
-    lock: Any
     compress: str
     predictor: int
     zlevel: int
@@ -47,7 +47,7 @@ class GeoTIFFWriteOptions(TypedDict, total=False):
 
 
 class COGWriteOptions(GeoTIFFWriteOptions, total=False):
-    """Optional behavior supported by GDAL's COG driver."""
+    """Creation options GDAL's COG driver supports."""
 
     blocksize: int
     overview_resampling: str
@@ -55,7 +55,7 @@ class COGWriteOptions(GeoTIFFWriteOptions, total=False):
 
 
 class GTiffWriteOptions(GeoTIFFWriteOptions, total=False):
-    """Optional behavior supported by GDAL's GTiff driver."""
+    """Creation options GDAL's GTiff driver supports."""
 
     tiled: bool
     blockxsize: int
@@ -66,19 +66,19 @@ class GTiffWriteOptions(GeoTIFFWriteOptions, total=False):
 
 
 def write_cog(
-    array: xr.DataArray,
+    ds: Dataset,
     path: str | PathLike[str],
     *,
     overwrite: bool = False,
     **options: Unpack[COGWriteOptions],
 ) -> Path:
-    """Write one array as a Cloud Optimized GeoTIFF.
+    """Write one Dataset as a Cloud Optimized GeoTIFF, a band per variable.
 
-    The `band` coordinate's labels become GDAL band descriptions, and a
-    scalar `time` coordinate becomes ``TIFFTAG_DATETIME``.
+    Each variable names itself in its band's metadata, and a scalar `time`
+    coordinate becomes ``TIFFTAG_DATETIME``.
 
     Args:
-        array: Array shaped `(band, y, x)`.
+        ds: Cube of `(y, x)` variables sharing one grid.
         path: Output path ending in ``.tif`` or ``.tiff``.
         overwrite: Replace an existing file when true.
         **options: COG creation options.
@@ -88,31 +88,31 @@ def write_cog(
 
     Raises:
         FileExistsError: The path exists and `overwrite` is false.
-        ValueError: The suffix is wrong, the array carries a `time` dimension
+        ValueError: The suffix is wrong, the cube carries a `time` dimension
             rather than a scalar coordinate, or a scalar `time` carries
             sub-second precision the tag cannot hold.
 
     Examples:
-        >>> write_cog(array, "scene.tif", compress="DEFLATE")
+        >>> write_cog(ds, "scene.tif", compress="DEFLATE")
         PosixPath('scene.tif')
     """
-    return _write(array, path, "COG", overwrite=overwrite, options=options)
+    return _write(ds, path, "COG", overwrite=overwrite, options=options)
 
 
 def write_gtiff(
-    array: xr.DataArray,
+    ds: Dataset,
     path: str | PathLike[str],
     *,
     overwrite: bool = False,
     **options: Unpack[GTiffWriteOptions],
 ) -> Path:
-    """Write one array as a plain GeoTIFF.
+    """Write one Dataset as a plain GeoTIFF, a band per variable.
 
     Reach for `write_cog` unless a consumer needs a striped or otherwise
     non-COG file. Coordinates map to tags exactly as `write_cog` maps them.
 
     Args:
-        array: Array shaped `(band, y, x)`.
+        ds: Cube of `(y, x)` variables sharing one grid.
         path: Output path ending in ``.tif`` or ``.tiff``.
         overwrite: Replace an existing file when true.
         **options: GTiff creation options.
@@ -122,29 +122,29 @@ def write_gtiff(
 
     Raises:
         FileExistsError: The path exists and `overwrite` is false.
-        ValueError: The suffix is wrong, the array carries a `time` dimension
+        ValueError: The suffix is wrong, the cube carries a `time` dimension
             rather than a scalar coordinate, or a scalar `time` carries
             sub-second precision the tag cannot hold.
 
     Examples:
-        >>> write_gtiff(array, "scene.tif", tiled=True, blockxsize=512)
+        >>> write_gtiff(ds, "scene.tif", tiled=True, blockxsize=512)
         PosixPath('scene.tif')
     """
-    return _write(array, path, "GTiff", overwrite=overwrite, options=options)
+    return _write(ds, path, "GTiff", overwrite=overwrite, options=options)
 
 
 def _write(
-    array: xr.DataArray,
+    ds: Dataset,
     path: str | PathLike[str],
     driver: Literal["COG", "GTiff"],
     *,
     overwrite: bool,
     options: Mapping[str, Any],
 ) -> Path:
-    """Encode one array through the GDAL driver `driver` names.
+    """Encode one cube through the GDAL driver `driver` names.
 
     Args:
-        array: Array shaped `(band, y, x)`.
+        ds: Cube of `(y, x)` variables sharing one grid.
         path: Output path ending in ``.tif`` or ``.tiff``.
         driver: GDAL driver creating the file.
         overwrite: Replace an existing file when true.
@@ -166,33 +166,63 @@ def _write(
         raise FileExistsError(f"{target} exists; pass overwrite=True to replace it")
 
     # One file holds one grid, so an instant travels in the datetime tag.
-    if _TIME_COORDINATE in array.dims:
+    if TIME_COORDINATE in ds.dims:
         raise ValueError(
-            f"one GeoTIFF holds one grid, but this array spans "
-            f"{array.sizes[_TIME_COORDINATE]} instants; select one with "
+            f"one GeoTIFF holds one grid, but this cube spans "
+            f"{ds.sizes[TIME_COORDINATE]} instants; select one with "
             f".sel(time=...) or resample the time axis away first"
         )
     # A scalar time coordinate is the instant, so it becomes the datetime tag.
-    payload = array
-    if _TIME_COORDINATE in payload.coords:
+    cube = ds
+    if TIME_COORDINATE in cube.coords:
         instant = GeoTIFFTags.model_validate(
-            {"TIFFTAG_DATETIME": payload[_TIME_COORDINATE].values}
+            {"TIFFTAG_DATETIME": cube[TIME_COORDINATE].values}
         )
-        payload = rebase(payload, instant).drop_vars(_TIME_COORDINATE)
+        cube = rebase(cube, instant).drop_vars(TIME_COORDINATE)
 
-    carried = read(payload).root.get(GeoTIFFTags)
-    stated = carried if isinstance(carried, GeoTIFFTags) else GeoTIFFTags()
+    header = read(cube)
+    tags = header.root.get(GeoTIFFTags) or GeoTIFFTags()
+    colorinterp = [
+        (header.data_vars[str(name)].get(GDALVariable) or GDALVariable()).colorinterp
+        for name in cube.data_vars
+    ]
 
-    # GDAL reads band descriptions off this one attr, so band labels ride there.
-    if BAND_DIMENSION in payload.dims and BAND_DIMENSION in payload.coords:
-        payload = payload.assign_attrs(
-            {
-                _BAND_DESCRIPTIONS: tuple(
-                    str(label) for label in payload[BAND_DIMENSION].values
-                )
-            }
+    # A band names itself in a tag, but its interpretation has a slot of GDAL's own.
+    for name in cube.data_vars:
+        cube = rebase(
+            cube,
+            GDALVariable(variable_name=str(name), colorinterp=None),
+            target=str(name),
         )
+
+    # rioxarray computes a chunked cube whole unless told to walk its windows.
+    streaming: Mapping[str, Any] = {"windowed": True} if cube.chunks else {}
 
     target.parent.mkdir(parents=True, exist_ok=True)
-    payload.rio.to_raster(target, driver=driver, tags=stated.to_attrs(), **options)
+    with TemporaryDirectory(dir=target.parent) as workspace:
+        # A COG is copied from a source raster, which its own options create.
+        if driver == "COG":
+            source = Path(workspace) / target.name
+            source_options: Mapping[str, Any] = {"tiled": True}
+        else:
+            source = target
+            source_options = options
+
+        cube.rio.to_raster(
+            source,
+            driver="GTiff",
+            tags=tags.to_attrs(),
+            **streaming,
+            **source_options,
+        )
+        # GDAL honours this as a property of an open dataset, not as an option.
+        if any(colorinterp):
+            with rasterio.open(source, "r+") as dst:
+                dst.colorinterp = [
+                    ColorInterp[band or ColorInterp.undefined.name]
+                    for band in colorinterp
+                ]
+
+        if driver == "COG":
+            copy(source, target, driver="COG", **options)
     return target

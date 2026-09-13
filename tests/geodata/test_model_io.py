@@ -6,10 +6,7 @@ import torch
 import xarray as xr
 from odc.geo.geobox import GeoBox
 
-from geosave_engine.geodata.attrs import Tiling
 from geosave_engine.geodata.core.raster import raster
-from geosave_engine.geodata.core.stack import stack
-from geosave_engine.geodata.core.stitcher import GeoStitcher
 
 UTM = "EPSG:32633"
 
@@ -64,8 +61,8 @@ def test_to_numpy_stacks_variables_ahead_of_the_other_axes() -> None:
     assert stacked.dtype == np.dtype("uint16")
 
 
-def test_to_numpy_follows_the_requested_variable_order() -> None:
-    stacked = optical().gs.to_numpy(("B08", "B04"))
+def test_to_numpy_stacks_in_the_order_xarray_holds_the_variables() -> None:
+    stacked = optical()[["B08", "B04"]].gs.to_numpy()
 
     assert stacked[0, :, 0, 0].tolist() == [8, 4]
 
@@ -76,9 +73,9 @@ def test_to_numpy_reads_an_unplaced_raster() -> None:
     assert unplaced.gs.to_numpy().shape == (1, 4, 4)
 
 
-def test_to_numpy_refuses_an_absent_variable() -> None:
-    with pytest.raises(KeyError, match="B99"):
-        optical().gs.to_numpy(("B04", "B99"))
+def test_to_numpy_refuses_a_raster_carrying_no_variables() -> None:
+    with pytest.raises(ValueError, match="no variables to stack"):
+        optical()[[]].gs.to_numpy()
 
 
 def test_to_numpy_refuses_variables_on_different_axes() -> None:
@@ -123,76 +120,37 @@ def test_to_tensor_honours_a_requested_dtype() -> None:
     assert optical().gs.to_tensor(dtype=torch.int16).dtype is torch.int16
 
 
-def test_stack_to_numpy_keys_arrays_by_group() -> None:
-    scene = stack(
-        {
-            "optical": optical(),
-            "dem": raster({"elevation": np.zeros((8, 8), "int16")}, geobox()),
-        }
-    )
+def test_a_band_reads_with_the_grid_trailing() -> None:
+    scrambled = xr.DataArray(
+        np.zeros((8, 8, 3), "uint16"),
+        dims=("y", "x", "band"),
+        coords={"band": ["r", "g", "b"]},
+    ).odc.assign_crs(UTM)
 
-    arrays = scene.gs.to_numpy()
-
-    assert list(arrays) == ["optical", "dem"]
-    assert arrays["optical"].shape == (2, 2, 8, 8)
-    assert arrays["dem"].shape == (1, 8, 8)
+    assert scrambled.gs.to_numpy().shape == (3, 8, 8)
+    assert scrambled.gs.to_tensor().shape == (3, 8, 8)
 
 
-def test_stack_to_numpy_drops_the_groups_left_out() -> None:
-    scene = stack(
-        {
-            "optical": optical(),
-            "dem": raster({"elevation": np.zeros((8, 8), "int16")}, geobox()),
-        }
-    )
+def test_a_band_keeps_its_other_axes_ahead_of_the_bands() -> None:
+    cube = xr.DataArray(
+        np.zeros((3, 2, 8, 8), "uint16"),
+        dims=("band", "time", "y", "x"),
+        coords={"band": ["r", "g", "b"], "time": [0, 1]},
+    ).odc.assign_crs(UTM)
 
-    arrays = scene.gs.to_numpy({"optical": ("B04",)})
-
-    assert list(arrays) == ["optical"]
-    assert arrays["optical"].shape == (2, 1, 8, 8)
+    assert cube.gs.to_numpy().shape == (2, 3, 8, 8)
 
 
-def test_stack_to_numpy_refuses_an_absent_group() -> None:
-    scene = stack({"optical": optical()})
+def test_a_band_carrying_no_band_axis_reads_without_one() -> None:
+    band = optical()["B04"]
 
-    with pytest.raises(KeyError, match="radar"):
-        scene.gs.to_numpy({"radar": None})
-
-
-def test_stack_to_tensor_casts_each_group_on_its_own_dtype() -> None:
-    scene = stack(
-        {
-            "optical": optical(),
-            "label": raster(
-                {"class": np.ones((8, 8), "uint8")}, geobox()
-            ).gs.write_nodata(255),
-        }
-    )
-
-    batch = scene.gs.to_tensor(dtype={"label": torch.int64})
-
-    assert batch["optical"].dtype is torch.float32
-    assert batch["label"].dtype is torch.int64
+    assert band.gs.to_numpy().shape == (2, 8, 8)
+    assert optical()[["B04"]].gs.to_numpy().shape == (2, 1, 8, 8)
 
 
-def test_a_prediction_stitches_back_onto_the_grid_it_was_read_from() -> None:
-    source = optical((16, 16))
-    tiles = source.gs.tile((8, 8), group_id="scene-001")
-    stitcher = GeoStitcher()
+def test_a_band_casts_the_way_a_raster_does() -> None:
+    band = optical()["B04"]
 
-    for tile in tiles:
-        model_input = tile.gs.to_tensor(("B04", "B08"))
-        predicted = model_input.mean(dim=(0, 1)).numpy().astype("uint8")
-        prediction = (
-            raster({"class": predicted}, tile.gs.geobox)
-            .gs.write_nodata(255)
-            .gs.rebase(tile.gs.attrs.root.get(Tiling))
-        )
-        stitcher.add(prediction)
-
-    (rebuilt,) = stitcher.flush()
-
-    assert rebuilt.gs.geobox == source.gs.geobox
-    assert rebuilt.gs.variables == ("class",)
-    assert rebuilt["class"].dtype == np.dtype("uint8")
-    assert np.array_equal(rebuilt["class"].values, np.full((16, 16), 6, "uint8"))
+    assert band.gs.to_numpy(dtype="float32").dtype == np.float32
+    assert band.gs.to_tensor().dtype is torch.float32
+    assert band.gs.to_tensor(dtype=torch.bfloat16).dtype is torch.bfloat16

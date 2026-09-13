@@ -3,7 +3,8 @@
 from __future__ import annotations
 
 from collections.abc import Sequence
-from typing import TYPE_CHECKING, Annotated, ClassVar, Literal, Self
+from types import MappingProxyType
+from typing import TYPE_CHECKING, Annotated, ClassVar, Final, Literal, Self
 
 from pydantic import Field
 
@@ -12,19 +13,36 @@ from geosave_engine.geodata.attrs.model import AttrsModel
 from .stac import shared_asset_fields
 
 if TYPE_CHECKING:
+    from collections.abc import Mapping
+
     import pystac
     from odc.geo.geobox import GeoBox
 
-# CFVariable and CFCoordinate declare standard_name and units alike, stated once here.
+# CFVariable and CFCoordinate type standard_name and units alike, written once here.
 type CFPhrase = Annotated[str, Field(min_length=1)] | None
+
+
+# Named reducers xarray collapses with, mapped to their CF Appendix E cell method.
+CELL_METHODS: Final[Mapping[str, str]] = MappingProxyType(
+    {
+        "first": "point",
+        "last": "point",
+        "min": "minimum",
+        "max": "maximum",
+        "mean": "mean",
+        "median": "median",
+        "sum": "sum",
+        "std": "standard_deviation",
+        "var": "variance",
+    }
+)
 
 
 class CFVariable(AttrsModel):
     """Describe the CF semantics of one data variable.
 
-    Structural grid metadata is not represented here. Profile owns coordinate
-    axes and grid mappings, while this model carries semantics supplied by a
-    source or caller.
+    What the pixels mean, not where they sit: the grid owns the coordinate
+    axes and the grid mapping, and `CFCoordinate` describes those.
 
     Args:
         standard_name: CF standard name, e.g. `"toa_bidirectional_reflectance"`.
@@ -59,7 +77,7 @@ class CFVariable(AttrsModel):
             asset: Asset name to read, which names the variable it loads into.
 
         Returns:
-            Model carrying the semantics every item states identically, its
+            Model carrying the semantics every item publishes identically, its
             other fields unset.
 
         Examples:
@@ -76,22 +94,22 @@ class CFVariable(AttrsModel):
         )
 
     @classmethod
-    def combine(cls, sides: Sequence[AttrsModel | None]) -> tuple[Self, set[str]]:
-        """Combine CF variable semantics.
+    def merge(cls, models: Sequence[AttrsModel | None]) -> tuple[Self, set[str]]:
+        """Merge CF variable semantics.
 
         Args:
-            sides: This model as each side of the join stated it, in call
-                order, at least one, None where a side did not state it.
+            models: This model from each joined object, in call order, at
+                least one, None where an object carried none.
 
         Returns:
-            Combined model, and the attr keys it could not keep.
+            Merged model, and the attr keys it could not keep.
 
         Raises:
-            TypeError: A side holds a different model.
+            TypeError: An object carries a different model.
             ValueError: A semantic field disagrees or `models` is empty.
         """
-        return cls._combine_fields(
-            sides, must_agree=("standard_name", "units", "cell_methods")
+        return cls._merge_fields(
+            models, must_agree=("standard_name", "units", "cell_methods")
         )
 
 
@@ -135,12 +153,12 @@ class CFCoordinate(AttrsModel):
             {
                 "<coordinate name>": semantics that axis carries,
             }
-            Named as the grid names its own dimensions. Neither states
+            Named as the grid names its own dimensions. Neither carries
             `bounds`, because the grid's affine already gives every pixel's
             edges.
 
         Raises:
-            ValueError: `geobox` declares no CRS, so its axes measure pixels
+            ValueError: `geobox` carries no CRS, so its axes measure pixels
                 rather than ground position.
 
         Examples:
@@ -152,7 +170,7 @@ class CFCoordinate(AttrsModel):
         crs = geobox.crs
         if crs is None:
             raise ValueError(
-                "geobox declares no CRS, so its axes measure pixels rather than "
+                "geobox carries no CRS, so its axes measure pixels rather than "
                 "ground position; assign one before describing them"
             )
         names = (
@@ -169,18 +187,18 @@ class CFCoordinate(AttrsModel):
         }
 
     @classmethod
-    def combine(cls, sides: Sequence[AttrsModel | None]) -> tuple[Self, set[str]]:
-        """Combine coordinate semantics, refusing disagreements.
+    def merge(cls, models: Sequence[AttrsModel | None]) -> tuple[Self, set[str]]:
+        """Merge coordinate semantics, refusing disagreements.
 
         Args:
-            sides: This model as each side of the join stated it, in call
-                order, at least one, None where a side did not state it.
+            models: This model from each joined object, in call order, at
+                least one, None where an object carried none.
 
         Returns:
-            Combined model, and the attr keys it could not keep.
+            Merged model, and the attr keys it could not keep.
 
         Raises:
-            TypeError: A side holds a different model.
+            TypeError: An object carries a different model.
             ValueError: A field disagrees or `models` is empty.
         """
-        return cls._combine_fields(sides, must_agree=cls.model_fields)
+        return cls._merge_fields(models, must_agree=cls.model_fields)

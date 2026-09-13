@@ -6,7 +6,7 @@ import pytest
 import pystac
 import xarray as xr
 
-from geosave_engine.geodata.attrs import CFVariable, Packing, read
+from geosave_engine.geodata.attrs import CFVariable, Nodata, read
 from geosave_engine.geodata.stac.stamp import stamp_stac
 
 
@@ -68,7 +68,7 @@ def test_stamp_skips_field_missing_from_one_item() -> None:
 
     stamped = stamp_stac(_loaded(first, second), items, _collection(), groupby="id")
 
-    assert read(stamped).data_vars["red"].get(Packing) is None
+    assert read(stamped).data_vars["red"].get(Nodata) is None
 
 
 def test_stamp_rejects_mixed_nodata_values() -> None:

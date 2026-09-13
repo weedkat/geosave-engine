@@ -72,19 +72,19 @@ class ACDD(AttrsModel):
         )
 
     @classmethod
-    def combine(cls, sides: Sequence[AttrsModel | None]) -> tuple[Self, set[str]]:
-        """Combine discovery metadata, dropping disagreements.
+    def merge(cls, models: Sequence[AttrsModel | None]) -> tuple[Self, set[str]]:
+        """Merge discovery metadata, dropping disagreements.
 
         Args:
-            sides: This model as each side of the join stated it, in call
-                order, at least one, None where a side did not state it.
+            models: This model from each joined object, in call order, at
+                least one, None where an object carried none.
 
         Returns:
-            Model carrying the fields every side states alike, and the
+            Model carrying the fields every object agreed on, and the
             attr keys it could not keep.
 
         Raises:
-            TypeError: A side holds a different model.
+            TypeError: An object carries a different model.
             ValueError: `models` is empty.
         """
-        return cls._combine_fields(sides, must_agree=())
+        return cls._merge_fields(models, must_agree=())

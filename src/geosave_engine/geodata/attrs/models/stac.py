@@ -74,29 +74,29 @@ def shared_asset_fields(
     *,
     on_conflict: AssetConflict,
 ) -> dict[str, object]:
-    """Read the fields every item describes one asset with identically.
+    """Read the fields every item publishes one asset with identically.
 
-    A load merges these items into one variable, and that variable carries one
-    attrs mapping, so a field only holds of it where every item carries the
-    asset, states the field non-null, and states the same value.
+    A load merges these items into one variable carrying one attrs mapping, so
+    a field survives only where every item carries the asset and publishes the
+    same non-null value for it.
 
     Args:
         items: Items making up one load.
         asset: Asset name to read, which names the variable it loads into.
         fields: STAC asset field names mapped to the model field each fills.
-        on_conflict: `"drop"` leaves out a field the items state differently;
+        on_conflict: `"drop"` leaves out a field the items disagree on;
             `"reject"` raises instead, for a field that decides what the pixel
             values mean.
 
     Returns:
         {
-            "<model field>": the one value every item states,
+            "<model field>": the one value every item published,
         }
-        Fields the items do not all state identically are absent.
+        Fields the items disagree on are absent.
 
     Raises:
-        ValueError: `on_conflict` is `"reject"` and the items state one of
-            `fields` differently.
+        ValueError: `on_conflict` is `"reject"` and the items disagree on one
+            of `fields`.
 
     Examples:
         >>> shared_asset_fields(items, "B04", {"unit": "units"}, on_conflict="drop")
@@ -110,39 +110,39 @@ def shared_asset_fields(
 
     shared: dict[str, object] = {}
     for key, field in fields.items():
-        stated = [entry.get(key) for entry in published]
-        if any(value is None for value in stated):
+        per_item = [entry.get(key) for entry in published]
+        if any(value is None for value in per_item):
             continue
-        if any(value != stated[0] for value in stated[1:]):
+        if any(value != per_item[0] for value in per_item[1:]):
             if on_conflict == "drop":
                 continue
             raise ValueError(
                 f"STAC items disagree on {key!r} for asset {asset!r}: "
-                f"{_disagreement(items, stated)}. They load into one {asset!r} "
+                f"{_disagreement(items, per_item)}. They load into one {asset!r} "
                 f"variable carrying one {key!r}, so one item's pixels would "
-                f"decode wrong. Narrow the search so every item states the same "
+                f"decode wrong. Narrow the search so every item publishes the same "
                 f"{key!r}, or override it through stac_cfg."
             )
-        shared[field] = stated[0]
+        shared[field] = per_item[0]
     return shared
 
 
-def _disagreement(items: Sequence[pystac.Item], stated: Sequence[object]) -> str:
+def _disagreement(items: Sequence[pystac.Item], per_item: Sequence[object]) -> str:
     """Name an item behind each distinct value of one disputed field.
 
     Args:
         items: Items making up one load.
-        stated: The value each item published, in the same order.
+        per_item: The value each item published, in the same order.
 
     Returns:
-        One `'<item id>' states <value>` phrase per distinct value, in
-        first-stated order.
+        One `'<item id>' publishes <value>` phrase per distinct value, first
+        occurrence first.
     """
     example: dict[str, tuple[str, object]] = {}
-    for item, value in zip(items, stated, strict=True):
+    for item, value in zip(items, per_item, strict=True):
         example.setdefault(repr(value), (item.id, value))
     return ", ".join(
-        f"{item_id!r} states {value!r}" for item_id, value in example.values()
+        f"{item_id!r} publishes {value!r}" for item_id, value in example.values()
     )
 
 
@@ -208,14 +208,14 @@ class StacMetadata(AttrsModel):
             item_properties: Item property names to record. Empty records
                 identity only; None records every property.
             asset_fields: Asset field names to record. Empty records none; None
-                records every field an asset declares.
+                records every field an asset publishes.
 
         Returns:
             Model holding one row per item, in search order.
 
         Raises:
-            ValueError: An item declares neither `datetime` nor a datetime
-                range, so it states no instant to record.
+            ValueError: An item publishes neither `datetime` nor a datetime
+                range, so it names no instant to record.
 
         Examples:
             >>> stac = StacMetadata.from_items(matched, groupby="solar_day")
@@ -244,33 +244,32 @@ class StacMetadata(AttrsModel):
         return tuple(sorted({key for row in self.stac_items for key in row.properties}))
 
     @classmethod
-    def combine(cls, sides: Sequence[AttrsModel | None]) -> tuple[Self, set[str]]:
-        """Combine STAC metadata: union `stac_items`, drop a mixed grouping.
+    def merge(cls, models: Sequence[AttrsModel | None]) -> tuple[Self, set[str]]:
+        """Merge STAC metadata: union `stac_items`, drop a mixed grouping.
 
         Items are provenance, so a joined result was loaded from all of them. A
-        grouping the sides do not share describes neither, so it is dropped
+        grouping the models do not share describes neither, so it is dropped
         rather than refused.
 
         Args:
-            sides: This model as each side of the join stated it, in call
-                order, at least one, None where a side carries no STAC
-                metadata.
+            models: This model from each joined object, in call order, at
+                least one, None where an object carried none.
 
         Returns:
-            Metadata carrying every side's items once, the first occurrence
+            Metadata carrying every model's items once, the first occurrence
             of an item id winning, and the attr keys it could not keep.
 
         Raises:
-            TypeError: A side holds a different model.
-            ValueError: `sides` is empty.
+            TypeError: An object carries a different model.
+            ValueError: `models` is empty.
         """
-        grouped, dropped = cls._combine_fields(sides, must_agree=())
+        grouped, dropped = cls._merge_fields(models, must_agree=())
         items: dict[str, StacItem] = {}
-        # _combine_fields has already refused any side that is not this model.
-        for side in sides:
-            if not isinstance(side, cls):
+        # _merge_fields has already refused any model that is not this model.
+        for model in models:
+            if not isinstance(model, cls):
                 continue
-            for item in side.stac_items:
+            for item in model.stac_items:
                 items.setdefault(item.id, item)
         combined = cls(
             stac_items=tuple(items.values()),
@@ -288,7 +287,7 @@ def _item_assets(
     Args:
         item: Item whose assets to read.
         asset_fields: Field names to capture. Empty captures none; None captures
-            every field an asset declares.
+            every field an asset publishes.
 
     Returns:
         {

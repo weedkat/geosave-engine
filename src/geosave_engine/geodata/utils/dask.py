@@ -40,8 +40,9 @@ def map_blocks_with_halo(
 
     Raises:
         ValueError: If no fields are given, ``depth`` is negative, the fields do
-            not span two trailing spatial dimensions on one aligned grid, or a
-            spatial chunk is smaller than ``depth``.
+            not span two trailing spatial dimensions on one aligned grid, a
+            field's dims are not ordered like the first field's, or a spatial
+            chunk is smaller than ``depth``.
     """
     if not fields:
         raise ValueError("Need at least one input field")
@@ -57,6 +58,14 @@ def map_blocks_with_halo(
             "optionally preceded by 'time'"
         )
     spatial = dims[-2:]
+    misordered = [
+        i for i, field in enumerate(fields) if tuple(str(d) for d in field.dims) != dims
+    ]
+    if misordered:
+        raise ValueError(
+            f"fields {misordered} are not ordered {dims} like field 0; "
+            f"transpose them to match before calling"
+        )
     try:
         fields = xr.align(*fields, join="exact")
     except ValueError as exc:

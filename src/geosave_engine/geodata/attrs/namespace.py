@@ -1,4 +1,4 @@
-"""One flat attrs mapping, parsed into the models it states."""
+"""One flat attrs mapping, parsed into the models it carries."""
 
 from __future__ import annotations
 
@@ -17,41 +17,53 @@ from .model import (
 
 @dataclass(frozen=True)
 class AttrsNamespace:
-    """Typed and foreign fields in one xarray attrs mapping.
+    """One xarray attrs mapping, split into typed models and foreign keys.
 
     Args:
-        models: Registered model names mapped to their stated models.
-        foreign: Fields no registered model writes.
+        models: Registered model name mapped to the model parsed from the
+            mapping.
+        foreign: Keys no registered model writes, kept as they came in.
+
+    Examples:
+        >>> namespace = AttrsNamespace.from_attrs({"units": "1", "mission": "S2"})
+        >>> namespace.get(CFVariable).units, namespace.foreign
+        ('1', {'mission': 'S2'})
     """
 
     models: Mapping[str, AttrsModel] = field(default_factory=dict[str, AttrsModel])
     foreign: Mapping[str, object] = field(default_factory=dict[str, object])
 
     @classmethod
-    def from_attrs(cls, attrs: Mapping[Hashable, object]) -> Self:
+    def from_attrs(cls, attrs: Mapping[Hashable, Any]) -> Self:
         """Parse one flat xarray attrs mapping.
+
+        A model appears where the mapping carries at least one of its keys.
+        xarray types attrs keys as merely `Hashable`, but every key actually
+        written is a string, so this is where that gets settled once.
 
         Args:
             attrs: Flat xarray attrs mapping.
 
         Returns:
-            Namespace holding stated registered models and foreign fields.
+            Namespace holding the models the mapping carries and every key
+            none of them writes.
 
         Raises:
-            ValidationError: A stated registered field is invalid.
+            ValidationError: A value does not satisfy the field that owns its
+                key.
         """
         flat_attrs = {str(key): value for key, value in attrs.items()}
 
         models: dict[str, AttrsModel] = {}
         for model_name, model_type in REGISTERED_MODELS.items():
-            stated: dict[str, object] = {}
+            kwargs: dict[str, Any] = {}
             for attr_key in model_type.attr_keys.values():
                 if attr_key in flat_attrs:
-                    stated[attr_key] = flat_attrs[attr_key]
-            if stated:
-                models[model_name] = model_type(**stated)
+                    kwargs[attr_key] = flat_attrs[attr_key]
+            if kwargs:
+                models[model_name] = model_type(**kwargs)
 
-        foreign: dict[str, object] = {}
+        foreign: dict[str, Any] = {}
         for attr_key, value in flat_attrs.items():
             if attr_key not in REGISTERED_ATTR_KEYS:
                 foreign[attr_key] = value
@@ -59,26 +71,26 @@ class AttrsNamespace:
         return cls(models=models, foreign=foreign)
 
     @classmethod
-    def combine(cls, namespaces: Sequence[AttrsNamespace]) -> tuple[Self, set[str]]:
-        """Combine the namespaces the joined objects carried in one spot.
+    def merge(cls, namespaces: Sequence[AttrsNamespace]) -> tuple[Self, set[str]]:
+        """Merge the namespaces the joined objects carried at one name.
 
-        Each model decides for itself what survives, through its own `combine`.
-        A foreign field survives only where every object states it identically.
+        Each model decides for itself what survives, through its own `merge`.
+        A foreign key survives only where every object carries the same value.
 
         Args:
-            namespaces: That spot's namespace from each object being joined, in
-                call order, at least one.
+            namespaces: That name's namespace from each object being joined,
+                in call order, at least one.
 
         Returns:
-            Combined namespace and every attr key dropped from it, registered
-            and foreign alike.
+            (merged namespace, every attr key dropped from it — registered
+            and foreign alike)
 
         Raises:
             ValueError: `namespaces` is empty, or a registered model refuses a
                 disagreement.
         """
         if not namespaces:
-            raise ValueError("combining attrs needs at least one namespace")
+            raise ValueError("merging attrs needs at least one namespace")
 
         model_names: set[str] = set()
         foreign_keys: set[str] = set()
@@ -90,35 +102,37 @@ class AttrsNamespace:
 
         models: dict[str, AttrsModel] = {}
         for model_name in sorted(model_names):
-            stated_models = [
-                namespace.models.get(model_name) for namespace in namespaces
-            ]
-            models[model_name], dropped_keys = resolve_model(model_name).combine(
-                stated_models
+            per_object = [namespace.models.get(model_name) for namespace in namespaces]
+            models[model_name], dropped_keys = resolve_model(model_name).merge(
+                per_object
             )
             dropped.update(dropped_keys)
 
         foreign: dict[str, object] = {}
         for attr_key in sorted(foreign_keys):
-            stated = [
+            values = [
                 namespace.foreign[attr_key]
                 for namespace in namespaces
                 if attr_key in namespace.foreign
             ]
-            if len(stated) < len(namespaces):
+            if len(values) < len(namespaces):
                 dropped.add(attr_key)
-            elif all(values_agree(value, stated[0]) for value in stated[1:]):
-                foreign[attr_key] = stated[0]
+            elif all(values_agree(value, values[0]) for value in values[1:]):
+                foreign[attr_key] = values[0]
             else:
                 dropped.add(attr_key)
 
         return cls(models=models, foreign=foreign), dropped
 
     def to_attrs(self) -> dict[str, Any]:
-        """Serialize this namespace into one flat attrs mapping.
+        """Flatten this namespace back into one xarray attrs mapping.
 
         Returns:
-            Foreign and registered fields as xarray attrs.
+            {
+                "<attr key>": its value,
+            }
+            Foreign keys first, then every key the models write. A field set
+            to None writes nothing, marking its key absent.
 
         Raises:
             KeyError: A model name is not registered.
@@ -139,7 +153,7 @@ class AttrsNamespace:
                     f"header model {model_name!r} must be {expected.__name__}, "
                     f"got {type(model).__name__}"
                 )
-            # A field stating None says the attr is absent, so it writes nothing.
+            # A field set to None marks the attr absent, so it writes nothing.
             for attr_key, value in model.to_attrs().items():
                 if value is not None:
                     attrs[attr_key] = value
@@ -158,9 +172,13 @@ class AttrsNamespace:
             model: Registered model class or its stable `NAME`.
 
         Returns:
-            Stated model, or None when this namespace does not carry it.
+            The model, or None when this namespace does not carry it.
+
+        Examples:
+            >>> namespace.get(Packing).scale_factor
+            0.0001
         """
         if isinstance(model, str):
             return self.models.get(model)
-        carried = self.models.get(model.NAME)
-        return carried if isinstance(carried, model) else None
+        instance = self.models.get(model.NAME)
+        return instance if isinstance(instance, model) else None

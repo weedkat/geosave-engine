@@ -235,7 +235,7 @@ class GeoVector:
         geometry_crs = geometry.crs if isinstance(geometry, Geometry) else None
         if geometry_crs is not None and crs is not None and OdcCRS(crs) != geometry_crs:
             raise ValueError(
-                f"geometry is in {geometry_crs} but crs= declares {crs}; "
+                f"geometry is in {geometry_crs} but crs= names {crs}; "
                 "transform the geometry or provide its actual CRS"
             )
         resolved_crs = geometry_crs or crs or "EPSG:4326"

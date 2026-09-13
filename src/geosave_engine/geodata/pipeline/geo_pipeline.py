@@ -38,7 +38,7 @@ class GeoPipeline(ABC):
         """
 
     def fetch(self, anchor: GeoAnchor) -> dict[str, Dataset]:
-        """Load every declared source over one anchor.
+        """Load every source `sources` names over one anchor.
 
         Args:
             anchor: Grid and time window to load.
@@ -55,7 +55,7 @@ class GeoPipeline(ABC):
         sources = self.sources()
         if not sources:
             raise NotImplementedError(
-                f"{type(self).__name__} declares no sources() -- "
+                f"{type(self).__name__} names no sources() -- "
                 "override sources() or fetch()"
             )
         return {name: source.load(anchor) for name, source in sources.items()}

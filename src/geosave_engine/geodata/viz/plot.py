@@ -1,4 +1,4 @@
-"""Draw a placed DataArray as a HoloViews element. Internal to `GeoRaster.plot`.
+"""Draw a georeferenced DataArray as a HoloViews element. Internal to `GeoRaster.plot`.
 
 No interactive backend: every element renders through matplotlib, so
 `hv.save(element, "scene.png")` writes a static figure directly.
@@ -14,7 +14,7 @@ import numpy as np
 import odc.geo.xr  # noqa: F401  — registers the .odc accessor
 import xarray as xr
 
-from geosave_engine.geodata.core.array import BAND_DIMENSION
+from geosave_engine.geodata.core.convention import BAND_DIMENSION, TIME_COORDINATE
 from matplotlib.colors import ListedColormap
 
 from geosave_engine.utils.colorize import parse_color
@@ -38,15 +38,15 @@ def plot(
     title: str | None = None,
     xlabel: str | None = None,
 ) -> hv.Element | hv.Layout:
-    """Draw a placed array the way its shape and the given palette describe it.
+    """Draw a georeferenced array, picking the element its shape calls for.
 
-    A `band` dim of three draws through `rgb`; a given `class_map` draws
-    through `classes`; else `continuous`. Never reads attrs itself —
-    `GeoRaster.plot`/`DataArray.plot` read a `Legend` and unpack it here.
+    Three channels on `band` draw through `rgb`, a `class_map` through
+    `classes`, and anything else through `continuous`. Reads no attrs of its
+    own: the `gs` accessors read a `Legend` and unpack it into these arguments.
 
     Args:
-        array: Placed band, or the three-channel stack
-            `Dataset.to_array(rgb=True)` built.
+        array: Georeferenced band, or the three-channel stack
+            `GeoRaster.to_array` built from three named variables.
         cmap: Colormap. Refused for a composite and alongside `class_map`,
             both of which carry colour rather than a quantity.
         clim: Colour limits for a band, the composite's stretch onto
@@ -69,7 +69,7 @@ def plot(
 
     Examples:
         >>> plot(ds.gs.to_array(["ndvi"]), cmap="RdYlGn")
-        >>> plot(ds.gs.to_array(rgb=True), clim=(0.0, 0.3))
+        >>> plot(ds.gs.to_array(["B04", "B03", "B02"]), clim=(0.0, 0.3))
     """
     if BAND_DIMENSION in array.dims:
         if array.sizes[BAND_DIMENSION] == 3:
@@ -117,7 +117,7 @@ def continuous(
     map. Pass a label band to `classes` to draw it through a named palette.
 
     Args:
-        array: Placed band, spanning the spatial pair and, optionally,
+        array: Georeferenced band, spanning the spatial pair and, optionally,
             `time`.
         cmap: Colormap. None leaves hvplot's own.
         clim: Colour limits. None reads them from the pixels.
@@ -135,18 +135,18 @@ def continuous(
         >>> continuous(monthly["ndvi"], cols=6)  # one panel per month
     """
     y, x = array.odc.geobox.dimensions
-    has_time = "time" in array.dims
+    has_time = TIME_COORDINATE in array.dims
     drawn = array.hvplot.image(
         x=x,
         y=y,
-        groupby=["time"] if has_time else None,
+        groupby=[TIME_COORDINATE] if has_time else None,
         dynamic=False,  # materialise every panel; there is no live kernel
         cmap=cmap,
         clim=clim,
         title=title,
         xlabel=xlabel,
     )
-    return drawn.layout(["time"]).cols(cols) if has_time else drawn
+    return drawn.layout([TIME_COORDINATE]).cols(cols) if has_time else drawn
 
 
 def rgb(
@@ -160,11 +160,11 @@ def rgb(
     """Stretch and draw a three-channel composite as an RGB element.
 
     Maps `stretch` onto the unit interval, clipping outside it, reading the
-    channels as `Dataset.to_array(rgb=True)` stacked them — no packing,
+    channels as `GeoRaster.to_array` stacked them — no packing,
     no colour of their own yet.
 
     Args:
-        array: Placed array spanning the spatial pair, `band`, and,
+        array: Georeferenced array spanning the spatial pair, `band`, and,
             optionally, `time`. `band` holds exactly three channels ordered
             red, green, blue.
         stretch: Bounds mapped onto `[0, 1]`, in the channels' own stored
@@ -185,11 +185,11 @@ def rgb(
             every channel pixel is nan or the channels are flat.
 
     Examples:
-        >>> rgb(ds.gs.to_array(rgb=True), stretch=(0.0, 0.3))
-        >>> rgb(monthly.gs.to_array(rgb=True), cols=6)
+        >>> rgb(ds.gs.to_array(["B04", "B03", "B02"]), stretch=(0.0, 0.3))
+        >>> rgb(monthly.gs.to_array(["B04", "B03", "B02"]), cols=6)
     """
     y, x = array.odc.geobox.dimensions
-    has_time = "time" in array.dims
+    has_time = TIME_COORDINATE in array.dims
 
     if stretch is None:
         if array.dtype == np.uint8:
@@ -224,7 +224,7 @@ def rgb(
             for index, name in enumerate(channels)
         }
     )
-    groupby = ["time"] if has_time else []
+    groupby = [TIME_COORDINATE] if has_time else []
     drawn = hv.Dataset(frame, kdims=[x, y, *groupby], vdims=channels).to(
         hv.RGB, [x, y], channels, groupby or None
     )
@@ -233,7 +233,7 @@ def rgb(
     }
     if overrides:
         drawn = drawn.opts(hv.opts.RGB(**overrides))
-    return drawn.layout(["time"]).cols(cols) if has_time else drawn
+    return drawn.layout([TIME_COORDINATE]).cols(cols) if has_time else drawn
 
 
 def classes(
@@ -252,7 +252,7 @@ def classes(
     none. Colour limits follow the class count, so they are not the caller's.
 
     Args:
-        array: Placed band holding class codes, spanning the spatial pair
+        array: Georeferenced band holding class codes, spanning the spatial pair
             and, optionally, `time`.
         class_map: Pixel value mapped to class name.
         color_map: Pixel value mapped to hex or RGB, covering every class.
@@ -270,10 +270,15 @@ def classes(
 
     Examples:
         >>> classes(ds["cover"], class_map={0: "water"}, color_map={0: "#419bdf"})
-        >>> classes(yearly["cover"], cols=6, **declared)
+        >>> classes(
+        ...     yearly["cover"],
+        ...     class_map={0: "water", 1: "forest"},
+        ...     color_map={0: "#419bdf", 1: "#397d49"},
+        ...     cols=6,  # one panel per year
+        ... )
     """
     y, x = array.odc.geobox.dimensions
-    has_time = "time" in array.dims
+    has_time = TIME_COORDINATE in array.dims
 
     uncoloured = sorted(code for code in class_map if code not in color_map)
     if uncoloured:
@@ -291,7 +296,7 @@ def classes(
     drawn = array.copy(data=positions).hvplot.image(
         x=x,
         y=y,
-        groupby=["time"] if has_time else None,
+        groupby=[TIME_COORDINATE] if has_time else None,
         dynamic=False,  # materialise every panel; there is no live kernel
         clim=(-0.5, len(codes) - 0.5),
         colorbar=True,
@@ -304,4 +309,4 @@ def classes(
             cmap=ListedColormap(hexes), color_levels=len(codes), cbar_ticks=ticks
         )
     )
-    return styled.layout(["time"]).cols(cols) if has_time else styled
+    return styled.layout([TIME_COORDINATE]).cols(cols) if has_time else styled

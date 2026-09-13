@@ -29,7 +29,9 @@ def optical() -> xr.Dataset:
     values = np.arange(16, dtype="uint16").reshape(4, 4) * 100
     raster = build_raster({"B04": values}, geobox())
     return raster.gs.rebase(
-        attrs.Packing(scale_factor=1e-4, add_offset=0.0, _FillValue=0), target="B04"
+        attrs.Packing(scale_factor=1e-4, add_offset=0.0),
+        attrs.Nodata(_FillValue=0),
+        target="B04",
     )
 
 

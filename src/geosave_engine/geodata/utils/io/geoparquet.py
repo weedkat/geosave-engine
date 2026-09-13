@@ -36,7 +36,7 @@ def read(
         **open_options: Supported GeoPandas and Parquet read options.
 
     Returns:
-        GeoDataFrame on the CRS declared by the file.
+        GeoDataFrame on the CRS the file names.
 
     Raises:
         TypeError: An option is unsupported or supplied twice.

@@ -22,7 +22,7 @@ class GeoSaveWarning(UserWarning):
 
 
 class MissingCRSWarning(GeoSaveWarning):
-    """Opened raster declares no CRS, so ground-referenced operations will raise."""
+    """Opened raster carries no CRS, so ground-referenced operations will raise."""
 
 
 class UnreferencedGridWarning(GeoSaveWarning):
@@ -30,7 +30,11 @@ class UnreferencedGridWarning(GeoSaveWarning):
 
 
 class DroppedAttrsWarning(GeoSaveWarning):
-    """Joined rasters did not state an attr alike, so the result states nothing."""
+    """Joined rasters carried an attr differently, so the result carries neither value."""
+
+
+class DroppedPackingWarning(GeoSaveWarning):
+    """Reduced values are no longer `scale_factor * stored + add_offset`, so the packing was dropped."""
 
 
 class DroppedBucketsWarning(GeoSaveWarning):

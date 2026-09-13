@@ -15,6 +15,7 @@ The `geosave` CLI is the product entry point. The repository also owns the geoda
 - Implement scoped fixes directly once intent is clear. Ask only when a missing choice materially changes behavior or risk.
 - Explain a better design when one is available.
 - Keep diffs focused. Preserve unrelated work in a dirty worktree.
+- Never discard a working tree. `git checkout --`, `restore`, and `clean` take the user's uncommitted work too; undo your own edit by editing it back.
 - Give a reason for every changed file.
 - Use real repository APIs, dependencies, commands, and paths. Verify documentation claims against source because docs may lag during redesign.
 - Preserve public interfaces unless the user requests or approves a break.
@@ -45,11 +46,13 @@ Fix the cause, not the symptom.
 - Offer two or three shapes and say what each costs. Do not defend your first idea.
 - Prefer the shape that removes the most. Patches add code, real fixes delete it, and a new class or helper must remove more than it adds. Judge the whole change, not single statements.
 - Ignore what the existing code cost to write. Its shape is not a reason to keep it. Rewrite the wrong part instead of building around it.
+- Measure at realistic scale. A ratio from a toy fixture is not a finding.
 - Tests passing is not done. Ask separately whether the structure and names read correctly to someone new.
 
 ## Design and coding
 
 - Apply SOLID, DRY, YAGNI, and KISS. Prefer one strict contract over compatibility glue.
+- Write the simple solution first to see the mechanism it rests on. Seek edge cases after foundation is done.
 - Keep modules focused and interfaces smaller than their implementations.
 - Validate inputs early and raise actionable errors that identify the mismatch and corrective operation.
 - Use typed parameters and returns. Avoid `Any` unless an external library forces it.
@@ -62,10 +65,13 @@ Fix the cause, not the symptom.
 - Name a parameter after what it holds. Explain the wider idea in the docstring instead of inventing a group noun for it.
 - Use a dataclass or value object when a multi-part domain value needs named fields. Do not use anonymous tuples or parallel mappings where they obscure meaning.
 - A private helper must name a real invariant or remove meaningful repetition. Keep domain-shaped orchestration close to the caller.
+- A helper you cannot name is not a helper. Inline it and comment the chunk.
+- Do not add a parameter the stack already provides.
 - Resolve static-type errors through accurate contracts and concrete narrowing. Do not suppress them with `Any`, broad casts, or an unresolved generic type variable.
 - Use structured parsers for YAML, TOML, JSON, STAC, and geospatial metadata.
 - Use dependencies declared in `pyproject.toml`; discuss new dependencies or stack substitutions first.
 - Look for existing code before writing new code.
+- Read the library before wrapping it. Probe what it already exposes and say which member you took; hand-rolling needs a stated reason.
 
 ## Documentation and comments
 
@@ -75,6 +81,8 @@ Fix the cause, not the symptom.
 - Every public callable documents caller-supplied parameters under `Args` and every non-`None` result under `Returns`. Omit sections that do not apply; never add empty `Args` or a fake `Returns: None`.
 - Add `Examples` when construction, configuration, or a transformation is not obvious from the signature. Use real public APIs and omit unrelated setup.
 - A simple property still documents its value under `Returns`.
+- State the problem before the machinery, and what a thing is before what it does.
+- A question asked twice is a defect in the text. Rewrite it, do not restate it.
 - Put flow in code structure. Use a short standalone comment only for non-obvious chunks or edge cases.
 - Reserve trailing comments for mechanical notes such as tensor shapes.
 - For Torch modules, annotate important tensor dimension changes.
@@ -160,7 +168,10 @@ Documentation may remain skeletal during an explicitly agreed redesign. Once beh
 
 ## Verification
 
+- State the acceptance property before building. Write the tests once the mechanism settles, not while it churns.
 - Match checks to risk: targeted tests for local behavior, round-trip tests for persistence, and smoke tests during design work.
+- Assert real values and side effects, not that the code ran.
+- Attack your own change before handoff: empty, missing, extreme, and out-of-order inputs.
 - Default suite: `pytest` (skips `slow` and `integration` through project configuration).
 - Integration suite: `pytest -m integration`; credentials live in `tests/.env`.
 - Use `workspace/` only for generated-workspace integration checks.

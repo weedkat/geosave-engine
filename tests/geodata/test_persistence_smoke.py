@@ -34,6 +34,45 @@ def test_zarr_round_trip_preserves_the_profile(
         assert restored.sizes["time"] == times
 
 
+def build_shuffled(names: list[str]) -> xr.Dataset:
+    """Build a raster whose variable order is neither sorted nor reversed.
+
+    Args:
+        names: Variable names, in the order the raster should carry them.
+
+    Returns:
+        Raster Dataset holding one `uint16` variable per name.
+    """
+    base = build_raster()
+    return xr.Dataset({name: base.red for name in names}, coords=base.coords)
+
+
+def test_zarr_reads_its_variables_in_the_order_they_were_written(
+    tmp_path: Path,
+) -> None:
+    # Six names scramble on every read; two happen to come back written order.
+    names = ["zulu", "alpha", "mike", "bravo", "yankee", "charlie"]
+
+    destination = zarr.write(build_shuffled(names), tmp_path / "ordered.zarr")
+
+    # A Zarr group lists its members in no order, so every read must agree.
+    for _ in range(3):
+        assert list(zarr.read(destination).data_vars) == names
+
+
+def test_a_zarr_variable_written_elsewhere_trails_the_written_order(
+    tmp_path: Path,
+) -> None:
+    names = ["zulu", "alpha", "mike", "bravo", "yankee", "charlie"]
+    destination = zarr.write(build_shuffled(names), tmp_path / "ordered.zarr")
+    grown = zarr.read(destination).assign(swir=lambda ds: ds.zulu)
+    grown.to_zarr(tmp_path / "grown.zarr", zarr_format=3, consolidated=False)
+
+    restored = zarr.read(tmp_path / "grown.zarr")
+
+    assert list(restored.data_vars) == [*names, "swir"]
+
+
 def test_digital_numbers_stay_stored_and_decode_on_request(tmp_path: Path) -> None:
     destination = zarr.write(build_raster(packed=True), tmp_path / "packed.zarr")
 

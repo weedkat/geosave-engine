@@ -1,15 +1,25 @@
-"""Explicit transformations of a raster Dataset.
+"""Turn raw loads into model-ready layers.
 
-Each transform runs the underlying xarray or odc operation, then rebases the
-attrs its result earns. Nothing is aligned, promoted, reprojected, or
-resampled implicitly.
+Only the operations `odc.stac.load` and xarray leave undone. Nothing is
+aligned, promoted, reprojected, or resampled implicitly.
+
+Examples:
+    One preprocess, end to end::
+
+        clear = nodata.mask(raw, raw.scl.isin(CLEAR_CLASSES))
+        filled = composite.mosaic([clear, last_week])
+        monthly = composite.reduce(composite.resample(filled, "MS"), "median")
+        dem = warp.reproject_match(srtm, monthly, resampling="bilinear")
+        samples = tiling.Tiles([monthly], (256, 256), overlap=32)
 """
 
-from . import grid, tiles, time, variables
+from . import composite, concat, nodata, packing, tiling, warp
 
 __all__ = [
-    "grid",
-    "tiles",
-    "time",
-    "variables",
+    "composite",
+    "concat",
+    "nodata",
+    "packing",
+    "tiling",
+    "warp",
 ]

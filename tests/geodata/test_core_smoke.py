@@ -1,4 +1,3 @@
-from datetime import datetime as dt
 from typing import TYPE_CHECKING, assert_type
 
 import numpy as np
@@ -8,7 +7,6 @@ import geosave_engine.geodata as gs
 
 from geosave_engine.geodata import GeoAnchor, GeoArray, GeoRaster, GeoStack, GeoVector
 from geosave_engine.geodata.attrs import CFVariable
-from geosave_engine.geodata.transform import time as transform_time
 
 from .conftest import build_raster
 
@@ -58,20 +56,6 @@ def test_unbucketed_time_covers_only_its_own_instants() -> None:
 
     assert (start.hour, start.minute, start.second) == (10, 23, 11)
     assert (end.hour, end.minute, end.second) == (10, 24, 2)
-
-
-def test_recorded_resample_widens_time_to_its_buckets() -> None:
-    raster = build_raster(times=2).assign_coords(
-        time=np.array(
-            ["2025-06-01T10:23:11", "2025-06-11T10:24:02"], dtype="datetime64[ns]"
-        )
-    )
-    monthly = transform_time.resample(raster, "MS", "first")
-
-    start, end = monthly.gs.timespan
-
-    assert start == dt(2025, 6, 1)
-    assert end.day == 30
 
 
 def test_timeless_raster_has_no_timespan(raster: xr.Dataset) -> None:

@@ -1,24 +1,32 @@
-"""Read one GDAL-supported raster file into a banded DataArray."""
+"""Read one GDAL-supported raster file into a Dataset of its bands.
+
+A band is one variable: GDAL writes its name and colour interpretation in the
+band's own metadata, which `GDALVariable` reads, and its `long_name` in the band
+description, which stays CF's. ``TIFFTAG_DATETIME`` becomes a scalar `time`.
+"""
 
 from __future__ import annotations
 
 from typing import TYPE_CHECKING, Any, TypedDict, Unpack, cast
 
+import rasterio
 import rioxarray  # noqa: F401  — registers the .rio accessor
 import xarray as xr
+from rasterio.enums import ColorInterp
 
-from geosave_engine.geodata.core.array import BAND_DIMENSION
+from geosave_engine.geodata.attrs import (
+    GDALVariable,
+    GeoTIFFTags,
+    read as read_attrs,
+    rebase,
+)
 
-from geosave_engine.geodata.attrs import GeoTIFFTags, read as read_attrs
+from geosave_engine.geodata.core.convention import TIME_COORDINATE
 
 if TYPE_CHECKING:
-    from collections.abc import Sequence
     from os import PathLike
 
-    from geosave_engine.geodata import DataArray
-
-
-_BAND_DESCRIPTIONS = "long_name"
+    from geosave_engine.geodata import Dataset
 
 
 class RasterioOpenOptions(TypedDict, total=False):
@@ -29,87 +37,80 @@ class RasterioOpenOptions(TypedDict, total=False):
     lock: Any
     decode_times: bool
     decode_timedelta: bool | None
-    rasterio_open_options: dict[str, Any]
+    overview_level: int
 
 
 def read(
     source: str | PathLike[str],
     *,
-    band_names: Sequence[str] | None = None,
-    overview_level: int | None = None,
     chunks: Any = None,
     mask_and_scale: bool = False,
     **open_options: Unpack[RasterioOpenOptions],
-) -> DataArray:
-    """Read any GDAL-readable raster as one `(band, y, x)` array.
+) -> Dataset:
+    """Read any GDAL-readable raster as one variable per band.
 
-    The `band` coordinate holds the file's GDAL band descriptions where it
-    names them, and rasterio's indexes where it does not. Tags stay in the
-    array's attrs, ``TIFFTAG_DATETIME`` also becoming `time`.
+    A band naming itself in `GDALVariable.variable_name` becomes a variable of
+    that name; the rest keep rasterio's `band_1`, `band_2`. A band's other
+    metadata stays on its variable, the description among it as `long_name`.
 
     Args:
         source: Local path or URI to a raster GDAL can open.
-        band_names: Names replacing the file's own descriptions, in band
-            order.
-        overview_level: Zero-based overview level, or None for full
-            resolution.
-        chunks: Chunk configuration for the opened array.
+        chunks: Chunk configuration for the opened variables.
         mask_and_scale: Decode CF packing to physical values instead of
             returning stored digital numbers.
         **open_options: Supported rioxarray and rasterio open options.
 
     Returns:
-        Array shaped `(band, y, x)`.
+        Dataset holding one `(y, x)` variable per band.
 
     Raises:
-        ValueError: The file cannot be read, holds subdatasets, or
-            `band_names` does not match the band count.
+        ValueError: The file cannot be read, holds subdatasets, or names one
+            variable on two bands.
 
     Examples:
-        >>> read("scene.tif").band.values
-        array(['B04', 'B08'], dtype=object)
+        >>> read("scene.tif").gs.variables
+        ('B04', 'B08')
     """
-    options: dict[str, Any] = dict(open_options)
-    if overview_level is not None:
-        options["overview_level"] = overview_level
+    with rasterio.open(source) as src:
+        # rioxarray reads no colour interpretation, so it is taken here in band order.
+        band_colorinterp = tuple(band.name for band in src.colorinterp)
+        cube = rioxarray.open_rasterio(
+            src,
+            band_as_variable=True,
+            chunks=chunks,
+            mask_and_scale=mask_and_scale,
+            **open_options,
+        )
 
-    opened = rioxarray.open_rasterio(
-        source, chunks=chunks, mask_and_scale=mask_and_scale, **options
-    )
-    if isinstance(opened, list):
+    if isinstance(cube, list):
         raise ValueError(
             f"{source} holds subdatasets; open one of them by its own URI instead"
         )
-    if isinstance(opened, xr.Dataset):
+    if not isinstance(cube, xr.Dataset):
         raise ValueError(
-            f"{source} opened as a Dataset rather than a banded raster; open it "
-            f"with the reader for its own format"
+            f"{source} opened as a banded array rather than one variable per "
+            f"band; open it with the reader for its own format"
         )
 
-    count = opened.sizes.get(BAND_DIMENSION)
-    if band_names is not None:
-        if len(band_names) != count:
-            raise ValueError(
-                f"band_names names {len(band_names)} bands but {source} carries "
-                f"{count}; name every band exactly once, in band order"
+    for var_name, colorinterp in zip(cube.data_vars, band_colorinterp, strict=True):
+        if colorinterp != ColorInterp.undefined.name:
+            cube = rebase(
+                cube, GDALVariable(colorinterp=colorinterp), target=str(var_name)
             )
-        opened = opened.assign_coords(
-            {BAND_DIMENSION: [str(name) for name in band_names]}
-        )
-        opened.attrs.pop(_BAND_DESCRIPTIONS, None)
-    else:
-        # A file naming every band labels them; the rest keep rasterio's indexes.
-        described = opened.attrs.get(_BAND_DESCRIPTIONS)
-        descriptions = (described,) if isinstance(described, str) else described or ()
-        if count is not None and len(descriptions) == count and all(descriptions):
-            opened = opened.assign_coords(
-                {BAND_DIMENSION: [str(name) for name in descriptions]}
-            )
-            opened.attrs.pop(_BAND_DESCRIPTIONS, None)
 
-    # The tag model reads the instant GDAL spells its own way.
-    tags = read_attrs(opened).root.get(GeoTIFFTags)
-    if isinstance(tags, GeoTIFFTags) and tags.TIFFTAG_DATETIME is not None:
-        opened = opened.assign_coords(time=tags.TIFFTAG_DATETIME)
+    # Renaming leaves the root alone, so one read serves both the bands and tags.
+    header = read_attrs(cube)
+    rename_map: dict[str, str] = {}
+    for var_name, namespace in header.data_vars.items():
+        identity = namespace.get(GDALVariable)
+        if identity is not None and identity.variable_name is not None:
+            rename_map[var_name] = identity.variable_name
 
-    return cast("DataArray", opened)
+    # rename_vars refuses two bands naming one variable.
+    cube = cube.rename_vars(rename_map)
+
+    tags = header.root.get(GeoTIFFTags)
+    if tags is not None and tags.TIFFTAG_DATETIME is not None:
+        cube = cube.assign_coords({TIME_COORDINATE: tags.TIFFTAG_DATETIME})
+
+    return cast("Dataset", cube)

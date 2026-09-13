@@ -35,8 +35,10 @@ from typing import TYPE_CHECKING, Any, Final, Protocol, cast, runtime_checkable
 import pandas as pd
 import xarray as xr
 
+from geosave_engine.geodata.attrs import merge, rebase
+from geosave_engine.geodata.core.convention import TIME_COORDINATE
+
 from ..datetime import format_instant
-from geosave_engine.geodata.core.array import BAND_DIMENSION
 
 from .gdal import read as read_raster
 from .geotiff import write_cog
@@ -46,7 +48,6 @@ if TYPE_CHECKING:
 
     from geosave_engine.geodata import Dataset
 
-TIME_COORDINATE: Final = "time"
 _SUFFIX: Final = ".tif"
 
 
@@ -61,16 +62,16 @@ class Layout(Protocol):
     def write(
         self,
         ds: Dataset,
-        target: str | PathLike[str],
+        destination: str | PathLike[str],
         *,
         overwrite: bool = False,
         **rio_options: Any,
     ) -> None:
-        """Write `ds` as a tree of COG leaves under `target`.
+        """Write `ds` as a tree of COG leaves under `destination`.
 
         Args:
             ds: Cube to write.
-            target: Directory the tree is written into.
+            destination: Directory the tree is written into.
             overwrite: Replace leaves that already exist.
             **rio_options: COG creation options passed to every leaf.
 
@@ -130,7 +131,7 @@ class NestedLayout:
               20250601T103031.tif   bands: B04, B08
               20250611T103031.tif   bands: B04, B08
 
-        A cube with no time axis is one file, named by the target itself::
+        A cube with no time axis is one file, named by the destination::
 
             dem.tif   bands: elevation, slope
     """
@@ -140,26 +141,26 @@ class NestedLayout:
     def write(
         self,
         ds: Dataset,
-        target: str | PathLike[str],
+        destination: str | PathLike[str],
         *,
         overwrite: bool = False,
         **rio_options: Any,
     ) -> None:
         """Write one directory per instant, its bands inside."""
-        root = Path(target)
+        root = Path(destination)
         for timestamp, scene in scenes(ds):
             if not self.split_bands:
                 one_file = (root / timestamp) if timestamp else root
                 write_cog(
-                    scene.to_array(dim=BAND_DIMENSION),
+                    scene,
                     one_file.with_suffix(_SUFFIX),
                     overwrite=overwrite,
                     **rio_options,
                 )
                 continue
-            for name, variable in scene.data_vars.items():
+            for name in scene.data_vars:
                 write_cog(
-                    variable.expand_dims({BAND_DIMENSION: [str(name)]}),
+                    scene[[name]],
                     root / timestamp / f"{name}{_SUFFIX}",
                     overwrite=overwrite,
                     **rio_options,
@@ -202,7 +203,7 @@ class FlatLayout:
               20250601T103031.tif   bands: B04, B08
               20250611T103031.tif   bands: B04, B08
 
-        A cube with no time axis is one file, named by the target itself::
+        A cube with no time axis is one file, named by the destination::
 
             dem.tif   bands: elevation, slope
     """
@@ -213,27 +214,27 @@ class FlatLayout:
     def write(
         self,
         ds: Dataset,
-        target: str | PathLike[str],
+        destination: str | PathLike[str],
         *,
         overwrite: bool = False,
         **rio_options: Any,
     ) -> None:
         """Write one directory, each leaf named by its axis values."""
-        root = Path(target)
+        root = Path(destination)
         for timestamp, scene in scenes(ds):
             if not self.split_bands:
                 one_file = (root / timestamp) if timestamp else root
                 write_cog(
-                    scene.to_array(dim=BAND_DIMENSION),
+                    scene,
                     one_file.with_suffix(_SUFFIX),
                     overwrite=overwrite,
                     **rio_options,
                 )
                 continue
-            for name, variable in scene.data_vars.items():
+            for name in scene.data_vars:
                 stem = f"{timestamp}{self.sep}{name}" if timestamp else str(name)
                 write_cog(
-                    variable.expand_dims({BAND_DIMENSION: [str(name)]}),
+                    scene[[name]],
                     root / f"{stem}{_SUFFIX}",
                     overwrite=overwrite,
                     **rio_options,
@@ -278,7 +279,7 @@ class SAFELayout:
     def write(
         self,
         ds: Dataset,
-        target: str | PathLike[str],
+        destination: str | PathLike[str],
         *,
         overwrite: bool = False,
         **rio_options: Any,
@@ -340,9 +341,9 @@ def scenes(ds: Dataset) -> list[tuple[str, Dataset]]:
             "the cube carries no locatable grid, so its leaves cannot be "
             "georeferenced; assign a CRS with odc.geo.xr.assign_crs first"
         )
-    beyond = sorted(
-        str(dim) for dim in ds.dims if dim not in (*spatial, TIME_COORDINATE)
-    )
+    # Only pixels have to fit a leaf; an axis only a coordinate spans writes nothing.
+    pixel_dims = {str(dim) for array in ds.data_vars.values() for dim in array.dims}
+    beyond = sorted(pixel_dims - {*spatial, TIME_COORDINATE})
     if beyond:
         raise ValueError(
             f"a leaf holds one instant of one grid, but the cube also spans "
@@ -378,7 +379,12 @@ def read_tree(source: str | PathLike[str], **rio_options: Any) -> Dataset:
         The cube the leaves hold, its time axis in ascending order.
 
     Raises:
-        ValueError: `source` holds no leaf, or its leaves name no variables.
+        ValueError: `source` holds no leaf, its leaves name no variables, or a
+            model refuses what the leaves disagree on.
+
+    Warns:
+        DroppedAttrsWarning: The leaves carry an attr differently and its model
+            drops rather than refuses the disagreement.
 
     Examples:
         >>> read_tree("scene").gs.variables
@@ -394,19 +400,19 @@ def read_tree(source: str | PathLike[str], **rio_options: Any) -> Dataset:
 
     leaves: list[xr.Dataset] = []
     for path in paths:
-        array = read_raster(path, **rio_options)
-        leaf = array.to_dataset(dim=BAND_DIMENSION)
+        leaf = read_raster(path, **rio_options)
         if TIME_COORDINATE in leaf.coords and TIME_COORDINATE not in leaf.dims:
             leaf = leaf.expand_dims(TIME_COORDINATE)
         leaves.append(leaf)
 
-    # Stated rather than defaulted: xarray is changing compat from no_conflicts.
+    # Attrs drop here and are rebased below, where each model rules on its own.
     cube = xr.combine_by_coords(
-        leaves, compat="no_conflicts", join="outer", combine_attrs="drop_conflicts"
+        leaves, compat="no_conflicts", join="outer", combine_attrs="drop"
     )
     if not isinstance(cube, xr.Dataset):
         raise ValueError(
             f"{root} holds leaves naming no variables, so they combine into an "
             f"array rather than a cube; write them with band descriptions"
         )
+    cube = rebase(cube, merge(leaves))
     return cast("Dataset", cube)

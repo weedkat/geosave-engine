@@ -1,19 +1,29 @@
-"""Build raster stacks and read them through the `gs` DataTree accessor."""
+"""Build raster stacks and read them through the `gs` DataTree accessor.
+
+A stack is a flat DataTree: one raster per group, every group on one exact
+grid. The root carries the coordinates they share.
+
+Examples:
+    >>> scene = stack({"sentinel-2-l2a": optical, "dem": dem})
+    /                       y, x, spatial_ref   shared by both groups
+    ├── /sentinel-2-l2a     red, nir            (time, y, x)
+    └── /dem                elevation           (y, x)
+"""
 
 from __future__ import annotations
 
 from collections.abc import Mapping
 from pathlib import Path
-from typing import TYPE_CHECKING, Unpack, cast
+from typing import TYPE_CHECKING, Any, Literal, Unpack, cast, overload
 
 import odc.geo.xr  # noqa: F401  — registers the .odc accessor
 import xarray as xr
-from odc.geo.geobox import GeoBox
 
+import geosave_engine.geodata.attrs as attrs
+
+from .base import GeoAccessor
+from .convention import CRS_COORDINATE
 from .raster import GeoRaster
-
-# odc names the grid mapping variable, and every group shares the one root holds.
-_GRID_MAPPING_COORDINATE = "spatial_ref"
 
 if TYPE_CHECKING:
     from collections.abc import Sequence
@@ -28,31 +38,35 @@ if TYPE_CHECKING:
         NetCDFEngine,
         NetCDFWriteOptions,
     )
-    from geosave_engine.geodata.attrs import TilingMode
-    from geosave_engine.geodata import DataTree
+    from geosave_engine.geodata.attrs import AttrsModel
+    from geosave_engine.geodata.utils.datetime import DateRange
+    from geosave_engine.geodata import DataTree, Dataset
+    from geosave_engine.geodata.utils.io.geotiff import COGWriteOptions
+    from geosave_engine.geodata.utils.io.layout import Layout
     from geosave_engine.geodata.utils.io.zarr import ZarrWriteOptions
+
+    from .anchor import GeoAnchor
 
 
 def stack(rasters: Mapping[str, xr.Dataset]) -> DataTree:
     """Build one raster stack from named rasters sharing an exact grid.
 
-    Every raster becomes a group under a root that carries the shared grid, so
-    xarray refuses a later group that does not align with it. A group carrying
-    `time` is held to the same standard — resample or broadcast a mismatched one first.
+    Groups must agree on the grid and nothing else, so one may span `time`
+    while another does not.
 
     Args:
-        rasters: Group name mapped to a raster Dataset. Names become on-disk
-            group names, so they are supplied rather than inferred.
+        rasters: Group name mapped to its raster Dataset. The names become
+            on-disk group names. The first raster supplies the root's spatial
+            coordinates, so its coordinate attrs are the ones every group
+            reads.
 
     Returns:
-        Flat DataTree whose root carries the shared grid (and shared time
-        axis, when any group carries one) and whose children are the
-        supplied rasters, unchanged.
+        Flat DataTree whose root carries the shared spatial coordinates and
+        whose children are the given rasters, unchanged.
 
     Raises:
-        ValueError: `rasters` is empty, a raster carries no locatable grid,
-            the rasters do not share one exact GeoBox, or a raster's time
-            axis disagrees with another's.
+        ValueError: `rasters` is empty, a raster carries no locatable grid, or
+            the rasters are not on one exact GeoBox.
 
     Examples:
         >>> stack({"sentinel-2-l2a": optical, "dem": dem}).gs.groups
@@ -71,46 +85,13 @@ def stack(rasters: Mapping[str, xr.Dataset]) -> DataTree:
             f"them onto it first"
         )
 
-    anchor = rasters[reference_name]
-    root_coords = {
-        name: anchor.coords[name]
-        for name in (*reference_grid.dimensions, _GRID_MAPPING_COORDINATE)
-    }
-
-    # A raster with no 'time' coordinate has nothing to disagree with, so it is exempt.
-    carries_time = {
-        name: rasters[name].coords["time"]
-        for name in rasters
-        if "time" in rasters[name].coords
-    }
-    if carries_time:
-        reference_time_name, reference_time = next(iter(carries_time.items()))
-        time_mismatched = sorted(
-            name
-            for name, coord in carries_time.items()
-            if not coord.equals(reference_time)
-        )
-        if time_mismatched:
-            raise ValueError(
-                f"rasters {time_mismatched} carry a different time axis from "
-                f"{reference_time_name!r}; resample or broadcast them onto one "
-                f"shared axis first"
-            )
-
-        root_coords["time"] = reference_time
-        # The reference may be a broadcast() result with no time_bnds of its own.
-        bounded = next(
-            (
-                rasters[name]
-                for name in carries_time
-                if "time_bnds" in rasters[name].coords
-            ),
-            None,
-        )
-        if bounded is not None:
-            root_coords["time_bnds"] = bounded.coords["time_bnds"]
-
-    root = xr.Dataset(coords=root_coords)
+    reference = rasters[reference_name]
+    root = xr.Dataset(
+        coords={
+            name: reference.coords[name]
+            for name in (*reference_grid.dimensions, CRS_COORDINATE)
+        }
+    )
     return cast(
         "DataTree",
         xr.DataTree.from_dict(
@@ -120,12 +101,21 @@ def stack(rasters: Mapping[str, xr.Dataset]) -> DataTree:
 
 
 @xr.register_datatree_accessor("gs")
-class GeoStack:
+class GeoStack(GeoAccessor["DataTree"]):
     """Read and persist one raster-stack DataTree.
+
+    `attrs` reads only the root's own attrs; groups carry their own, read
+    through `rasters["<group>"].gs.attrs`.
 
     Args:
         data: Flat DataTree whose direct children are raster Datasets on one
             exact GeoBox.
+
+    Examples:
+        >>> scene.gs.groups
+        ('sentinel-2-l2a', 'dem')
+        >>> scene.gs.geobox.shape
+        (512, 512)
     """
 
     def __init__(self, data: xr.DataTree) -> None:
@@ -134,7 +124,7 @@ class GeoStack:
         Args:
             data: DataTree to read through this accessor.
         """
-        self._data: DataTree = cast("DataTree", data)
+        self._data = cast("DataTree", data)
 
     @property
     def groups(self) -> tuple[str, ...]:
@@ -146,24 +136,156 @@ class GeoStack:
         return tuple(self._data.children)
 
     @property
-    def geobox(self) -> GeoBox:
-        """Read the exact grid every raster group shares.
+    def grid_dims(self) -> tuple[str, str]:
+        """Name the two dimensions the shared grid spans.
+
+        Unlike `GeoRaster.grid_dims`, this refuses a stack carrying no grid
+        rather than falling back to `("y", "x")` — a stack is defined by the
+        grid its groups share, so one without a grid is not a stack.
 
         Returns:
-            Grid carried by the stack root.
+            `("y", "x")` for a projected CRS, `("latitude", "longitude")` for a
+            geographic one.
 
         Raises:
-            ValueError: The root carries no locatable grid, so this DataTree
-                is not a raster stack.
+            ValueError: The root carries no locatable grid.
         """
-        return GeoRaster(self._data.dataset).geobox
+        return self.geobox.dimensions
+
+    @property
+    def timespan(self) -> DateRange | None:
+        """Read inclusive temporal coverage across every group.
+
+        Groups need not share a cadence, so the stack runs from the earliest
+        instant any group reaches to the latest, a timeless group widening
+        nothing. Read one group's own span with `rasters["<group>"].gs.timespan`.
+
+        Returns:
+            First and last covered instant, or None where no group is dated.
+
+        Examples:
+            >>> scene.gs.rasters["dem"].gs.timespan is None
+            True
+            >>> scene.gs.timespan == scene.gs.rasters["sentinel-2-l2a"].gs.timespan
+            True
+        """
+        spans = [
+            span
+            for span in (raster.gs.timespan for raster in self.rasters.values())
+            if span is not None
+        ]
+        if not spans:
+            return None
+        return (min(start for start, _ in spans), max(end for _, end in spans))
+
+    @property
+    def anchor(self) -> GeoAnchor:
+        """Read exact spatial and temporal coverage.
+
+        Returns:
+            Anchor over the shared grid and everything the groups jointly
+            cover in time, which names the stack's centroid, filename stem,
+            and place.
+
+        Raises:
+            ValueError: The root carries no locatable grid.
+
+        Examples:
+            >>> scene.gs.anchor.stem
+            '26.3970E_50.8960N_800mx800m_202506-20250611T000000.000000_100m'
+        """
+        from .anchor import GeoAnchor
+
+        return GeoAnchor(self.geobox, timespan=self.timespan)
+
+    @property
+    def rasters(self) -> dict[str, Dataset]:
+        """Read every group as a raster Dataset.
+
+        Returns:
+            {
+                group name: that group's raster, carrying the grid and time
+                    coordinates it inherits from the root,
+            }
+
+        Examples:
+            Rebuild a stack to add a group, or to join two of them:
+
+            >>> stack({**scene.gs.rasters, "ndvi": ndvi}).gs.groups
+            ('sentinel-2-l2a', 'dem', 'ndvi')
+            >>> stack({**optical.gs.rasters, **labels.gs.rasters}).gs.groups
+            ('sentinel-2-l2a', 'dem', 'labels')
+        """
+        # .dataset would return a DatasetView whose attrs still write through here.
+        return {
+            name: cast("Dataset", self._data[name].to_dataset()) for name in self.groups
+        }
+
+    @overload
+    def rebase(
+        self,
+        *models: AttrsModel,
+        target: str | Sequence[str] | None = None,
+        inplace: Literal[False] = False,
+        **model_kwargs: Mapping[str, Any] | None,
+    ) -> DataTree: ...
+
+    @overload
+    def rebase(
+        self,
+        *models: AttrsModel,
+        target: str | Sequence[str] | None = None,
+        inplace: Literal[True],
+        **model_kwargs: Mapping[str, Any] | None,
+    ) -> None: ...
+
+    def rebase(
+        self,
+        *models: AttrsModel,
+        target: str | Sequence[str] | None = None,
+        inplace: bool = False,
+        **model_kwargs: Mapping[str, Any] | None,
+    ) -> DataTree | None:
+        """Return a copy of this stack whose root carries the supplied attrs.
+
+        Only the root is written; groups keep their own, rebased through
+        `rasters["<group>"].gs.rebase`.
+
+        Args:
+            *models: Model instances to apply to `target`.
+            target: Shared coordinate name the models describe, or several of
+                them. None writes to the root's own attrs.
+            inplace: Write into this stack rather than returning a new one.
+            **model_kwargs: Model name mapped to its field values, or to None
+                to drop that model.
+
+        Returns:
+            New DataTree carrying the attrs without copying pixel data, or None
+            when `inplace` is set.
+
+        Raises:
+            KeyError: A keyword names no registered model.
+            ValueError: `target` names no coordinate of the root.
+            ValidationError: A supplied value does not satisfy its field.
+
+        Examples:
+            >>> scene.gs.rebase(ACDD(title="Training scene"))
+            >>> scene.gs.rebase(coordinate={"axis": "Y"}, target="y")
+        """
+        if inplace:
+            attrs.rebase(
+                self._data, *models, target=target, inplace=True, **model_kwargs
+            )
+            return None
+        return attrs.rebase(
+            self._data, *models, target=target, inplace=False, **model_kwargs
+        )
 
     def plot(self, *, cols: int = 1) -> hv.Layout:
-        """Draw every group down the page, composed with `+`. Needs the `viz` extra.
+        """Draw every group down the page. Needs the `viz` extra.
 
-        Each group draws through `Dataset.gs.plot`, so it keeps its own kind,
-        captioned with the group name, and the panels stack into one column. A
-        group spanning `time` contributes one panel per step.
+        Each group draws through `Dataset.gs.plot`, captioned with the group
+        name. A group spanning `time` contributes one panel per step.
 
         Args:
             cols: Panels per row. Defaults to one, stacking them in a column.
@@ -173,8 +295,8 @@ class GeoStack:
             group with no time axis.
 
         Raises:
-            ValueError: A group names nothing to draw; declare `RenderHints`
-                on it or plot it alone with
+            ValueError: A group names nothing to draw; name each channel's
+                `GDALVariable.colorinterp` on it or plot it alone with
                 `stack["<group>"].to_dataset().gs.plot()`.
 
         Examples:
@@ -190,178 +312,16 @@ class GeoStack:
 
         return hv.Layout(panels).cols(cols)
 
-    def insert(self, name: str, raster: xr.Dataset) -> DataTree:
-        """Add one raster to this stack under a new group name.
-
-        Args:
-            name: Group name, absent from this stack.
-            raster: Raster Dataset on the stack's exact grid.
-
-        Returns:
-            New DataTree carrying the existing groups and `name`.
-
-        Raises:
-            ValueError: `name` is already a group, `raster` carries no
-                locatable grid, or its grid differs from the stack's.
-
-        Examples:
-            >>> stack.gs.insert("ndvi", ndvi).gs.groups
-            ('sentinel-2-l2a', 'dem', 'ndvi')
-        """
-        if name in self._data.children:
-            raise ValueError(
-                f"group {name!r} is already in this stack; drop it first or "
-                f"choose another name"
-            )
-        grid = GeoRaster(raster).geobox
-        stack_grid = self.geobox
-        if grid != stack_grid:
-            raise ValueError(
-                f"raster {name!r} is on {grid} but the stack is on "
-                f"{stack_grid}; align or resample it onto the stack grid first"
-            )
-        grown = self._data.copy()
-        grown[name] = xr.DataTree(raster)
-        return grown
-
-    def tile(
-        self,
-        shape: tuple[int, int],
-        *,
-        group_id: str,
-        overlap: int | float | tuple[int, int] = 0,
-        mode: TilingMode = "reflect",
-    ) -> list[DataTree]:
-        """Cut every group of this stack on one shared layout.
-
-        This stack holds one exact grid, so each group is cut at the same
-        positions and a tile pairs the groups covering the same ground.
-
-        Args:
-            shape: Tile height and width in pixels.
-            group_id: Identifier every tile of this operation shares, used to
-                route tiles back to this stack when stitching.
-            overlap: Shared pixels as a count, a fraction in `[0, 1)`, or
-                row-column counts.
-            mode: How the trailing edges are padded. `"constant"` extends every
-                variable with its own declared fill value.
-
-        Returns:
-            Stacks in row-major order, each holding every group cut to one tile
-            and stamped with the shared `Tiling`.
-
-        Raises:
-            ValueError: This stack holds no group, a group carries no locatable
-                grid or sits on a different one, `shape` exceeds the stack's own
-                shape, or `mode` is `"constant"` while a variable declares no
-                fill value.
-
-        Examples:
-            >>> tiles = scene.gs.tile((256, 256), group_id="scene-001")
-            >>> tiles[3].gs.groups
-            ('sentinel-2-l2a', 'dem')
-        """
-        from geosave_engine.geodata.transform.tiles import tile_stack
-
-        return cast(
-            "list[DataTree]",
-            tile_stack(
-                self._data, shape, group_id=group_id, overlap=overlap, mode=mode
-            ),
-        )
-
-    def time_window(
-        self,
-        slot: Mapping[str, int],
-        *,
-        stride: int,
-    ) -> list[DataTree]:
-        """Cut every group of this stack into fixed-length windows along time.
-
-        Every group already shares one exact time axis, so the walk advances
-        by one shared `stride` and each group contributes its own `slot`
-        length of context around the same calendar position.
-
-        Args:
-            slot: Window length in buckets, keyed by group name.
-            stride: Buckets between consecutive window starts, shared across
-                every group.
-
-        Returns:
-            Windowed stacks in walk order, each holding every group cut to
-            its own `slot` length around the same calendar position.
-
-        Raises:
-            ValueError: This stack holds no group, a group's name is missing
-                from `slot`, a group's time axis is not calendar-contiguous,
-                or a `slot` value exceeds the shared axis length.
-
-        Examples:
-            >>> windows = scene.gs.time_window({"sentinel-2-l2a": 3, "dem": 1}, stride=1)
-            >>> windows[0].gs.groups
-            ('sentinel-2-l2a', 'dem')
-        """
-        from geosave_engine.geodata.transform.time import time_window_stack
-
-        return cast(
-            "list[DataTree]", time_window_stack(self._data, slot, stride=stride)
-        )
-
-    def merge(self, other: xr.DataTree) -> DataTree:
-        """Combine this stack with another on the same grid.
-
-        Args:
-            other: Raster stack sharing this stack's exact grid and sharing no
-                group name with it.
-
-        Returns:
-            New DataTree carrying both stacks' groups.
-
-        Raises:
-            ValueError: The stacks share a group name or sit on different
-                grids.
-
-        Examples:
-            >>> optical_stack.gs.merge(label_stack).gs.groups
-            ('sentinel-2-l2a', 'dem', 'labels')
-        """
-        collisions = sorted(set(self.groups) & set(other.gs.groups))
-        if collisions:
-            raise ValueError(
-                f"both stacks carry the groups {collisions}; rename one side "
-                f"before merging"
-            )
-        other_grid = other.gs.geobox
-        stack_grid = self.geobox
-        if other_grid != stack_grid:
-            raise ValueError(
-                f"the other stack is on {other_grid} but this one is on "
-                f"{stack_grid}; align or resample them onto the same grid first"
-            )
-        merged = self._data.copy()
-        for name, node in other.children.items():
-            merged[name] = node
-        return merged
-
-    def to_numpy(
-        self,
-        variables: Mapping[str, Sequence[str] | None] | None = None,
-        *,
-        dtype: DTypeLike | Mapping[str, DTypeLike] | None = None,
-    ) -> dict[str, np.ndarray]:
+    def to_numpy(self, *, dtype: DTypeLike | None = None) -> dict[str, np.ndarray]:
         """Stack each group's variables into one model-input array.
 
         Groups share a grid but not their variables, non-spatial axes, or
-        dtypes, so each one keeps its own array rather than being joined.
+        dtypes, so each keeps its own array rather than being joined. Cast a
+        single group afterwards, which is one call on the array it returns.
 
         Args:
-            variables: Groups to read, mapped to their variables in the order
-                the model expects. A group is dropped by leaving it out, and
-                reads every variable in Dataset order when mapped to None.
-                None reads every group.
-            dtype: Cast applied to every group's array, or one cast per group.
-                A group left out of a mapping keeps its source dtype, as does
-                every group when None.
+            dtype: Cast applied to every group. None keeps each group's source
+                dtype, which every variable of that group must then share.
 
         Returns:
             {
@@ -369,38 +329,25 @@ class GeoStack:
             }
 
         Raises:
-            KeyError: A named group or variable is absent.
-            ValueError: A group's selected variables carry different
-                non-spatial dimensions, or they differ in dtype while no cast
-                covers that group.
+            ValueError: A group's variables carry different non-spatial
+                dimensions, or differ in dtype while `dtype` is None.
 
         Examples:
-            >>> {name: array.shape for name, array in scene.gs.to_numpy().items()}
+            >>> {name: a.shape for name, a in scene.gs.to_numpy().items()}
             {'sentinel-2-l2a': (2, 4, 256, 256), 'dem': (1, 256, 256)}
         """
-        selected = self._select(variables)
-        arrays: dict[str, np.ndarray] = {}
-        for name, names in selected.items():
-            group = self._data[name].to_dataset()
-            arrays[name] = group.gs.to_numpy(names, dtype=_cast_for(dtype, name))
-        return arrays
+        return {
+            name: raster.gs.to_numpy(dtype=dtype)
+            for name, raster in self.rasters.items()
+        }
 
-    def to_tensor(
-        self,
-        variables: Mapping[str, Sequence[str] | None] | None = None,
-        *,
-        dtype: torch.dtype | Mapping[str, torch.dtype] | None = None,
-    ) -> dict[str, torch.Tensor]:
+    def to_tensor(self, *, dtype: torch.dtype | None = None) -> dict[str, torch.Tensor]:
         """Stack each group's variables into one model-input tensor.
 
         Args:
-            variables: Groups to read, mapped to their variables in the order
-                the model expects. A group is dropped by leaving it out, and
-                reads every variable in Dataset order when mapped to None.
-                None reads every group.
-            dtype: Tensor dtype for every group, or one dtype per group. A
-                group no mapping covers casts to `torch.float32`, as does
-                every group when None.
+            dtype: Tensor dtype for every group. None casts each to
+                `torch.float32`, which keeps unsigned imagery off dtypes torch
+                carries no arithmetic kernels for.
 
         Returns:
             {
@@ -408,55 +355,49 @@ class GeoStack:
             }
 
         Raises:
-            KeyError: A named group or variable is absent.
-            ValueError: A group's selected variables carry different
-                non-spatial dimensions.
+            ValueError: A group's variables carry different non-spatial
+                dimensions.
 
         Examples:
-            >>> batch = scene.gs.to_tensor(dtype={"label": torch.int64})
-            >>> batch["label"].dtype
-            torch.int64
+            >>> {name: t.shape for name, t in scene.gs.to_tensor().items()}
+            {'sentinel-2-l2a': (2, 4, 256, 256), 'dem': (1, 256, 256)}
         """
-        selected = self._select(variables)
-        tensors: dict[str, torch.Tensor] = {}
-        for name, names in selected.items():
-            group = self._data[name].to_dataset()
-            tensors[name] = group.gs.to_tensor(names, dtype=_cast_for(dtype, name))
-        return tensors
+        return {
+            name: raster.gs.to_tensor(dtype=dtype)
+            for name, raster in self.rasters.items()
+        }
 
-    def _select(
-        self, variables: Mapping[str, Sequence[str] | None] | None
-    ) -> dict[str, Sequence[str] | None]:
-        """Resolve which groups to read and which variables each contributes.
+    def to_cog(
+        self,
+        destination: str | PathLike[str],
+        *,
+        layout: Layout | Literal["nested", "flat"] = "nested",
+        overwrite: bool = False,
+        **options: Unpack[COGWriteOptions],
+    ) -> None:
+        """Write every group as a tree of Cloud Optimized GeoTIFFs.
+
+        Each group writes into its own directory named after the group, so the
+        groups stay separable on disk.
 
         Args:
-            variables: Groups mapped to their variables, or None for every
-                group and every variable.
-
-        Returns:
-            {
-                group name: variables to read, or None for all of them,
-            }
-            in this stack's own group order.
+            destination: Directory the groups are written into.
+            layout: `"nested"` or `"flat"` on their defaults, or a configured
+                `NestedLayout` or `FlatLayout`, applied to every group.
+            overwrite: Replace leaves that already exist.
+            **options: COG creation options passed to every leaf.
 
         Raises:
-            KeyError: A named group is absent.
+            FileExistsError: A leaf exists and `overwrite` is false.
+            KeyError: `layout` names neither `"nested"` nor `"flat"`.
+            ValueError: A group spans a non-spatial axis other than time.
+
+        Examples:
+            >>> scene.gs.to_cog("scene")  # scene/sentinel-2-l2a/..., scene/dem/...
         """
-        groups = self.groups
-        if variables is None:
-            return dict.fromkeys(groups)
-
-        absent = sorted(set(variables) - set(groups))
-        if absent:
-            raise KeyError(
-                f"{absent} are not groups of this stack; it carries {groups}"
-            )
-
-        selected: dict[str, Sequence[str] | None] = {}
-        for name in groups:
-            if name in variables:
-                selected[name] = variables[name]
-        return selected
+        root = Path(destination)
+        for name, raster in self.rasters.items():
+            raster.gs.to_cog(root / name, layout=layout, overwrite=overwrite, **options)
 
     def to_zarr(
         self,
@@ -522,18 +463,3 @@ class GeoStack:
             overwrite=overwrite,
             **write_options,
         )
-
-
-def _cast_for[T](dtype: T | Mapping[str, T] | None, group: str) -> T | None:
-    """Read the cast one group is given.
-
-    Args:
-        dtype: One cast covering every group, casts named per group, or None.
-        group: Group being read.
-
-    Returns:
-        Cast to apply to that group, or None when nothing covers it.
-    """
-    if isinstance(dtype, Mapping):
-        return dtype.get(group)
-    return dtype

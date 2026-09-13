@@ -11,7 +11,7 @@ from .namespace import AttrsNamespace
 
 @dataclass(frozen=True)
 class DroppedAttr:
-    """One foreign attr a join could not carry over.
+    """One attr key a join could not carry over.
 
     Args:
         variable: Variable that held it, or None for the object's own attrs.
@@ -36,11 +36,11 @@ class DroppedAttr:
 
 @dataclass(frozen=True)
 class AttrsHeader:
-    """Attrs namespaces read off one xarray object, detached from it.
+    """Every attrs mapping of one xarray object, detached from it.
 
-    Variables key data variables and coordinates together the way xarray keys
-    them, and the two name sets partition them, so `data_vars` and `coords`
-    stay readable off a header detached from its object.
+    `variables` holds data variables and coordinates together, the way xarray
+    keys them; `var_names` and `coord_names` say which is which, so `data_vars`
+    and `coords` stay readable once the header leaves its object.
 
     Args:
         root: Namespace for the object's own attrs.
@@ -54,9 +54,9 @@ class AttrsHeader:
 
     Examples:
         >>> header = attrs.read(ds)
-        >>> header.root.get("acdd").title
+        >>> header.root.get(ACDD).title
         'Sentinel-2 Level-2A'
-        >>> header.data_vars["B04"].get("packing").fill_value
+        >>> header.data_vars["B04"].get(Nodata).fill_value
         0
     """
 
@@ -86,19 +86,19 @@ class AttrsHeader:
 
     @property
     def data_vars(self) -> Mapping[str, AttrsNamespace]:
-        """Return the namespaces of the variables that are not coordinates."""
+        """Return the data variables' namespaces, keyed by name, sorted."""
         return {name: self.variables[name] for name in sorted(self.var_names)}
 
     @property
     def coords(self) -> Mapping[str, AttrsNamespace]:
-        """Return the namespaces of the variables that are coordinates."""
+        """Return the coordinates' namespaces, keyed by name, sorted."""
         return {name: self.variables[name] for name in sorted(self.coord_names)}
 
     @classmethod
-    def combine(cls, headers: Sequence[AttrsHeader]) -> tuple[Self, set[DroppedAttr]]:
-        """Combine the headers read off the objects being joined.
+    def merge(cls, headers: Sequence[AttrsHeader]) -> tuple[Self, set[DroppedAttr]]:
+        """Merge the headers read off the objects being joined.
 
-        The objects' own attrs combine together, and variables combine with
+        The objects' own attrs merge together, and variables merge with
         their namesakes, from whichever objects carry them. A variable stays a
         coordinate where any object called it one.
 
@@ -107,8 +107,8 @@ class AttrsHeader:
                 at least one.
 
         Returns:
-            Combined header and the foreign attrs dropped from it, each naming
-            the variable that held it.
+            (merged header, attrs dropped from it — each naming the variable
+            that held it)
 
         Raises:
             ValueError: `headers` is empty, a registered model refuses a
@@ -116,9 +116,9 @@ class AttrsHeader:
                 another calls it a coordinate.
         """
         if not headers:
-            raise ValueError("combining attrs needs at least one header")
+            raise ValueError("merging attrs needs at least one header")
 
-        root, dropped_keys = AttrsNamespace.combine([header.root for header in headers])
+        root, dropped_keys = AttrsNamespace.merge([header.root for header in headers])
         dropped = {DroppedAttr(None, key) for key in dropped_keys}
 
         var_names: set[str] = set()
@@ -129,17 +129,17 @@ class AttrsHeader:
 
         variables: dict[str, AttrsNamespace] = {}
         for name in sorted(var_names | coord_names):
-            stated = [
+            namespaces = [
                 header.variables[name] for header in headers if name in header.variables
             ]
-            variables[name], dropped_keys = AttrsNamespace.combine(stated)
+            variables[name], dropped_keys = AttrsNamespace.merge(namespaces)
             for attr_key in dropped_keys:
                 dropped.add(DroppedAttr(name, attr_key))
 
-        combined = cls(
+        merged = cls(
             root=root,
             variables=variables,
             coord_names=frozenset(coord_names),
             var_names=frozenset(var_names),
         )
-        return combined, dropped
+        return merged, dropped

@@ -15,6 +15,7 @@ _ADMIN_SUFFIXES = re.compile(
 
 
 def _strip_administrative_suffix(value: str | None) -> str | None:
+    """Drop a trailing administrative word, so "Jawa Timur Province" is "Jawa Timur"."""
     if value is None:
         return None
     return _ADMIN_SUFFIXES.sub("", value).strip() or None
@@ -22,10 +23,15 @@ def _strip_administrative_suffix(value: str | None) -> str | None:
 
 @dataclass(frozen=True)
 class Place:
-    """Store normalized Nominatim address components.
+    """One reverse-geocoded address, one field per Nominatim level.
 
-    Fields retain Nominatim's administrative levels so callers can choose
-    their own display or storage representation.
+    Every level Nominatim returned is kept, so a caller picks the ones it
+    wants rather than being handed one rendering.
+
+    Examples:
+        >>> place = Place.from_coordinate(-8.05, 112.15)
+        >>> place.city, place.state, place.country_code
+        ('Malang', 'Jawa Timur', 'id')
     """
 
     city: str | None = None
@@ -53,7 +59,11 @@ class Place:
         """Build a human-readable address below the state level.
 
         Returns:
-            Comma-separated populated-place and district components.
+            Comma-separated populated-place and district fields, finest first.
+
+        Examples:
+            >>> place.to_address()
+            'Kedungkandang, Malang'
         """
         excluded = {
             "state",
@@ -73,10 +83,16 @@ class Place:
         return ", ".join(parts)
 
     def to_dict(self) -> dict[str, str | None]:
-        """Build flat location fields for records and manifests.
+        """Flatten this place into the four fields a manifest row holds.
 
         Returns:
-            Address, state or province, country, and country code.
+            {
+                "address": everything below the state level,
+                "state/province": the coarsest level below country,
+                "country": country name,
+                "country_code": ISO 3166-1 alpha-2 code,
+            }
+            A field Nominatim did not return reads as None.
         """
         return {
             "address": self.to_address(),
@@ -134,6 +150,7 @@ def _request_nominatim_address(
     latitude: float,
     longitude: float,
 ) -> dict[str, str] | None:
+    """Ask Nominatim about one coordinate, None when it cannot answer."""
     from geopy.exc import GeopyError
     from geopy.geocoders import Nominatim
 

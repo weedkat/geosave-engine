@@ -17,7 +17,7 @@ DATETIME_FORMAT = "%Y:%m:%d %H:%M:%S"
 class GeoTIFFTags(AttrsModel):
     """State the baseline TIFF tags a GeoTIFF carries.
 
-    Fields are named for the tags themselves, so what the model states is what
+    Fields are named for the tags themselves, so what the model carries is what
     GDAL writes. `TIFFTAG_MINSAMPLEVALUE` and `TIFFTAG_MAXSAMPLEVALUE` are
     absent because GDAL reports them read-only.
 
@@ -112,7 +112,7 @@ class GeoTIFFTags(AttrsModel):
         """Spell the instant the way GDAL does.
 
         Args:
-            value: The instant this model states.
+            value: The instant this model carries.
 
         Returns:
             Tag text shaped ``YYYY:mm:dd HH:MM:SS``, or None where the tag is
@@ -121,19 +121,19 @@ class GeoTIFFTags(AttrsModel):
         return None if value is None else value.strftime(DATETIME_FORMAT)
 
     @classmethod
-    def combine(cls, sides: Sequence[AttrsModel | None]) -> tuple[Self, set[str]]:
-        """Combine TIFF tags, dropping disagreements.
+    def merge(cls, models: Sequence[AttrsModel | None]) -> tuple[Self, set[str]]:
+        """Merge TIFF tags, dropping disagreements.
 
         Args:
-            sides: This model as each side of the join stated it, in call
-                order, at least one, None where a side did not state it.
+            models: This model from each joined object, in call order, at
+                least one, None where an object carried none.
 
         Returns:
-            Model carrying the fields every side states alike, and the
+            Model carrying the fields every object agreed on, and the
             attr keys it could not keep.
 
         Raises:
-            TypeError: A side holds a different model.
+            TypeError: An object carries a different model.
             ValueError: `models` is empty.
         """
-        return cls._combine_fields(sides, must_agree=())
+        return cls._merge_fields(models, must_agree=())

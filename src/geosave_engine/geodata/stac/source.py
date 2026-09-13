@@ -46,7 +46,7 @@ class StacSourceConfig(BaseModel):
 
     Args:
         bands: Band names to load. None loads whatever the matched items
-            declare.
+            publish.
         groupby: How odc-stac groups scenes along the time axis.
         chunks: Dask chunk sizes for the spatial dims. None loads eagerly.
         resampling: Resampling odc-stac applies, one mode or one per band.
@@ -57,9 +57,9 @@ class StacSourceConfig(BaseModel):
             raising.
         item_properties: Item properties captured per acquisition, e.g.
             `("platform", "eo:cloud_cover")`. Empty captures identity only;
-            None captures every property each item declares.
+            None captures every property each item publishes.
         asset_fields: Asset fields captured onto the variable they describe.
-            Empty captures none; None captures every field each asset declares.
+            Empty captures none; None captures every field each asset publishes.
         stac_cfg: Per-collection band overrides odc-stac applies, correcting
             nodata, dtype, or asset aliases a catalog publishes wrongly.
         pool: Reader threads odc-stac uses. None takes its default.
@@ -151,7 +151,7 @@ class StacSource:
 
         Args:
             bands: Band names to load. None loads whatever the matched items
-                declare.
+                publish.
             groupby: How odc-stac groups scenes along the time axis.
             chunks: Dask chunk sizes for the spatial dims. None loads eagerly.
             resampling: Resampling odc-stac applies, one mode or one per band.
@@ -165,7 +165,7 @@ class StacSource:
                 captures identity only; None captures every property.
             asset_fields: Asset fields captured onto the variable they
                 describe. Empty captures none; None captures every field each
-                asset declares.
+                asset publishes.
             stac_cfg: Per-collection band overrides odc-stac applies.
             pool: Reader threads odc-stac uses. None takes its default.
             progress: Progress bar odc-stac reports reads through. None is
@@ -331,7 +331,7 @@ class StacSource:
 
         Collection metadata becomes `ACDD` and the matched items become
         `StacMetadata`. Each variable carries its own asset's `CFVariable` and
-        `Packing`, so pixels stay the published DN.
+        `Nodata` and `Packing`, so pixels stay the published DN.
 
         Args:
             anchor: Grid and datetime window to load.

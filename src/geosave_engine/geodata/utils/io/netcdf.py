@@ -86,7 +86,7 @@ def read(
     Raises:
         ValueError: The file cannot be read.
     """
-    opened = xr.open_dataset(
+    cube = xr.open_dataset(
         source,
         engine=engine,
         # A grid mapping variable is a coordinate; the CF default leaves it a data variable.
@@ -96,7 +96,7 @@ def read(
         mask_and_scale=mask_and_scale,
         **open_options,
     )
-    return cast("Dataset", opened)
+    return cast("Dataset", cube)
 
 
 def read_stack(
@@ -123,7 +123,7 @@ def read_stack(
     Raises:
         ValueError: The file cannot be read.
     """
-    opened = xr.open_datatree(
+    stack = xr.open_datatree(
         source,
         engine=engine,
         # A grid mapping variable is a coordinate; the CF default leaves it a data variable.
@@ -132,7 +132,7 @@ def read_stack(
         mask_and_scale=mask_and_scale,
         **open_options,
     )
-    return cast("DataTree", opened)
+    return cast("DataTree", stack)
 
 
 @overload
@@ -171,8 +171,9 @@ def write(
     """Write a raster or raster stack to netCDF.
 
     Args:
-        raster_or_stack: Profile raster Dataset or raster-stack DataTree.
+        raster_or_stack: Raster Dataset, or raster-stack DataTree.
         destination: Output path ending in `.nc`, `.nc4`, or `.cdf`.
+        compute: False returns a delayed write instead of writing now.
         engine: Xarray netCDF backend.
         overwrite: Replace an existing destination when true.
         **write_options: Supported xarray netCDF write options.
@@ -200,11 +201,10 @@ def write(
         raise FileExistsError(f"{path} exists; pass overwrite=True to replace it")
 
     options: dict[str, Any] = dict(write_options)
-    written = raster_or_stack.to_netcdf(
-        path,
-        mode="w",
-        engine=engine,
-        compute=compute,
-        **options,
-    )
-    return written if compute is False else path
+    # Passing the literal lets xarray's overloads say what each call returns.
+    if not compute:
+        return raster_or_stack.to_netcdf(
+            path, mode="w", engine=engine, compute=False, **options
+        )
+    raster_or_stack.to_netcdf(path, mode="w", engine=engine, compute=True, **options)
+    return path

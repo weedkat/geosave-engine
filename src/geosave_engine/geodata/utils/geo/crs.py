@@ -120,7 +120,7 @@ def select_grid_crs(
         CRS to build the geobox in.
 
     Raises:
-        ValueError: The footprint declares no CRS.
+        ValueError: The footprint carries no CRS.
 
     Examples:
         >>> select_grid_crs(plots.footprint)
@@ -129,7 +129,7 @@ def select_grid_crs(
     if to_crs is not None:
         return OdcCRS(to_crs)
     if footprint.crs is None:
-        raise ValueError("footprint declares no CRS, so its bounds place no grid")
+        raise ValueError("footprint carries no CRS, so its bounds place no grid")
     if not footprint.crs.geographic:
         return footprint.crs
 

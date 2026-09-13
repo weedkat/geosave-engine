@@ -8,6 +8,7 @@ from typing import TYPE_CHECKING, Literal
 from geosave_engine.geodata.attrs import (
     ACDD,
     CFVariable,
+    Nodata,
     Packing,
     StacMetadata,
     rebase,
@@ -32,9 +33,9 @@ def stamp_stac(
 ) -> xr.Dataset:
     """Stamp a STAC load with the provenance of the items it came from.
 
-    Collection metadata becomes `ACDD`, matched items become `StacMetadata` rows,
-    and each variable receives `CFVariable` and `Packing` fields its asset declares
-    consistently. Missing or conflicting descriptive fields are not stamped.
+    Collection metadata becomes `ACDD` and matched items become `StacMetadata`
+    rows, while each variable takes the `CFVariable`, `Nodata` and `Packing`
+    fields its asset publishes consistently; a conflicting one is not stamped.
 
     Args:
         ds: Dataset `odc.stac.load` produced from `items`.
@@ -44,13 +45,13 @@ def stamp_stac(
         item_properties: Item property names to record. Empty records identity
             only; None records every property.
         asset_fields: Asset field names to record. Empty records none; None
-            records every field an asset declares.
+            records every field an asset publishes.
 
     Returns:
         New Dataset carrying the STAC-derived attrs, same pixels.
 
     Raises:
-        ValueError: `items` is empty, an item declares no usable timestamp, or
+        ValueError: `items` is empty, an item publishes no usable timestamp, or
             items disagree on one asset's packing.
 
     Examples:
@@ -78,6 +79,7 @@ def stamp_stac(
         rebase(
             stamped,
             CFVariable.from_stac_asset(items, variable),
+            Nodata.from_stac_asset(items, variable),
             Packing.from_stac_asset(items, variable),
             target=variable,
             inplace=True,

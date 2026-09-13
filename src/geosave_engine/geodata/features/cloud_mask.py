@@ -1,4 +1,4 @@
-"""Cloud masks for Sentinel-2, chunk-safe. See each compute_* function."""
+"""Cloud masks for Sentinel-2, each safe to run chunk by chunk."""
 
 from __future__ import annotations
 
@@ -9,7 +9,7 @@ import xarray as xr
 from scipy.ndimage import gaussian_filter, uniform_filter
 from s2cloudless.cloud_detector import S2PixelCloudDetector
 
-from ._blocks import map_blocks_with_halo
+from geosave_engine.geodata.utils.dask import map_blocks_with_halo
 
 
 S2C_BAND_ORDER = ("b01", "b02", "b04", "b05", "b08", "b8a", "b09", "b10", "b11", "b12")
@@ -46,8 +46,9 @@ def _local_var(arr: np.ndarray, size: int | tuple[int, int, int] = 7) -> np.ndar
     Returns:
         Variance per pixel, same shape.
     """
-    mean = uniform_filter(arr, size=size)
-    mean_sq = uniform_filter(arr**2, size=size)
+    # scipy accepts int or a per-axis sequence (see its own docstring); its stub is narrower.
+    mean = uniform_filter(arr, size=size)  # pyright: ignore[reportArgumentType]
+    mean_sq = uniform_filter(arr**2, size=size)  # pyright: ignore[reportArgumentType]
     return mean_sq - mean**2
 
 
@@ -67,9 +68,9 @@ def compute_s2c_mask(
 ) -> xr.DataArray:
     """Cloud mask via s2cloudless, one chunk at a time.
 
-    Takes Sentinel-2 L1C TOA reflectance already scaled to [0, 1] — raw DN
-    read straight from a provider is 10000x this and produces a meaningless
-    mask. Bands are ordered into `S2C_BAND_ORDER` here, not by the caller.
+    Needs Sentinel-2 L1C TOA reflectance in [0, 1]; a band carrying `Packing`
+    is unpacked automatically, one carrying raw DN and no `Packing` still
+    produces a meaningless mask. Bands are ordered into `S2C_BAND_ORDER` here.
 
     Args:
         b01: Coastal aerosol reflectance.
@@ -88,9 +89,11 @@ def compute_s2c_mask(
         (y, x) uint8 mask, 1 where cloud, lazy when the inputs are.
 
     Examples:
-        >>> scaled = ds / 10_000
-        >>> mask = compute_s2c_mask(b01=scaled.gs["B01"], b02=scaled.gs["B02"], ...)
+        >>> mask = compute_s2c_mask(b01=ds.gs["B01"], b02=ds.gs["B02"], ...)
     """
+    b01, b02, b04, b05, b08, b8a, b09, b10, b11, b12 = (
+        band.gs.unpack() for band in (b01, b02, b04, b05, b08, b8a, b09, b10, b11, b12)
+    )
     return map_blocks_with_halo(
         _s2c_block,
         b01,

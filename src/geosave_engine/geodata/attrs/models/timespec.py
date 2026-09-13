@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from collections.abc import Sequence
 from datetime import datetime as dt, timedelta
-from typing import ClassVar, Final, Literal, Self
+from typing import ClassVar, Literal, Self
 
 import numpy as np
 import pandas as pd
@@ -19,47 +19,43 @@ from geosave_engine.geodata.utils.datetime import (
     freq_offset,
 )
 
-_CF_CELL_METHOD: Final[dict[str, str]] = {
-    "mean": "mean",
-    "median": "median",
-    "sum": "sum",
-    "min": "minimum",
-    "max": "maximum",
-    "std": "standard_deviation",
-    "var": "variance",
-}
-
 
 class TimeSpec(AttrsModel):
-    """What one label on a raster's time axis stands for.
+    """Where the edges fall of the buckets a raster's time labels name.
 
-    A resampled axis names buckets, and this records the resample that cut
-    them. An axis stating no cadence names instants, so a raster carrying no
-    `TimeSpec` reads as `TimeSpec.instants()`.
+    A resampled axis names buckets; this records the grid they were cut on.
+    What their values were collapsed with is CF `cell_methods`, on the
+    variables. An axis carrying no cadence names instants.
 
     Args:
-        freq: Cadence — any pandas offset alias, e.g. `"5D"`, `"MS"`, `"ME"`.
-            None for an axis of instants, which states no other field.
-        time_method: Named reducer each bucket collapsed with, e.g.
-            `"median"`. None for a bucket collapsed by a callable.
-        time_closed: Which bucket edge pandas treated as inclusive.
-        time_label: Which bucket edge names the bucket in the `time` coord.
+        time_freq: Cadence — any pandas offset alias, e.g. `"5D"`, `"MS"`,
+            `"ME"`. None for an axis of instants, which carries no other field.
+        time_closed: Which bucket edge pandas treated as inclusive, always
+            resolved to `"left"` or `"right"` rather than left open.
+        time_label: Which bucket edge names the bucket in the `time` coord,
+            resolved the same way.
         time_origin: Timestamp the edge grid was phased from, or a strategy
             name like `"start_day"`.
         time_offset: Shift added on top of `time_origin`.
 
     Raises:
-        ValueError: A bucket field is stated without a `freq` to cut buckets.
+        ValueError: A bucket field is set without a `time_freq` to cut
+            buckets.
 
     Examples:
-        >>> TimeSpec.instants().bounds(labels)[0]
-        array(['2024-01-15T10:30:00.000000', '2024-01-15T10:30:00.000001'], ...)
+        A monthly axis labels each bucket by its own month start, and the
+        bucket runs to the next one:
+
+        >>> monthly = TimeSpec.from_resample("MS")
+        >>> monthly.time_freq, monthly.time_closed, monthly.time_label
+        ('MS', 'left', 'left')
+        >>> monthly.bounds(labels)[0]
+        array(['2024-01-01T00:00:00.000000', '2024-02-01T00:00:00.000000'], ...)
     """
 
     NAME: ClassVar[str] = "timespec"
 
-    freq: Freq | None = None
-    time_method: str | None = None
+    time_freq: Freq | None = None
     time_closed: Literal["left", "right"] | None = None
     time_label: Literal["left", "right"] | None = None
     time_origin: str | dt | None = None
@@ -73,19 +69,20 @@ class TimeSpec(AttrsModel):
             This spec, unchanged.
 
         Raises:
-            ValueError: `freq` is None while another field describes buckets.
+            ValueError: `time_freq` is None while another field describes
+                buckets.
         """
-        if self.freq is not None:
+        if self.time_freq is not None:
             return self
-        stated = sorted(
+        bucket_fields = sorted(
             name
             for name in type(self).model_fields
-            if name != "freq" and getattr(self, name) is not None
+            if name != "time_freq" and getattr(self, name) is not None
         )
-        if stated:
+        if bucket_fields:
             raise ValueError(
-                f"{stated} describe buckets but freq is None, so the axis names "
-                f"instants; state a freq or drop them"
+                f"{bucket_fields} describe buckets but time_freq is None, so the "
+                f"axis names instants; set a time_freq or drop them"
             )
         return self
 
@@ -94,45 +91,37 @@ class TimeSpec(AttrsModel):
         """Build the spec of an axis whose labels are instants, not buckets.
 
         Returns:
-            Spec stating no cadence, which every raster without its own reads as.
+            Spec carrying no cadence, which a raster without its own reads as.
+
+        Examples:
+            >>> TimeSpec.instants().time_freq is None
+            True
         """
         return cls()
 
     @classmethod
-    def combine(cls, sides: Sequence[AttrsModel | None]) -> tuple[Self, set[str]]:
-        """Combine a time specification, refusing disagreements.
+    def merge(cls, models: Sequence[AttrsModel | None]) -> tuple[Self, set[str]]:
+        """Merge a time specification, refusing disagreements.
 
         Args:
-            sides: This model as each side of the join stated it, in call
-                order, at least one, None where a side did not state it.
+            models: This model from each joined object, in call order, at
+                least one, None where an object carried none.
 
         Returns:
-            Combined model, and the attr keys it could not keep.
+            Merged model, and the attr keys it could not keep.
 
         Raises:
-            TypeError: A side holds a different model.
+            TypeError: An object carries a different model.
             ValueError: A time field disagrees or `models` is empty.
         """
-        return cls._combine_fields(sides, must_agree=cls.model_fields)
-
-    @property
-    def cell_methods(self) -> str | None:
-        """CF `cell_methods` phrase describing this bucketing.
-
-        Returns:
-            `"time: <name>"` for a reducer with a CF cell-method name, or None
-            when the reducer keeps an observed value (`first`, `last`) or has
-            no CF equivalent.
-        """
-        name = _CF_CELL_METHOD.get(self.time_method or "")
-        return f"time: {name}" if name is not None else None
+        return cls._merge_fields(models, must_agree=cls.model_fields)
 
     def bounds(self, labels: np.ndarray) -> np.ndarray:
         """Half-open `[start, end)` edges of the bucket each label names.
 
-        Each label sits on one edge of its bucket and the other is one `freq`
-        step away, `time_label` saying which. A label on an axis of instants
-        spans the one microsecond it names.
+        Each label sits on one edge of its bucket and the other is one
+        `time_freq` step away, `time_label` saying which. A label on an axis
+        of instants spans the one microsecond it names.
 
         Args:
             labels: The `time` coordinate.
@@ -142,15 +131,15 @@ class TimeSpec(AttrsModel):
             `i`'s bucket start and next edge.
 
         Raises:
-            ValueError: pandas doesn't know this spec's own `freq`.
+            ValueError: pandas doesn't know this spec's own `time_freq`.
         """
         index = pd.DatetimeIndex(labels)
-        if self.freq is None:
+        if self.time_freq is None:
             edges = index.to_numpy("datetime64[us]")
             return np.stack([edges, edges + np.timedelta64(1, "us")], axis=1)
 
         # time_offset already sits in `labels`; consecutive edges stay one step apart.
-        step = to_offset(self.freq)
+        step = to_offset(self.time_freq)
         low, high = (
             (index - step, index)
             if self.time_label == "right"
@@ -170,7 +159,7 @@ class TimeSpec(AttrsModel):
             First and last covered instant.
 
         Raises:
-            ValueError: pandas doesn't know this spec's own `freq`.
+            ValueError: pandas doesn't know this spec's own `time_freq`.
 
         Examples:
             >>> monthly.timespan(labels)
@@ -186,21 +175,19 @@ class TimeSpec(AttrsModel):
         cls,
         freq: Freq,
         *,
-        method: str | None = None,
         closed: Literal["left", "right"] | None = None,
         label: Literal["left", "right"] | None = None,
         origin: str | dt = "start_day",
         offset: str | timedelta | None = None,
     ) -> TimeSpec:
-        """Record a resample call, its edge rules resolved to pandas' defaults.
+        """Record the bucket grid a resample call cuts, on pandas' own defaults.
 
         Args:
             freq: Any pandas offset alias, e.g. `"5D"`, `"MS"`.
-            method: Named reducer the buckets collapse with. None for a callable.
-            closed: Which bucket edge is inclusive. None resolves to the alias
-                default.
-            label: Which bucket edge names the bucket. None resolves to the
-                alias default.
+            closed: Which bucket edge is inclusive. None resolves as pandas
+                does: a period-end alias such as `"ME"` closes on the right,
+                every other alias on the left.
+            label: Which bucket edge names the bucket, resolved the same way.
             origin: Timestamp the edge grid is phased from, or a strategy name.
             offset: Shift added on top of `origin`.
 
@@ -213,8 +200,7 @@ class TimeSpec(AttrsModel):
         alias = freq_offset(freq)
         closed, label = edge_rules(alias, closed, label)
         return cls(
-            freq=alias,
-            time_method=method,
+            time_freq=alias,
             time_closed=closed,
             time_label=label,
             time_origin=origin,

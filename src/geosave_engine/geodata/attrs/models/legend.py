@@ -1,4 +1,4 @@
-"""Legend: what a label raster's pixel values mean. See Legend for details."""
+"""What a label raster's pixel values mean, and how they colour."""
 
 from __future__ import annotations
 
@@ -16,7 +16,7 @@ class Legend(AttrsModel):
 
     Keyed to pixel values, so it survives every operation that leaves the
     values alone. `flag_values`/`flag_meanings` mirror `class_map` in CF form
-    and are derived, not set — only `class_map` declares a legend.
+    and are derived, not set — only `class_map` makes a legend.
 
     Args:
         class_map: `{pixel value: class name}` for a label variable. Class
@@ -126,18 +126,18 @@ class Legend(AttrsModel):
         return self
 
     @classmethod
-    def combine(cls, sides: Sequence[AttrsModel | None]) -> tuple[Self, set[str]]:
-        """Combine a legend, refusing a different class map.
+    def merge(cls, models: Sequence[AttrsModel | None]) -> tuple[Self, set[str]]:
+        """Merge a legend, refusing a different class map.
 
         Args:
-            sides: This model as each side of the join stated it, in call
-                order, at least one, None where a side did not state it.
+            models: This model from each joined object, in call order, at
+                least one, None where an object carried none.
 
         Returns:
-            Combined model, and the attr keys it could not keep.
+            Merged model, and the attr keys it could not keep.
 
         Raises:
-            TypeError: A side holds a different model.
+            TypeError: An object carries a different model.
             ValueError: `class_map` disagrees or `models` is empty.
         """
-        return cls._combine_fields(sides, must_agree=("class_map",))
+        return cls._merge_fields(models, must_agree=("class_map",))

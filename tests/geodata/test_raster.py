@@ -5,7 +5,7 @@ import pandas as pd
 import pytest
 from odc.geo.geobox import GeoBox
 
-from geosave_engine.geodata.attrs import Packing
+from geosave_engine.geodata.attrs import Nodata
 from geosave_engine.geodata.core.raster import raster
 
 UTM = "EPSG:32633"
@@ -83,7 +83,7 @@ def test_write_nodata_declares_it_under_both_names() -> None:
 
     built = raster({"red": np.zeros(box.shape, "uint16")}, box, nodata=0)
 
-    assert built.gs.attrs.data_vars["red"].get(Packing).fill_value == 0
+    assert built.gs.attrs.data_vars["red"].get(Nodata).fill_value == 0
     assert built.red.odc.nodata == 0
 
 

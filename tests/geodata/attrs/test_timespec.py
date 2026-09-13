@@ -7,18 +7,8 @@ import numpy as np
 from geosave_engine.geodata.attrs import TimeSpec
 
 
-def test_cell_methods_names_the_reducer() -> None:
-    assert TimeSpec.from_resample("MS", method="mean").cell_methods == "time: mean"
-    assert TimeSpec.from_resample("MS", method="min").cell_methods == "time: minimum"
-
-
-def test_cell_methods_is_none_for_a_value_picking_reducer() -> None:
-    assert TimeSpec.from_resample("MS", method="first").cell_methods is None
-    assert TimeSpec.from_resample("MS").cell_methods is None
-
-
 def test_bounds_are_half_open_forward_for_start_labels() -> None:
-    spec = TimeSpec.from_resample("MS", method="mean")
+    spec = TimeSpec.from_resample("MS")
     labels = np.array(["2024-01-01", "2024-02-01"], dtype="datetime64[ns]")
 
     edges = spec.bounds(labels)
@@ -31,7 +21,7 @@ def test_bounds_are_half_open_forward_for_start_labels() -> None:
 
 
 def test_bounds_run_backward_for_end_labels() -> None:
-    spec = TimeSpec.from_resample("ME", method="mean")
+    spec = TimeSpec.from_resample("ME")
     labels = np.array(["2024-01-31", "2024-02-29"], dtype="datetime64[ns]")
 
     edges = spec.bounds(labels)
@@ -43,7 +33,7 @@ def test_bounds_run_backward_for_end_labels() -> None:
 
 
 def test_bounds_place_each_label_independently_of_gaps() -> None:
-    spec = TimeSpec.from_resample("MS", method="mean")
+    spec = TimeSpec.from_resample("MS")
     labels = np.array(["2024-01-01", "2024-04-01"], dtype="datetime64[ns]")
 
     edges = spec.bounds(labels)
@@ -55,7 +45,7 @@ def test_bounds_place_each_label_independently_of_gaps() -> None:
 
 
 def test_bounds_step_by_the_full_multiple() -> None:
-    spec = TimeSpec.from_resample("5D", method="mean")
+    spec = TimeSpec.from_resample("5D")
     labels = np.array(["2024-01-01", "2024-01-06"], dtype="datetime64[ns]")
 
     edges = spec.bounds(labels)

@@ -1,11 +1,11 @@
-"""build_shadow_mask: project cloud pixels onto their shadow footprint. See build_shadow_mask."""
+"""Project cloud pixels onto the ground their shadow is estimated to fall on."""
 
 from __future__ import annotations
 
 import numpy as np
 import xarray as xr
 
-from ._blocks import map_blocks_with_halo
+from geosave_engine.geodata.utils.dask import map_blocks_with_halo
 
 
 def build_shadow_mask(

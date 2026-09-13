@@ -9,6 +9,8 @@ from typing import TYPE_CHECKING, Any, TypedDict, Unpack, Literal, cast, overloa
 import xarray as xr
 from xarray.core.types import T_Chunks
 
+from geosave_engine.geodata.attrs import ZarrOrder, read as read_attrs, rebase
+
 
 if TYPE_CHECKING:
     from os import PathLike
@@ -79,12 +81,12 @@ def read(
         **open_options: Supported `xarray.open_zarr` options.
 
     Returns:
-        Profile raster Dataset, carrying stored digital numbers unless
-        `mask_and_scale` asked for physical values.
+        Raster Dataset carrying stored digital numbers, or physical values
+        when `mask_and_scale` asked for them. Variables come back in the order
+        they were written, which `ZarrOrder` records.
 
     Raises:
-        ValueError: The store cannot be read, carries no GeoSave signature, or
-            declares an incompatible store version.
+        ValueError: The store cannot be read.
 
     Examples:
         >>> raster = read("scene.zarr")
@@ -95,7 +97,7 @@ def read(
     options.setdefault("consolidated", False)
     # A grid mapping variable is a coordinate; the CF default leaves it a data variable.
     options.setdefault("decode_coords", "all")
-    opened = xr.open_dataset(
+    cube = xr.open_dataset(
         source,
         engine="zarr",
         group=group,
@@ -103,7 +105,29 @@ def read(
         mask_and_scale=mask_and_scale,
         **options,
     )
-    return cast("Dataset", opened)
+    return cast("Dataset", _in_written_order(cube))
+
+
+def _in_written_order(ds: xr.Dataset) -> xr.Dataset:
+    """Put the variables back in the order the store was written in.
+
+    A Zarr group lists its members in no order, so the written one is read from
+    `ZarrOrder`. Variables it does not name trail the ones it does, which is
+    where a variable written by something else ends up.
+
+    Args:
+        ds: Dataset as the store listed it.
+
+    Returns:
+        Dataset holding the same variables, ordered as written, or `ds` itself
+        where the store names no order.
+    """
+    order = read_attrs(ds).root.get(ZarrOrder)
+    if order is None or order.zarr_variable_order is None:
+        return ds
+    named = [name for name in order.zarr_variable_order if name in ds.data_vars]
+    trailing = [name for name in ds.data_vars if name not in named]
+    return ds[[*named, *trailing]]
 
 
 def read_stack(
@@ -126,8 +150,7 @@ def read_stack(
         DataTree whose every leaf is a raster Dataset.
 
     Raises:
-        ValueError: The store cannot be read, carries no GeoSave signature, or
-            declares an incompatible store version.
+        ValueError: The store cannot be read.
 
     Examples:
         >>> read_stack("scene.zarr").gs.groups
@@ -137,14 +160,14 @@ def read_stack(
     options.setdefault("consolidated", False)
     # A grid mapping variable is a coordinate; the CF default leaves it a data variable.
     options.setdefault("decode_coords", "all")
-    opened = xr.open_datatree(
+    stack = xr.open_datatree(
         source,
         engine="zarr",
         chunks=chunks,
         mask_and_scale=mask_and_scale,
         **options,
     )
-    return cast("DataTree", opened)
+    return cast("DataTree", stack)
 
 
 @overload
@@ -177,11 +200,15 @@ def write(
     overwrite: bool = False,
     **write_options: Unpack[ZarrWriteOptions],
 ) -> Path | Delayed:
-    """Write a raster to a GeoSave Zarr store.
+    """Write a raster or raster stack to a Zarr store.
+
+    A Zarr group records no member order, so a Dataset's variable order
+    travels in `ZarrOrder` for `read` to restore.
 
     Args:
-        raster_or_stack: Profile raster Dataset.
+        raster_or_stack: Raster Dataset, or raster-stack DataTree.
         destination: Output path ending in `.zarr`.
+        compute: False returns a delayed write instead of writing now.
         overwrite: Replace an existing destination when true.
         **write_options: Supported xarray Zarr write options.
 
@@ -190,7 +217,6 @@ def write(
 
     Raises:
         FileExistsError: The destination exists and overwrite is false.
-        NotImplementedError: `raster_or_stack` is a DataTree.
         TypeError: `raster_or_stack` is neither a Dataset nor a DataTree.
         ValueError: The destination does not end in `.zarr`.
 
@@ -208,13 +234,28 @@ def write(
     if path.suffix != _STORE_SUFFIX:
         raise ValueError(f"destination {path.name!r} must end in {_STORE_SUFFIX!r}")
 
+    # A Zarr group records no member order, so the Dataset's own travels in attrs.
+    if isinstance(raster_or_stack, xr.Dataset):
+        raster_or_stack = rebase(
+            raster_or_stack,
+            ZarrOrder(
+                zarr_variable_order=tuple(str(n) for n in raster_or_stack.data_vars)
+            ),
+        )
+
     options: dict[str, Any] = dict(write_options)
     options.setdefault("consolidated", False)
-    written = raster_or_stack.to_zarr(
-        path,
-        mode="w" if overwrite else "w-",
-        zarr_format=_STORE_ZARR_FORMAT,
-        compute=compute,
-        **options,
+    mode: Literal["w", "w-"] = "w" if overwrite else "w-"
+    # Passing the literal lets xarray's overloads say what each call returns.
+    if not compute:
+        return raster_or_stack.to_zarr(
+            path,
+            mode=mode,
+            zarr_format=_STORE_ZARR_FORMAT,
+            compute=False,
+            **options,
+        )
+    raster_or_stack.to_zarr(
+        path, mode=mode, zarr_format=_STORE_ZARR_FORMAT, compute=True, **options
     )
-    return path if compute else written
+    return path
