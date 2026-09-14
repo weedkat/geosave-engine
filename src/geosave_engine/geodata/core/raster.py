@@ -341,7 +341,10 @@ class GeoRaster(GeoAccessor["Dataset"]):
         Raises:
             ValueError: The Dataset carries no locatable grid.
         """
-        return GeoAnchor(self.geobox, timespan=self.timespan)
+        geobox = self.geobox
+        if not isinstance(geobox, GeoBox):
+            raise ValueError(f"{type(self._data).__name__} carries no locatable grid")
+        return GeoAnchor(geobox, timespan=self.timespan)
 
     @overload
     def rebase(
@@ -418,14 +421,26 @@ class GeoRaster(GeoAccessor["Dataset"]):
 
         Raises:
             ValueError: The raster carries no locatable grid and `crs` names
-                none, or `crs` names no known reference system.
+                none, `crs` names no known reference system, or the raster is
+                placed by ground control points rather than a regular grid.
 
         Examples:
             >>> ds.gs.write_crs("EPSG:32633").y.attrs["standard_name"]
             'projection_y_coordinate'
         """
         result = self._data if crs is None else self._data.odc.assign_crs(crs)
-        for name, semantics in attrs.CFCoordinate.from_geobox(result.gs.geobox).items():
+        geobox = result.gs.geobox
+        if geobox is None:
+            raise ValueError(
+                "raster carries no locatable grid and no crs was given; pass "
+                "one or assign a CRS first"
+            )
+        if not isinstance(geobox, GeoBox):
+            raise ValueError(
+                f"raster is placed by {type(geobox).__name__}, not a regular "
+                f"grid, so its axes measure no CF coordinate"
+            )
+        for name, semantics in attrs.CFCoordinate.from_geobox(geobox).items():
             result = result.gs.rebase(semantics, target=name)
         return cast("Dataset", result)
 
@@ -498,7 +513,7 @@ class GeoRaster(GeoAccessor["Dataset"]):
             >>> ds.gs.unpack().B04.max().item()
             0.09
         """
-        return packing.decode(self._data)
+        return packing.unpack(self._data)
 
     def mask(
         self, valid: xr.DataArray | np.ndarray, *, fill: float | int | None = None
@@ -530,7 +545,7 @@ class GeoRaster(GeoAccessor["Dataset"]):
         """
         return nodata.mask(self._data, valid, fill=fill)
 
-    def decode(self) -> Dataset:
+    def to_nan(self) -> Dataset:
         """Replace each variable's fill value with NaN.
 
         Returns:
@@ -538,75 +553,51 @@ class GeoRaster(GeoAccessor["Dataset"]):
             unchanged where it carries no fill value.
 
         Examples:
-            >>> ds.gs.decode().red.dtype
+            >>> ds.gs.to_nan().red.dtype
             dtype('float64')
         """
-        return nodata.decode(self._data)
+        return nodata.to_nan(self._data)
 
     def reproject(
         self,
-        crs: SomeCRS,
+        target: warp.Target,
         *,
-        resampling: Resampling = "nearest",
+        resampling: Resampling | Mapping[str, Resampling] = "nearest",
         resolution: SomeResolution | None = None,
     ) -> Dataset:
-        """Warp pixels into another CRS, deriving the grid to land on.
+        """Warp pixels onto the grid a target names.
 
-        Reach for `reproject_match` where the target grid already exists;
-        this is for when only the CRS is decided and the grid is sized from
-        the source.
+        A target grid is adopted whole — CRS, resolution, and extent — while a
+        bare CRS only decides the projection, sizing the grid from this raster.
 
         Args:
-            crs: Coordinate reference system to land in.
-            resampling: GDAL resampling kernel.
-            resolution: Output pixel size. None keeps the source's ground
-                sampling as closely as the new CRS allows.
+            target: Grid to land on, a raster already on one, or a CRS.
+            resampling: One GDAL kernel for every variable, or a mapping
+                naming each variable's own, which `"*"` answers the rest of.
+            resolution: Output pixel size, taken only for a CRS target. None
+                keeps this raster's ground sampling as closely as the new CRS
+                allows.
 
         Returns:
-            New Dataset in `crs`, on a grid covering the source.
+            New Dataset on the target grid, carrying its own `spatial_ref` and
+            the CF semantics its axes earn.
 
         Raises:
-            ValueError: The raster carries no locatable grid, a variable does
-                not span it, or `resampling` would blend a variable whose
-                values are class codes.
+            ValueError: This raster or `target` sits on no locatable grid, the
+                raster holds no data variable, `resolution` contradicts a
+                target grid, a variable does not span the grid, or `resampling`
+                would blend a variable whose values are class codes.
 
         Examples:
             >>> ds.gs.reproject("EPSG:3857").gs.crs.epsg
             3857
-        """
-        return warp.reproject(
-            self._data, crs, resampling=resampling, resolution=resolution
-        )
-
-    def reproject_match(
-        self,
-        match: GeoBox | xr.DataArray | xr.Dataset | xr.DataTree,
-        *,
-        resampling: Resampling = "nearest",
-    ) -> Dataset:
-        """Warp pixels onto a grid that already exists.
-
-        Args:
-            match: Grid to land on, or any xarray object carrying one. Its
-                CRS, resolution, and extent are all adopted, so no resolution
-                is taken.
-            resampling: GDAL resampling kernel.
-
-        Returns:
-            New Dataset on the matched grid, carrying its own `spatial_ref`
-            and the CF semantics its axes earn.
-
-        Raises:
-            ValueError: The raster carries no locatable grid, a variable does
-                not span it, or `resampling` would blend a variable whose
-                values are class codes.
-
-        Examples:
-            >>> dem = srtm.gs.reproject_match(scene, resampling="bilinear")
+            >>> dem = srtm.gs.reproject(scene, resampling="bilinear")
             >>> dem.gs.geobox == scene.gs.geobox
             True
         """
-        return warp.reproject_match(self._data, match, resampling=resampling)
+        return warp.reproject(
+            self._data, target, resampling=resampling, resolution=resolution
+        )
 
     def crop(self, vector: GeoVector, *, mask: bool = True) -> Dataset:
         """Cut the raster down to a vector's extent.
@@ -620,26 +611,40 @@ class GeoRaster(GeoAccessor["Dataset"]):
             New Dataset covering the vector's extent.
 
         Raises:
-            ValueError: `vector` is in a different CRS, does not overlap the
-                raster, or `mask` is set while a variable carries no fill
-                value to mark nodata with.
+            ValueError: The raster carries no CRS, `vector` is in a different
+                CRS, does not overlap the raster, the raster is placed by
+                ground control points rather than a regular grid, or `mask`
+                is set while a variable carries no fill value to mark nodata
+                with.
         """
         from odc.geo.geom import Geometry
         from odc.geo.xr import rasterize
         from shapely import union_all
 
-        if vector.crs != self.crs:
+        crs = self.crs
+        if crs is None:
             raise ValueError(
-                f"vector is in {vector.crs} but the raster is in {self.crs}; "
+                "raster carries no CRS; assign one with odc.geo.xr.assign_crs "
+                "before cropping"
+            )
+        if vector.crs != crs:
+            raise ValueError(
+                f"vector is in {vector.crs} but the raster is in {crs}; "
                 f"reproject the vector before cropping"
             )
-        geometry = Geometry(union_all(vector.gdf.geometry.values), crs=self.crs)
+        geometry = Geometry(union_all(vector.gdf.geometry.values), crs=crs)
 
         # odc's own apply_mask writes NaN, which promotes every integer variable.
         cut = cast("Dataset", self._data.odc.crop(geometry, apply_mask=False))
         if not mask:
             return cut
-        return nodata.mask(cut, rasterize(geometry, cut.gs.geobox))
+        geobox = cut.gs.geobox
+        if not isinstance(geobox, GeoBox):
+            raise ValueError(
+                f"crop left {type(cut).__name__} with no locatable grid, so "
+                f"mask has nothing to rasterize the vector onto"
+            )
+        return nodata.mask(cut, rasterize(geometry, geobox))
 
     def to_array(self, *, dtype: DTypeLike | None = None) -> DataArray:
         """Stack every variable this raster carries into one array.

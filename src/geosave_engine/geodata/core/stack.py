@@ -1,13 +1,23 @@
 """Build raster stacks and read them through the `gs` DataTree accessor.
 
-A stack is a flat DataTree: one raster per group, every group on one exact
-grid. The root carries the coordinates they share.
+A stack is a flat DataTree holding one raster per group, a group being as many
+variables as one grid can hold. What the root carries says whether the groups
+are co-registered, and `GeoStack.align` is what puts them there.
 
 Examples:
-    >>> scene = stack({"sentinel-2-l2a": optical, "dem": dem})
-    /                       y, x, spatial_ref   shared by both groups
-    ├── /sentinel-2-l2a     red, nir            (time, y, x)
-    └── /dem                elevation           (y, x)
+    Co-registered, so the grid sits at the root and the groups inherit it::
+
+        >>> scene = stack({"sentinel-2-l2a": optical, "dem": dem})
+        /                       y, x, spatial_ref   shared by both groups
+        ├── /sentinel-2-l2a     red, nir            (time, y, x)
+        └── /dem                elevation           (y, x)
+
+    Native resolutions, so the root holds nothing and each group keeps its
+    own grid::
+
+        >>> sentinel = stack({"r10": bands_10m, "r20": bands_20m})
+        >>> sentinel.gs.geobox is None
+        True
 """
 
 from __future__ import annotations
@@ -18,12 +28,13 @@ from typing import TYPE_CHECKING, Any, Literal, Unpack, cast, overload
 
 import odc.geo.xr  # noqa: F401  — registers the .odc accessor
 import xarray as xr
+from odc.geo.geobox import GeoBox
 
 import geosave_engine.geodata.attrs as attrs
+from geosave_engine.geodata.transform import warp
 
 from .base import GeoAccessor
 from .convention import CRS_COORDINATE
-from .raster import GeoRaster
 
 if TYPE_CHECKING:
     from collections.abc import Sequence
@@ -39,7 +50,9 @@ if TYPE_CHECKING:
         NetCDFWriteOptions,
     )
     from geosave_engine.geodata.attrs import AttrsModel
+    from geosave_engine.geodata.transform.warp import Resampling
     from geosave_engine.geodata.utils.datetime import DateRange
+    from odc.geo import SomeResolution
     from geosave_engine.geodata import DataTree, Dataset
     from geosave_engine.geodata.utils.io.geotiff import COGWriteOptions
     from geosave_engine.geodata.utils.io.layout import Layout
@@ -49,49 +62,61 @@ if TYPE_CHECKING:
 
 
 def stack(rasters: Mapping[str, xr.Dataset]) -> DataTree:
-    """Build one raster stack from named rasters sharing an exact grid.
+    """Build one raster stack from named rasters.
 
-    Groups must agree on the grid and nothing else, so one may span `time`
-    while another does not.
+    A group holds as many variables as one grid can, so a product delivering
+    several grids names one group per grid. Groups agree on nothing but what
+    the root publishes, which only rasters on one exact GeoBox earn.
 
     Args:
         rasters: Group name mapped to its raster Dataset. The names become
-            on-disk group names. The first raster supplies the root's spatial
-            coordinates, so its coordinate attrs are the ones every group
-            reads.
+            on-disk group names, and carry no `"/"`, a stack being flat. Where
+            the rasters share a grid, the first supplies the root's spatial
+            coordinates, so its coordinate attrs are the ones every group reads.
 
     Returns:
-        Flat DataTree whose root carries the shared spatial coordinates and
-        whose children are the given rasters, unchanged.
+        Flat DataTree whose children are the given rasters, unchanged, over a
+        root carrying the spatial coordinates they share, or no coordinates
+        where they share none.
 
     Raises:
-        ValueError: `rasters` is empty, a raster carries no locatable grid, or
-            the rasters are not on one exact GeoBox.
+        ValueError: `rasters` is empty, or a name spells a path.
 
     Examples:
         >>> stack({"sentinel-2-l2a": optical, "dem": dem}).gs.groups
         ('sentinel-2-l2a', 'dem')
+
+        One product's resolutions are one group each, since no grid holds two
+        of them, and the stack carries no grid of its own until it is aligned:
+
+        >>> sentinel = stack({"s2-l2a-10m": bands_10m, "s2-l2a-20m": bands_20m})
+        >>> sentinel.gs.geobox is None
+        True
     """
     if not rasters:
         raise ValueError("a raster stack needs at least one named raster")
 
-    grids = {name: GeoRaster(raster).geobox for name, raster in rasters.items()}
-    reference_name, reference_grid = next(iter(grids.items()))
-    mismatched = sorted(name for name, grid in grids.items() if grid != reference_grid)
-    if mismatched:
+    pathed = sorted(name for name in rasters if "/" in name)
+    if pathed:
         raise ValueError(
-            f"rasters {mismatched} are on a different grid from "
-            f"{reference_name!r}; a stack shares one exact GeoBox, so align or resample "
-            f"them onto it first"
+            f"{pathed} spell paths rather than group names, which would nest "
+            f"nodes a stack does not read as rasters; a stack is flat, so name "
+            f"one group per grid, as 'sentinel-2-l2a-10m'"
         )
 
-    reference = rasters[reference_name]
-    root = xr.Dataset(
-        coords={
-            name: reference.coords[name]
-            for name in (*reference_grid.dimensions, CRS_COORDINATE)
-        }
-    )
+    reference = next(iter(rasters.values()))
+    shared = reference.gs.geobox
+    if not isinstance(shared, GeoBox) or any(
+        raster.gs.geobox != shared for raster in rasters.values()
+    ):
+        root = xr.Dataset()
+    else:
+        root = xr.Dataset(
+            coords={
+                name: reference.coords[name]
+                for name in (*shared.dimensions, CRS_COORDINATE)
+            }
+        )
     return cast(
         "DataTree",
         xr.DataTree.from_dict(
@@ -108,8 +133,7 @@ class GeoStack(GeoAccessor["DataTree"]):
     through `rasters["<group>"].gs.attrs`.
 
     Args:
-        data: Flat DataTree whose direct children are raster Datasets on one
-            exact GeoBox.
+        data: Flat DataTree whose direct children are raster Datasets.
 
     Examples:
         >>> scene.gs.groups
@@ -139,18 +163,25 @@ class GeoStack(GeoAccessor["DataTree"]):
     def grid_dims(self) -> tuple[str, str]:
         """Name the two dimensions the shared grid spans.
 
-        Unlike `GeoRaster.grid_dims`, this refuses a stack carrying no grid
-        rather than falling back to `("y", "x")` — a stack is defined by the
-        grid its groups share, so one without a grid is not a stack.
+        Unlike `GeoRaster.grid_dims`, this refuses a stack whose groups sit on
+        their own grids rather than falling back to `("y", "x")`, since no one
+        pair of axes spans them.
 
         Returns:
             `("y", "x")` for a projected CRS, `("latitude", "longitude")` for a
             geographic one.
 
         Raises:
-            ValueError: The root carries no locatable grid.
+            ValueError: The groups do not share a grid.
         """
-        return self.geobox.dimensions
+        geobox = self.geobox
+        if not isinstance(geobox, GeoBox):
+            raise ValueError(
+                f"{type(self._data).__name__} publishes no grid at its root, so "
+                f"its groups name no shared axes; align them onto one grid with "
+                f"gs.align first"
+            )
+        return geobox.dimensions
 
     @property
     def timespan(self) -> DateRange | None:
@@ -188,7 +219,7 @@ class GeoStack(GeoAccessor["DataTree"]):
             and place.
 
         Raises:
-            ValueError: The root carries no locatable grid.
+            ValueError: The groups do not share a grid.
 
         Examples:
             >>> scene.gs.anchor.stem
@@ -196,7 +227,14 @@ class GeoStack(GeoAccessor["DataTree"]):
         """
         from .anchor import GeoAnchor
 
-        return GeoAnchor(self.geobox, timespan=self.timespan)
+        geobox = self.geobox
+        if not isinstance(geobox, GeoBox):
+            raise ValueError(
+                f"{type(self._data).__name__} publishes no grid at its root, so "
+                f"nothing names the ground it covers; align its groups onto one "
+                f"grid with gs.align first"
+            )
+        return GeoAnchor(geobox, timespan=self.timespan)
 
     @property
     def rasters(self) -> dict[str, Dataset]:
@@ -220,6 +258,117 @@ class GeoStack(GeoAccessor["DataTree"]):
         return {
             name: cast("Dataset", self._data[name].to_dataset()) for name in self.groups
         }
+
+    @overload
+    def align(
+        self,
+        *,
+        target: warp.Target | None = None,
+        extent: warp.Extent = "union",
+        resampling: Resampling | Mapping[str, Resampling] = "nearest",
+        resolution: SomeResolution | warp.Native | None = None,
+        inplace: Literal[False] = False,
+    ) -> DataTree: ...
+
+    @overload
+    def align(
+        self,
+        *,
+        target: warp.Target | None = None,
+        extent: warp.Extent = "union",
+        resampling: Resampling | Mapping[str, Resampling] = "nearest",
+        resolution: SomeResolution | warp.Native | None = None,
+        inplace: Literal[True],
+    ) -> None: ...
+
+    def align(
+        self,
+        *,
+        target: warp.Target | None = None,
+        extent: warp.Extent = "union",
+        resampling: Resampling | Mapping[str, Resampling] = "nearest",
+        resolution: SomeResolution | warp.Native | None = None,
+        inplace: bool = False,
+    ) -> DataTree | None:
+        """Warp every group onto one grid, which the root then publishes.
+
+        A stack whose groups sit on their own grids names no shared axes, so
+        nothing can index them together. This is what brings them onto one,
+        and `Tiles` needs it before it will cut a stack.
+
+        Args:
+            target: Grid to align onto, a raster already on one, or a CRS.
+                None takes the finest group's grid as it stands.
+            extent: Ground the aligned groups cover. `"union"` reaches every
+                group, holding fill where one does not; `"intersection"` drops
+                every edge outside the ground they all cover; `"match"` adopts
+                the reference's own.
+            resampling: One GDAL kernel for every variable, or a mapping naming
+                each variable's own as `"<group>/<variable>"`, which `"*"`
+                answers the rest of. Pixels move only where a group does not
+                already sit on the grid they align onto.
+            resolution: Pixel size every group lands at. None takes the
+                reference's own, so the stack comes out co-registered and
+                publishes its grid. `"native"` keeps each group's instead, so
+                the groups cover one extent on nesting grids and the root stays
+                bare — which `Tiles` cuts group by group.
+            inplace: Warp into this stack rather than returning a new one.
+
+        Returns:
+            New DataTree whose groups share one exact GeoBox, or cover one
+            extent at their own pixel sizes under `"native"`, or None when
+            `inplace` is set.
+
+        Raises:
+            KeyError: A `resampling` mapping names neither a variable nor `"*"`.
+            ValueError: A group sits on no locatable grid, `target` names no
+                grid or CRS, `extent` names no ground, `"intersection"` leaves
+                none in common, or `resampling` would blend class codes.
+
+        Examples:
+            A group names its grid by the raster it is, since a bare string is
+            read as a CRS:
+
+            >>> sentinel.gs.geobox is None
+            True
+            >>> onto = sentinel.gs.rasters["r10"]
+            >>> sentinel.gs.align(target=onto, extent="intersection").gs.resolution.x
+            10.0
+
+            Imagery and labels in one stack warp with different kernels:
+
+            >>> scene.gs.align(resampling={"*": "bilinear", "labels/mask": "mode"})
+
+            Aligning in place leaves the stack ready to cut:
+
+            >>> sentinel.gs.align(inplace=True)
+            >>> Tiles([sentinel], (256, 256))
+        """
+        # Only the tree knows its qualified names, so a mapping can name a group.
+        geobox = warp.common_grid(
+            list(self.rasters.values()),
+            target=target,
+            extent=extent,
+            resolution=resolution,
+        )
+        aligned = warp.reproject(
+            self._data,
+            geobox,
+            resampling=resampling,
+            resolution=warp.NATIVE if resolution == warp.NATIVE else None,
+        )
+        aligned.attrs.update(self._data.attrs)
+        if not inplace:
+            return aligned
+
+        # A child disagreeing with the root is refused, so the root's grid goes first.
+        self._data.dataset = xr.Dataset(attrs=dict(self._data.attrs))
+        for name in aligned.gs.groups:
+            self._data[name] = aligned[name]
+        self._data.dataset = xr.Dataset(
+            coords=aligned.dataset.coords, attrs=dict(self._data.attrs)
+        )
+        return None
 
     @overload
     def rebase(

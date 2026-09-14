@@ -21,12 +21,12 @@ from .convention import (
 )
 
 if TYPE_CHECKING:
-    from collections.abc import Sequence
+    from collections.abc import Mapping, Sequence
 
     import holoviews as hv
     import torch
     from numpy.typing import DTypeLike
-    from odc.geo import SomeCRS, SomeResolution
+    from odc.geo import SomeResolution
 
     from geosave_engine.geodata.utils.datetime import DateRange
 
@@ -222,7 +222,10 @@ class GeoArray(GeoAccessor["DataArray"]):
         """
         from .anchor import GeoAnchor
 
-        return GeoAnchor(self.geobox, timespan=self.timespan)
+        geobox = self.geobox
+        if not isinstance(geobox, GeoBox):
+            raise ValueError(f"{type(self._data).__name__} carries no locatable grid")
+        return GeoAnchor(geobox, timespan=self.timespan)
 
     def write_nodata(self, value: float | int | None) -> DataArray:
         """Write the stored value standing for this band's nodata pixels.
@@ -267,7 +270,7 @@ class GeoArray(GeoAccessor["DataArray"]):
             >>> ds["B04"].gs.unpack().max().item()
             0.09
         """
-        return packing.decode(self._data)
+        return packing.unpack(self._data)
 
     def mask(
         self, valid: xr.DataArray | np.ndarray, *, fill: float | int | None = None
@@ -298,7 +301,7 @@ class GeoArray(GeoAccessor["DataArray"]):
         """
         return nodata.mask(self._data, valid, fill=fill)
 
-    def decode(self) -> DataArray:
+    def to_nan(self) -> DataArray:
         """Replace this band's fill value with NaN.
 
         Returns:
@@ -306,73 +309,50 @@ class GeoArray(GeoAccessor["DataArray"]):
             band unchanged where it carries no fill value.
 
         Examples:
-            >>> ds.red.gs.decode().dtype
+            >>> ds.red.gs.to_nan().dtype
             dtype('float64')
         """
-        return nodata.decode(self._data)
+        return nodata.to_nan(self._data)
 
     def reproject(
         self,
-        crs: SomeCRS,
+        target: warp.Target,
         *,
-        resampling: Resampling = "nearest",
+        resampling: Resampling | Mapping[str, Resampling] = "nearest",
         resolution: SomeResolution | None = None,
     ) -> DataArray:
-        """Warp pixels into another CRS, deriving the grid to land on.
+        """Warp pixels onto the grid a target names.
 
-        Reach for `reproject_match` where the target grid already exists;
-        this is for when only the CRS is decided and the grid is sized from
-        the source.
+        A target grid is adopted whole — CRS, resolution, and extent — while a
+        bare CRS only decides the projection, sizing the grid from this band.
 
         Args:
-            crs: Coordinate reference system to land in.
-            resampling: GDAL resampling kernel.
-            resolution: Output pixel size. None keeps the source's ground
-                sampling as closely as the new CRS allows.
+            target: Grid to land on, a raster already on one, or a CRS.
+            resampling: One GDAL kernel for every variable, or a mapping
+                naming each variable's own, which `"*"` answers the rest of.
+            resolution: Output pixel size, taken only for a CRS target. None
+                keeps this band's ground sampling as closely as the new CRS
+                allows.
 
         Returns:
-            New DataArray in `crs`, on a grid covering the source.
+            New DataArray on the target grid, carrying its own `spatial_ref`
+            and the CF semantics its axes earn.
 
         Raises:
-            ValueError: This band carries no locatable grid, or `resampling`
-                would blend a band whose values are class codes.
+            ValueError: This band or `target` sits on no locatable grid,
+                `resolution` contradicts a target grid, or `resampling` would
+                blend a band whose values are class codes.
 
         Examples:
             >>> ds.red.gs.reproject("EPSG:3857").gs.crs.epsg
             3857
-        """
-        return warp.reproject(
-            self._data, crs, resampling=resampling, resolution=resolution
-        )
-
-    def reproject_match(
-        self,
-        match: GeoBox | xr.DataArray | xr.Dataset | xr.DataTree,
-        *,
-        resampling: Resampling = "nearest",
-    ) -> DataArray:
-        """Warp pixels onto a grid that already exists.
-
-        Args:
-            match: Grid to land on, or any xarray object carrying one. Its
-                CRS, resolution, and extent are all adopted, so no resolution
-                is taken.
-            resampling: GDAL resampling kernel.
-
-        Returns:
-            New DataArray on the matched grid, carrying its own `spatial_ref`
-            and the CF semantics its axes earn.
-
-        Raises:
-            ValueError: This band carries no locatable grid, or `resampling`
-                would blend a band whose values are class codes.
-
-        Examples:
-            >>> dem = srtm.gs.reproject_match(scene.red, resampling="bilinear")
+            >>> dem = srtm.gs.reproject(scene.red, resampling="bilinear")
             >>> dem.gs.geobox == scene.gs.geobox
             True
         """
-        return warp.reproject_match(self._data, match, resampling=resampling)
+        return warp.reproject(
+            self._data, target, resampling=resampling, resolution=resolution
+        )
 
     def to_numpy(self, *, dtype: DTypeLike | None = None) -> np.ndarray:
         """Read this band as one model-input array.

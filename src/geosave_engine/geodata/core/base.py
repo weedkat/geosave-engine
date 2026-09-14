@@ -6,7 +6,6 @@ from typing import TYPE_CHECKING
 
 import numpy as np
 import xarray as xr
-from odc.geo.geobox import GeoBox
 
 import geosave_engine.geodata.attrs as attrs
 
@@ -16,6 +15,8 @@ if TYPE_CHECKING:
     import torch
     from numpy.typing import DTypeLike
     from odc.geo import CRS, BoundingBox, Resolution
+    from odc.geo.gcp import GCPGeoBox
+    from odc.geo.geobox import GeoBox
 
     from geosave_engine.geodata.attrs import AttrsHeader
 
@@ -68,89 +69,82 @@ class GeoAccessor[DataT: xr.Dataset | xr.DataArray | xr.DataTree]:
         return self._data.dataset if isinstance(self._data, xr.DataTree) else self._data
 
     @property
-    def geobox(self) -> GeoBox:
-        """Read the pixel grid, which places this object on the ground.
+    def geobox(self) -> GeoBox | GCPGeoBox | None:
+        """Read the pixel grid, if this object carries one.
 
-        Every ground-referenced member reads the grid through here, so an
-        object carrying no CRS refuses them all rather than answering in
-        pixel coordinates that mean nothing.
+        Same lookup as `.odc.geobox`, since `gs` is built on odc-geo: None is
+        a normal answer, not a refused one. A caller that needs ground
+        position checks for None and a regular `GeoBox` itself.
 
         Returns:
-            Grid including CRS, transform, bounds, and shape.
-
-        Raises:
-            ValueError: The object carries no CRS, carries no spatial dims,
-                or describes its grid by ground control points rather than a
-                transform.
+            Grid including CRS, transform, bounds, and shape; a `GCPGeoBox`
+            if placed by ground control points rather than a transform; or
+            None if this object carries no CRS or spatial dims.
         """
-        kind = type(self._data).__name__
-        grid = self._grid_source.odc.geobox
-        if grid is None:
-            raise ValueError(
-                f"{kind} carries no locatable grid; it has no CRS or spatial dims"
-            )
-        if not isinstance(grid, GeoBox):
-            raise ValueError(
-                f"{kind} grid is a {type(grid).__name__}; expected a regular GeoBox"
-            )
-        if grid.crs is None:
-            raise ValueError(
-                f"{kind} grid carries no CRS, so it is indexed in pixels rather "
-                f"than placed on the ground; assign one with odc.geo.xr.assign_crs "
-                f"before asking where it is"
-            )
-        return grid
+        return self._grid_source.odc.geobox
 
     @property
     def is_georeferenced(self) -> bool:
         """Whether this object carries a locatable grid.
 
         Returns:
-            True when `geobox` resolves; False where it would raise.
+            True when `geobox` resolves to one.
         """
-        try:
-            self.geobox
-        except ValueError:
-            return False
-        return True
+        return self.geobox is not None
 
     @property
-    def crs(self) -> CRS:
-        """Read the coordinate reference system.
+    def crs(self) -> CRS | None:
+        """Read the coordinate reference system, if this object carries one.
 
         Returns:
-            CRS the grid mapping coordinate names.
-
-        Raises:
-            ValueError: The object carries no CRS.
+            CRS the grid mapping coordinate names, or None if this object
+            carries no locatable grid or the grid itself carries no CRS.
         """
-        grid = self.geobox
-        assert grid.crs is not None  # geobox already refused a CRS-less grid
-        return grid.crs
+        geobox = self.geobox
+        return None if geobox is None else geobox.crs
 
     @property
-    def bounds(self) -> BoundingBox:
-        """Read the grid's extent in its own CRS.
+    def crs_name(self) -> str | None:
+        """Name the coordinate reference system briefly, for a reader.
+
+        A CRS read back off `spatial_ref` prints its whole WKT, and odc's own
+        `crs_str` prints whatever the CRS was built from, so neither is short
+        enough to name one in a message.
 
         Returns:
-            Bounding box covering every pixel.
+            Its EPSG code as `"EPSG:32633"`, the projection's own name where
+            it carries no code, or None if this object carries no CRS.
 
-        Raises:
-            ValueError: The object carries no locatable grid.
+        Examples:
+            >>> scene.gs.crs_name
+            'EPSG:32633'
         """
-        return self.geobox.boundingbox
+        crs = self.crs
+        if crs is None:
+            return None
+        return f"EPSG:{crs.epsg}" if crs.epsg else crs.proj.name
 
     @property
-    def resolution(self) -> Resolution:
-        """Read the pixel size in CRS units.
+    def bounds(self) -> BoundingBox | None:
+        """Read the grid's extent in its own CRS, if this object carries one.
 
         Returns:
-            Signed resolution along x and y.
-
-        Raises:
-            ValueError: The object carries no locatable grid.
+            Bounding box covering every pixel, or None if this object
+            carries no locatable grid.
         """
-        return self.geobox.resolution
+        geobox = self.geobox
+        return None if geobox is None else geobox.boundingbox
+
+    @property
+    def resolution(self) -> Resolution | None:
+        """Read the pixel size in CRS units, if this object carries one.
+
+        Returns:
+            Signed resolution along x and y, or None if this object carries
+            no locatable grid.
+        """
+        geobox = self.geobox
+        return None if geobox is None else geobox.resolution
 
     @property
     def attrs(self) -> AttrsHeader:

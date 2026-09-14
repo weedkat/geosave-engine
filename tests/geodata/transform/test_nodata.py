@@ -8,7 +8,7 @@ from odc.geo.geobox import GeoBox
 from geosave_engine.geodata.core.raster import raster as build_raster
 from geosave_engine.geodata.core.stack import stack as build_stack
 import geosave_engine.geodata.attrs as attrs
-from geosave_engine.geodata.transform.nodata import decode, mask
+from geosave_engine.geodata.transform.nodata import mask, to_nan
 
 UTM = "EPSG:32633"
 CLEAR = [4, 5, 6, 7]
@@ -197,21 +197,20 @@ def test_cropping_with_a_mask_keeps_the_dtype_and_declared_fill() -> None:
     ).red.dtype == np.dtype("float32")
 
 
-def test_decoding_leaves_the_source_alone() -> None:
-    # xarray's own mask coder pops what it reads, so decoding a raster would
-    # otherwise strip the declaration off the caller's copy and never fire again.
+def test_blanking_leaves_the_source_alone() -> None:
+    # xarray's mask coder pops what it reads, so it must be handed a copy.
     source = scene()
     source["red"][0, 0] = 0
 
-    decoded = decode(source)
+    blanked = to_nan(source)
 
     assert source.red.attrs["_FillValue"] == 0
     assert source.red.dtype == np.dtype("uint16")
-    assert np.isnan(decoded.red.values[0, 0])
-    assert np.isnan(decode(source).red.values[0, 0])
+    assert np.isnan(blanked.red.values[0, 0])
+    assert np.isnan(to_nan(source).red.values[0, 0])
 
 
-def test_decoding_leaves_the_packing_alone() -> None:
+def test_blanking_leaves_the_packing_alone() -> None:
     packed = scene().gs.rebase(attrs.Packing(scale_factor=1e-4), target="red")
 
-    assert decode(packed).red.attrs["scale_factor"] == 1e-4
+    assert to_nan(packed).red.attrs["scale_factor"] == 1e-4

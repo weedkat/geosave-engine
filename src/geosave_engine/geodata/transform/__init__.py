@@ -9,11 +9,11 @@ Examples:
         clear = nodata.mask(raw, raw.scl.isin(CLEAR_CLASSES))
         filled = composite.mosaic([clear, last_week])
         monthly = composite.reduce(composite.resample(filled, "MS"), "median")
-        dem = warp.reproject_match(srtm, monthly, resampling="bilinear")
+        dem = warp.reproject(srtm, monthly, resampling="bilinear")
         samples = tiling.Tiles([monthly], (256, 256), overlap=32)
 """
 
-from . import composite, concat, nodata, packing, tiling, warp
+from . import composite, concat, nodata, packing, tiling, time, warp
 
 __all__ = [
     "composite",
@@ -21,5 +21,6 @@ __all__ = [
     "nodata",
     "packing",
     "tiling",
+    "time",
     "warp",
 ]

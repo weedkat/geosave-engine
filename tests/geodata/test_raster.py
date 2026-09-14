@@ -74,8 +74,22 @@ def test_raster_without_a_geobox_stays_unplaced() -> None:
 
     assert built.band.dims == ("y", "x")
     assert not built.coords
-    with pytest.raises(ValueError, match="no locatable grid"):
-        built.gs.geobox
+    assert built.gs.geobox is None
+    assert built.gs.crs_name is None
+
+
+def test_crs_name_stays_short_however_the_crs_was_built() -> None:
+    coded = raster({"red": np.zeros((8, 8), "uint16")}, geobox())
+    named = raster(
+        {"red": np.zeros((8, 8), "uint16")},
+        geobox(crs="+proj=laea +lat_0=52 +lon_0=10"),
+    )
+
+    assert coded.gs.crs_name == "EPSG:32633"
+    assert coded.red.gs.crs_name == "EPSG:32633"
+    # A CRS read back off spatial_ref prints its whole WKT, which this refuses to.
+    assert len(str(coded.gs.crs)) > 100
+    assert named.gs.crs_name == "unknown"
 
 
 def test_write_nodata_declares_it_under_both_names() -> None:

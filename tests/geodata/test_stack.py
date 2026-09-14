@@ -38,27 +38,54 @@ def test_stack_refuses_an_empty_mapping() -> None:
         build_stack({})
 
 
-def test_stack_refuses_a_different_resolution() -> None:
-    fine = build_raster()
-    coarse = build_raster().isel(y=slice(0, 1), x=slice(0, 1))
+def test_stack_refuses_a_name_spelling_a_path() -> None:
+    raster = build_raster()
 
-    with pytest.raises(ValueError, match="different grid"):
-        build_stack({"fine": fine, "coarse": coarse})
+    with pytest.raises(ValueError, match="spell paths rather than group names"):
+        build_stack(
+            {"sentinel-2/r10": raster[["red"]], "sentinel-2/r20": raster[["nir"]]}
+        )
 
 
-def test_stack_refuses_a_different_crs() -> None:
+def test_groups_covering_different_ground_leave_the_root_bare() -> None:
+    whole = build_raster()
+    corner = build_raster().isel(y=slice(0, 1), x=slice(0, 1))
+
+    loose = build_stack({"whole": whole, "corner": corner})
+
+    assert loose.gs.groups == ("whole", "corner")
+    assert loose.gs.geobox is None
+    assert loose.gs.rasters["corner"].gs.geobox == corner.gs.geobox
+
+
+def test_groups_in_different_crs_leave_the_root_bare() -> None:
     projected = build_raster(crs="EPSG:32749")
     geographic = build_raster(crs="EPSG:4326")
 
-    with pytest.raises(ValueError, match="different grid"):
-        build_stack({"projected": projected, "geographic": geographic})
+    loose = build_stack({"projected": projected, "geographic": geographic})
+
+    assert loose.gs.geobox is None
+    assert loose.gs.rasters["geographic"].gs.crs.epsg == 4326
 
 
-def test_stack_refuses_an_unplaced_raster() -> None:
+def test_an_unplaced_raster_leaves_the_root_bare() -> None:
     unplaced = xr.Dataset({"red": (("y", "x"), np.zeros((2, 2), "uint16"))})
 
-    with pytest.raises(ValueError, match="no locatable grid"):
-        build_stack({"unplaced": unplaced})
+    loose = build_stack({"unplaced": unplaced})
+
+    assert loose.gs.groups == ("unplaced",)
+    assert loose.gs.geobox is None
+
+
+def test_a_stack_without_a_shared_grid_names_no_axes_and_no_anchor() -> None:
+    loose = build_stack(
+        {"whole": build_raster(), "geographic": build_raster(crs="EPSG:4326")}
+    )
+
+    with pytest.raises(ValueError, match="publishes no grid at its root"):
+        _ = loose.gs.grid_dims
+    with pytest.raises(ValueError, match="publishes no grid at its root"):
+        _ = loose.gs.anchor
 
 
 def test_xarray_refuses_a_misaligned_group_after_construction(

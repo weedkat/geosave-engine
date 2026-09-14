@@ -27,14 +27,14 @@ if TYPE_CHECKING:
 
 
 @overload
-def decode(data: xr.DataArray) -> DataArray: ...
+def to_nan(data: xr.DataArray) -> DataArray: ...
 
 
 @overload
-def decode(data: xr.Dataset) -> Dataset: ...
+def to_nan(data: xr.Dataset) -> Dataset: ...
 
 
-def decode(data: xr.DataArray | xr.Dataset) -> DataArray | Dataset:
+def to_nan(data: xr.DataArray | xr.Dataset) -> DataArray | Dataset:
     """Replace each variable's fill value with NaN.
 
     A reduction reads a stored fill value as data unless it finds NaN there
@@ -48,21 +48,21 @@ def decode(data: xr.DataArray | xr.Dataset) -> DataArray | Dataset:
         The fill value leaves attrs with them, since no pixel holds it now.
 
     Examples:
-        >>> decode(scene).red.dtype
+        >>> to_nan(scene).red.dtype
         dtype('float64')
-        >>> decode(scene).red.attrs
+        >>> to_nan(scene).red.attrs
         {}
     """
     if isinstance(data, xr.DataArray):
-        return cast("DataArray", _decode_array(data))
+        return cast("DataArray", _to_nan_array(data))
 
-    decoded = {
-        variable: _decode_array(data[variable]) for variable in data.gs.variables
+    blanked = {
+        variable: _to_nan_array(data[variable]) for variable in data.gs.variables
     }
-    return cast("Dataset", xr.Dataset(decoded, attrs=dict(data.attrs)))
+    return cast("Dataset", xr.Dataset(blanked, attrs=dict(data.attrs)))
 
 
-def _decode_array(array: xr.DataArray) -> xr.DataArray:
+def _to_nan_array(array: xr.DataArray) -> xr.DataArray:
     """Replace one variable's fill value with NaN.
 
     Args:
@@ -76,15 +76,11 @@ def _decode_array(array: xr.DataArray) -> xr.DataArray:
     if nodata is None or nodata.fill_value is None:
         return array
 
-    # The coder pops what it reads, so it gets a copy, not the source.
-    decoded = CFMaskCoder().decode(array.variable.copy(deep=False), name=array.name)
+    # xarray copies the attrs it reads today; the copy keeps that promise ours.
+    blanked = CFMaskCoder().decode(array.variable.copy(deep=False), name=array.name)
     # The coder knows CF's spelling of nodata, not odc's.
-    decoded_attrs = {
-        key: value for key, value in decoded.attrs.items() if key != "nodata"
-    }
-    return xr.DataArray(
-        decoded, coords=array.coords, name=array.name, attrs=decoded_attrs
-    )
+    kept = {key: value for key, value in blanked.attrs.items() if key != "nodata"}
+    return xr.DataArray(blanked, coords=array.coords, name=array.name, attrs=kept)
 
 
 def mask[T: xr.DataArray | xr.Dataset | xr.DataTree](
@@ -255,8 +251,8 @@ def required_fill_values(
     if var_names is None:
         names = reference.gs.variables
     else:
-        names = set(var_names)
-        missing = names - reference.gs.variables
+        names = tuple(var_names)
+        missing = set(names) - set(reference.gs.variables)
         if missing:
             raise ValueError(
                 f"{sorted(missing)} are not in the raster's variables "

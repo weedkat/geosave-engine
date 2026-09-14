@@ -4,7 +4,6 @@ from __future__ import annotations
 
 from typing import TYPE_CHECKING, Literal, cast
 
-import pandas as pd
 import xarray as xr
 
 import geosave_engine.geodata.attrs as attrs
@@ -21,33 +20,6 @@ type Join = Literal["outer", "inner", "left", "right", "exact", "override"]
 type Compat = Literal[
     "identical", "equals", "broadcast_equals", "no_conflicts", "override", "minimal"
 ]
-
-
-def _require_chronological(rasters: Sequence[xr.DataArray | xr.Dataset]) -> None:
-    """Refuse rasters whose time labels are not strictly chronological.
-
-    Args:
-        rasters: Datasets or DataArrays, each carrying a `time` coordinate,
-            in the order they are meant to concatenate.
-
-    Raises:
-        ValueError: A raster's own time labels are not chronological, or one
-            raster ends at or after the next one starts.
-    """
-    labels = [raster.coords[TIME_COORDINATE].values for raster in rasters]
-    for index, own in enumerate(labels):
-        if not pd.Index(own).is_monotonic_increasing:
-            raise ValueError(
-                f"raster {index}'s own time labels are not chronological; "
-                f"sort it before concatenating"
-            )
-    for index in range(len(labels) - 1):
-        if labels[index][-1] >= labels[index + 1][0]:
-            raise ValueError(
-                f"raster {index} ends at {labels[index][-1]}, at or after "
-                f"raster {index + 1} starts at {labels[index + 1][0]}; concat "
-                f"needs chronological, non-overlapping rasters"
-            )
 
 
 def concat_time[T: xr.DataArray | xr.Dataset | xr.DataTree](
@@ -67,8 +39,8 @@ def concat_time[T: xr.DataArray | xr.Dataset | xr.DataTree](
 
     Args:
         rasters: Datasets, DataArrays, or DataTrees sharing a grid and dtype,
-            each carrying a `time` coordinate, in chronological order with no
-            overlap. A DataTree recurses group by group.
+            each carrying a `time` coordinate, at least one. A DataTree
+            recurses group by group.
         join: How non-time coordinates are aligned, forwarded to `xr.concat`:
             `"exact"`, `"outer"`, `"inner"`, `"left"`, or `"right"`.
         compat: How non-time-varying data variables are checked for
@@ -83,23 +55,41 @@ def concat_time[T: xr.DataArray | xr.Dataset | xr.DataTree](
             `"exact"`.
 
     Returns:
-        New object of the kind given, spanning every raster's time labels, in
-        the order given.
+        New object of the kind given, spanning every raster's time labels in
+        the order the rasters were given. Nothing is reordered, so sort the
+        result with `.sortby("time")` where a chronological axis is wanted —
+        resampling, interpolation and label-based selection each require one.
 
     Raises:
-        ValueError: `rasters` is empty, a raster's own time labels are not
-            chronological, two rasters overlap or are out of order, `join`
-            pads a variable that carries no fill value and none is given, or
-            they differ in a way `join`/`compat` refuses.
+        ValueError: `rasters` is empty, the stacks hold different groups, they
+            carry different CRSs, `join` pads a variable that carries no fill
+            value and none is given, or the rasters differ in a way
+            `join`/`compat` refuses.
 
     Examples:
         >>> series = concat_time([january, february, march])
+
+        Rasters that arrived out of order lay down in that order all the same.
+        Sort the result where the axis has to be chronological; a DataTree
+        carries no `sortby`, so a stack sorts group by group::
+
+            >>> concat_time([march, january]).sortby("time")
+            >>> stack({n: g.sortby("time") for n, g in tree.gs.rasters.items()})
     """
+    if not rasters:
+        raise ValueError("no rasters to concatenate; pass at least one")
     if isinstance(rasters[0], xr.DataTree):
         from geosave_engine.geodata.core.stack import stack
 
         trees = cast("Sequence[xr.DataTree]", rasters)
         groups = trees[0].gs.rasters.keys()
+        for ordinal, tree in enumerate(trees[1:], start=1):
+            if set(tree.gs.groups) != set(groups):
+                raise ValueError(
+                    f"stack {ordinal} holds {sorted(tree.gs.groups)} and stack 0 "
+                    f"holds {sorted(groups)}, so they name different rasters to lay "
+                    f"end to end; concatenate stacks carrying the same groups"
+                )
         return cast(
             "T",
             stack(
@@ -118,7 +108,14 @@ def concat_time[T: xr.DataArray | xr.Dataset | xr.DataTree](
         )
 
     bands = cast("Sequence[xr.DataArray | xr.Dataset]", rasters)
-    _require_chronological(bands)
+    # Grid axes are `join`'s to settle; a CRS it never reads, so check it here.
+    crs_names = {band.gs.crs_name for band in bands}
+    if len(crs_names) > 1:
+        raise ValueError(
+            f"the rasters carry {sorted(str(name) for name in crs_names)}, so "
+            f"laying them end to end would stack pixels naming different ground; "
+            f"reproject them onto one CRS first"
+        )
 
     reference = bands[0]
     resolved = fill_value

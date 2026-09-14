@@ -20,6 +20,7 @@ from typing import TYPE_CHECKING, Literal, get_args
 
 import numpy as np
 import xarray as xr
+from odc.geo.geobox import GeoBox
 from odc.geo.xr import xr_coords
 
 from geosave_engine.geodata.core.array import array
@@ -29,7 +30,6 @@ from geosave_engine.geodata.core.stack import stack
 if TYPE_CHECKING:
     from collections.abc import Hashable, Mapping, Sequence
 
-    from odc.geo.geobox import GeoBox
     from tiler import Merger, Tiler
 
     from geosave_engine.geodata.core.array import DataArray
@@ -55,7 +55,7 @@ type StitchWindow = Literal[
 
 _PADDING_KINDS = get_args(TilingMode.__value__)
 
-# What a raster may be. A stack shares one grid, so one tiler cuts every group.
+# What a raster may be. One tiler lays out a whole stack, group by group.
 type Raster = xr.Dataset | xr.DataArray | xr.DataTree
 
 
@@ -151,17 +151,20 @@ class _Raster:
 
     Args:
         pixels: The raster, carrying a frame where the tiles overlap.
+        dims: Its row and column dimension names.
         tiler: Layout over the framed raster.
         coords: Its coordinates, run out to wherever the last tile reaches, so
-            a tile slices its own rather than deriving them.
-        grid: The raster's own geobox, naming its dimensions and where a
-            merged result lands back.
+            a tile slices its own rather than deriving them. Empty for a
+            raster carrying no geobox, whose dims carry no coordinates either.
+        grid: The raster's own geobox, naming where a merged result lands
+            back. None for a raster carrying no geobox.
     """
 
     pixels: Raster
+    dims: tuple[str, str]
     tiler: Tiler
     coords: dict[Hashable, xr.DataArray]
-    grid: GeoBox
+    grid: GeoBox | None
 
 
 class Tiles:
@@ -172,8 +175,11 @@ class Tiles:
     routes its result back. Rasters need not share a shape.
 
     Args:
-        rasters: Georeferenced rasters to cut, each a Dataset, a DataArray or
-            a stack DataTree, in the order they are numbered.
+        rasters: Rasters to cut, each a Dataset, a DataArray or a stack
+            DataTree, in the order they are numbered. A raster carrying no
+            geobox is cut in pixel space; its tiles carry none either. A stack
+            is cut by one window across every group, so its groups must
+            already share a grid.
         tile_shape: Tile height and width in pixels.
         overlap: Pixels neighbouring tiles share, which a window needs to weigh
             them against each other. Sharing any also frames every raster, so
@@ -181,8 +187,9 @@ class Tiles:
         mode: How a raster is extended wherever a tile reaches past it.
 
     Raises:
-        ValueError: `rasters` is empty, one carries no geobox, `mode` names no
-            padding kind, or `tile_shape` exceeds a raster in either axis.
+        ValueError: `rasters` is empty, `mode` names no padding kind,
+            `tile_shape` exceeds a raster in either axis, or a stack publishes
+            no grid at its root.
 
     Examples:
         >>> tiles = Tiles([scene_a, scene_b], (256, 256), overlap=32)
@@ -217,41 +224,57 @@ class Tiles:
 
         prepared: list[_Raster] = []
         for ordinal, pixels in enumerate(rasters):
-            try:
-                grid = pixels.gs.geobox
-            except ValueError as absent:
+            geobox = pixels.gs.geobox
+            grid = geobox if isinstance(geobox, GeoBox) else None
+            if isinstance(pixels, xr.DataTree) and grid is None:
                 raise ValueError(
-                    f"raster {ordinal} carries no geobox, so its tiles could not be "
-                    f"placed; write a CRS onto it first"
-                ) from absent
-            rows, columns = grid.dimensions
-            if tile_shape[0] > grid.shape[0] or tile_shape[1] > grid.shape[1]:
+                    f"stack {ordinal} publishes no grid at its root, so one window "
+                    f"would name different ground in each group; align it first "
+                    f"with gs.align(extent='intersection') to keep only the ground "
+                    f"every group covers, or 'union' to keep every group whole"
+                )
+            rows, columns = pixels.gs.grid_dims
+            raster_shape = (pixels.sizes[rows], pixels.sizes[columns])
+            if tile_shape[0] > raster_shape[0] or tile_shape[1] > raster_shape[1]:
                 raise ValueError(
                     f"tile shape {tile_shape} is larger than raster {ordinal}'s own "
-                    f"{tuple(grid.shape)}; a tile is cut from the raster, so it "
+                    f"{raster_shape}; a tile is cut from the raster, so it "
                     f"cannot exceed it"
                 )
+            framed_shape = (
+                raster_shape[0] + self._frame[0][0] + self._frame[0][1],
+                raster_shape[1] + self._frame[1][0] + self._frame[1][1],
+            )
 
-            # GeoBox.pad takes columns before rows, unlike the frame's own order.
-            framed = grid.pad(self._frame[1][0], self._frame[0][0])
+            coords: dict[Hashable, xr.DataArray] = {}
+            framed: GeoBox | None = None
+            if isinstance(grid, GeoBox):
+                # GeoBox.pad only doubles symmetrically; an odd frame needs each side expanded on its own.
+                framed = grid.translate_pix(
+                    -self._frame[1][0], -self._frame[0][0]
+                ).crop(framed_shape)
+                coords = xr_coords(framed)
+
             if overlap:
                 pixels = _cut(
                     pixels,
                     {},
                     {rows: self._frame[0], columns: self._frame[1]},
                     mode,
-                    xr_coords(framed),
+                    coords,
                 )
             tiler = Tiler(
-                data_shape=tuple(framed.shape),
+                data_shape=framed_shape,
                 tile_shape=tile_shape,
                 overlap=overlap,
                 mode=mode,
             )
 
             far = tiler.get_tile_bbox(len(tiler) - 1)[1]
-            span = framed[0 : int(far[0]), 0 : int(far[1])]
-            prepared.append(_Raster(pixels, tiler, xr_coords(span), grid))
+            if framed is not None:
+                span = framed[0 : int(far[0]), 0 : int(far[1])]
+                coords = xr_coords(span)
+            prepared.append(_Raster(pixels, (rows, columns), tiler, coords, grid))
 
         self._rasters = tuple(prepared)
 
@@ -277,18 +300,27 @@ class Tiles:
             index: Tile number in `range(len(self))`.
 
         Returns:
-            Tile of `tile_shape` on its own geobox, of whichever kind its
-            raster is, extended wherever it reaches past that raster.
+            Tile of `tile_shape`, of whichever kind its raster is, extended
+            wherever it reaches past that raster. On its own geobox if the
+            raster carries one, otherwise unreferenced like the raster.
 
         Raises:
             IndexError: `index` falls outside the numbering.
         """
         ordinal, tile_id = self.locate(index)
         raster = self._rasters[ordinal]
-        rows, columns = raster.grid.dimensions
+        rows, columns = raster.dims
         near, far = raster.tiler.get_tile_bbox(tile_id)
         top, left = int(near[0]), int(near[1])
         bottom, right = int(far[0]), int(far[1])
+
+        coords: dict[Hashable, xr.DataArray] = {}
+        if raster.grid is not None:
+            coords = {
+                rows: raster.coords[rows][top:bottom],
+                columns: raster.coords[columns][left:right],
+                CRS_COORDINATE: raster.coords[CRS_COORDINATE],
+            }
 
         # isel clips at the raster's edge, so a trailing tile is padded back out.
         reach = raster.tiler.data_shape
@@ -300,14 +332,15 @@ class Tiles:
                 columns: (0, max(0, right - int(reach[1]))),
             },
             self.mode,
-            {
-                rows: raster.coords[rows][top:bottom],
-                columns: raster.coords[columns][left:right],
-                CRS_COORDINATE: raster.coords[CRS_COORDINATE],
-            },
+            coords,
         )
 
-    def merger(self, *, window: StitchWindow | None = None) -> TileMerger:
+    def merger(
+        self,
+        *,
+        window: StitchWindow | None = None,
+        leading_dims: tuple[str, ...] | None = None,
+    ) -> TileMerger:
         """Build the accumulator that lays this cut's results back down.
 
         Args:
@@ -315,6 +348,10 @@ class Tiles:
                 other. None weighs every tile alike, rebuilding a raster
                 exactly. A tapering window blends the seams, down to
                 `"overlap-tile"`, which lets one tile alone answer each pixel.
+            leading_dims: Names for the axes a result carries ahead of
+                `(y, x)`. None infers from the first result taken: no leading
+                axis, or one named `"band"`. See `TileMerger` for results
+                carrying more than one.
 
         Returns:
             Accumulator holding no raster yet.
@@ -328,7 +365,26 @@ class Tiles:
                 f"{window!r} weighs tiles against each other, which needs tiles cut "
                 f"with an overlap; cut with overlap=... or merge without a window"
             )
-        return TileMerger(self, window=window)
+        return TileMerger(self, window=window, leading_dims=leading_dims)
+
+    def grid(self, ordinal: int) -> GeoBox | None:
+        """Read one raster's own geobox, before framing or cutting.
+
+        Args:
+            ordinal: The raster's place in the order it was cut in.
+
+        Returns:
+            Its geobox, or None if it carries none and was cut in pixel space.
+
+        Raises:
+            IndexError: `ordinal` names no raster in this cut.
+        """
+        if not -len(self._rasters) <= ordinal < len(self._rasters):
+            raise IndexError(
+                f"raster {ordinal} is outside this cut, which holds "
+                f"{len(self._rasters)}"
+            )
+        return self._rasters[ordinal].grid
 
     def locate(self, index: int) -> tuple[int, int]:
         """Resolve a tile number into the raster holding it and its tile id.
@@ -363,26 +419,51 @@ class TileMerger:
 
     A result is routed by the tile number it answers, so results may arrive in
     any order and several rasters may arrive together. A raster's accumulator
-    opens on its first result, taking its band count and dtype from it.
+    opens on its first result, taking its leading shape and dtype from it.
 
     Args:
         tiles: Cut the results answer.
         window: How pixels several tiles cover are weighed against each other.
             None weighs every tile alike.
+        leading_dims: Names for the axes a result carries ahead of `(y, x)`,
+            in that order. None infers from the first result taken: no
+            leading axis, or one named `"band"`. Given explicitly, every
+            result must carry exactly that many leading axes — pass `()` to
+            require a bare `(y, x)` result.
 
     Examples:
+        A plain mask or a single stack of logits needs no `leading_dims`:
+
         >>> merger = tiles.merger()
         >>> merger.add(dict(zip(batch["index"].tolist(), predictions)))
         >>> merger.merge()[0].odc.geobox == scene_a.odc.geobox
         True
+
+        Two leading axes — say per-instant class logits — are named once, up
+        front; every result then answers shaped `(time, band, y, x)`:
+
+        >>> merger = tiles.merger(leading_dims=("time", "band"))
+        >>> predictions.shape  # (time, band, y, x) per tile
+        (4, 3, 256, 256)
+        >>> merger.add({0: predictions})
+        >>> merger.merge()[0].dims
+        ('time', 'band', 'y', 'x')
     """
 
-    def __init__(self, tiles: Tiles, *, window: StitchWindow | None = None) -> None:
+    def __init__(
+        self,
+        tiles: Tiles,
+        *,
+        window: StitchWindow | None = None,
+        leading_dims: tuple[str, ...] | None = None,
+    ) -> None:
         """Start an accumulator holding no raster."""
         self._tiles = tiles
         self._window = window
+        self._leading_dims = leading_dims
         self._mergers: dict[_Raster, Merger] = {}
         self._tile_ids: dict[_Raster, set[int]] = {}
+        self._leading_shapes: dict[_Raster, tuple[int, ...]] = {}
 
     def __repr__(self) -> str:
         """Describe how many of the cut's rasters have taken a result."""
@@ -394,13 +475,22 @@ class TileMerger:
     def add(self, results: Mapping[int, np.ndarray]) -> None:
         """Take each result under the tile number it answers.
 
+        A result's leading axes (everything ahead of `(y, x)`) are flattened
+        into one accumulator axis, then restored on `merge` — weighing and
+        padding treat every leading position alike either way.
+
         Args:
-            results: Tile number mapped to that tile's result, shaped `(y, x)`
-                or `(band, y, x)`. A batch states one entry per row.
+            results: Tile number mapped to that tile's result. Shaped
+                `(y, x)`, or with as many leading axes as `leading_dims` names
+                — one, named `"band"`, if this merger was built without
+                `leading_dims`. A batch states one entry per row.
 
         Raises:
             IndexError: A number falls outside the cut.
-            ValueError: A result does not match the tile shape.
+            ValueError: A result's leading axes do not match `leading_dims`
+                (or, without one, number more than one); a raster's results
+                disagree on their leading shape; or a result does not match
+                the tile shape.
 
         Examples:
             >>> merger.add({3: prediction})
@@ -408,12 +498,46 @@ class TileMerger:
         """
         for number, result in results.items():
             pixels = np.asarray(result)
+            if pixels.ndim < 2:
+                raise ValueError(
+                    f"tile {number}'s result is {pixels.ndim}-dimensional; a tile "
+                    f"answers with at least (y, x)"
+                )
+            leading = pixels.shape[:-2]
+
+            if self._leading_dims is None:
+                if len(leading) > 1:
+                    raise ValueError(
+                        f"tile {number}'s result carries {len(leading)} leading "
+                        f"axes ahead of (y, x); name them with "
+                        f"leading_dims=(...) when building the merger, or merge "
+                        f"one at a time"
+                    )
+            elif len(leading) != len(self._leading_dims):
+                raise ValueError(
+                    f"tile {number}'s result carries {len(leading)} leading "
+                    f"axes but leading_dims names {list(self._leading_dims)}; "
+                    f"make the result and leading_dims agree"
+                )
+
             ordinal, tile_id = self._tiles.locate(int(number))
             raster = self._tiles._rasters[ordinal]
+
+            expected = self._leading_shapes.get(raster)
+            if expected is None:
+                self._leading_shapes[raster] = leading
+            elif leading != expected:
+                raise ValueError(
+                    f"tile {number}'s result carries leading axes {leading}, "
+                    f"but raster {ordinal} started with {expected}; every "
+                    f"result for one raster carries the same ones"
+                )
+
+            flat = pixels.reshape(-1, *pixels.shape[-2:]) if leading else pixels
             if raster not in self._mergers:
-                self._mergers[raster] = self._build_merger(raster, pixels)
+                self._mergers[raster] = self._build_merger(raster, flat)
                 self._tile_ids[raster] = set()
-            self._mergers[raster].add(tile_id, pixels)
+            self._mergers[raster].add(tile_id, flat)
             self._tile_ids[raster].add(tile_id)
 
     @property
@@ -444,9 +568,10 @@ class TileMerger:
         no result has named at all is not this merger's to rebuild.
 
         Returns:
-            Raster place in the cut mapped to its one rebuilt band, on that
-            raster's own geobox. A result carrying bands keeps them on a
-            leading `band` axis.
+            Raster place in the cut mapped to its rebuilt result, on that
+            raster's own geobox. Carries whatever leading axes its results
+            did, named as `leading_dims` said (or `band`, alone, by default),
+            each unlabeled.
 
         Examples:
             >>> for ordinal, prediction in merger.merge().items():
@@ -463,9 +588,18 @@ class TileMerger:
             pixels = self._mergers.pop(raster).merge(
                 unpad=True, extra_padding=self._tiles._frame
             )
+            leading = self._leading_shapes.pop(raster)
             del self._tile_ids[raster]
-            leading = {BAND_DIMENSION: None} if pixels.ndim == 3 else {}
-            rebuilt[ordinal] = array(pixels, raster.grid, **leading)
+
+            if leading:
+                pixels = pixels.reshape(*leading, *pixels.shape[-2:])
+            if self._leading_dims is not None:
+                dims = self._leading_dims
+            elif leading:
+                dims = (BAND_DIMENSION,)
+            else:
+                dims = ()
+            rebuilt[ordinal] = array(pixels, raster.grid, **dict.fromkeys(dims))
         return rebuilt
 
     def _build_merger(self, raster: _Raster, pixels: np.ndarray) -> Merger:
@@ -473,7 +607,8 @@ class TileMerger:
 
         Args:
             raster: The raster the result belongs to.
-            pixels: Its first result, shaped `(y, x)` or `(band, y, x)`.
+            pixels: Its first result, already flattened to `(y, x)` or
+                `(logits, y, x)`.
 
         Returns:
             Accumulator over that raster's tiler, carrying no tile yet.

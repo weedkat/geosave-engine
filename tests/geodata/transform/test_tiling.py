@@ -29,7 +29,7 @@ def _feed(tiles: Tiles, merger, order=None) -> None:
     merger.add({int(n): np.asarray(tiles[int(n)]["B"].values) for n in numbers})
 
 
-@pytest.mark.parametrize("overlap", [0, 32, 64])
+@pytest.mark.parametrize("overlap", [0, 32, 64, 17])
 def test_merge_rebuilds_every_raster_exactly(overlap: int) -> None:
     rasters = [_raster(600, 600, seed=1), _raster(512, 300, seed=2)]
     tiles = Tiles(rasters, (256, 256), overlap=overlap)
@@ -166,6 +166,60 @@ def test_a_cut_refuses_what_it_cannot_tile() -> None:
         Tiles([_raster(600, 600)], (1024, 1024))
     with pytest.raises(ValueError, match="not a padding kind"):
         Tiles([_raster(600, 600)], (256, 256), mode="bogus")  # type: ignore[arg-type]
+
+
+def test_a_raster_with_no_geobox_is_cut_in_pixel_space() -> None:
+    source = xr.Dataset({"B": (("y", "x"), np.full((600, 600), 7.0, "float32"))})
+    tiles = Tiles([source], (256, 256), overlap=32)
+    merger = tiles.merger()
+
+    _feed(tiles, merger)
+
+    tile = tiles[0]
+    assert "spatial_ref" not in tile.coords
+    rebuilt = merger.merge()[0]
+    np.testing.assert_allclose(rebuilt.values, 7.0, atol=1e-4)
+
+
+def test_a_merger_refuses_a_result_with_a_stray_leading_axis() -> None:
+    tiles = Tiles([_raster(600, 600)], (256, 256), overlap=32)
+    merger = tiles.merger()
+
+    with pytest.raises(ValueError, match=r"tile 0's result carries 2 leading axes"):
+        merger.add({0: np.zeros((2, 3, 256, 256), "float32")})
+
+
+def test_a_merger_with_named_leading_dims_round_trips_them() -> None:
+    tiles = Tiles([_raster(600, 600)], (256, 256), overlap=32)
+    merger = tiles.merger(leading_dims=("time", "band"))
+
+    for index in range(len(tiles)):
+        tile = np.asarray(tiles[index]["B"].values)
+        prediction = np.stack(
+            [np.stack([tile, tile, tile])] * 2
+        )  # (time=2, band=3, y, x)
+        merger.add({index: prediction})
+
+    rebuilt = merger.merge()[0]
+    assert rebuilt.dims == ("time", "band", "y", "x")
+    assert rebuilt.shape == (2, 3, 600, 600)
+
+
+def test_a_merger_refuses_leading_dims_arity_mismatch() -> None:
+    tiles = Tiles([_raster(600, 600)], (256, 256), overlap=32)
+    merger = tiles.merger(leading_dims=("time", "band"))
+
+    with pytest.raises(ValueError, match="leading_dims names"):
+        merger.add({0: np.zeros((3, 256, 256), "float32")})
+
+
+def test_a_merger_refuses_a_raster_whose_leading_shape_drifts() -> None:
+    tiles = Tiles([_raster(600, 600)], (256, 256), overlap=32)
+    merger = tiles.merger()
+
+    merger.add({0: np.zeros((3, 256, 256), "float32")})
+    with pytest.raises(ValueError, match="started with"):
+        merger.add({1: np.zeros((4, 256, 256), "float32")})
 
 
 def test_a_window_needs_tiles_that_overlap() -> None:

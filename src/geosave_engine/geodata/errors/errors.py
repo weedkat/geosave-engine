@@ -43,3 +43,15 @@ class DroppedBucketsWarning(GeoSaveWarning):
 
 class UnmatchedBucketsWarning(GeoSaveWarning):
     """A broadcast source bucket matched no target label, so it was left out of the result."""
+
+
+class DroppedInstantsWarning(GeoSaveWarning):
+    """Instants at one end of a time axis did not fill a window, so they were left out."""
+
+
+class UncoveredInstantsWarning(GeoSaveWarning):
+    """Instants lie outside the interval every group covers, so they name no slot."""
+
+
+class DroppedWindowsWarning(GeoSaveWarning):
+    """A window covered a slot some group had no scene for, so it was not emitted."""

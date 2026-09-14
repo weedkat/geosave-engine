@@ -19,13 +19,12 @@ from typing import TYPE_CHECKING, Literal, cast, overload
 import numpy as np
 import pandas as pd
 import xarray as xr
-from odc.geo.xr import xr_coords
+from odc.geo.geobox import GeoBox, geobox_union_conservative
 from xarray.core.resample import DataArrayResample, DatasetResample
 
 import geosave_engine.geodata.attrs as attrs
 from geosave_engine.geodata.core.convention import TIME_COORDINATE
-from geosave_engine.geodata.core.raster import GeoRaster
-from geosave_engine.geodata.transform import nodata
+from geosave_engine.geodata.transform import nodata, warp
 from geosave_engine.geodata.utils.datetime import freq_offset
 
 if TYPE_CHECKING:
@@ -68,24 +67,60 @@ def mosaic(rasters: Sequence[xr.Dataset], *, method: MosaicMethod = "first") -> 
         New Dataset covering every raster's ground, absent only where no
         raster carried a value.
 
+    Raises:
+        ValueError: `rasters` is empty, one sits on no locatable grid, or no
+            one grid holds them all because they disagree on CRS, resolution
+            or pixel phase.
+
     Examples:
         >>> scene = mosaic([granule_32TNS, granule_32TPS])
     """
+    if not rasters:
+        raise ValueError("no rasters to mosaic; pass at least one")
+
     header = attrs.merge(rasters)
     fills = nodata.required_fill_values(rasters[0], header.data_vars)
 
-    union = GeoRaster(rasters[0]).geobox
-    for raster in rasters[1:]:
-        union = union | GeoRaster(raster).geobox
-    rows, columns = union.dimensions
-    coords = dict(xr_coords(union))
-    grid = {rows: coords[rows], columns: coords[columns]}
+    grids: list[GeoBox] = []
+    for ordinal, raster in enumerate(rasters):
+        geobox = raster.gs.geobox
+        if not isinstance(geobox, GeoBox):
+            raise ValueError(
+                f"raster {ordinal} sits on no locatable grid, so no ground says "
+                f"where it overlaps the rest; open it georeferenced first"
+            )
+        grids.append(geobox)
 
-    sources = rasters if method == "first" else list(reversed(rasters))
-    composite = sources[0].reindex(grid, fill_value=fills)
+    reference = grids[0]
+    for ordinal, grid in enumerate(grids[1:], start=1):
+        if grid.crs != reference.crs:
+            mismatch = (
+                f"CRS {rasters[ordinal].gs.crs_name} against {rasters[0].gs.crs_name}"
+            )
+        elif grid.resolution != reference.resolution:
+            mismatch = f"resolution {grid.resolution} against {reference.resolution}"
+        else:
+            continue
+        raise ValueError(
+            f"raster {ordinal} carries {mismatch} of raster 0, so no one grid holds "
+            f"both; align them onto one grid first"
+        )
+
+    # Sharing a CRS and resolution leaves only phase to refuse a union over.
+    try:
+        covered = geobox_union_conservative(grids)
+    except ValueError as offset:
+        raise ValueError(
+            "the rasters lay their pixel edges on different lines, so no one grid "
+            "holds them at that phase; align them onto one grid first"
+        ) from offset
+
+    covering = tuple(warp.reproject(raster, covered) for raster in rasters)
+    sources = covering if method == "first" else covering[::-1]
+    composite = sources[0]
     for source in sources[1:]:
         gaps = xr.Dataset({name: nodata.is_fill(composite[name]) for name in fills})
-        composite = xr.where(gaps, source.reindex(grid, fill_value=fills), composite)
+        composite = xr.where(gaps, source, composite)
 
     # Coordinate attrs are each raster's own tile-specific grid; the union's own are already right.
     composite_header = attrs.AttrsHeader(
@@ -228,7 +263,7 @@ def resample(
     bucketing = attrs.TimeSpec.from_resample(
         alias, closed=closed, label=label, origin=origin, offset=offset
     )
-    values = nodata.decode(data) if skip_nodata else data
+    values = nodata.to_nan(data) if skip_nodata else data
     return attrs.rebase(values, bucketing, target=TIME_COORDINATE).resample(
         {TIME_COORDINATE: alias},
         closed=closed,
