@@ -21,7 +21,10 @@ record = GeoVector.from_xarray(
     fields=("time", "grid"),
 )
 catalog = GeoVector.concat([catalog, record])
-catalog.to_geoparquet("dataset/catalog.parquet")
+catalog.to_geoparquet(
+    "dataset/catalog.parquet",
+    write_covering_bbox=True,
+)
 ```
 
 `Manifest` is removed. Its useful behavior becomes ordinary `GeoVector`
@@ -37,7 +40,7 @@ workflow state and is not part of this change.
   index. Collection coordinates are never silently rewritten; relational
   operations may transform only a transient query or burn geometry.
 - Pixel values stay in xarray or persisted raster assets. A vector record keeps
-  only lightweight geometry, grid, time, identity, and caller properties.
+  only lightweight geometry, grid, time, and caller properties.
 - Constructors return `GeoVector` instances. Collection growth composes those
   instances rather than introducing separate raster-record or manifest types.
 - Native GeoPandas, pandas, Rasterio, and ODC operations do the spatial work.
@@ -57,14 +60,11 @@ geometry column and CRS are defined, enabling `GeoVector.empty(crs)` and empty
 filtered reads. Operations that need a footprint raise a clear error for an
 empty collection.
 
-No universal identity is inferred for arbitrary geometry. The same geometry may
-legitimately occur at different times, for different assets, or with different
-labels. Callers may supply their own identifier property.
-
-Anchors have an exact identity. `from_anchor` and `from_xarray` add the existing
-deterministic `anchor_id`, derived from grid CRS, affine transform, shape, and
-UTC timespan. This preserves resumable ingest behavior without claiming that a
-geometry alone is unique.
+No identity is inferred, including for an anchor. The same geometry and time may
+legitimately describe different assets, models, resolutions, or pixel phases.
+Callers that need keyed replacement supply a meaningful property such as
+`record_id` or `path`. Spatial and temporal selection are queries, not implicit
+identity rules.
 
 ## Construction
 
@@ -105,7 +105,8 @@ become columns.
 
 `from_anchor` creates one record using the grid extent. `crs` optionally and
 explicitly selects the collection plane; otherwise the extent stays in the grid
-CRS. The result includes `anchor_id` and the selected lightweight fields.
+CRS. The result includes only the selected lightweight fields and caller
+properties.
 
 `from_xarray` accepts a geolocated `DataArray`, `Dataset`, or single-grid
 `DataTree` and obtains its `GeoAnchor` through the existing accessor. Its default
@@ -114,7 +115,9 @@ instead, while grid columns still describe the actual xarray grid. A supplied
 geometry follows `from_geometry`'s CRS rules before an explicit output `crs` is
 applied.
 
-`fields` is an explicit collection of supported metadata groups:
+`fields` is an explicitly typed collection of supported metadata groups.
+`from_anchor` accepts `Literal["time", "grid"]`; `from_xarray` additionally
+accepts `Literal["variables"]`:
 
 | Field | Columns | Meaning |
 | --- | --- | --- |
@@ -122,11 +125,23 @@ applied.
 | `grid` | `grid_crs`, `grid_transform`, `grid_height`, `grid_width` | Exact native pixel grid |
 | `variables` | `variables` | Ordered xarray variable or band names |
 
-Geometry, `anchor_id`, and a supplied `path` are not field groups and are never
-silently disabled. `fields=()` creates the smallest spatial record. Arbitrary
-xarray attrs are not copied as a group: they may contain arrays, opaque objects,
-or conflicting names. Callers select meaningful scalar properties explicitly.
-Reserved derived column names cannot be replaced through `**properties`.
+Geometry and a supplied `path` are not field groups and are never silently
+disabled. `fields=()` creates the smallest spatial record. Arbitrary xarray
+attrs are not copied as a group: they may contain arrays, opaque objects, or
+conflicting names. Callers select meaningful properties explicitly. A caller
+property cannot replace a selected derived column.
+
+Variable identity belongs to each native xarray accessor rather than a
+`GeoVector` helper:
+
+```python
+array.gs.variables    # ("ndvi",) or () for an unnamed array
+dataset.gs.variables  # ("red", "nir")
+stack.gs.variables    # ("optical/red", "labels/class_id")
+```
+
+`from_xarray(..., fields=("variables",))` reads this common property. It does
+not branch over the three xarray types itself.
 
 ## Collection growth
 
@@ -134,7 +149,7 @@ Literal concatenation and keyed replacement are separate operations:
 
 ```python
 combined = GeoVector.concat([labels, anchors, raster_records])
-updated = combined.upsert(new_records, on="anchor_id")
+updated = combined.upsert(new_records, on="path")
 ```
 
 `concat` performs one native concatenation, unions property columns, fills
@@ -146,8 +161,8 @@ silently transformed. Empty inputs participate when their CRS agrees.
 `upsert` requires an explicit key column on both collections and non-null,
 unique keys within the incoming collection. It replaces existing matching rows
 and appends new keys, returning a new `GeoVector`. It does not treat geometry as
-identity. `upsert(..., on="anchor_id")` replaces the mutation behavior formerly
-owned by `Manifest.add`.
+identity. The key is caller-owned; GeoVector never hashes geometry or anchor
+metadata into one.
 
 Both operations return new collections. Incremental callers should accumulate
 small records and concatenate once rather than repeatedly copying a growing
@@ -166,10 +181,10 @@ GeoDataFrame spatial index for candidates, applies the requested exact GeoPandas
 predicate, preserves source row order, and returns a `GeoVector` containing the
 original geometries and properties.
 
-The first implementation supports GeoPandas spatial-index predicates, starting
-with `intersects`, `within`, `contains`, `covers`, and `covered_by`. Unsupported
-predicates fail before querying. An empty collection returns an empty collection
-with the same schema and CRS.
+The first implementation types `predicate` as a `Literal` containing
+`intersects`, `within`, `contains`, `covers`, and `covered_by`. A runtime value
+outside that set also fails before querying. An empty collection returns an
+empty collection with the same schema and CRS.
 
 For large persisted collections, filtering occurs in two stages:
 
@@ -177,10 +192,14 @@ For large persisted collections, filtering occurs in two stages:
    only candidate row groups and requested columns.
 2. `query` applies the exact geometry predicate in memory.
 
-`GeoVector.to_geoparquet` enables covering-bbox metadata by default so the first
-stage is available; callers may explicitly disable it. A materialized
-`GeoVector` remains an in-memory GeoDataFrame; the design does not claim
-out-of-core computation.
+GeoPandas can optionally write one bounding-box value per row using
+`write_covering_bbox=True`. That extra GeoParquet 1.1 column enables the first
+stage for WKB geometry, but it costs computation, increases the schema, and is
+still marked experimental by GeoPandas. GeoVector does not enable it silently;
+callers opt in when they intend to use filtered persisted reads. It is a file
+query optimization, not a second boundary geometry or an in-memory R-tree. A
+materialized `GeoVector` remains an in-memory GeoDataFrame; the design does not
+claim out-of-core computation.
 
 ## Portable asset references
 
@@ -197,8 +216,9 @@ moving the catalog and its asset directory together preserves references.
 Reading a local vector file records its source path. `resolve_path(row)` accepts
 one row mapping, resolves its relative `path` against the source file's parent,
 and rejects escaped paths. It fails clearly when the vector has no source path
-or the row has no asset. URI asset semantics and multiple named asset columns
-remain out of scope until a concrete caller defines them.
+or the row has no asset. This contract is local-only; it contains no URI parsing
+or remote asset branches. Multiple named asset columns remain out of scope until
+a concrete caller defines them.
 
 Catalog GeoParquet writes use a sibling staging file followed by atomic
 replacement, preserving the behavior being absorbed from `Manifest`. Path
@@ -247,17 +267,38 @@ not an alternate contract.
 
 ## Ownership and module changes
 
-- `geodata/core/vector.py` owns the expanded collection contract, constructors,
-  composition, querying, asset resolution, polygonization, and rasterization.
+- `geodata/core/vector.py` owns the collection contract, constructors,
+  composition, querying, asset resolution, and thin conversion methods.
+- `geodata/core/array.py`, `raster.py`, and `stack.py` expose one shared
+  `.gs.variables` contract appropriate to their native xarray object.
+- `geodata/transform/vector.py` owns eager Rasterio polygonization and
+  rasterization. GeoVector methods delegate to it so the useful fluent API does
+  not make the collection class own conversion mechanics.
 - Existing GeoParquet I/O continues to own format reading and writing. It gains
-  source-path propagation, covering-bbox defaults for `GeoVector`, portable
-  `path` normalization, staging, and atomic replacement.
+  source-path propagation, portable `path` normalization, staging, and atomic
+  replacement. Covering bboxes remain an explicit native GeoPandas option.
 - Existing xarray accessors continue to own anchor extraction. They do not store
   a `GeoVector` inside each raster.
 - `geodata/pipeline/manifest.py`, its export, and its dedicated tests are removed.
   Manifest behavior is covered through `GeoVector` tests and public I/O.
 - No new dependency, registry, schema language, raster wrapper, or compatibility
   alias is introduced.
+
+## Code shape and typing
+
+Public inputs use concrete types: Literal aliases for fields and predicates,
+explicit unions for query targets, `DTypeLike` for raster output, and `object`
+for caller-owned tabular properties. `Any` remains only at third-party
+passthrough boundaries whose value vocabulary is not defined by GeoSave, such as
+PyArrow keyword options.
+
+A private helper is introduced only when more than one call site shares a real
+domain operation. One-use normalization and dispatch stay inline, grouped into
+short blocks with comments explaining the constraint. In particular, the
+implementation has no `_anchor_id`, `_checked_fields`, `_variable_names`,
+`_canonical_frame`, `_query_geometry`, `_polygonize_values`, `_target_geobox`,
+or `_burn_values` methods. Existing nodata and dtype utilities are reused before
+adding another helper.
 
 ## Errors and preservation
 
@@ -281,18 +322,25 @@ Implementation starts with focused public smoke tests for these flows:
    return exactly the original intersecting rows in source order.
 3. Register an xarray object using an irregular semantic polygon while retaining
    the rectangular native grid metadata.
-4. Upsert an equivalent anchor and prove its row is replaced rather than
-   duplicated; concatenate the same records and prove duplicates are retained.
+4. Upsert a record by a caller-supplied key and prove its row is replaced rather
+   than duplicated; concatenate the same records and prove duplicates are
+   retained.
 5. Save a catalog with an asset, reopen it after moving the directory, resolve
    the asset, and reject parent and symlink escapes without replacing prior data.
-6. Write covering-bbox metadata, read with a bbox and selected columns, then
-   apply an exact spatial predicate.
+6. Opt into covering-bbox metadata, read with a bbox and selected columns, then
+   apply an exact spatial predicate; verify the default does not add the column.
 7. Vectorize categorical flags with nodata and disconnected regions, then
    rasterize the value column onto the original grid and compare valid pixels.
 8. Verify registration of a Dask-backed raster does not compute pixels; verify
    vectorization does compute and documents that boundary.
 9. Verify empty construction, empty filtered reads, CRS mismatch failures,
-   invalid metadata groups, and overlapping-rasterization row order.
+   invalid metadata groups, accessor variable names, and overlapping-
+   rasterization row order.
+
+Every touched source and test file must pass BasedPyright. Targeted mypy runs
+ignore unavailable third-party stubs but must report no code errors. Repository-
+wide type-check failures outside this change are recorded separately rather than
+hidden or expanded into this feature.
 
 After focused tests pass, run the geodata suite and the full project suite. The
 existing working tree contains unrelated changes; implementation and commits
@@ -302,8 +350,10 @@ must include only files belonging to this design.
 
 `geosave_engine.geodata.pipeline.Manifest` is removed without a compatibility
 alias. Callers construct or read `GeoVector` collections and use `concat` or
-`upsert` instead. `GeoVector` begins accepting a correctly typed empty frame,
-and GeoParquet catalog writes gain portable-path validation and covering bboxes.
+`upsert` instead. No automatic `anchor_id` is produced. `GeoVector` begins
+accepting a correctly typed empty frame, and GeoParquet catalog writes gain
+portable-path validation; covering bboxes are opt-in through GeoPandas' native
+option.
 
 The first implementation is single-process and local-path oriented. A loaded
 collection is memory-resident, atomic replacement assumes one writer, and
