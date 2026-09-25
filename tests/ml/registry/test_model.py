@@ -8,7 +8,7 @@ import torch
 from torch import nn
 
 from geosave_engine.ml.model_chain import Published, chain_step
-from geosave_engine.ml.registry import BuildSpec, build_model, register_model
+from geosave_engine.ml.registry import BuildSpec, build_model, list_models, register_model
 from geosave_engine.ml.registry.model import MODEL_REGISTRY
 
 
@@ -42,6 +42,7 @@ def make_head(feature_channels: int) -> Head:
 
 @pytest.fixture
 def model_factories(monkeypatch: pytest.MonkeyPatch) -> None:
+    list_models()
     monkeypatch.setitem(MODEL_REGISTRY, "encoder", {"TEST": Encoder})
     monkeypatch.setitem(MODEL_REGISTRY, "head", {"TEST": make_head})
 

@@ -14,6 +14,7 @@ from unittest.mock import MagicMock, patch
 
 from huggingface_hub import ModelCard
 import pytest
+from safetensors.torch import load_file, save_file
 import torch
 from transformers import AutoModel
 
@@ -67,6 +68,29 @@ def test_export_rejects_a_directly_composed_chain() -> None:
 
     with pytest.raises(ValueError, match="stage specifications"):
         GeoSaveModel.from_chain(chain)
+
+
+@pytest.mark.parametrize(
+    ("change", "message"),
+    [("missing", "Missing keys"), ("unexpected", "Unexpected keys")],
+)
+def test_transformers_reload_rejects_incompatible_weights(
+    tmp_path: Path,
+    stages: dict[str, dict[str, object]],
+    change: str,
+    message: str,
+) -> None:
+    GeoSaveModel.from_chain(build_model(stages)).save_pretrained(tmp_path)
+    weights_path = tmp_path / "model.safetensors"
+    state = load_file(weights_path)
+    if change == "missing":
+        state.pop(next(iter(state)))
+    else:
+        state["unexpected"] = torch.tensor(1.0)
+    save_file(state, weights_path)
+
+    with pytest.raises(RuntimeError, match=message):
+        AutoModel.from_pretrained(tmp_path, local_files_only=True)
 
 
 def test_exported_adapter_loads_without_registration_in_fresh_process(

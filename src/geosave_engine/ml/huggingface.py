@@ -94,6 +94,38 @@ class GeoSaveModel(PreTrainedModel):
         model.training = chain.training
         return model
 
+    @staticmethod
+    def _finalize_model_loading(
+        model: PreTrainedModel,
+        load_config: Any,
+        loading_info: Any,
+    ) -> Any:
+        """Reject artifacts that do not exactly match their configured chain."""
+        loading_info = PreTrainedModel._finalize_model_loading(
+            model, load_config, loading_info
+        )
+        problems = []
+        if loading_info.missing_keys:
+            problems.append(f"Missing keys: {sorted(loading_info.missing_keys)}")
+        if loading_info.unexpected_keys:
+            problems.append(
+                f"Unexpected keys: {sorted(loading_info.unexpected_keys)}"
+            )
+        if loading_info.mismatched_keys:
+            problems.append(
+                f"Mismatched keys: {sorted(loading_info.mismatched_keys)}"
+            )
+        if loading_info.error_msgs:
+            problems.append(f"Loading errors: {loading_info.error_msgs}")
+        if loading_info.conversion_errors:
+            problems.append(f"Conversion errors: {loading_info.conversion_errors}")
+        if problems:
+            raise RuntimeError(
+                "GeoSaveModel requires an exact checkpoint match. "
+                + "; ".join(problems)
+            )
+        return loading_info
+
     def forward(self, **inputs: object) -> dict[str, object] | torch.Tensor:
         """Evaluate the chain using named tensor and geospatial context inputs.
 
