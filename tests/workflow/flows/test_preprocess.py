@@ -22,6 +22,10 @@ def meet(*, value: int) -> int:
     return value
 
 
+def fail() -> None:
+    raise RuntimeError("boom")
+
+
 def model_spec(**declarations: object) -> ModelSpec:
     return ModelSpec.model_validate(
         {"schema_version": 2, "sources": {}, **declarations}
@@ -207,3 +211,39 @@ def test_independent_calls_can_overlap(prefect_server) -> None:
         assert preprocess({}, spec) == {"first": 1, "second": 2}
     finally:
         _barrier = None
+
+
+def test_failed_dependency_keeps_declaration_names(prefect_server) -> None:
+    spec = model_spec(
+        preprocessing={
+            "failed_call": {"call": f"{__name__}.fail"},
+            "dependent_call": {
+                "call": "builtins.dict",
+                "kwargs": {"value": Ref("failed_call")},
+            },
+            "independent_call": {
+                "call": "builtins.dict",
+                "kwargs": {"value": 1},
+            },
+        }
+    )
+
+    with pytest.raises(RuntimeError, match="boom"):
+        preprocess({}, spec)
+
+    with get_client(sync_client=True) as client:
+        runs = client.read_task_runs()
+
+    states = {
+        declaration: next(
+            run.state_name
+            for run in runs
+            if run.name.startswith(f"preprocess-{declaration}")
+        )
+        for declaration in ("failed_call", "dependent_call", "independent_call")
+    }
+    assert states == {
+        "failed_call": "Failed",
+        "dependent_call": "NotReady",
+        "independent_call": "Completed",
+    }

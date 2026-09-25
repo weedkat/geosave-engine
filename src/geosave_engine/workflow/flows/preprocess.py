@@ -34,7 +34,10 @@ def preprocess(
 
     futures = {}
     for name, declaration in stage.items():
-        operation = invoke_call.with_options(task_run_name=f"preprocess-{name}")
+        operation = invoke_call.with_options(
+            name=f"preprocess-{name}",
+            task_run_name=f"preprocess-{name}",
+        )
         future = operation.submit(declaration, declaration.select_inputs(state))
         state[name] = future
         futures[name] = future
