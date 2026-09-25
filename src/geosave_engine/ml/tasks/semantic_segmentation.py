@@ -1,19 +1,16 @@
-from __future__ import annotations
-
 import logging
-from typing import Any
+from copy import deepcopy
+from importlib import import_module
+from typing import Any, Literal, Required, TypedDict
 
 import torch
+from torch import nn
+from torch.optim import Optimizer
+from torch.optim.lr_scheduler import LRScheduler
 from lightning import LightningModule
 from lightning.pytorch.utilities.types import OptimizerLRScheduler
 
-from geosave_engine.ml.registry import (
-    BuildSpec,
-    StageSpec,
-    build_loss,
-    build_optimizer,
-    build_scheduler,
-)
+from geosave_engine.ml.registry import StageSpec
 from geosave_engine.ml.postprocessing.segmentation import apply_thresholds
 from geosave_engine.ml.metrics.semantic_segmentation import SemanticSegmentationMetrics
 from geosave_engine.ml.models.contract import ModelChain
@@ -22,22 +19,35 @@ from geosave_engine.ml.transforms import ImageAugmenter
 log = logging.getLogger(__name__)
 
 
-def _validate_dense_map(name: str, mapping: dict[int, str]) -> None:
-    """Raise if `mapping`'s keys aren't exactly `0..len(mapping)-1`.
+class ModuleSpec(TypedDict, total=False):
+    """Importable PyTorch class and its constructor arguments."""
 
-    Args:
-        name: Param name, for the error message.
-        mapping: Map to check (`class_map` or `band_map`).
+    class_path: Required[str]
+    init_args: dict[str, Any]
 
-    Raises:
-        ValueError: Keys aren't a dense 0-based range — a hand-typed gap or
-            duplicate would otherwise silently misalign class/channel indices.
-    """
-    expected = set(range(len(mapping)))
-    if set(mapping) != expected:
-        raise ValueError(
-            f"{name} keys must be dense 0..{len(mapping) - 1}, got {sorted(mapping)}"
-        )
+
+class OptimizerSpec(ModuleSpec, total=False):
+    """Optimizer arguments and overrides keyed by exact model-chain stage names."""
+
+    groups: dict[str, dict[str, Any]]
+
+
+class LRSchedulerSpec(ModuleSpec, total=False):
+    """Scheduler arguments and Lightning scheduling metadata."""
+
+    interval: Literal["step", "epoch"]
+    frequency: int
+    monitor: str
+    strict: bool
+    name: str
+
+
+def _resolve_class(path: str, base: type) -> type:
+    module, _, name = path.rpartition(".")
+    cls = getattr(import_module(module), name)
+    if not isinstance(cls, type) or not issubclass(cls, base):
+        raise TypeError(f"{path!r} must name a {base.__name__} subclass")
+    return cls
 
 
 class SemanticSegmentationTask(LightningModule):
@@ -47,25 +57,26 @@ class SemanticSegmentationTask(LightningModule):
     selected model expects. Model context arrives in batch["model_context"].
 
     Args:
-        stages: Ordered stage construction specifications. Each selects a
+        in_channels: Number of input channels.
+        num_classes: Number of output classes.
+        model_chain: Ordered stage construction specifications. Each selects a
             registered name or class_path with optional init_args. Defaults to
             DINOv3, DPT, and DenseHead. The first stage receives in_channels and
-            input_size; the last receives num_classes. Explicit init_args override
-            these task defaults, and constructors must accept the resulting arguments.
+            input_size; the last receives num_classes. These task dimensions
+            override stage init_args.
         input_size: Training crop size and default model input size.
         image_key: Batch key holding the input image tensor.
         label_key: Batch key holding the label tensor.
         ignore_index: Class index excluded from loss and metrics.
-        class_map: ``{class_id: class_name}`` for every output class, dense
-            from 0. Required — ``num_classes`` is ``len(class_map)``.
-        band_map: ``{channel_idx: band_name}`` for every input channel, dense
-            from 0. Required — ``in_channels`` is ``len(band_map)``.
-        loss: Loss construction specification. None selects CELoss.
-        optimizer: Optimizer construction specification. None selects AdamW.
-        scheduler: Scheduler construction specification. None disables scheduling.
+        criterion: Loss class and arguments. Defaults to CrossEntropyLoss with
+            ignore_index; an explicit criterion ignore_index takes precedence.
+        optimizer: Optimizer class, arguments, and stage groups. Defaults to
+            AdamW with a learning rate of 1e-3.
+        lr_scheduler: Scheduler class, arguments, and Lightning metadata.
+            None disables scheduling.
         metrics: Metric names in dot notation (e.g. ``["iou.macro", "f1.macro"]``).
         augmentations: Kornia augmentation config list.
-        class_thresholds: Per-class confidence threshold, one per class_map entry.
+        class_thresholds: Per-class confidence threshold, one per output class.
             None initializes every class to 0.5. Checkpoint loading restores saved
             thresholds; an explicitly configured calibration callback may update them.
 
@@ -74,14 +85,14 @@ class SemanticSegmentationTask(LightningModule):
         model:
           class_path: geosave_engine.ml.tasks.SemanticSegmentationTask
           init_args:
-            stages:
+            in_channels: 2
+            num_classes: 2
+            model_chain:
               encoder: {name: dinov3}
               decoder: {name: dpt}
               head: {name: dense}
             image_key: sentinel_2_l1c
             label_key: dynamicworld
-            class_map: {0: water, 1: trees}
-            band_map: {0: B02, 1: B03}
     """
 
     model: ModelChain
@@ -90,67 +101,62 @@ class SemanticSegmentationTask(LightningModule):
     def __init__(
         self,
         *,
-        stages: dict[str, StageSpec] | None = None,
-        class_map: dict[int, str],
-        band_map: dict[int, str],
+        in_channels: int,
+        num_classes: int,
+        model_chain: dict[str, StageSpec] | None = None,
         input_size: int | tuple[int, int] = 224,
         image_key: str = "image",
         label_key: str = "label",
         ignore_index: int = 255,
-        loss: BuildSpec | None = None,
-        optimizer: BuildSpec | None = None,
-        scheduler: BuildSpec | None = None,
+        criterion: ModuleSpec | None = None,
+        optimizer: OptimizerSpec | None = None,
+        lr_scheduler: LRSchedulerSpec | None = None,
         metrics: list[str] | None = None,
         augmentations: list[dict] | None = None,
         class_thresholds: list[float] | None = None,
     ) -> None:
         super().__init__()
 
-        if stages is None:
-            stages = {
+        if model_chain is None:
+            model_chain = {
                 "encoder": {"name": "dinov3"},
                 "decoder": {"name": "dpt"},
                 "head": {"name": "dense"},
             }
-        if not stages:
+        if not model_chain:
             raise ValueError("Supply at least one model stage")
-        loss = {"name": "CELoss"} if loss is None else loss
-        optimizer = {"name": "AdamW"} if optimizer is None else optimizer
+        if criterion is None:
+            criterion = {"class_path": "torch.nn.CrossEntropyLoss"}
+        if optimizer is None:
+            optimizer = {
+                "class_path": "torch.optim.AdamW", "init_args": {"lr": 1e-3}
+            }
         self.save_hyperparameters()
-        self.stages = stages
+        self.model_chain = model_chain
 
-        _validate_dense_map("class_map", class_map)
-        _validate_dense_map("band_map", band_map)
-        self.num_classes = len(class_map)
-        self.in_channels = len(band_map)
+        self.num_classes = num_classes
+        self.in_channels = in_channels
         self.input_size = (
             (input_size, input_size) if isinstance(input_size, int) else input_size
         )
         self.image_key = image_key
         self.label_key = label_key
         self.ignore_index = ignore_index
-        self.class_map = class_map
-        self.band_map = band_map
 
         self.optimizer_spec = optimizer
-        self.scheduler_spec = scheduler
+        self.scheduler_spec = lr_scheduler
         self.metrics_config = metrics
         self.augmentations = augmentations or []
         if class_thresholds is not None and len(class_thresholds) != self.num_classes:
             raise ValueError(
-                f"class_thresholds must have {self.num_classes} entries (one per class_map "
-                f"entry), got {len(class_thresholds)}"
+                f"class_thresholds must have {self.num_classes} entries, "
+                f"got {len(class_thresholds)}"
             )
         self._initial_class_thresholds = class_thresholds
 
-        self.loss_fn = build_loss(
-            {
-                **loss,
-                "init_args": {
-                    "ignore_index": ignore_index,
-                    **loss.get("init_args", {}),
-                },
-            }
+        criterion_cls = _resolve_class(criterion["class_path"], nn.Module)
+        self.criterion = criterion_cls(
+            **{"ignore_index": ignore_index, **criterion.get("init_args", {})}
         )
 
     def configure_model(self) -> None:
@@ -158,21 +164,19 @@ class SemanticSegmentationTask(LightningModule):
         if hasattr(self, "model"):
             return
 
-        stage_names = list(self.stages)
+        stage_names = list(self.model_chain)
         first, last = stage_names[0], stage_names[-1]
-        stages: dict[str, StageSpec] = {
-            name: {**spec} for name, spec in self.stages.items()
-        }
-        stages[first]["init_args"] = {
+        stage_specs = deepcopy(self.model_chain)
+        stage_specs[first]["init_args"] = {
+            **stage_specs[first].get("init_args", {}),
             "in_channels": self.in_channels,
             "input_size": self.input_size,
-            **stages[first].get("init_args", {}),
         }
-        stages[last]["init_args"] = {
+        stage_specs[last]["init_args"] = {
+            **stage_specs[last].get("init_args", {}),
             "num_classes": self.num_classes,
-            **stages[last].get("init_args", {}),
         }
-        self.model = ModelChain(stages=stages)
+        self.model = ModelChain(stages=stage_specs)
 
         initial = (
             torch.tensor(self._initial_class_thresholds)
@@ -187,19 +191,58 @@ class SemanticSegmentationTask(LightningModule):
         )
 
     def configure_optimizers(self) -> OptimizerLRScheduler:
-        optimizer = build_optimizer(self.optimizer_spec, self.model)
+        groups = self.optimizer_spec.get("groups", {})
+        named = self.model._modules
+        unknown = groups.keys() - named.keys()
+        if unknown:
+            raise ValueError(
+                f"Unknown model-chain optimizer groups: {sorted(unknown)}"
+            )
+        selected = {
+            id(parameter)
+            for stage in groups
+            for parameter in named[stage].parameters()
+        }
+        param_groups = [
+            {
+                "params": [p for p in named[stage].parameters() if p.requires_grad],
+                **options,
+            }
+            for stage, options in groups.items()
+        ]
+        remaining = [
+            p
+            for p in self.model.parameters()
+            if p.requires_grad and id(p) not in selected
+        ]
+        if remaining:
+            param_groups.append({"params": remaining})
+        optimizer_cls = _resolve_class(self.optimizer_spec["class_path"], Optimizer)
+        optimizer = optimizer_cls(
+            param_groups, **self.optimizer_spec.get("init_args", {})
+        )
 
         if self.scheduler_spec is None:
             return optimizer
 
-        scheduler = build_scheduler(self.scheduler_spec, optimizer)
-        return {"optimizer": optimizer, "lr_scheduler": scheduler}
+        scheduler_cls = _resolve_class(self.scheduler_spec["class_path"], LRScheduler)
+        scheduler = scheduler_cls(
+            optimizer, **self.scheduler_spec.get("init_args", {})
+        )
+        metadata = {
+            key: self.scheduler_spec[key]
+            for key in ("interval", "frequency", "monitor", "strict", "name")
+            if key in self.scheduler_spec
+        }
+        return {
+            "optimizer": optimizer,
+            "lr_scheduler": {"scheduler": scheduler, **metadata},
+        }
 
     def setup(self, stage: str | None = None) -> None:
         metrics = SemanticSegmentationMetrics(
             num_classes=self.num_classes,
             ignore_index=self.ignore_index,
-            labels=[self.class_map[i] for i in range(self.num_classes)],
             metrics=self.metrics_config,
         )
         self.train_metrics = metrics.clone(prefix="train_")
@@ -269,7 +312,7 @@ class SemanticSegmentationTask(LightningModule):
         label = label.squeeze(1)  # (B, 1, H, W) → (B, H, W)
 
         logits = self(image, **model_context)
-        loss = self.loss_fn(logits, label)
+        loss = self.criterion(logits, label)
 
         self.train_metrics.update(logits, label)
         self.log(
@@ -308,7 +351,7 @@ class SemanticSegmentationTask(LightningModule):
         label = label.squeeze(1)  # (B, 1, H, W) → (B, H, W)
 
         logits = self(image, **model_context)
-        loss = self.loss_fn(logits, label)
+        loss = self.criterion(logits, label)
 
         self.val_metrics.update(logits, label)
         self.log(

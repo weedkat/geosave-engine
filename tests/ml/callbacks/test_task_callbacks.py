@@ -59,11 +59,17 @@ class Samples(Dataset[dict[str, dict[str, torch.Tensor]]]):
 
 def test_max_steps_training_preserves_explicit_callbacks(tmp_path: Path) -> None:
     task = SemanticSegmentationTask(
-        stages={"model": {"class_path": f"{__name__}.SegmentationModel"}},
-        class_map={0: "water", 1: "trees"},
-        band_map={0: "red", 1: "nir"},
+        model_chain={"model": {"class_path": f"{__name__}.SegmentationModel"}},
+        in_channels=2,
+        num_classes=2,
         input_size=4,
         optimizer={"class_path": "torch.optim.SGD", "init_args": {"lr": 0.1}},
+        lr_scheduler={
+            "class_path": "torch.optim.lr_scheduler.ReduceLROnPlateau",
+            "init_args": {"patience": 2},
+            "monitor": "val_loss",
+            "interval": "epoch",
+        },
     )
     observer = ValidationObserver()
     image_logger = DensePredictionLogger({0: "#000000"})
@@ -85,6 +91,10 @@ def test_max_steps_training_preserves_explicit_callbacks(tmp_path: Path) -> None
     trainer.fit(task, train_dataloaders=loader, val_dataloaders=loader)
 
     assert trainer.global_step == 1
+    schedule = trainer.lr_scheduler_configs[0]
+    assert schedule.reduce_on_plateau
+    assert schedule.monitor == "val_loss"
+    assert schedule.scheduler.best < float("inf")
     callbacks = getattr(trainer, "callbacks")
     assert observer in callbacks
     assert image_logger in callbacks

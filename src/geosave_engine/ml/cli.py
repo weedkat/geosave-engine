@@ -10,6 +10,12 @@ DEFAULT_MODEL_NAME = "model"
 
 
 class GeosaveCLI(LightningCLI):
+    """Configure Lightning runs and default loggers.
+
+    Pass ``auto_configure_optimizers=False`` for tasks that own their optimizer
+    and scheduler configuration, as the generated workspace entry point does.
+    """
+
     def add_arguments_to_parser(self, parser: LightningArgumentParser) -> None:
         parser.add_argument(
             "--model_name",
