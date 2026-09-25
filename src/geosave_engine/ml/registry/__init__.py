@@ -1,7 +1,19 @@
+from .criterion import CriterionSpec, build_criterion
+from .factory import BuildSpec, resolve
 from .model import StageSpec, list_models, register_model
+from .optimizer import OptimizerSpec, build_optimizer
+from .scheduler import SchedulerSpec, build_scheduler
 
 __all__ = [
+    "BuildSpec",
+    "CriterionSpec",
+    "OptimizerSpec",
+    "SchedulerSpec",
     "StageSpec",
+    "build_criterion",
+    "build_optimizer",
+    "build_scheduler",
     "list_models",
     "register_model",
+    "resolve",
 ]
