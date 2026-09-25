@@ -439,13 +439,14 @@ class GeoStack(GeoAccessor["DataTree"]):
             for name, raster in self.rasters.items()
         }
 
-    def to_tensor(self, *, dtype: torch.dtype | None = None) -> dict[str, torch.Tensor]:
+    def to_tensor(
+        self, *, dtype: str | torch.dtype | None = None
+    ) -> dict[str, torch.Tensor]:
         """Stack each group's variables into one model-input tensor.
 
         Args:
-            dtype: Tensor dtype for every group. None casts each to
-                `torch.float32`, which keeps unsigned imagery off dtypes torch
-                carries no arithmetic kernels for.
+            dtype: Torch dtype or its YAML-friendly name for every group. None
+                preserves each prepared raster dtype.
 
         Returns:
             {

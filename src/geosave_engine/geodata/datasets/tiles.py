@@ -38,7 +38,6 @@ class TileDataset(Dataset[tuple[dict[str, Any], int]]):
     Args:
         tiles: Cut to read. Select and order the variables a model expects
             before cutting, so the selection happens once rather than per tile.
-        dtype: Tensor dtype. None casts to `torch.float32`.
         model_context: Extract unbatched context tensors from each tile before
             reading pixels. A stack callback must select the group it needs.
             None adds no context to the sample.
@@ -54,12 +53,10 @@ class TileDataset(Dataset[tuple[dict[str, Any], int]]):
         self,
         tiles: Tiles,
         *,
-        dtype: torch.dtype | None = None,
         model_context: Callable[..., dict[str, torch.Tensor]] | None = None,
     ) -> None:
         """Read nothing yet, holding the cut its samples come from."""
         self.tiles = tiles
-        self.dtype = dtype
         self.model_context = model_context
 
     def __len__(self) -> int:
@@ -96,7 +93,7 @@ class TileDataset(Dataset[tuple[dict[str, Any], int]]):
         tile = self.tiles[index]
         context = {} if self.model_context is None else self.model_context(tile)
         model_inputs: dict[str, Any] = {
-            "image": tile.gs.to_tensor(dtype=self.dtype),
+            "image": tile.gs.to_tensor(),
         }
         model_inputs.update(context)
         return model_inputs, index

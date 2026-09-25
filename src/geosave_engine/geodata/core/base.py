@@ -28,28 +28,42 @@ if TYPE_CHECKING:
 
 
 def tensor(
-    pixels: Callable[[DTypeLike], np.ndarray], dtype: torch.dtype | None
+    pixels: Callable[[DTypeLike | None], np.ndarray],
+    dtype: str | torch.dtype | None = None,
 ) -> torch.Tensor:
-    """Build a model-input tensor from pixels read in a torch-compatible dtype.
+    """Build a contiguous tensor, preserving pixels unless a dtype is requested.
 
     Args:
         pixels: Reads the pixels in the numpy dtype it is given.
-        dtype: Tensor dtype, which the pixels are also read in. None casts to
-            `torch.float32`, which keeps unsigned imagery off `torch.uint16` —
-            a dtype torch accepts and carries no arithmetic kernels for. A
-            dtype numpy cannot hold, such as `torch.bfloat16`, is read as
-            float32 and narrowed on the way out.
+        dtype: Torch dtype or its YAML-friendly name. None preserves the
+            pixels' dtype. A dtype numpy cannot hold, such as
+            `torch.bfloat16`, is read as float32 and narrowed on conversion.
 
     Returns:
         Tensor over contiguous pixels, in `dtype`.
     """
     import torch
 
-    target = dtype or torch.float32
+    if isinstance(dtype, str):
+        target = getattr(torch, dtype, None)
+        if not isinstance(target, torch.dtype):
+            raise ValueError(f"Unknown torch dtype {dtype!r}")
+    else:
+        target = dtype
+
+    if target is None:
+        values = np.ascontiguousarray(pixels(None))
+        try:
+            return torch.as_tensor(values)
+        except (TypeError, ValueError) as error:
+            raise TypeError(
+                f"Cannot convert numpy dtype {values.dtype} to a torch tensor"
+            ) from error
+
     try:
         reading_dtype = torch.empty(0, dtype=target).numpy().dtype
     except TypeError:
-        reading_dtype = np.dtype(np.float32)
+        reading_dtype = np.dtype("float32")
     return torch.as_tensor(np.ascontiguousarray(pixels(reading_dtype)), dtype=target)
 
 

@@ -839,17 +839,17 @@ class GeoRaster(GeoAccessor["Dataset"]):
         )
         return stacked if dtype is None else stacked.astype(dtype)
 
-    def to_tensor(self, *, dtype: torch.dtype | None = None) -> torch.Tensor:
+    def to_tensor(
+        self, *, dtype: str | torch.dtype | None = None
+    ) -> torch.Tensor:
         """Stack every variable this raster carries into one model-input tensor.
 
         Select and order the variables with xarray before stacking them.
 
         Args:
-            dtype: Tensor dtype, which the variables are also stacked in. None
-                casts to `torch.float32`, which keeps unsigned imagery off
-                `torch.uint16` — a dtype torch accepts and carries no
-                arithmetic kernels for. A dtype numpy cannot hold, such as
-                `torch.bfloat16`, stacks as float32 and narrows on the way out.
+            dtype: Torch dtype or its YAML-friendly name. None preserves the
+                prepared raster dtype. A dtype numpy cannot hold, such as
+                `torch.bfloat16`, stacks as float32 and narrows on conversion.
 
         Returns:
             Tensor shaped `(*axes, band, y, x)`.
@@ -860,7 +860,7 @@ class GeoRaster(GeoAccessor["Dataset"]):
 
         Examples:
             >>> ds[["B04", "B08"]].gs.to_tensor().dtype
-            torch.float32
+            torch.uint16
         """
         return tensor(lambda stacking: self.to_numpy(dtype=stacking), dtype)
 

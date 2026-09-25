@@ -7,6 +7,7 @@ import xarray as xr
 from odc.geo.geobox import GeoBox
 
 from geosave_engine.geodata.core.raster import raster
+from geosave_engine.geodata.core.stack import stack
 
 UTM = "EPSG:32633"
 
@@ -109,15 +110,26 @@ def test_to_numpy_refuses_a_raster_already_carrying_the_stacking_axis() -> None:
         conflicting.gs.to_numpy()
 
 
-def test_to_tensor_casts_to_float32_by_default() -> None:
+def test_to_tensor_preserves_the_prepared_dtype_by_default() -> None:
     tensor = optical().gs.to_tensor()
 
-    assert tensor.dtype is torch.float32
+    assert tensor.dtype is torch.uint16
     assert tuple(tensor.shape) == (2, 2, 8, 8)
 
 
 def test_to_tensor_honours_a_requested_dtype() -> None:
     assert optical().gs.to_tensor(dtype=torch.int16).dtype is torch.int16
+
+
+def test_to_tensor_accepts_a_yaml_dtype_name() -> None:
+    tensor = optical().gs.to_tensor(dtype="float32")
+
+    assert tensor.dtype is torch.float32
+
+
+def test_to_tensor_rejects_an_unknown_dtype_name() -> None:
+    with pytest.raises(ValueError, match="not-a-dtype"):
+        optical().gs.to_tensor(dtype="not-a-dtype")
 
 
 def test_a_band_reads_with_the_grid_trailing() -> None:
@@ -152,5 +164,13 @@ def test_a_band_casts_the_way_a_raster_does() -> None:
     band = optical()["B04"]
 
     assert band.gs.to_numpy(dtype="float32").dtype == np.float32
-    assert band.gs.to_tensor().dtype is torch.float32
+    assert band.gs.to_tensor().dtype is torch.uint16
+    assert band.gs.to_tensor(dtype="float32").dtype is torch.float32
     assert band.gs.to_tensor(dtype=torch.bfloat16).dtype is torch.bfloat16
+
+
+def test_a_stack_preserves_and_explicitly_casts_group_dtypes() -> None:
+    scene = stack({"optical": optical()})
+
+    assert scene.gs.to_tensor()["optical"].dtype is torch.uint16
+    assert scene.gs.to_tensor(dtype="float32")["optical"].dtype is torch.float32

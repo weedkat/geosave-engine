@@ -353,14 +353,14 @@ class GeoArray(GeoAccessor["DataArray"]):
         ordered = self._data.transpose(*ahead, *self.grid_dims).values
         return ordered if dtype is None else ordered.astype(dtype)
 
-    def to_tensor(self, *, dtype: torch.dtype | None = None) -> torch.Tensor:
+    def to_tensor(
+        self, *, dtype: str | torch.dtype | None = None
+    ) -> torch.Tensor:
         """Read this band as one model-input tensor.
 
         Args:
-            dtype: Tensor dtype, which the pixels are also read in. None casts
-                to `torch.float32`, which keeps unsigned imagery off
-                `torch.uint16` — a dtype torch accepts and carries no
-                arithmetic kernels for.
+            dtype: Torch dtype or its YAML-friendly name. None preserves the
+                prepared array dtype.
 
         Returns:
             Tensor shaped `(*axes, band, y, x)`, or `(*axes, y, x)` where this
@@ -368,7 +368,7 @@ class GeoArray(GeoAccessor["DataArray"]):
 
         Examples:
             >>> ds["ndvi"].gs.to_tensor().dtype
-            torch.float32
+            torch.uint16
         """
         return tensor(lambda reading: self.to_numpy(dtype=reading), dtype)
 

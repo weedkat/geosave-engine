@@ -37,6 +37,11 @@ def test_a_sample_states_the_number_it_was_asked_by() -> None:
     assert inputs["image"].shape == (2, 256, 256)
 
 
+def test_tile_dataset_has_no_sampling_dtype_policy() -> None:
+    with pytest.raises(TypeError, match="dtype"):
+        TileDataset(Tiles([_raster(256, 256)], (256, 256)), dtype=torch.float16)
+
+
 def test_variables_are_read_in_the_order_they_were_cut_in() -> None:
     source = _raster(600, 600)
 
