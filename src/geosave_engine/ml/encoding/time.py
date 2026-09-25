@@ -1,4 +1,4 @@
-"""Validation shared by encoders that read acquisition times."""
+"""Validation shared by model inputs that read acquisition times."""
 
 from __future__ import annotations
 
@@ -24,14 +24,14 @@ def time_labels(data: xr.Dataset | xr.DataArray) -> list[datetime]:
         ValueError: Time labels are missing, empty, invalid, or not datetimes.
     """
     if not isinstance(data, (xr.Dataset, xr.DataArray)):
-        raise TypeError("Select a Dataset or DataArray before extracting model context")
+        raise TypeError("Select a Dataset or DataArray before extracting model inputs")
     if "time" not in data.coords:
-        raise ValueError("Model context requires a 'time' coordinate")
+        raise ValueError("Model inputs require a 'time' coordinate")
     values = data.coords["time"].values
     if values.ndim > 1 or values.size == 0:
-        raise ValueError("Model context requires non-empty scalar or 1D time labels")
+        raise ValueError("Model inputs require non-empty scalar or 1D time labels")
     if not np.issubdtype(values.dtype, np.datetime64) or np.isnat(values).any():
-        raise ValueError("Model context requires datetime64 time labels without NaT")
+        raise ValueError("Model inputs require datetime64 time labels without NaT")
     return [
         datetime.fromisoformat(str(np.datetime_as_string(value, unit="us")))
         for value in np.atleast_1d(values)

@@ -11,7 +11,7 @@ from terratorch.registry import BACKBONE_REGISTRY
 from geosave_engine.ml.registry import register_model
 from geosave_engine.ml.model_chain import Published, chain_step
 
-from ..context.time import time_labels
+from geosave_engine.ml.encoding.time import time_labels
 
 
 class _Prithvi(nn.Module):
