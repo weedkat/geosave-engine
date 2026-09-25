@@ -4,60 +4,12 @@ from __future__ import annotations
 
 from collections.abc import Mapping
 import math
-import re
 from typing import Any
 
 from pydantic import ConfigDict, Field, field_validator
 
 from .base import SpecModel
-
-_PATH = re.compile(r"[A-Za-z_][A-Za-z0-9_]*(?:\.[A-Za-z_][A-Za-z0-9_]*)*")
-
-
-class Ref:
-    """Name a supplied value or one of its Python attributes.
-
-    Args:
-        path: Value name followed by optional dot-separated attributes.
-
-    Examples:
-        >>> Ref("optical.gs.unpack")
-        Ref('optical.gs.unpack')
-    """
-
-    __slots__ = ("_path",)
-
-    def __init__(self, path: str) -> None:
-        if not isinstance(path, str) or not _PATH.fullmatch(path):
-            raise ValueError(f"Invalid reference path: {path!r}")
-        self._path = path
-
-    @property
-    def path(self) -> str:
-        """Return the referenced Python path."""
-        return self._path
-
-    @property
-    def root(self) -> str:
-        """Return the name required in the supplied values."""
-        return self.path.split(".", 1)[0]
-
-    def resolve(self, values: Mapping[str, Any]) -> Any:
-        """Retrieve the value, following attributes without calling methods."""
-        name, *attributes = self.path.split(".")
-        result = values[name]
-        for attribute in attributes:
-            result = getattr(result, attribute)
-        return result
-
-    def __repr__(self) -> str:
-        return f"Ref({self.path!r})"
-
-    def __eq__(self, other: object) -> bool:
-        return isinstance(other, Ref) and self.path == other.path
-
-    def __hash__(self) -> int:
-        return hash(self.path)
+from .call import Ref
 
 
 class OperationSpec(SpecModel):

@@ -1,9 +1,11 @@
 """Portable declarations owned by ``model_spec.yaml``."""
 
 from .base import Name, SpecModel, Text
+from .call import CallSpec, CallValue, Ref
 from .model import ModelSpec
 from .postprocessing import PostprocessingSpec
-from .preprocessing import OperationSpec, Ref
+from .preprocessing import OperationSpec
+from .stage import StageSpec
 from .sources import (
     AttrsRequirement,
     FieldRequirement,
@@ -13,6 +15,8 @@ from .sources import (
 
 __all__ = [
     "AttrsRequirement",
+    "CallSpec",
+    "CallValue",
     "FieldRequirement",
     "ModelSpec",
     "Name",
@@ -22,5 +26,6 @@ __all__ = [
     "RasterRequirement",
     "Ref",
     "SpecModel",
+    "StageSpec",
     "Text",
 ]
