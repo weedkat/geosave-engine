@@ -17,6 +17,8 @@ and the final supervised dataset representation remain separate future work.
 src/geosave_engine/ml/
 ├── data/
 │   └── semantic_segmentation.py
+├── encoding/
+│   └── time.py
 ├── model_chain/
 │   ├── chain.py
 │   ├── published.py
@@ -41,6 +43,10 @@ src/geosave_engine/ml/
 `models` contains model implementations only. The vague
 `ml.models.contract` package is removed without a compatibility alias. Its
 public replacement is `geosave_engine.ml.model_chain`.
+
+`encoding` contains conversions from native data and metadata into named model
+inputs. It is not a generic utility package and is not nested under a particular
+encoder implementation.
 
 ## Registry Ownership
 
@@ -159,6 +165,30 @@ LightningCLI independently instantiates the pair through top-level
 points both paths at the library implementations. Users replace either top-level
 class when their training or data behavior differs.
 
+## Model Inputs and Context
+
+Image tensors, acquisition time, geographic coordinates, prompts, and masks are
+all named arguments to `model(**inputs)`. The model spec must not create a
+separate `context` category that makes some forward arguments structurally
+special.
+
+Constructor constants such as channel counts and wavelengths stay in model
+registry configuration. Per-sample values derived from native raster metadata
+belong in model-spec inference inputs. Request-time values use explicit
+references in those same inputs. Training batches produce the identical named
+mapping expected during inference.
+
+`ml.encoding` owns reusable conversions from native xarray/geodata values to
+those model inputs. The shared datetime validation currently under
+`ml.models.context.time` moves to `ml.encoding.time`; Clay and Prithvi remain
+its consumers during this phase. A later model-spec inference change will expose
+model-specific functions such as `prithvi_time` and `clay_time` directly from
+YAML and remove encoder-owned context callbacks.
+
+The current phase does not add an incomplete `inference.inputs` schema or a
+second execution path. That schema and runtime migrate together when inference
+orchestration is implemented.
+
 ## Migration
 
 All live source, tests, templates, and documentation move to
@@ -174,6 +204,7 @@ round trips retain fresh-process coverage.
 ## Deferred Work
 
 - The concrete supervised semantic-segmentation `Dataset`.
+- Model-spec inference input declarations and their runtime execution.
 - Model-specific postprocessing and output types.
 - Threshold calibration ownership and export with inference artifacts.
 - Orchestration of tile inference, dense-logit merging, and scene output.
