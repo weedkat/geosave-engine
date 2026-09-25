@@ -33,7 +33,8 @@ features = prepare({"optical": optical})["features"]
 The spec names the inputs and calls needed by the model. Preprocessing and
 postprocessing run independently and return native Python objects. Importing a
 processor does not import Prefect or Lightning. Start with the
-[runnable raster example](examples/README.md); see the [spec reference](spec/README.md)
+[segmentation workspace example](../templates/tasks/semantic_segmentation/supervised/README.md);
+see the [spec reference](spec/README.md)
 for the declaration rules. Model loading and inference execution remain deferred.
 
 ## Acquire and save rasters

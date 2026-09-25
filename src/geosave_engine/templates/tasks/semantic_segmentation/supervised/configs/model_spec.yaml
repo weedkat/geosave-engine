@@ -1,0 +1,19 @@
+schema_version: 2
+sources:
+  sentinel_2_l2a:
+    collection: sentinel-2-l2a
+    endpoints:
+      - https://planetarycomputer.microsoft.com/api/stac/v1/
+      - https://stac.dataspace.copernicus.eu/v1/
+    variables: [B02, B03, B04, B08]
+    require_crs: true
+preprocessing:
+  valid_pixels:
+    call: !ref sentinel_2_l2a.gs.to_nan
+  image:
+    call: !ref valid_pixels.gs.unpack
+outputs:
+  prediction:
+    legend:
+      class_map: {0: background, 1: vegetation}
+      color_map: {0: "#000000", 1: "#00ff00"}

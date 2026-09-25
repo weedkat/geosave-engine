@@ -25,15 +25,34 @@ trainer:
 model:
   class_path: geosave_engine.ml.tasks.SemanticSegmentationTask
   init_args:
-    stages:
+    in_channels: 4
+    num_classes: 2
+    input_size: 224
+    ignore_index: 255
+    model_chain:
       encoder: {name: dinov3}
       decoder: {name: dpt}
       head: {name: dense}
     optimizer:
-      name: AdamW.split
-      init_args: {weight_decay: 0.01, encoder_lr: 0.0001, decoder_lr: 0.001}
-    scheduler:
-      name: CosineAnnealingLR
+      class_path: torch.optim.AdamW
+      init_args: {lr: 0.001, weight_decay: 0.01}
+      groups:
+        encoder: {lr: 0.0001}
+    lr_scheduler:
+      class_path: torch.optim.lr_scheduler.CosineAnnealingLR
       init_args: {T_max: 100}
-    loss:
-      name: CELoss
+      interval: epoch
+    criterion:
+      class_path: torch.nn.CrossEntropyLoss
+      init_args: {ignore_index: 255}
+    metrics: [iou.macro, f1.macro]
+
+data:
+  class_path: modules.data.SegmentationDataModule
+  init_args:
+    train_path: data/train
+    val_path: data/val
+    input_size: 224
+    batch_size: 8
+    num_workers: 4
+    augmentations: []

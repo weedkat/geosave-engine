@@ -1,4 +1,4 @@
-model:
+data:
   init_args:
     augmentations:
       - name: RandomHorizontalFlip

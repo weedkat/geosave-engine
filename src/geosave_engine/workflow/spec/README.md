@@ -7,7 +7,7 @@ in the caller's Python parameters and runtime configuration.
 
 Use
 `Processor.load(path, stage="preprocessing")` or `stage="postprocessing"` to run
-one stage. See the [runnable example](../examples/README.md) first.
+one stage. See the [segmentation workspace example](../../templates/tasks/semantic_segmentation/supervised/README.md) first.
 
 ```yaml
 schema_version: 2
