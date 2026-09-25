@@ -1,21 +1,31 @@
 from __future__ import annotations
 
 import inspect
-from collections.abc import Callable
+from collections.abc import Callable, Mapping
 from copy import deepcopy
 from dataclasses import dataclass
-from typing import TYPE_CHECKING, TypeVar
+from importlib import import_module
+from typing import Any, TypeVar, TypedDict
 
 import torch.nn as nn
-
-from geosave_engine.ml.registry.base import BuildSpec, resolve
-
-if TYPE_CHECKING:
-    from geosave_engine.ml.models.contract import ModelChain
 
 type ModelFactory = Callable[..., nn.Module]
 _Factory = TypeVar("_Factory", bound=ModelFactory)
 MODEL_REGISTRY: dict[str, dict[str, ModelFactory]] = {}
+
+
+class StageSpec(TypedDict, total=False):
+    """Describe one model stage selected by registered name or class path.
+
+    Args:
+        name: Registered factory name, matched without case sensitivity.
+        class_path: Dotted import path to an ``nn.Module`` subclass.
+        init_args: Keyword arguments passed to the selected stage constructor.
+    """
+
+    name: str
+    class_path: str
+    init_args: dict[str, Any]
 
 
 def register_model(stage: str, name: str) -> Callable[[_Factory], _Factory]:
@@ -69,10 +79,40 @@ class BuiltStages:
     """
 
     modules: dict[str, nn.Module]
-    config: dict[str, BuildSpec]
+    config: dict[str, StageSpec]
 
 
-def build_stages(stages: dict[str, BuildSpec]) -> BuiltStages:
+def _resolve_stage(
+    spec: StageSpec,
+    factories: Mapping[str, ModelFactory],
+) -> ModelFactory:
+    """Resolve a strict model stage selector to its factory."""
+    unknown = set(spec) - {"name", "class_path", "init_args"}
+    if unknown:
+        raise ValueError(f"Unknown stage fields: {sorted(unknown)}; use init_args")
+    if ("name" in spec) == ("class_path" in spec):
+        raise ValueError("Specify exactly one of name or class_path")
+    if not isinstance(spec.get("init_args", {}), dict):
+        raise TypeError("init_args must be a dict of constructor arguments")
+    if "name" in spec:
+        name = spec["name"]
+        if not isinstance(name, str) or not name:
+            raise ValueError("name must be a non-empty registered factory name")
+        matched = {name.casefold(): factory for name, factory in factories.items()}
+        if name.casefold() not in matched:
+            raise ValueError(f"Unknown model stage {name!r}; available: {list(factories)}")
+        return matched[name.casefold()]
+    path = spec["class_path"]
+    if not isinstance(path, str) or "." not in path:
+        raise ValueError(f"class_path must include a module and class: {path!r}")
+    module, _, attribute = path.rpartition(".")
+    stage = getattr(import_module(module), attribute)
+    if not isinstance(stage, type) or not issubclass(stage, nn.Module):
+        raise TypeError(f"{path!r} must name an nn.Module subclass")
+    return stage
+
+
+def build_stages(stages: dict[str, StageSpec]) -> BuiltStages:
     """Construct stages and record the arguments needed to reconstruct them.
 
     Args:
@@ -92,9 +132,9 @@ def build_stages(stages: dict[str, BuildSpec]) -> BuiltStages:
     if not stages:
         raise ValueError("Supply at least one model stage")
     modules: dict[str, nn.Module] = {}
-    config: dict[str, BuildSpec] = {}
+    config: dict[str, StageSpec] = {}
     for stage, spec in stages.items():
-        factory = resolve(spec, MODEL_REGISTRY.get(stage, {}), nn.Module)
+        factory = _resolve_stage(spec, MODEL_REGISTRY.get(stage, {}))
         try:
             kwargs = published_kwargs(factory, modules, spec.get("init_args", {}))
             signature = inspect.signature(factory)
@@ -116,29 +156,3 @@ def build_stages(stages: dict[str, BuildSpec]) -> BuiltStages:
             init_args["pretrained"] = False
         config[stage] = {**spec, "init_args": init_args}
     return BuiltStages(modules=modules, config=config)
-
-
-def build_model(stages: dict[str, BuildSpec]) -> ModelChain:
-    """Construct named model stages in order, wiring their Published attributes.
-
-    Args:
-        stages: Stage names mapped to a registered name or class_path and init_args.
-            Explicit init_args take precedence over published values.
-
-    Returns:
-        ModelChain containing the constructed stages.
-
-    Raises:
-        ValueError: No stages are supplied or a construction specification is invalid.
-        TypeError: A constructor rejects arguments or published values are ambiguous.
-
-    Examples:
-        >>> model = build_model({
-        ...     "encoder": {"name": "dinov3", "init_args": {"pretrained": False}},
-        ...     "decoder": {"name": "dpt"},
-        ...     "head": {"name": "dense", "init_args": {"num_classes": 6}},
-        ... })
-    """
-    from geosave_engine.ml.models.contract import ModelChain
-
-    return ModelChain(stages=stages)

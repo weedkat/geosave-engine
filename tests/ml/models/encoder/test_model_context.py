@@ -14,7 +14,6 @@ from geosave_engine.geodata.attrs import TimeSpec
 from geosave_engine.geodata.datasets import TileDataset
 from geosave_engine.geodata.transform.tiling import Tiles
 from geosave_engine.ml.models.contract import ModelChain
-from geosave_engine.ml.registry import build_model
 from geosave_engine.ml.models.encoder.clay import Clay
 from geosave_engine.ml.models.encoder.prithvi import (
     BACKBONE_REGISTRY,
@@ -203,8 +202,8 @@ def test_hub_reload_restores_prithvi_context_extractor(
         return Backbone()
 
     monkeypatch.setattr(BACKBONE_REGISTRY, "build", build)
-    model = build_model(
-        {
+    model = ModelChain(
+        stages={
             "encoder": {
                 "name": "prithvi_tl",
                 "init_args": {

@@ -15,7 +15,7 @@ _PUBLISHED = "geosave.published"
 _T = TypeVar("_T")
 
 Published = Annotated[_T, _PUBLISHED]
-"""Mark a class attribute as readable by later stages in `build_model`.
+"""Mark a class attribute as readable by later stages during construction.
 
 Annotate at class level; the runtime value stays a plain ``T``, and a stage
 built later whose constructor takes a parameter of the same name and type

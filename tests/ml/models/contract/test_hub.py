@@ -13,7 +13,7 @@ import torch
 from torch import nn
 
 from geosave_engine.ml.models.contract import ModelChain, Published, chain_step
-from geosave_engine.ml.registry import BuildSpec, build_model
+from geosave_engine.ml.registry import StageSpec
 
 
 class Encoder(nn.Module):
@@ -40,7 +40,7 @@ class Head(nn.Module):
         return features + self.channels
 
 
-def stages() -> dict[str, BuildSpec]:
+def stages() -> dict[str, StageSpec]:
     return {
         "z_encoder": {"class_path": f"{__name__}.Encoder"},
         "a_head": {"class_path": f"{__name__}.Head"},
@@ -50,7 +50,7 @@ def stages() -> dict[str, BuildSpec]:
 def test_hub_roundtrip_preserves_weights_order_and_constructor_arguments(tmp_path):
     specs = stages()
     original = deepcopy(specs)
-    model = build_model(specs)
+    model = ModelChain(stages=specs)
     encoder = model.get_submodule("z_encoder")
     assert isinstance(encoder, Encoder)
     assert encoder.pretrained
@@ -83,7 +83,7 @@ def test_hub_roundtrip_preserves_weights_order_and_constructor_arguments(tmp_pat
 
 
 def test_hub_artifact_loads_in_fresh_offline_process(tmp_path):
-    model = build_model(stages())
+    model = ModelChain(stages=stages())
     model.save_pretrained(tmp_path)
     result = subprocess.run(
         [
@@ -108,7 +108,7 @@ def test_hub_artifact_loads_in_fresh_offline_process(tmp_path):
 
 
 def test_hub_loading_rejects_unexpected_weights_by_default(tmp_path):
-    model = build_model(stages())
+    model = ModelChain(stages=stages())
     model.register_parameter("unexpected", nn.Parameter(torch.tensor(1.0)))
     model.save_pretrained(tmp_path)
     with pytest.raises(RuntimeError, match="unexpected"):
@@ -117,7 +117,7 @@ def test_hub_loading_rejects_unexpected_weights_by_default(tmp_path):
 
 def test_module_instances_require_a_construction_recipe_before_export(tmp_path):
     model = ModelChain(encoder=Encoder(), head=Head(2))
-    with pytest.raises(ValueError, match="Build with stages"):
+    with pytest.raises(ValueError, match="stage specifications"):
         model.save_pretrained(tmp_path)
     assert not (tmp_path / "model.safetensors").exists()
 

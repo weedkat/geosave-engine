@@ -74,14 +74,15 @@ normalization is separate and remains caller-owned.
 
 ```python
 from geosave_engine.ml.models.contract import ModelChain
-from geosave_engine.ml.registry import build_model
+from geosave_engine.ml.registry import StageSpec
 
-model = build_model({
+stages: dict[str, StageSpec] = {
     "encoder": {
         "name": "prithvi_tl",
         "init_args": {"pretrained": False, "num_frames": 2},
     },
-})
+}
+model = ModelChain(stages=stages)
 model.save_pretrained("artifacts/model")
 restored = ModelChain.from_pretrained("artifacts/model", local_files_only=True)
 

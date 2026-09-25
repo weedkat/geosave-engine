@@ -9,8 +9,8 @@ from lightning.pytorch.utilities.types import OptimizerLRScheduler
 
 from geosave_engine.ml.registry import (
     BuildSpec,
+    StageSpec,
     build_loss,
-    build_model,
     build_optimizer,
     build_scheduler,
 )
@@ -90,7 +90,7 @@ class SemanticSegmentationTask(LightningModule):
     def __init__(
         self,
         *,
-        stages: dict[str, BuildSpec] | None = None,
+        stages: dict[str, StageSpec] | None = None,
         class_map: dict[int, str],
         band_map: dict[int, str],
         input_size: int | tuple[int, int] = 224,
@@ -160,7 +160,7 @@ class SemanticSegmentationTask(LightningModule):
 
         stage_names = list(self.stages)
         first, last = stage_names[0], stage_names[-1]
-        stages: dict[str, BuildSpec] = {
+        stages: dict[str, StageSpec] = {
             name: {**spec} for name, spec in self.stages.items()
         }
         stages[first]["init_args"] = {
@@ -172,7 +172,7 @@ class SemanticSegmentationTask(LightningModule):
             "num_classes": self.num_classes,
             **stages[last].get("init_args", {}),
         }
-        self.model = build_model(stages)
+        self.model = ModelChain(stages=stages)
 
         initial = (
             torch.tensor(self._initial_class_thresholds)

@@ -10,7 +10,6 @@ import sys
 import pytest
 import torch
 
-from geosave_engine.ml.registry import build_model
 from geosave_engine.ml.models.contract import ModelChain
 
 transformers = pytest.importorskip("transformers")
@@ -44,8 +43,8 @@ def test_registered_transformers_model_loads_identical_outputs(
 
 
 def test_exported_adapter_loads_without_registration_in_fresh_process(tmp_path):
-    model = build_model(
-        {
+    model = ModelChain(
+        stages={
             "head": {
                 "name": "dense",
                 "init_args": {"feature_channels": 2, "num_classes": 3},
@@ -96,7 +95,7 @@ torch.testing.assert_close(actual, expected, rtol=0, atol=0)
 def test_export_requires_recipe_and_rejects_duplicate_stages():
     from tests.ml.models.contract.test_hub import Encoder
 
-    with pytest.raises(ValueError, match="Build with stages"):
+    with pytest.raises(ValueError, match="stage specifications"):
         GeoSaveModel.from_chain(ModelChain(encoder=Encoder()))
     with pytest.raises(ValueError, match="unique"):
         GeoSaveConfig(

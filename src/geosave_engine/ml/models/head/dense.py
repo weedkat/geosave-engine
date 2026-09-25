@@ -19,7 +19,7 @@ class DenseHead(nn.Module):
     Args:
         num_classes: number of output channels (classes or regression outputs).
         feature_channels: channel width of the decoded feature map. Auto-wired
-            from whatever fills the 'decoder' slot through ``build_model``; set
+            from whatever fills the 'decoder' slot during stage construction; set
             it directly for standalone use.
         input_size: original input spatial size (H, W), or a single int for
             square. Auto-wired from the encoder. If the decoder's own output

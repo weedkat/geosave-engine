@@ -9,14 +9,14 @@ from transformers import AutoConfig, AutoModel, PretrainedConfig, PreTrainedMode
 from transformers.initialization import no_init_weights
 
 from geosave_engine.ml.models.contract import ModelChain
-from geosave_engine.ml.registry.base import BuildSpec
+from geosave_engine.ml.registry.model import StageSpec
 
 
 class StageConfig(TypedDict):
     """One named stage in an ordered Transformers configuration."""
 
     stage: str
-    spec: BuildSpec
+    spec: StageSpec
 
 
 class GeoSaveConfig(PretrainedConfig):

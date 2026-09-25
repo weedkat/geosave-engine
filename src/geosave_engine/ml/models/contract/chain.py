@@ -11,7 +11,7 @@ from huggingface_hub import PyTorchModelHubMixin
 import torch
 from torch import nn
 
-from geosave_engine.ml.registry.base import BuildSpec
+from geosave_engine.ml.registry.model import StageSpec
 from .graph import external_inputs, resolve_steps
 
 
@@ -40,7 +40,7 @@ class ModelChain(nn.Module, PyTorchModelHubMixin, library_name="geosave-engine")
     def __init__(
         self,
         *args: nn.Module,
-        stages: dict[str, BuildSpec] | None = None,
+        stages: dict[str, StageSpec] | None = None,
         **modules: nn.Module,
     ) -> None:
         super().__init__()
@@ -63,7 +63,7 @@ class ModelChain(nn.Module, PyTorchModelHubMixin, library_name="geosave-engine")
         self._inputs = external_inputs(self._steps, list(modules))
 
     @property
-    def stage_specs(self) -> dict[str, BuildSpec]:
+    def stage_specs(self) -> dict[str, StageSpec]:
         """Return an independent copy of the ordered construction specifications.
 
         Returns:
@@ -73,7 +73,7 @@ class ModelChain(nn.Module, PyTorchModelHubMixin, library_name="geosave-engine")
             ValueError: The chain was constructed directly from module instances.
         """
         if not isinstance(self._hub_mixin_config, dict):
-            raise ValueError("Build with stages or build_model() before saving")
+            raise ValueError("Build with stage specifications before saving")
         return deepcopy(self._hub_mixin_config["stages"])
 
     @property
@@ -134,7 +134,7 @@ class ModelChain(nn.Module, PyTorchModelHubMixin, library_name="geosave-engine")
             TypeError: Constructor arguments are not JSON serializable.
         """
         if self._hub_mixin_config is None:
-            raise ValueError("Build with stages or build_model() before saving")
+            raise ValueError("Build with stage specifications before saving")
         config = json.dumps(self._hub_mixin_config, indent=2, allow_nan=False)
         super()._save_pretrained(save_directory)
         # Published constructor arguments depend on stage order; the mixin sorts keys.

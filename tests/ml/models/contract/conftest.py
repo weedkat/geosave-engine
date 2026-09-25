@@ -8,7 +8,7 @@ from huggingface_hub.hf_api import RepoUrl
 import pytest
 import torch
 
-from geosave_engine.ml.registry import build_model
+from geosave_engine.ml.models.contract import ModelChain
 from tests.ml.models.contract.test_hub import Encoder, stages
 
 
@@ -18,7 +18,7 @@ def pushed_artifact(tmp_path: Path) -> Path:
     destination = tmp_path / "uploaded"
     repo_id = "test-org/geosave-probe"
     commit_url = f"https://huggingface.co/{repo_id}/commit/test-commit"
-    model = build_model(stages())
+    model = ModelChain(stages=stages())
     encoder = model.get_submodule("z_encoder")
     assert isinstance(encoder, Encoder)
     with torch.no_grad():
