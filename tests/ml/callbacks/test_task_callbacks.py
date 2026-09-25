@@ -44,17 +44,14 @@ class ValidationObserver(Callback):
         self.labels.append(outputs["label"].clone())
 
 
-class Samples(Dataset[dict[str, dict[str, torch.Tensor]]]):
+class Samples(Dataset[tuple[dict[str, torch.Tensor], torch.Tensor]]):
     def __len__(self) -> int:
         return 1
 
-    def __getitem__(self, index: int) -> dict[str, dict[str, torch.Tensor]]:
+    def __getitem__(self, index: int) -> tuple[dict[str, torch.Tensor], torch.Tensor]:
         return {
-            "layers": {
-                "image": torch.ones(2, 4, 4),
-                "label": torch.zeros(1, 4, 4, dtype=torch.long),
-            }
-        }
+            "image": torch.ones(2, 4, 4),
+        }, torch.zeros(1, 4, 4, dtype=torch.long)
 
 
 def test_max_steps_training_preserves_explicit_callbacks(tmp_path: Path) -> None:

@@ -1,4 +1,3 @@
-import logging
 from copy import deepcopy
 from importlib import import_module
 from typing import Any, Literal, Required, TypedDict
@@ -14,9 +13,7 @@ from geosave_engine.ml.registry import StageSpec
 from geosave_engine.ml.postprocessing.segmentation import apply_thresholds
 from geosave_engine.ml.metrics.semantic_segmentation import SemanticSegmentationMetrics
 from geosave_engine.ml.models.contract import ModelChain
-from geosave_engine.ml.transforms import ImageAugmenter
 
-log = logging.getLogger(__name__)
 
 
 class ModuleSpec(TypedDict, total=False):
@@ -54,7 +51,8 @@ class SemanticSegmentationTask(LightningModule):
     """Train and evaluate segmentation models from prepared image tensors.
 
     Inputs must already use the dtype, bands, and numerical representation the
-    selected model expects. Model context arrives in batch["model_context"].
+    selected model expects. Each supervised batch is ``(model_inputs, target)``
+    where model inputs are passed to the model chain by name.
 
     Args:
         in_channels: Number of input channels.
@@ -65,8 +63,6 @@ class SemanticSegmentationTask(LightningModule):
             input_size; the last receives num_classes. These task dimensions
             override stage init_args.
         input_size: Training crop size and default model input size.
-        image_key: Batch key holding the input image tensor.
-        label_key: Batch key holding the label tensor.
         ignore_index: Class index excluded from loss and metrics.
         criterion: Loss class and arguments. Defaults to CrossEntropyLoss with
             ignore_index; an explicit criterion ignore_index takes precedence.
@@ -75,7 +71,6 @@ class SemanticSegmentationTask(LightningModule):
         lr_scheduler: Scheduler class, arguments, and Lightning metadata.
             None disables scheduling.
         metrics: Metric names in dot notation (e.g. ``["iou.macro", "f1.macro"]``).
-        augmentations: Kornia augmentation config list.
         class_thresholds: Per-class confidence threshold, one per output class.
             None initializes every class to 0.5. Checkpoint loading restores saved
             thresholds; an explicitly configured calibration callback may update them.
@@ -91,8 +86,6 @@ class SemanticSegmentationTask(LightningModule):
               encoder: {name: dinov3}
               decoder: {name: dpt}
               head: {name: dense}
-            image_key: sentinel_2_l1c
-            label_key: dynamicworld
     """
 
     model: ModelChain
@@ -105,14 +98,11 @@ class SemanticSegmentationTask(LightningModule):
         num_classes: int,
         model_chain: dict[str, StageSpec] | None = None,
         input_size: int | tuple[int, int] = 224,
-        image_key: str = "image",
-        label_key: str = "label",
         ignore_index: int = 255,
         criterion: ModuleSpec | None = None,
         optimizer: OptimizerSpec | None = None,
         lr_scheduler: LRSchedulerSpec | None = None,
         metrics: list[str] | None = None,
-        augmentations: list[dict] | None = None,
         class_thresholds: list[float] | None = None,
     ) -> None:
         super().__init__()
@@ -139,14 +129,11 @@ class SemanticSegmentationTask(LightningModule):
         self.input_size = (
             (input_size, input_size) if isinstance(input_size, int) else input_size
         )
-        self.image_key = image_key
-        self.label_key = label_key
         self.ignore_index = ignore_index
 
         self.optimizer_spec = optimizer
         self.scheduler_spec = lr_scheduler
         self.metrics_config = metrics
-        self.augmentations = augmentations or []
         if class_thresholds is not None and len(class_thresholds) != self.num_classes:
             raise ValueError(
                 f"class_thresholds must have {self.num_classes} entries, "
@@ -160,7 +147,7 @@ class SemanticSegmentationTask(LightningModule):
         )
 
     def configure_model(self) -> None:
-        """Construct the model, training augmentation, and prediction thresholds."""
+        """Construct the model and prediction thresholds."""
         if hasattr(self, "model"):
             return
 
@@ -184,11 +171,6 @@ class SemanticSegmentationTask(LightningModule):
             else torch.full((self.num_classes,), 0.5)
         )
         self.register_buffer("class_thresholds", initial)
-        self.augmenter = ImageAugmenter(
-            augmentations=self.augmentations,
-            size=self.input_size,
-            data_keys=["image", "mask"],
-        )
 
     def configure_optimizers(self) -> OptimizerLRScheduler:
         groups = self.optimizer_spec.get("groups", {})
@@ -249,22 +231,18 @@ class SemanticSegmentationTask(LightningModule):
         self.val_metrics = metrics.clone(prefix="val_")
         self.test_metrics = metrics.clone(prefix="test_")
 
-    def forward(self, image: torch.Tensor, **ctx: Any) -> torch.Tensor:
+    def forward(self, **model_inputs: Any) -> torch.Tensor:
         """Run a prepared tile batch through the model chain.
 
         Args:
-            image: Prepared tile tensor in the selected encoder's input layout,
-                including a time axis when required.
-            **ctx: Extra per-model context (e.g. `temporal_coords=...`,
-                `location_coords=...`) forwarded from the dataset adapter to
-                the model chain unchanged.
-                Only consumed by whichever stage's `@chain_step` method
-                actually names the key — unused keys sit in the chain's ctx dict untouched.
+            **model_inputs: Prepared named model tensors. ``image`` holds the
+                selected encoder's input layout, including a time axis when
+                required; contextual tensors are ordinary keys.
 
         Returns:
             ``[B, num_classes, H, W]`` logits.
         """
-        result = self.model(image=image, **ctx)
+        result = self.model(**model_inputs)
         return result if isinstance(result, torch.Tensor) else result["logits"]
 
     def postprocess(
@@ -290,70 +268,59 @@ class SemanticSegmentationTask(LightningModule):
 
         return preds, max_probs
 
-    def _extract_model_context(self, batch: dict[str, Any]) -> dict[str, Any]:
-        """Read precomputed model context from a batch.
+    def training_step(
+        self, batch: tuple[dict[str, Any], torch.Tensor], batch_idx: int
+    ) -> torch.Tensor:
+        model_inputs, target = batch
+        if target.ndim == 4 and target.shape[1] == 1:
+            target = target.squeeze(1)
 
-        Dataset adapters compute this through their context function before
-        encoding tensors. Model code only consumes the result.
+        logits = self(**model_inputs)
+        loss = self.criterion(logits, target)
 
-        Args:
-            batch: One model batch containing optional precomputed context.
-
-        Returns:
-            Extra keys to forward into `self(image, **model_context)` — `{}`
-            when the adapter supplied no context.
-        """
-        return dict(batch.get("model_context") or {})
-
-    def training_step(self, batch: dict[str, Any], batch_idx: int) -> torch.Tensor:
-        image, label = batch["layers"][self.image_key], batch["layers"][self.label_key]
-        model_context = self._extract_model_context(batch)
-        image, label = self.augmenter(image, label)
-        label = label.squeeze(1)  # (B, 1, H, W) → (B, H, W)
-
-        logits = self(image, **model_context)
-        loss = self.criterion(logits, label)
-
-        self.train_metrics.update(logits, label)
+        self.train_metrics.update(logits, target)
         self.log(
             "train_loss",
             loss,
             on_step=True,
             on_epoch=True,
             prog_bar=True,
-            batch_size=image.shape[0],
+            batch_size=target.shape[0],
         )
         self.log_dict(
             self.train_metrics,
             on_step=False,
             on_epoch=True,
             prog_bar=False,
-            batch_size=image.shape[0],
+            batch_size=target.shape[0],
         )
 
         return loss
 
     def validation_step(
-        self, batch: dict[str, Any], batch_idx: int, dataloader_idx: int = 0
+        self,
+        batch: tuple[dict[str, Any], torch.Tensor],
+        batch_idx: int,
+        dataloader_idx: int = 0,
     ) -> dict[str, torch.Tensor]:
         """Compute loss and metrics over prepared validation tiles.
 
         Args:
-            batch: Supervised layers and optional per-tile model_context.
+            batch: ``(model_inputs, target)`` prepared for the model chain.
             batch_idx: Lightning batch number.
             dataloader_idx: Lightning validation loader number.
 
         Returns:
             Tile logits and labels for validation callbacks.
         """
-        image, label = batch["layers"][self.image_key], batch["layers"][self.label_key]
-        model_context = self._extract_model_context(batch)
-        label = label.squeeze(1)  # (B, 1, H, W) → (B, H, W)
+        model_inputs, target = batch
+        if target.ndim == 4 and target.shape[1] == 1:
+            target = target.squeeze(1)
 
-        logits = self(image, **model_context)
-        loss = self.criterion(logits, label)
+        logits = self(**model_inputs)
+        loss = self.criterion(logits, target)
 
-        self.val_metrics.update(logits, label)
+        self.val_metrics.update(logits, target)
         self.log(
             "val_loss",
             loss,
@@ -369,48 +336,50 @@ class SemanticSegmentationTask(LightningModule):
             prog_bar=False,
             sync_dist=True,
         )
-        return {"logits": logits, "label": label}
+        return {"logits": logits, "label": target}
 
     def test_step(
-        self, batch: dict[str, Any], batch_idx: int, dataloader_idx: int = 0
+        self,
+        batch: tuple[dict[str, Any], torch.Tensor],
+        batch_idx: int,
+        dataloader_idx: int = 0,
     ) -> dict[str, torch.Tensor]:
         """Compute metrics over prepared test tiles.
 
         Args:
-            batch: Supervised layers and optional per-tile model_context.
+            batch: ``(model_inputs, target)`` prepared for the model chain.
             batch_idx: Lightning batch number.
             dataloader_idx: Lightning test loader number.
 
         Returns:
             Tile logits and labels for test callbacks.
         """
-        image, label = batch["layers"][self.image_key], batch["layers"][self.label_key]
-        model_context = self._extract_model_context(batch)
-        label = label.squeeze(1)  # (B, 1, H, W) → (B, H, W)
+        model_inputs, target = batch
+        if target.ndim == 4 and target.shape[1] == 1:
+            target = target.squeeze(1)
 
-        logits = self(image, **model_context)
+        logits = self(**model_inputs)
 
-        self.test_metrics.update(logits, label)
+        self.test_metrics.update(logits, target)
         self.log_dict(self.test_metrics, on_step=False, on_epoch=True, prog_bar=False)
-        return {"logits": logits, "label": label}
+        return {"logits": logits, "label": target}
 
     def predict_step(
         self,
-        batch: dict[str, Any],
+        batch: tuple[dict[str, Any], Any],
         batch_idx: int,
         dataloader_idx: int = 0,
-    ) -> dict[str, torch.Tensor]:
+    ) -> tuple[torch.Tensor, Any]:
         """Predict tile logits for geodata stitching without class assignment.
 
         Args:
-            batch: TileDataset batch with image, index, and optional model_context.
+            batch: ``(model_inputs, index)`` from TileDataset.
             batch_idx: Lightning batch number.
             dataloader_idx: Lightning prediction loader number.
 
         Returns:
-            Raw logits and the input tile indices. Merge logits before applying
+            ``(logits, index)``. Merge logits before applying
             postprocess; indices are local to each loader's Tiles collection.
         """
-        image = batch["image"]
-        model_context = self._extract_model_context(batch)
-        return {"logits": self(image, **model_context), "index": batch["index"]}
+        model_inputs, index = batch
+        return self(**model_inputs), index

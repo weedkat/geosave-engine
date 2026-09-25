@@ -8,8 +8,9 @@ Examples:
         merger = tiles.merger(window="hann")
 
         for batch in loader:
-            predictions = model(batch["image"]).cpu().numpy()
-            merger.add(dict(zip(batch["index"].tolist(), predictions)))
+            model_inputs, index = batch
+            predictions = model(**model_inputs).cpu().numpy()
+            merger.add(dict(zip(index.tolist(), predictions)))
 
         predictions = merger.merge()
 """
@@ -27,7 +28,7 @@ if TYPE_CHECKING:
     from geosave_engine.geodata.transform.tiling import Tiles
 
 
-class TileDataset(Dataset[dict[str, Any]]):
+class TileDataset(Dataset[tuple[dict[str, Any], int]]):
     """Read a cut's tiles as model input, each under the number it answers.
 
     A sample states the tile number it was asked by, which is what routes its
@@ -44,8 +45,9 @@ class TileDataset(Dataset[dict[str, Any]]):
 
     Examples:
         >>> samples = TileDataset(Tiles([scene[["B04", "B08"]]], (256, 256)))
-        >>> len(samples), sorted(samples[0])
-        (9, ['image', 'index'])
+        >>> model_inputs, index = samples[0]
+        >>> sorted(model_inputs), index
+        (['image'], 0)
     """
 
     def __init__(
@@ -72,34 +74,29 @@ class TileDataset(Dataset[dict[str, Any]]):
         """Describe how many samples the cut being read holds."""
         return f"{type(self).__name__}({len(self)} samples)"
 
-    def __getitem__(self, index: int) -> dict[str, Any]:
+    def __getitem__(self, index: int) -> tuple[dict[str, Any], int]:
         """Read the tile this number names as model input.
 
         Args:
             index: Tile number in `range(len(self))`.
 
         Returns:
-            {
-                "image": tensor shaped `(*axes, band, y, x)`, or one such
-                    per group where the raster is a stack,
-                "index": the number this sample was asked by,
-                "model_context": unbatched tensors, only when an extractor
-                    was supplied; DataLoader collates them normally,
-            }
+            ``(model_inputs, index)`` where ``model_inputs["image"]`` is a
+            tensor shaped ``(*axes, band, y, x)``, or one such per group where
+            the raster is a stack. Context tensors become ordinary named
+            ``model_inputs`` entries and DataLoader collates them normally.
 
         Raises:
             IndexError: `index` falls outside the cut.
 
         Examples:
-            >>> samples[3]["image"].shape
+            >>> samples[3][0]["image"].shape
             torch.Size([2, 256, 256])
         """
         tile = self.tiles[index]
-        context = self.model_context(tile) if self.model_context is not None else None
-        sample: dict[str, Any] = {
+        model_inputs: dict[str, Any] = {
             "image": tile.gs.to_tensor(dtype=self.dtype),
-            "index": index,
         }
-        if context is not None:
-            sample["model_context"] = context
-        return sample
+        if self.model_context is not None:
+            model_inputs.update(self.model_context(tile))
+        return model_inputs, index

@@ -98,12 +98,12 @@ def test_clay_refuses_multiple_frames(scene: Dataset) -> None:
 
 def test_tile_context_collates_with_frame_and_batch_axes(scene: Dataset) -> None:
     samples = TileDataset(Tiles([scene], (4, 4)), model_context=PrithviTL.model_context)
-    batch = next(iter(DataLoader(samples, batch_size=2)))
-    assert batch["image"].shape == (2, 2, 1, 4, 4)
-    assert batch["model_context"]["temporal_coords"].shape == (2, 2, 2)
-    assert batch["model_context"]["location_coords"].shape == (2, 2)
+    inputs, _ = next(iter(DataLoader(samples, batch_size=2)))
+    assert inputs["image"].shape == (2, 2, 1, 4, 4)
+    assert inputs["temporal_coords"].shape == (2, 2, 2)
+    assert inputs["location_coords"].shape == (2, 2)
     torch.testing.assert_close(
-        batch["model_context"]["location_coords"],
+        inputs["location_coords"],
         torch.tensor([[51.5, 10.5], [51.5, 11.5]]),
     )
 
@@ -112,10 +112,10 @@ def test_clay_tile_context_batches_single_frame(scene: Dataset) -> None:
     samples = TileDataset(
         Tiles([scene.isel(time=0)], (4, 4)), model_context=Clay.model_context
     )
-    batch = next(iter(DataLoader(samples, batch_size=2)))
-    assert batch["image"].shape == (2, 1, 4, 4)
+    inputs, _ = next(iter(DataLoader(samples, batch_size=2)))
+    assert inputs["image"].shape == (2, 1, 4, 4)
     torch.testing.assert_close(
-        batch["model_context"]["time"], torch.tensor([[1.0, 14.0], [1.0, 14.0]])
+        inputs["time"], torch.tensor([[1.0, 14.0], [1.0, 14.0]])
     )
 
 
@@ -187,10 +187,10 @@ def test_stack_context_selects_its_source_explicitly(scene: Dataset) -> None:
         return PrithviTL.model_context(tile["optical"].dataset)
 
     samples = TileDataset(Tiles([grouped], (4, 4)), model_context=optical_context)
-    batch = next(iter(DataLoader(samples, batch_size=2)))
-    assert sorted(batch["image"]) == ["dem", "optical"]
+    inputs, _ = next(iter(DataLoader(samples, batch_size=2)))
+    assert sorted(inputs["image"]) == ["dem", "optical"]
     torch.testing.assert_close(
-        batch["model_context"]["temporal_coords"],
+        inputs["temporal_coords"],
         torch.tensor([[[2024.0, 365.0], [2024.0, 0.0]]] * 2),
     )
 
@@ -233,8 +233,8 @@ def test_hub_reload_restores_prithvi_context_extractor(
     samples = TileDataset(
         Tiles([scene], (4, 4)), model_context=restored_encoder.model_context
     )
-    batch = next(iter(DataLoader(samples, batch_size=2)))
+    inputs, _ = next(iter(DataLoader(samples, batch_size=2)))
     torch.testing.assert_close(
-        restored(batch["image"], **batch["model_context"]),
-        model(batch["image"], **batch["model_context"]),
+        restored(**inputs),
+        model(**inputs),
     )

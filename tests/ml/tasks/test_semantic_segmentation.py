@@ -29,18 +29,21 @@ class SegmentationModel(nn.Module):
         self.factor = nn.Parameter(torch.tensor(1.0))
 
     @chain_step(head=True)
-    def logits(self, image: torch.Tensor, offset: torch.Tensor) -> torch.Tensor:
-        return image * self.factor + offset
+    def logits(
+        self, image: torch.Tensor, offset: torch.Tensor | None = None
+    ) -> torch.Tensor:
+        logits = image * self.factor
+        return logits if offset is None else logits + offset
 
 
 class Samples(Dataset):
-    def __init__(self, samples: list[dict[str, dict[str, torch.Tensor]]]) -> None:
+    def __init__(self, samples: list[tuple[dict[str, torch.Tensor], torch.Tensor]]) -> None:
         self.samples = samples
 
     def __len__(self) -> int:
         return len(self.samples)
 
-    def __getitem__(self, index: int) -> dict[str, dict[str, torch.Tensor]]:
+    def __getitem__(self, index: int) -> tuple[dict[str, torch.Tensor], torch.Tensor]:
         return self.samples[index]
 
 
@@ -257,13 +260,54 @@ def test_forward_preserves_prepared_inputs_and_routes_context(
     original = image.clone()
     offset = torch.tensor(4.0)
 
-    actual = task(image, offset=offset)
+    actual = task(image=image, offset=offset)
 
     torch.testing.assert_close(actual, image + offset)
     torch.testing.assert_close(image, original)
     assert actual.dtype == torch.float64
     assert not hasattr(task, "preprocessor")
     assert not hasattr(task, "preprocess")
+
+
+def test_steps_accept_model_inputs_and_target_tuples(stages: dict[str, StageSpec]) -> None:
+    task = SemanticSegmentationTask(
+        model_chain=stages,
+        in_channels=2,
+        num_classes=2,
+        input_size=2,
+    )
+    task.configure_model()
+    task.setup("fit")
+    image = torch.tensor([[[[3.0, 0.0], [0.0, 3.0]], [[0.0, 3.0], [3.0, 0.0]]]])
+    target = torch.tensor([[[[0, 1], [1, 0]]]])
+
+    loss = task.training_step(({"image": image}, target), 0)
+
+    expected = torch.nn.functional.cross_entropy(image, target.squeeze(1))
+    torch.testing.assert_close(loss, expected)
+
+
+@pytest.mark.parametrize(
+    "batch",
+    [
+        (torch.zeros(1, 2, 2, 2), torch.zeros(1, 2, 2, dtype=torch.long)),
+        {"image": torch.zeros(1, 2, 2, 2), "target": torch.zeros(1, 2, 2)},
+    ],
+)
+def test_incompatible_batches_raise_native_python_errors(
+    stages: dict[str, StageSpec], batch: object
+) -> None:
+    task = SemanticSegmentationTask(
+        model_chain=stages,
+        in_channels=2,
+        num_classes=2,
+        input_size=2,
+    )
+    task.configure_model()
+    task.setup("fit")
+
+    with pytest.raises((AttributeError, TypeError, ValueError)):
+        task.training_step(batch, 0)  # type: ignore[arg-type]
 
 
 def test_training_and_checkpoint_reload_preserve_construction(
@@ -289,13 +333,10 @@ def test_training_and_checkpoint_reload_preserve_construction(
     loader = DataLoader(
         Samples(
             [
-                {
-                    "layers": {
-                        "image": image,
-                        "label": torch.tensor([[[0, 1], [1, 0]]]),
-                    },
-                    "model_context": {"offset": torch.tensor(0.0)},
-                }
+                (
+                    {"image": image, "offset": torch.tensor(0.0)},
+                    torch.tensor([[[0, 1], [1, 0]]]),
+                )
             ]
         ),
         batch_size=1,
@@ -323,8 +364,8 @@ def test_training_and_checkpoint_reload_preserve_construction(
     assert isinstance(model, SegmentationModel)
     assert model.factor.item() > 1.0
     torch.testing.assert_close(
-        restored(image.unsqueeze(0), offset=torch.tensor(0.0)),
-        task(image.unsqueeze(0), offset=torch.tensor(0.0)),
+        restored(image=image.unsqueeze(0), offset=torch.tensor(0.0)),
+        task(image=image.unsqueeze(0), offset=torch.tensor(0.0)),
     )
     assert restored.hparams["model_chain"] == stages
     assert restored.hparams == task.hparams
@@ -424,13 +465,9 @@ def test_lightning_predict_tiles_stitches_logits_on_source_grid(stages, tmp_path
     assert len(set(seen_centres)) > 1
     merger = tiles.merger(window="hann")
     indices = []
-    for batch in predictions:
-        assert isinstance(batch, dict)
-        assert set(batch) == {"logits", "index"}
-        indices.extend(batch["index"].tolist())
-        merger.add(
-            dict(zip(batch["index"].tolist(), batch["logits"].numpy(), strict=True))
-        )
+    for logits, index in predictions:
+        indices.extend(index.tolist())
+        merger.add(dict(zip(index.tolist(), logits.numpy(), strict=True)))
     assert indices == list(reversed(range(len(tiles))))
     output = merger.merge()[0]
     assert output.odc.geobox == scene.odc.geobox
@@ -455,16 +492,9 @@ def test_predict_preserves_per_tile_context_and_indices(stages, shape):
     image = torch.zeros(shape)
     offset = torch.tensor([3.0, 7.0]).reshape(2, *([1] * (len(shape) - 1)))
     indices = torch.tensor([19, 2])
-    result = task.predict_step(
-        {
-            "image": image,
-            "index": indices,
-            "model_context": {"offset": offset},
-        },
-        0,
-    )
-    torch.testing.assert_close(result["logits"], image + offset)
-    assert result["index"] is indices
+    logits, returned = task.predict_step(({"image": image, "offset": offset}, indices), 0)
+    torch.testing.assert_close(logits, image + offset)
+    assert returned is indices
 
 
 def test_validation_and_test_evaluate_prepared_tiles(stages, tmp_path):
@@ -478,10 +508,10 @@ def test_validation_and_test_evaluate_prepared_tiles(stages, tmp_path):
     loader = DataLoader(
         Samples(
             [
-                {
-                    "layers": {"image": image, "label": torch.tensor([[[0, 1, 0]]])},
-                    "model_context": {"offset": torch.tensor(0.0)},
-                }
+                (
+                    {"image": image, "offset": torch.tensor(0.0)},
+                    torch.tensor([[[0, 1, 0]]]),
+                )
             ]
         ),
         batch_size=1,
