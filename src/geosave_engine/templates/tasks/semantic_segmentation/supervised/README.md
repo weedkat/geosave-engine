@@ -1,9 +1,8 @@
 # Semantic segmentation
 
-`configs/model.yaml` configures separate Lightning model and data objects.
-`configs/model_spec.yaml` accompanies the model and describes its source bands,
-preprocessing and output legend. Keep the four input channels in B02, B03, B04,
-B08 order and the two output classes aligned when editing these documents.
+`configs/model.yaml` configures the Lightning model and data objects.
+`configs/model_spec.yaml` accompanies the model and declares its required source
+bands, lazy preprocessing, and future per-sample inference input.
 
 ## Prepare a raster
 
@@ -13,55 +12,47 @@ Run the local example from this workspace; it needs no downloads or model:
 uv run python scripts/prepare_example.py
 ```
 
-The script creates a small lazy raster, masks nodata and unpacks reflectance.
-It prints B08 values of approximately `0.6`. Use the same steps on your own raster:
+Input is a packed, lazy four-band Sentinel-2 `xarray.Dataset`. Output is a
+sample-ready lazy Dataset with nodata masked and reflectance unpacked. The
+example computes only the small result it prints.
 
 ```python
-from geosave_engine.workflow import Processor
+from geosave_engine.workflow.specs import ModelSpec
+from geosave_engine.workflow.tasks.preprocess import Preprocessor
 
-prepare = Processor.load("configs/model_spec.yaml", stage="preprocessing")
-image = prepare({"sentinel_2_l2a": optical})["image"]
+spec = ModelSpec.load("configs/model_spec.yaml")
+image = Preprocessor(spec).run({"sentinel_2_l2a": optical})["image"]
 ```
 
-Inputs and results are ordinary Python objects. The returned dictionary contains
-both supplied inputs and named results. Preparation stays lazy; the example
-calls `.compute()` only to display pixels. Each YAML step names its result,
-`call` selects a function or bound method, and `kwargs` supplies arguments.
-`!ref image` refers to a prior result; ordinary text remains a literal value.
-
-Job inputs, query/load options, output paths and Prefect settings are supplied
-by the caller in Python, separately from the model document. Its source declares
-the STAC collection and endpoints used for acquisition.
+Job areas, dates, query/load options, destinations, and Prefect settings are
+caller-owned flow parameters. Collection identity, endpoint priority, source
+requirements, and model-specific preparation stay with the model document.
 
 ## Prepare training items
 
 The configured `SemanticSegmentationDataModule` defines the Lightning lifecycle
 and ordinary PyTorch `DataLoader` behavior. Its storage-specific `_dataset`
-method is intentionally a skeleton. Subclass it to construct a `torch.utils.data.Dataset`
-for each path, then point `data.class_path` at that subclass.
+method is intentionally a skeleton. Subclass it to construct a
+`torch.utils.data.Dataset` for each path, then point `data.class_path` at that
+subclass.
 
 Each dataset item is `({"image": image, ...}, target)`, where named inputs match
-the model chain. For this example, `image` is an unpacked floating-point tensor
-with shape `[4, H, W]` and `target` is an `int64` class mask with shape `[H, W]`
-or `[1, H, W]`. Use pixel codes 0 for background, 1 for vegetation, and 255 for
-ignored pixels. Band selection, nodata handling, tensor conversion, and paired
-augmentation belong in the dataset implementation.
+the model chain. For this example, `image` is a floating-point tensor with shape
+`[4, H, W]`, and `target` is an `int64` class mask with shape `[H, W]` or
+`[1, H, W]`. Use pixel code 255 for ignored pixels.
 
-Train from the workspace after selecting that data-module subclass:
+Train after selecting the data-module subclass:
 
 ```bash
 uv run python main.py fit --config configs/model.yaml
 ```
 
-The task owns its criterion, optimizer, and scheduler. Model-specific weight
-downloads may require access to the selected backbone's repository.
+## Inference and postprocessing status
 
-## Interpret predictions
+The model spec declares `image.gs.to_tensor(dtype="float32")` as the future
+inference-input conversion. The current workflow validates and round-trips that
+call but does not execute inference: bounded sampling, batching, model loading,
+device policy, and prediction deployment still need their own design.
 
-Processing stages run independently. A caller can extend the same document with
-postprocessing calls and execute them with
-`Processor.load("configs/model_spec.yaml", stage="postprocessing")` using a
-supplied `prediction`. The template declares its output legend but no inference
-or postprocessing calls; model loading and inference remain caller-owned.
-For tiled predictions, merge logits before assigning classes. The caller owns
-the accumulator and batch lifecycle; other output types need no merging steps.
+`postprocessing` is intentionally empty. Prediction interpretation, tiling, and
+merging are not implemented by this workflow revision.
