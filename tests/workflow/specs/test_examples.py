@@ -7,8 +7,8 @@ import numpy as np
 from dask.callbacks import Callback
 
 from geosave_engine.cli.core.workspace import create_workspace
+from geosave_engine.workflow.flows import preprocess
 from geosave_engine.workflow.specs import ModelSpec, Ref
-from geosave_engine.workflow.tasks.preprocess import Preprocessor
 
 
 def test_shipped_model_spec_round_trips_as_inert_declarations(tmp_path):
@@ -43,7 +43,7 @@ def test_value_declarations_round_trip_without_loading_calls(tmp_path):
     assert spec.preprocessing["record"].kwargs["text"] == "!ref value"
 
 
-def test_shipped_preprocessing_stays_lazy_and_sample_ready(raw):
+def test_shipped_preprocessing_stays_lazy_and_sample_ready(raw, prefect_server):
     optical = raw["optical"].rename({"red": "B04", "nir": "B08"})
     optical["B02"] = optical.B04.copy()
     optical["B03"] = optical.B04.copy()
@@ -57,23 +57,17 @@ def test_shipped_preprocessing_stays_lazy_and_sample_ready(raw):
     computed = []
 
     with Callback(posttask=lambda *args: computed.append(True)):
-        prepared = Preprocessor(ModelSpec.load(path)).run({"sentinel_2_l2a": optical})
+        prepared = preprocess({"sentinel_2_l2a": optical}, ModelSpec.load(path))
 
     assert computed == []
-    assert list(prepared["sentinel_2_l2a"].data_vars) == [
-        "B02",
-        "B03",
-        "B04",
-        "B08",
-    ]
-    assert prepared["sentinel_2_l2a"].B04.data is optical.B04.data
+    assert set(prepared) == {"valid_pixels", "image"}
     assert list(prepared["image"].data_vars) == ["B02", "B03", "B04", "B08"]
     assert isinstance(prepared["image"].B04.data, da.Array)
     np.testing.assert_allclose(prepared["image"].B08.compute(), 0.6)
     np.testing.assert_allclose(optical.B08.compute(), 6000)
 
 
-def test_value_declarations_execute_with_assignment_semantics():
+def test_value_declarations_execute_with_assignment_semantics(prefect_server):
     path = Path(__file__).with_name("fixtures") / "values.yaml"
     audit = {}
     supplied = {
@@ -82,7 +76,7 @@ def test_value_declarations_execute_with_assignment_semantics():
         "audit": audit,
     }
 
-    prepared = Preprocessor(ModelSpec.load(path)).run(supplied)
+    prepared = preprocess(supplied, ModelSpec.load(path))
 
     assert supplied["value"] == 2.0
     assert prepared["value"] == 6.0

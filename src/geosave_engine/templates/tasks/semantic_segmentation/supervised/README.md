@@ -17,11 +17,11 @@ sample-ready lazy Dataset with nodata masked and reflectance unpacked. The
 example computes only the small result it prints.
 
 ```python
+from geosave_engine.workflow.flows import preprocess
 from geosave_engine.workflow.specs import ModelSpec
-from geosave_engine.workflow.tasks.preprocess import Preprocessor
 
 spec = ModelSpec.load("configs/model_spec.yaml")
-image = Preprocessor(spec).run({"sentinel_2_l2a": optical})["image"]
+image = preprocess({"sentinel_2_l2a": optical}, spec)["image"]
 ```
 
 Job areas, dates, query/load options, destinations, and Prefect settings are
