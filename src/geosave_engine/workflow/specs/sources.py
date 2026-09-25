@@ -12,7 +12,7 @@ import xarray as xr
 from geosave_engine.geodata import attrs
 from geosave_engine.geodata.attrs.model import REGISTERED_ATTR_KEYS
 
-from .base import SpecModel, Text, unique
+from .base import SpecModel, Text
 
 
 class FieldRequirement(SpecModel):
@@ -35,7 +35,8 @@ class FieldRequirement(SpecModel):
 
     @model_validator(mode="after")
     def _validate_required_fields(self) -> Self:
-        unique(self.required, "required")
+        if len(self.required) != len(set(self.required)):
+            raise ValueError("required must not contain duplicate names")
         return self
 
     @property
@@ -207,14 +208,17 @@ class RasterRequirement(SpecModel):
     def _validate_structure(self) -> Self:
         if (self.collection is None) != (self.endpoints is None):
             raise ValueError("collection and endpoints must be supplied together")
-        if self.endpoints is not None:
-            unique(tuple(str(endpoint) for endpoint in self.endpoints), "endpoints")
+        endpoints = tuple(str(endpoint) for endpoint in self.endpoints or ())
+        if len(endpoints) != len(set(endpoints)):
+            raise ValueError("endpoints must not contain duplicate names")
         if (self.variables is None) == (self.channels is None):
             raise ValueError("Exactly one of variables or channels is required")
-        if self.variables is not None:
-            unique(self.variables, "variables")
-        if self.dims is not None:
-            unique(self.dims, "dims")
+        if self.variables is not None and len(self.variables) != len(
+            set(self.variables)
+        ):
+            raise ValueError("variables must not contain duplicate names")
+        if self.dims is not None and len(self.dims) != len(set(self.dims)):
+            raise ValueError("dims must not contain duplicate names")
         if self.dtypes is not None:
             for dtype in self.dtypes:
                 try:

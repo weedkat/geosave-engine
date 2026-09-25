@@ -1,0 +1,40 @@
+# Same grammar with non-raster data. Runtime bindings need no fake raster source.
+schema_version: 2
+sources: {}
+preprocessing:
+  # Resolve the old value (2.0), then replace its binding with the return (6.0).
+  value:
+    call: !ref scale
+    kwargs:
+      value: !ref value
+      factor: 3
+  squared:
+    call: builtins.pow
+    kwargs:
+      base: !ref value
+      exp: 2
+  # The whole tuple return is bound; there is no automatic unpacking.
+  ratio:
+    call: !ref value.as_integer_ratio
+  record:
+    call: builtins.dict
+    kwargs:
+      nested: [!ref value, {square: !ref squared}]
+      literal: {ref: value}
+      text: '!ref value'
+      enabled: true
+      missing: null
+  # Explicit mutation: audit changes; recorded is None, not audit.
+  recorded:
+    call: !ref audit.update
+    kwargs:
+      latest: !ref record
+  table:
+    call: pandas.DataFrame
+    kwargs:
+      data:
+        value: [!ref value]
+        squared: [!ref squared]
+  array:
+    call: !ref table.to_numpy
+postprocessing: {}

@@ -12,7 +12,7 @@ from geosave_engine.cli.core.workspace import create_workspace
 from geosave_engine.ml.cli import GeosaveCLI
 from geosave_engine.ml.data import SemanticSegmentationDataModule
 from geosave_engine.ml.tasks import SemanticSegmentationTask
-from geosave_engine.workflow.spec import ModelSpec
+from geosave_engine.workflow.specs import ModelSpec, Ref
 from geosave_engine.cli.core.templates import get_tasks
 
 
@@ -23,7 +23,7 @@ def workspace(tmp_path, monkeypatch):
     return tmp_path
 
 
-def test_segmentation_configs_agree_on_input_and_output(workspace):
+def test_segmentation_configs_agree_on_model_inputs(workspace):
     spec = ModelSpec.load(workspace / "configs/model_spec.yaml")
     config = yaml.safe_load((workspace / "configs/model.yaml").read_text())
     source = spec.sources["sentinel_2_l2a"]
@@ -36,10 +36,9 @@ def test_segmentation_configs_agree_on_input_and_output(workspace):
     assert source.require_crs
     model = SemanticSegmentationTask(**config["model"]["init_args"])
     assert model.in_channels == len(source.variables) == 4
-    legend = spec.outputs["prediction"].legend
-    assert legend.class_map == {0: "background", 1: "vegetation"}
-    assert legend.color_map == {0: "#000000", 1: "#00ff00"}
-    assert model.num_classes == len(legend.class_map) == 2
+    assert spec.inference["image"].call == Ref("image.gs.to_tensor")
+    assert spec.inference["image"].kwargs == {"dtype": "float32"}
+    assert model.num_classes == 2
     assert config["data"]["class_path"] == (
         "geosave_engine.ml.data.SemanticSegmentationDataModule"
     )
@@ -95,6 +94,7 @@ def test_generated_entrypoint_parses_library_lightning_pair(
     )
 
 
+@pytest.mark.slow
 def test_custom_lightning_workspace_runs_one_train_and_validation_batch(tmp_path):
     assert "lightning" in get_tasks()["custom"]
     create_workspace(tmp_path, "custom", "lightning")

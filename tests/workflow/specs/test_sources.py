@@ -10,7 +10,7 @@ import xarray as xr
 from pydantic import ValidationError
 
 from geosave_engine.geodata.core.raster import raster
-from geosave_engine.workflow.spec import RasterRequirement
+from geosave_engine.workflow.specs import RasterRequirement
 
 
 @pytest.mark.parametrize(
@@ -28,7 +28,7 @@ from geosave_engine.workflow.spec import RasterRequirement
         },
     ],
 )
-def test_acquisition_identity_requires_collection_and_unique_http_endpoints(settings):
+def test_source_identity_requires_collection_and_unique_http_endpoints(settings):
     with pytest.raises(ValidationError):
         RasterRequirement(channels=3, **settings)
 

@@ -12,8 +12,9 @@ preprocessing:
     call: !ref sentinel_2_l2a.gs.to_nan
   image:
     call: !ref valid_pixels.gs.unpack
-outputs:
-  prediction:
-    legend:
-      class_map: {0: background, 1: vegetation}
-      color_map: {0: "#000000", 1: "#00ff00"}
+inference:
+  image:
+    call: !ref image.gs.to_tensor
+    kwargs:
+      dtype: float32
+postprocessing: {}

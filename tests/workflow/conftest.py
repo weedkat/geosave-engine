@@ -13,7 +13,7 @@ from geosave_engine.geodata.core.anchor import GeoAnchor
 from geosave_engine.geodata.core.raster import raster
 from geosave_engine.geodata.stac.query import StacQuery
 from geosave_engine.geodata.stac.source import StacSource
-from geosave_engine.workflow.spec import ModelSpec, RasterRequirement
+from geosave_engine.workflow.specs import ModelSpec, RasterRequirement
 
 
 @pytest.fixture

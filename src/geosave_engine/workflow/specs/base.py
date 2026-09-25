@@ -18,9 +18,3 @@ class SpecModel(BaseModel):
         validate_default=True,
         revalidate_instances="always",
     )
-
-
-def unique(values: tuple[str, ...], label: str) -> None:
-    """Reject duplicate names in an ordered declaration."""
-    if len(values) != len(set(values)):
-        raise ValueError(f"{label} must not contain duplicate names")
