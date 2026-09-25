@@ -1,17 +1,18 @@
 from copy import deepcopy
-from importlib import import_module
-from typing import Any, Literal, Required, TypedDict
+from typing import Any
 
 import torch
-from torch import nn
-from torch.optim import Optimizer
-from torch.optim.lr_scheduler import LRScheduler
 from lightning import LightningModule
 from lightning.pytorch.utilities.types import OptimizerLRScheduler
 
-from geosave_engine.ml.model_chain import ModelChain
-from geosave_engine.ml.registry import build_model
 from geosave_engine.ml.metrics.semantic_segmentation import SemanticSegmentationMetrics
+from geosave_engine.ml.model_chain import ModelChain
+from geosave_engine.ml.registry import (
+    build_criterion,
+    build_model,
+    build_optimizer,
+    build_scheduler,
+)
 
 
 def softmax_argmax(logits: torch.Tensor) -> tuple[torch.Tensor, torch.Tensor]:
@@ -58,37 +59,6 @@ def apply_thresholds(
         preds = torch.where(mask.bool(), preds.new_full((), ignore_index), preds)
 
     return preds, max_probs
-
-
-class ModuleSpec(TypedDict, total=False):
-    """Importable PyTorch class and its constructor arguments."""
-
-    class_path: Required[str]
-    init_args: dict[str, Any]
-
-
-class OptimizerSpec(ModuleSpec, total=False):
-    """Optimizer arguments and overrides keyed by exact model-chain stage names."""
-
-    groups: dict[str, dict[str, Any]]
-
-
-class LRSchedulerSpec(ModuleSpec, total=False):
-    """Scheduler arguments and Lightning scheduling metadata."""
-
-    interval: Literal["step", "epoch"]
-    frequency: int
-    monitor: str
-    strict: bool
-    name: str
-
-
-def _resolve_class(path: str, base: type) -> type:
-    module, _, name = path.rpartition(".")
-    cls = getattr(import_module(module), name)
-    if not isinstance(cls, type) or not issubclass(cls, base):
-        raise TypeError(f"{path!r} must name a {base.__name__} subclass")
-    return cls
 
 
 class SemanticSegmentationTask(LightningModule):
@@ -143,9 +113,9 @@ class SemanticSegmentationTask(LightningModule):
         model_chain: dict[str, dict[str, Any]] | None = None,
         input_size: int | tuple[int, int] = 224,
         ignore_index: int = 255,
-        criterion: ModuleSpec | None = None,
-        optimizer: OptimizerSpec | None = None,
-        lr_scheduler: LRSchedulerSpec | None = None,
+        criterion: dict[str, Any] | None = None,
+        optimizer: dict[str, Any] | None = None,
+        lr_scheduler: dict[str, Any] | None = None,
         metrics: list[str] | None = None,
         class_thresholds: list[float] | None = None,
     ) -> None:
@@ -160,11 +130,9 @@ class SemanticSegmentationTask(LightningModule):
         if not model_chain:
             raise ValueError("Supply at least one model stage")
         if criterion is None:
-            criterion = {"class_path": "torch.nn.CrossEntropyLoss"}
+            criterion = {"name": "cross_entropy"}
         if optimizer is None:
-            optimizer = {
-                "class_path": "torch.optim.AdamW", "init_args": {"lr": 1e-3}
-            }
+            optimizer = {"name": "adamw", "init_args": {"lr": 1e-3}}
         self.save_hyperparameters()
         self.model_chain = model_chain
 
@@ -175,8 +143,8 @@ class SemanticSegmentationTask(LightningModule):
         )
         self.ignore_index = ignore_index
 
-        self.optimizer_spec = optimizer
-        self.scheduler_spec = lr_scheduler
+        self.optimizer_spec = deepcopy(optimizer)
+        self.scheduler_spec = deepcopy(lr_scheduler)
         self.metrics_config = metrics
         if class_thresholds is not None and len(class_thresholds) != self.num_classes:
             raise ValueError(
@@ -185,10 +153,12 @@ class SemanticSegmentationTask(LightningModule):
             )
         self._initial_class_thresholds = class_thresholds
 
-        criterion_cls = _resolve_class(criterion["class_path"], nn.Module)
-        self.criterion = criterion_cls(
-            **{"ignore_index": ignore_index, **criterion.get("init_args", {})}
-        )
+        criterion_spec = deepcopy(criterion)
+        criterion_spec["init_args"] = {
+            "ignore_index": ignore_index,
+            **criterion_spec.get("init_args", {}),
+        }
+        self.criterion = build_criterion(criterion_spec)
 
     def configure_model(self) -> None:
         """Construct the model and prediction thresholds."""
@@ -217,52 +187,14 @@ class SemanticSegmentationTask(LightningModule):
         self.register_buffer("class_thresholds", initial)
 
     def configure_optimizers(self) -> OptimizerLRScheduler:
-        groups = self.optimizer_spec.get("groups", {})
-        named = self.model._modules
-        unknown = groups.keys() - named.keys()
-        if unknown:
-            raise ValueError(
-                f"Unknown model-chain optimizer groups: {sorted(unknown)}"
-            )
-        selected = {
-            id(parameter)
-            for stage in groups
-            for parameter in named[stage].parameters()
-        }
-        param_groups = [
-            {
-                "params": [p for p in named[stage].parameters() if p.requires_grad],
-                **options,
-            }
-            for stage, options in groups.items()
-        ]
-        remaining = [
-            p
-            for p in self.model.parameters()
-            if p.requires_grad and id(p) not in selected
-        ]
-        if remaining:
-            param_groups.append({"params": remaining})
-        optimizer_cls = _resolve_class(self.optimizer_spec["class_path"], Optimizer)
-        optimizer = optimizer_cls(
-            param_groups, **self.optimizer_spec.get("init_args", {})
-        )
+        optimizer = build_optimizer(self.optimizer_spec, self.model)
 
         if self.scheduler_spec is None:
             return optimizer
 
-        scheduler_cls = _resolve_class(self.scheduler_spec["class_path"], LRScheduler)
-        scheduler = scheduler_cls(
-            optimizer, **self.scheduler_spec.get("init_args", {})
-        )
-        metadata = {
-            key: self.scheduler_spec[key]
-            for key in ("interval", "frequency", "monitor", "strict", "name")
-            if key in self.scheduler_spec
-        }
         return {
             "optimizer": optimizer,
-            "lr_scheduler": {"scheduler": scheduler, **metadata},
+            "lr_scheduler": build_scheduler(self.scheduler_spec, optimizer),
         }
 
     def setup(self, stage: str | None = None) -> None:

@@ -12,7 +12,6 @@ import yaml
 
 from geosave_engine.ml.cli import GeosaveCLI
 from geosave_engine.ml.model_chain import chain_step
-from geosave_engine.ml.registry import StageSpec
 from geosave_engine.ml.tasks import SemanticSegmentationTask
 
 
@@ -48,7 +47,7 @@ class Samples(Dataset):
 
 
 @pytest.fixture
-def stages() -> dict[str, StageSpec]:
+def stages() -> dict[str, dict[str, object]]:
     return {"model": {"class_path": f"{__name__}.SegmentationModel"}}
 
 
@@ -77,6 +76,29 @@ def test_task_defaults_and_authoritative_dimensions(stages):
     optimizer = task.configure_optimizers()
     assert isinstance(optimizer, torch.optim.AdamW)
     assert optimizer.param_groups[0]["lr"] == 1e-3
+
+
+def test_task_uses_registered_training_builders(stages) -> None:
+    task = SemanticSegmentationTask(
+        in_channels=2,
+        num_classes=2,
+        model_chain=stages,
+        criterion={"name": "cross_entropy", "init_args": {"ignore_index": -1}},
+        optimizer={"name": "sgd", "init_args": {"lr": 0.1}},
+        lr_scheduler={
+            "name": "reduce_on_plateau",
+            "init_args": {"patience": 2},
+            "monitor": "val_loss",
+        },
+    )
+    task.configure_model()
+
+    configured = task.configure_optimizers()
+
+    assert isinstance(task.criterion, nn.CrossEntropyLoss)
+    assert task.criterion.ignore_index == -1
+    assert isinstance(configured["optimizer"], torch.optim.SGD)
+    assert configured["lr_scheduler"]["monitor"] == "val_loss"
 
 
 @pytest.mark.parametrize(
@@ -193,7 +215,7 @@ def test_unknown_optimizer_groups_fail_before_optimizer_construction(stages, gro
         },
     )
     task.configure_model()
-    with pytest.raises(ValueError, match="Unknown model-chain optimizer groups"):
+    with pytest.raises(ValueError, match="Unknown model groups"):
         task.configure_optimizers()
 
 
@@ -209,7 +231,7 @@ def test_scheduler_metadata_and_plateau_monitoring(stages):
             "interval": "epoch",
             "frequency": 3,
             "strict": False,
-            "name": "rate",
+            "scheduler_name": "rate",
         },
     )
     task.configure_model()
@@ -279,7 +301,7 @@ def test_template_preserves_task_optimizer_configuration(monkeypatch):
 
 
 def test_forward_preserves_prepared_inputs_and_routes_context(
-    stages: dict[str, StageSpec],
+    stages: dict[str, dict[str, object]],
 ) -> None:
     task = SemanticSegmentationTask(
         model_chain=stages,
@@ -301,7 +323,9 @@ def test_forward_preserves_prepared_inputs_and_routes_context(
     assert not hasattr(task, "preprocess")
 
 
-def test_steps_accept_model_inputs_and_target_tuples(stages: dict[str, StageSpec]) -> None:
+def test_steps_accept_model_inputs_and_target_tuples(
+    stages: dict[str, dict[str, object]],
+) -> None:
     task = SemanticSegmentationTask(
         model_chain=stages,
         in_channels=2,
@@ -327,7 +351,7 @@ def test_steps_accept_model_inputs_and_target_tuples(stages: dict[str, StageSpec
     ],
 )
 def test_incompatible_batches_raise_native_python_errors(
-    stages: dict[str, StageSpec], batch: object
+    stages: dict[str, dict[str, object]], batch: object
 ) -> None:
     task = SemanticSegmentationTask(
         model_chain=stages,
@@ -343,7 +367,7 @@ def test_incompatible_batches_raise_native_python_errors(
 
 
 def test_training_and_checkpoint_reload_preserve_construction(
-    stages: dict[str, StageSpec], tmp_path: Path
+    stages: dict[str, dict[str, object]], tmp_path: Path
 ) -> None:
     task = SemanticSegmentationTask(
         model_chain=stages,
@@ -408,7 +432,7 @@ def test_training_and_checkpoint_reload_preserve_construction(
 
 
 def test_lightning_cli_parses_nested_construction_specs(
-    stages: dict[str, StageSpec], tmp_path: Path
+    stages: dict[str, dict[str, object]], tmp_path: Path
 ) -> None:
     cli = GeosaveCLI(
         SemanticSegmentationTask,

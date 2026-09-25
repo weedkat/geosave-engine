@@ -35,41 +35,26 @@ the STAC collection and endpoints used for acquisition.
 
 ## Prepare training items
 
-Write separate LitData datasets under `data/train` and `data/val` (or set the
-paths in `model.yaml`). Each decoded item is `(image, target)` with an unpacked
-floating-point image of shape `[4, H, W]` and an `int64` class mask of shape
-`[H, W]` or `[1, H, W]`. Use pixel codes 0 for background, 1 for vegetation,
-and 255 for ignored pixels. Prepare consistent tile sizes before writing.
-For example, LitData can optimize your own prepared pairs:
+The configured `SemanticSegmentationDataModule` defines the Lightning lifecycle
+and ordinary PyTorch `DataLoader` behavior. Its storage-specific `_dataset`
+method is intentionally a skeleton. Subclass it to construct a `torch.utils.data.Dataset`
+for each path, then point `data.class_path` at that subclass.
 
-```python
-from litdata import optimize
+Each dataset item is `({"image": image, ...}, target)`, where named inputs match
+the model chain. For this example, `image` is an unpacked floating-point tensor
+with shape `[4, H, W]` and `target` is an `int64` class mask with shape `[H, W]`
+or `[1, H, W]`. Use pixel codes 0 for background, 1 for vegetation, and 255 for
+ignored pixels. Band selection, nodata handling, tensor conversion, and paired
+augmentation belong in the dataset implementation.
 
-def prepare_item(item):
-    image, target = item
-    return image, target
-
-optimize(prepare_item, inputs=train_pairs, output_dir="data/train", chunk_bytes="64MB")
-optimize(prepare_item, inputs=val_pairs, output_dir="data/val", chunk_bytes="64MB")
-```
-
-`modules.data.SegmentationDataModule` reads these items with LitData, collates
-them into batches, then applies paired image/mask augmentation during training.
-Validation uses the prepared pixels without stochastic augmentation. Batches
-are `({"image": image}, target)`. Band selection, nodata handling, unpacking and
-conversion to tensors belong to preparation; the training task receives tensors.
-`input_size` supplies the default size for size-aware augmentations and model
-construction; the data module does not implicitly resize samples.
-
-Train from the workspace with the optional augmentation overlay:
+Train from the workspace after selecting that data-module subclass:
 
 ```bash
-uv run python main.py fit --config configs/model.yaml --config configs/augmentation.yaml
+uv run python main.py fit --config configs/model.yaml
 ```
 
-The overlay targets `data.init_args.augmentations`. The task owns its criterion,
-optimizer and scheduler. Model-specific weight downloads may require access to
-the selected backbone's repository.
+The task owns its criterion, optimizer, and scheduler. Model-specific weight
+downloads may require access to the selected backbone's repository.
 
 ## Interpret predictions
 

@@ -28,25 +28,24 @@ model:
       decoder: {name: dpt}
       head: {name: dense}
     optimizer:
-      class_path: torch.optim.AdamW
+      name: adamw
       init_args: {lr: 0.001, weight_decay: 0.01}
       groups:
         encoder: {lr: 0.0001}
     lr_scheduler:
-      class_path: torch.optim.lr_scheduler.CosineAnnealingLR
+      name: cosine_annealing
       init_args: {T_max: 100}
       interval: epoch
     criterion:
-      class_path: torch.nn.CrossEntropyLoss
+      name: cross_entropy
       init_args: {ignore_index: 255}
     metrics: [iou.macro, f1.macro]
 
 data:
-  class_path: modules.data.SegmentationDataModule
+  class_path: geosave_engine.ml.data.SemanticSegmentationDataModule
   init_args:
     train_path: data/train
     val_path: data/val
     input_size: 224
     batch_size: 8
     num_workers: 4
-    augmentations: []
