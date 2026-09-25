@@ -6,30 +6,16 @@ import json
 from threading import Thread
 from urllib.parse import parse_qs, urlparse
 
-import dask.array as da
 import numpy as np
 from prefect import Flow
 from prefect.settings import temporary_settings
 from prefect.task_runners import ThreadPoolTaskRunner
 from prefect.testing.utilities import prefect_test_harness
 import pytest
-import torch
-from torch import nn
 
-from geosave_engine.geodata.core.raster import raster
-from geosave_engine.geodata.core.stack import stack
 from geosave_engine.geodata.utils.io import zarr
-from geosave_engine.ml.models.contract import ModelChain, chain_step
-from geosave_engine.workflow import ingest, predict
-from geosave_engine.workflow.io import write_stack
-from geosave_engine.workflow.spec import (
-    InferenceSpec,
-    ModelSpec,
-    RasterRequirement,
-    TensorInputSpec,
-    TilingSpec,
-    TimeWindowSpec,
-)
+from geosave_engine.workflow.flows import ingest
+from geosave_engine.workflow.spec import ModelSpec, RasterRequirement
 
 
 @pytest.fixture(scope="module", autouse=True)
@@ -39,109 +25,6 @@ def prefect_server():
         prefect_test_harness(),
     ):
         yield
-
-
-class Identity(nn.Module):
-    def __init__(self):
-        super().__init__()
-        self.gain = nn.Parameter(torch.tensor(1.0))
-
-    @chain_step(head=True)
-    def forward(self, image: torch.Tensor) -> torch.Tensor:
-        return image * self.gain
-
-
-class TemporalMean(Identity):
-    @chain_step(head=True)
-    def forward(self, image: torch.Tensor) -> torch.Tensor:
-        return image.mean(dim=1) * self.gain
-
-
-class Broken(Identity):
-    @chain_step(head=True)
-    def forward(self, image: torch.Tensor) -> torch.Tensor:
-        raise RuntimeError("inference failure")
-
-
-def save_model(path, spec, model_class=Identity):
-    model = ModelChain(
-        stages={"model": {"class_path": f"{__name__}.{model_class.__name__}"}}
-    )
-    model.save_pretrained(path)
-    spec.save(path)
-    return str(path)
-
-
-def test_predict_flow_loads_artifacts_and_returns_completed_paths(tmp_path, spec, raw):
-    source = write_stack(stack(raw), tmp_path / "raw.zarr")
-    model = save_model(tmp_path / "model", spec)
-    paths = predict(
-        source, model=model, output=str(tmp_path / "predictions"), batch_size=2
-    )
-    assert type(predict) is Flow
-    assert len(paths) == 1
-    with zarr.read(paths[0]) as result:
-        assert result.gs.geobox == raw["optical"].gs.geobox
-        np.testing.assert_allclose(result.logits.isel(band=0), 6)
-        np.testing.assert_allclose(result.logits.isel(band=1), 2)
-
-
-def test_predict_accepts_named_paths_and_persists_preparation(tmp_path, spec, raw):
-    source = zarr.write(raw["optical"], tmp_path / "image.zarr")
-    model = save_model(tmp_path / "model", spec)
-    paths = predict(
-        {"optical": str(source)},
-        model=model,
-        output=str(tmp_path / "predictions"),
-        prepared_output=str(tmp_path / "prepared.zarr"),
-    )
-    with zarr.read_stack(tmp_path / "prepared.zarr") as prepared:
-        assert prepared.gs.groups == ("optical",)
-        np.testing.assert_allclose(prepared["optical"].nir.compute(), 6)
-    with zarr.read(paths[0]) as restored:
-        np.testing.assert_allclose(restored.logits.isel(band=0), 6)
-
-
-def test_saved_yaml_runs_temporal_model_and_persists_each_window(tmp_path, raw):
-    series = raster(
-        {
-            "signal": da.from_array(
-                np.broadcast_to(np.array([1.0, 3.0, 5.0])[:, None, None], (3, 4, 4)),
-                chunks=(1, 2, 2),
-            )
-        },
-        raw["optical"].gs.geobox,
-        time=np.array(
-            ["2025-01-01", "2025-01-02", "2025-01-03"], dtype="datetime64[ns]"
-        ),
-    )
-    settings = ModelSpec(
-        sources={
-            "series": RasterRequirement(variables=("signal",), dims=("time", "y", "x"))
-        },
-        inference=InferenceSpec(
-            inputs={"image": TensorInputSpec(raster="series", layout="TCHW")},
-            tiling=TilingSpec(raster="series", tile_shape=(4, 4)),
-            time_window=TimeWindowSpec(size=2, stride=1, tolerance="1D"),
-        ),
-    )
-    model = save_model(tmp_path / "model", settings, TemporalMean)
-    source = write_stack(stack({"series": series}), tmp_path / "series.zarr")
-    paths = predict(source, model=model, output=str(tmp_path / "predictions"))
-    assert len(paths) == 2
-    for path, expected, day in zip(paths, (2, 4), ("01", "02"), strict=True):
-        with zarr.read(path) as result:
-            np.testing.assert_allclose(result.logits, expected)
-            assert result.gs.geobox == series.gs.geobox
-            assert result.attrs["time_coverage_start"].startswith(f"2025-01-{day}")
-
-
-def test_flow_failures_propagate_model_error_and_leave_no_output(tmp_path, spec, raw):
-    model = save_model(tmp_path / "model", spec, Broken)
-    source = write_stack(stack(raw), tmp_path / "raw.zarr")
-    with pytest.raises(RuntimeError, match="inference failure"):
-        predict(source, model=model, output=str(tmp_path / "predictions"))
-    assert not (tmp_path / "predictions").exists()
 
 
 @contextmanager
@@ -220,6 +103,7 @@ def stac_server(sources):
                                 "rel": "search",
                                 "href": root + "/search",
                                 "method": "POST",
+                                "type": "application/geo+json",
                             },
                             {"rel": "data", "href": root + "/collections"},
                         ],
@@ -251,12 +135,24 @@ def test_ingest_flow_uses_primitive_settings_with_real_stac(tmp_path, spec, loca
     with stac_server(sources) as (url, requests):
         configuration = {
             name: {
-                "url": url,
-                "collection": name,
+                "query": {},
                 "load": {"groupby": "time", "chunks": {"x": 2, "y": 2}},
             }
-            for name in sources
+            for name in spec.sources
         }
+        spec = ModelSpec(
+            schema_version=2,
+            sources={
+                name: RasterRequirement(
+                    **{
+                        **requirement.model_dump(),
+                        "collection": name,
+                        "endpoints": [url],
+                    }
+                )
+                for name, requirement in spec.sources.items()
+            },
+        )
         configured = ingest.with_options(
             task_runner=ThreadPoolTaskRunner(max_workers=1)
         )
@@ -275,8 +171,24 @@ def test_ingest_flow_uses_primitive_settings_with_real_stac(tmp_path, spec, loca
         np.testing.assert_allclose(result["optical"].nir[0, 1:, :], 6000)
 
 
-def test_invalid_output_is_rejected_before_model_loading(tmp_path, spec):
-    model = str(tmp_path / "model")
-    spec.save(model)
-    with pytest.raises(ValueError, match="local"):
-        predict("missing.zarr", model=model, output="s3://bucket/result")
+def test_ingest_requires_model_spec(tmp_path):
+    with pytest.raises(TypeError, match="spec"):
+        ingest.fn({}, {}, output=str(tmp_path / "raw.zarr"))
+
+
+@pytest.mark.parametrize(
+    ("sources", "message"),
+    [
+        ({"optical": {}, "unknown": {}}, "unknown"),
+        ({"other": {}}, "optical"),
+        ({}, "source|Source"),
+    ],
+)
+def test_ingest_requires_exact_model_source_bindings(tmp_path, spec, sources, message):
+    with pytest.raises(ValueError, match=message):
+        ingest.fn(
+            sources,
+            {},
+            output=str(tmp_path / "raw.zarr"),
+            spec=str(spec.save(tmp_path / "model")),
+        )

@@ -1,66 +1,134 @@
-# Model usage specification
+# Model specifications
 
-```python
-from geosave_engine.workflow import preprocess
-from geosave_engine.workflow.examples.reflectance import make_spec, sample_rasters
-from geosave_engine.workflow.spec import ModelSpec
+A model spec accompanies a model and describes its required data and processing.
+It should remain useful to someone using the model without GeoSave's Prefect flows.
+Job-specific locations, dates, paths, query/load options and server settings stay
+in the caller's Python parameters and runtime configuration.
 
-spec = make_spec()
-path = spec.save('artifacts/model')  # artifacts/model/model_spec.yaml
-restored = ModelSpec.load(path)
-prepared = preprocess(sample_rasters(), spec=restored)
-prepared['reflectance'].to_dataset()
+Use
+`Processor.load(path, stage="preprocessing")` or `stage="postprocessing"` to run
+one stage. See the [runnable example](../examples/README.md) first.
+
+```yaml
+schema_version: 2
+sources:
+  optical:
+    variables: [red, nir]
+preprocessing:
+  selected:
+    call: !ref optical.__getitem__
+    kwargs:
+      key: [red, nir]
 ```
 
-The [runnable YAML example](../examples/model_spec.yaml) uses native `gs.to_nan` and `gs.unpack` methods.
-Recipes can select ordered `variables` before their operations. Native method
-signatures are checked against their stage target before execution; custom
-Python `call` paths are imported and checked on loading, without executing them. Save/load accepts a YAML file or artifact
-directory, rejects duplicate YAML keys, and preserves existing model files.
+Input: an `optical` Dataset. Output: `selected`, containing its red and nir bands.
+
+## Fields
 
 | Field | Meaning |
 | --- | --- |
-| `schema_version` | Supported YAML format version, currently `1` |
-| `sources` | Named raw raster requirements and ordered variable selections |
-| `preprocessing` | Output names mapped to a starting `raster`, optional `variables`, and ordered `operations` |
-| `inference.inputs` | Model argument names mapped to raster, variables, dtype, layout and optional normalization |
-| `inference.tiling` | Reference raster, tile dimensions, overlap and merger window |
-| `inference.time_window` | Optional size, tolerance, stride and strict/drop temporal sampling |
-| `postprocessing` | Optional segmentation settings, native method or custom callable consuming merged logits |
+| `schema_version` | Required; currently `2` |
+| `sources` | Required raster requirements; use `{}` when none are needed |
+| `preprocessing` | Ordered preparation steps; defaults to `{}` |
+| `postprocessing` | Ordered interpretation steps; defaults to `{}` |
+| `inference` | Saved declarations only; execution and model loading are deferred |
 
-An operation declares exactly one native `method` or custom Python `call`,
-optional primitive `kwargs`, and optional
-`inputs` mapping keyword argument names to other raster names. It receives the
-current Dataset first for a custom call; native methods are bound to the Dataset.
-Both return a Dataset. Recipes may refer to later recipes;
-cycles, unknown raster names and source/output collisions fail before pixels
-are read. Preprocessing retains selected sources and adds outputs to one native
-DataTree. Each branch gets independent arrays and metadata; Dask data stays lazy.
-Native methods and installed functions own explicit computation, reprojection or alignment.
+Each step names its complete return value. `call` is a module-level import path
+(such as `xarray.merge`) or a reference to a supplied callable or bound method.
+`kwargs` contains the actual keyword arguments and defaults to `{}`. A bound method
+already has its receiver; calls never add arguments or convert outputs implicitly.
 
-Raster names are flat DataTree group names and may contain hyphens and dots.
-When selected sources share a grid, its spatial and CRS coordinate names are
-reserved for the stack root; preprocessing rejects source or output group names
-that collide with them before executing operations. Model argument names are
-Python identifiers. Optional source resolution is a
-positive scalar or `(x, y)` pair in CRS units and validates the existing grid;
-it does not reproject. Source requirements reuse `attrs.create_header` namespaces:
-`root`, `data_vars`, and `coords`, with `models` for registered attrs and
-`foreign` for unregistered keys. `required`, `equals`, and `one_of` use the
-registered field parsers. Validation preserves lazy data and native metadata.
+`sources` names logical data requirements and optional STAC acquisition identity.
+Acquisition can use these requirements to select bands; processors can use them
+to validate supplied data. Processing `kwargs` describe the model's transformations,
+such as band order or normalization. They are not a second set of flow parameters.
 
-Inference bindings omit `variables` to use the prepared order. Channel counts
-for derived recipes are checked against their actual outputs during sampling.
-`tiling.raster` selects the common grid; preparation must align other inputs
-explicitly. `CHW` and `TCHW` are unbatched layouts. `time_window` reuses native
-`window_stack` duration and strict/drop semantics. Segmentation interprets
-spatially merged logits, preserving separate temporal outputs.
+When a model requires merging, its reconstruction calls belong in its own
+`postprocessing` section. The caller supplies request-owned objects and controls
+batching and accumulator lifetime. There is no separate merging configuration file.
 
-Python additionally validates installed callables and dependency references.
-`validated_copy()` revalidates mutable nested dictionaries before execution and
-saving. See the [workflow guide](../README.md) for ingestion and prediction.
+## References and results
 
-Coordinate values stay in xarray, including per-time `sun_azimuth` loaded through
-ODC `with_properties`. `attrs.coords` checks their metadata. `models` and `foreign`
-are siblings within each attrs scope; foreign keys must have no registered owner.
-Segmentation class labels use native Legend tokens, such as `dry_land`.
+- `!ref optical` uses the supplied object; `!ref optical.gs.unpack` uses its bound method.
+- References may appear inside lists and mappings. Plain strings and `{ref: optical}`
+  remain literal values.
+- Dotted paths follow Python attributes, without expressions or implicit dictionary lookup.
+- Steps run in order. References resolve before the result replaces its named binding.
+- Returns may be rasters, tensors, tables, tuples, scalars or `None`.
+- Each invocation returns a fresh dictionary. Referenced objects retain their identity;
+  explicitly called mutating methods can change those objects.
+
+A caller-supplied name can be replaced by a step result, including across stages.
+Duplicate names within one YAML mapping are rejected. Use distinct intermediate
+names within a stage. Missing external names and incompatible raster inputs fail
+before calls run; attributes and call arguments are checked when available.
+Positional-only calls are outside this keyword-argument grammar.
+
+## Source requirements
+
+Requirements select and validate lazy raster views without converting values or
+computing pixels. Only sources needed by the active stage are checked.
+
+| Setting | What it checks |
+| --- | --- |
+| `variables` | Required variable names, in a nonempty list |
+| `channels` | First N positional channels; mutually exclusive with variables |
+| `collection` | STAC collection ID; must be supplied with endpoints |
+| `endpoints` | Nonempty unique HTTP(S) endpoints in acquisition fallback order |
+| `dims` | Exact dimension order for each required variable |
+| `dtypes` | Allowed stored data types |
+| `require_crs` | Whether a spatial grid must be present |
+| `resolution` | Pixel size, as a scalar or `[x, y]` |
+| `attrs` | Required root, variable or coordinate metadata |
+
+Exactly one of `variables` or `channels` is required. The source `type` defaults to
+`raster`, the currently supported validator. Named variables preserve declared
+order; channels selects the first N ordinary variables or the first N bands of a
+single band variable. Multiple variables mixed with a band dimension are ambiguous.
+Other Python objects can be supplied directly without raster requirements.
+Unpacking, alignment and tensor conversion remain explicit operations.
+
+Existing raster requirements omit both `collection` and `endpoints`. Acquisition
+through `ingest` requires both, for example:
+
+```yaml
+sources:
+  imagery:
+    channels: 3
+    collection: sentinel-2-l2a
+    endpoints:
+      - https://primary.test/stac
+      - https://backup.test/stac
+```
+
+Endpoints serialize as strings and preserve their declared order. Runtime settings
+for `imagery` contain only optional `query` and `load` mappings, never a URL or
+collection override. Endpoint fallback checks catalogue and collection availability;
+empty search results and later lazy reads do not retry another endpoint.
+
+## Create and save a spec in Python
+
+```python
+from geosave_engine.workflow.spec import ModelSpec, OperationSpec, Ref
+
+spec = ModelSpec(
+    schema_version=2,
+    sources={},
+    preprocessing={
+        "selected": OperationSpec(
+            call=Ref("optical.__getitem__"), kwargs={"key": ["red", "nir"]}
+        ),
+    },
+)
+path = spec.save("artifacts/model")
+restored = ModelSpec.load(path)
+```
+
+`save` accepts a YAML filename or a directory receiving `model_spec.yaml`. Loading
+and saving preserve values, references and declaration order, but not comments or
+formatting. `ModelSpec.model_validate(spec.model_dump())` also preserves the spec.
+This does not translate arbitrary Python source code.
+
+Use `ModelSpec.load` to read `!ref` tags. Parsing does not import or execute calls;
+running a processor executes the declared Python code. Load specs from your model
+artifact, rather than accepting executable configuration in request bodies.

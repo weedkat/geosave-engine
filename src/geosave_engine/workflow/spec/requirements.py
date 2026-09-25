@@ -6,7 +6,7 @@ from collections.abc import Mapping
 from typing import Annotated, Self
 
 import numpy as np
-from pydantic import Field, JsonValue, model_validator
+from pydantic import Field, HttpUrl, JsonValue, field_serializer, model_validator
 import xarray as xr
 
 from geosave_engine.geodata import attrs
@@ -173,6 +173,8 @@ class RasterRequirement(SpecModel):
     Args:
         variables: Required data variables in their selected order.
         channels: First N channels; mutually exclusive with variables.
+        collection: STAC collection ID, paired with endpoints for acquisition.
+        endpoints: HTTP(S) STAC endpoints in fallback order; omitted for files.
         dims: Exact dimension order required for each selected variable, if set.
         dtypes: Accepted stored dtypes, if constrained.
         require_crs: Require a locatable geospatial grid.
@@ -182,6 +184,8 @@ class RasterRequirement(SpecModel):
 
     variables: Annotated[tuple[Text, ...], Field(min_length=1)] | None = None
     channels: Annotated[int, Field(gt=0)] | None = None
+    collection: Text | None = None
+    endpoints: Annotated[tuple[HttpUrl, ...], Field(min_length=1)] | None = None
     dims: Annotated[tuple[Text, ...], Field(min_length=1)] | None = None
     dtypes: Annotated[tuple[Text, ...], Field(min_length=1)] | None = None
     require_crs: bool = False
@@ -192,8 +196,18 @@ class RasterRequirement(SpecModel):
     ) = None
     attrs: AttrsRequirement = Field(default_factory=AttrsRequirement)
 
+    @field_serializer("endpoints")
+    def _serialize_endpoints(
+        self, endpoints: tuple[HttpUrl, ...] | None
+    ) -> tuple[str, ...] | None:
+        return None if endpoints is None else tuple(str(url) for url in endpoints)
+
     @model_validator(mode="after")
     def _validate_structure(self) -> Self:
+        if (self.collection is None) != (self.endpoints is None):
+            raise ValueError("collection and endpoints must be supplied together")
+        if self.endpoints is not None:
+            unique(tuple(str(endpoint) for endpoint in self.endpoints), "endpoints")
         if (self.variables is None) == (self.channels is None):
             raise ValueError("Exactly one of variables or channels is required")
         if self.variables is not None:

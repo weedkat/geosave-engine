@@ -13,6 +13,50 @@ from geosave_engine.geodata.core.raster import raster
 from geosave_engine.workflow.spec import RasterRequirement
 
 
+@pytest.mark.parametrize(
+    "settings",
+    [
+        {"collection": "sentinel-2-l2a"},
+        {"endpoints": ["https://primary.test/stac"]},
+        {"collection": "", "endpoints": ["https://primary.test/stac"]},
+        {"collection": "sentinel-2-l2a", "endpoints": []},
+        {"collection": "sentinel-2-l2a", "endpoints": ["file:///tmp/catalog"]},
+        {"collection": "sentinel-2-l2a", "endpoints": ["not a URL"]},
+        {
+            "collection": "sentinel-2-l2a",
+            "endpoints": ["https://primary.test/stac", "https://primary.test/stac"],
+        },
+    ],
+)
+def test_acquisition_identity_requires_collection_and_unique_http_endpoints(settings):
+    with pytest.raises(ValidationError):
+        RasterRequirement(channels=3, **settings)
+
+
+def test_endpoints_preserve_priority_and_serialize_as_strings():
+    requirement = RasterRequirement(
+        channels=3,
+        collection="sentinel-2-l2a",
+        endpoints=("https://primary.test/stac", "http://backup.test/stac"),
+    )
+    assert requirement.model_dump()["endpoints"] == (
+        "https://primary.test/stac",
+        "http://backup.test/stac",
+    )
+    assert requirement.model_dump(mode="json")["endpoints"] == [
+        "https://primary.test/stac",
+        "http://backup.test/stac",
+    ]
+    assert RasterRequirement.model_validate(requirement.model_dump()) == requirement
+
+
+def test_persisted_raster_requirements_need_no_acquisition_identity():
+    requirement = RasterRequirement(variables=("nir", "red"))
+    assert requirement.collection is None
+    assert requirement.endpoints is None
+    assert list(requirement.select_raster(packed())) == ["nir", "red"]
+
+
 def packed() -> xr.Dataset:
     return xr.Dataset(
         {
