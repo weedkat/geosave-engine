@@ -140,6 +140,78 @@ GeoSave's generated entry point disables LightningCLI's automatic top-level opti
 and scheduler injection with `auto_configure_optimizers=False`. This prevents a second
 configuration seam from overriding the task's `configure_optimizers` method.
 
+## Source resolution and validation
+
+`ModelSpec.sources` describes the raster contract whether pixels are acquired from
+STAC or already persist in GeoTIFF, Zarr, NetCDF, or a caller-owned xarray object.
+Do not add separate remote and persisted source schemas. Every opened source is
+selected and validated through the same `RasterRequirement` before preprocessing.
+
+A source selects channels in exactly one of two ways:
+
+```yaml
+sources:
+  named:
+    variables: [B02, B03, B04, B08]
+  positional:
+    channels: 3
+```
+
+- `variables` is a nonempty ordered list of required data-variable names.
+- `channels` is a positive integer selecting the first N channels in stored order.
+- Supplying both or neither is invalid.
+- For a Dataset with ordinary band variables, positional selection uses the first N
+  data variables. For one variable carrying a `band` dimension, it uses the first N
+  band positions. Other mixed representations are ambiguous and fail directly.
+- Named selection may use per-variable metadata requirements. Positional selection
+  permits only the `*` data-variable metadata requirement because persisted channel
+  names are deliberately not part of its contract.
+- Selection is an xarray view and does not compute, cast, resample, or unpack pixels.
+
+Replace the two proposed `rgb` and `grayscale` booleans with `channels`. The integer
+states the actual positional requirement without conflicting flags or implying that
+three arbitrary bands carry GDAL red, green, and blue color interpretation. Semantic
+true-color selection continues to use existing `GDALVariable.colorinterp` metadata.
+
+A source may also declare how STAC acquisition resolves it:
+
+```yaml
+sources:
+  imagery:
+    collection: sentinel-2-l2a
+    endpoints:
+      - https://catalog-primary.example/stac
+      - https://catalog-backup.example/stac
+    channels: 3
+    require_crs: true
+```
+
+`collection` and `endpoints` are an optional pair: both are present for a
+STAC-resolvable source and both are absent for a persisted-only source. Endpoint
+order is significant; entries are nonempty, unique HTTP(S) base URLs. Endpoints for
+one source are expected to provide equivalent versions of the named collection.
+Runtime settings own query constraints, authentication, chunking, and load policy.
+
+STAC resolution validates primitive settings before I/O, then tries endpoints in
+order. Opening the catalog and resolving the declared collection selects an
+endpoint. Continue only after transport failure, temporary server failure, or a
+missing collection. Authentication/authorization, malformed STAC documents, and
+invalid query/load settings fail immediately. Once selected, one endpoint owns the
+complete search and acquisition; an empty search and deferred asset-read failure do
+not switch catalogs. If no endpoint resolves, report every attempted endpoint and
+its cause.
+
+`ingest` reads collection/endpoints from the model spec and accepts only runtime
+query/load settings keyed by source name. It no longer duplicates URL or collection
+in its primitive source settings. Ordinary Python callers may still construct and
+pass native `StacSource` objects directly to `acquire`.
+
+For existing raster inputs, opening a file performs no catalog I/O. The source's
+variable/channel selection, dimensions, dtype, CRS, resolution, and attrs are
+validated lazily before preprocessing, using the same rules as a newly acquired
+raster. STAC collection is acquisition identity, not persisted-raster provenance;
+models needing provenance checks declare them explicitly through attrs requirements.
+
 ## Batch contract
 
 A DataModule returns DataLoaders; its datasets and optional collate functions emit
@@ -243,22 +315,22 @@ keys, source-band names, class names, or colors. Delete `metadata.yaml`.
 `augmentation.yaml` remains an optional overlay under
 `data.init_args.augmentations`; the template DataModule owns its application.
 
-The template model uses `sentinel_2_l1c` and ordered bands `B02`, `B03`, `B04`, and
+The template model uses `sentinel_2_l2a` and ordered bands `B02`, `B03`, `B04`, and
 `B08`. The workflow spec uses the same source name and variable order:
 
 ```yaml
 schema_version: 2
 sources:
-  sentinel_2_l1c:
+  sentinel_2_l2a:
+    collection: sentinel-2-l2a
+    endpoints:
+      - https://planetarycomputer.microsoft.com/api/stac/v1/
+      - https://stac.dataspace.copernicus.eu/v1/
     variables: [B02, B03, B04, B08]
     require_crs: true
 preprocessing:
-  selected:
-    call: !ref sentinel_2_l1c.__getitem__
-    kwargs:
-      key: [B02, B03, B04, B08]
   valid_pixels:
-    call: !ref selected.gs.to_nan
+    call: !ref sentinel_2_l2a.gs.to_nan
   image:
     call: !ref valid_pixels.gs.unpack
 outputs:
@@ -271,7 +343,7 @@ outputs:
 The documents stay separate: training policy does not become part of `ModelSpec`,
 and workflow declarations do not become LightningCLI fields. The LightningModule
 does not accept a metadata path. Template tests enforce agreement between source
-variable count and `in_channels`, and between legend size and `num_classes`;
+channel count and `in_channels`, and between legend size and `num_classes`;
 runtime model construction does not add a cross-schema adapter.
 
 Move the canonical `model_spec.yaml` example from `workflow/examples` into the task
@@ -323,11 +395,20 @@ Tests cover:
 - prediction tuple batches and unchanged tile reconstruction indices;
 - ordinary Python unpacking or model invocation surfacing incompatible DataModule
   batches without custom defensive schema handling;
+- mutually exclusive named-variable and positional-channel source selectors;
+- lazy positional selection for Dataset variables and a single variable's `band`
+  dimension, including insufficient and ambiguous channel failures;
+- identical source validation for STAC acquisition, caller-owned xarray values, and
+  opened GeoTIFF/Zarr inputs without computing pixels;
+- ordered endpoint resolution, fallback only for availability/missing-collection
+  failures, and a combined failure when none resolves;
+- no fallback for authentication, malformed declarations, empty searches, or lazy
+  asset-read failures;
 - `ModelSpec.outputs` legend YAML and Python round trips;
 - attachment of the declared legend to postprocessed categorical output;
 - absence of top-level LightningCLI optimizer injection in the generated entry point;
 - loading and lazily executing the template-owned `model_spec.yaml`;
-- agreement between template source-variable count and `in_channels`, and between
+- agreement between template source channel count and `in_channels`, and between
   output legend size and `num_classes`;
 - generated semantic-segmentation workspaces containing both configuration documents
   and a compatible DataModule;
@@ -349,6 +430,12 @@ changes throughout.
   map-length inference.
 - task-owned `augmentations` and `ImageAugmenter` application are removed; the
   DataModule emits already augmented model inputs and targets.
+- `RasterRequirement.variables` becomes one of two required source selectors;
+  `channels` supplies positional selection when variable names are not a contract.
+- optional paired `collection` and ordered `endpoints` fields let a model spec
+  resolve STAC acquisition while the same requirement validates persisted rasters.
+- `ingest` source settings no longer duplicate STAC URL or collection; the model
+  spec owns them and runtime settings retain query/load policy.
 - `loss` becomes `criterion`.
 - `scheduler` becomes `lr_scheduler`.
 - `BuildSpec` becomes `StageSpec`.
