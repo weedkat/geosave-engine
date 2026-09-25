@@ -1,5 +1,9 @@
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
+from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
+import json
+from threading import Thread
+from urllib.parse import parse_qs, urlparse
 
 import dask.array as da
 import numpy as np
@@ -8,6 +12,7 @@ import pytest
 import pystac
 from pystac.extensions.projection import ProjectionExtension
 import rasterio
+import requests
 
 from geosave_engine.geodata.core.anchor import GeoAnchor
 from geosave_engine.geodata.core.raster import raster
@@ -47,7 +52,7 @@ def anchor(raw):
 
 @pytest.fixture
 def source():
-    # These unit tests replace acquisition; constructing a source performs no I/O.
+    # These unit tests replace loading; constructing a source performs no I/O.
     return StacSource(client=None, collection="example").set_config(
         bands=("unused",), chunks={"x": 2, "y": 2}, item_properties=("platform",)
     )
@@ -152,3 +157,158 @@ def local_stac(tmp_path):
             )
         )
     return sources, anchor
+
+
+@pytest.fixture
+def stac_server(local_stac):
+    """Serve fixture STAC documents while retaining real local raster assets."""
+    sources, anchor = local_stac
+    catalogues = {name: source.client for name, source in sources.items()}
+    queries = []
+
+    class Handler(BaseHTTPRequestHandler):
+        def log_message(self, *args):
+            pass
+
+        def reply(self, data):
+            payload = json.dumps(data).encode()
+            self.send_response(200)
+            self.send_header("Content-Type", "application/json")
+            self.send_header("Content-Length", str(len(payload)))
+            self.end_headers()
+            self.wfile.write(payload)
+
+        def search(self, params):
+            requested = params.get("collections", list(catalogues))
+            if isinstance(requested, str):
+                requested = requested.split(",")
+            queries.append(requested)
+            self.reply(
+                {
+                    "type": "FeatureCollection",
+                    "features": [
+                        item.to_dict()
+                        for name in requested
+                        for item in catalogues[name].items
+                    ],
+                    "links": [],
+                }
+            )
+
+        def do_POST(self):
+            self.search(
+                json.loads(self.rfile.read(int(self.headers["Content-Length"])))
+            )
+
+        def do_GET(self):
+            parsed = urlparse(self.path)
+            if parsed.path == "/search":
+                self.search(
+                    {key: values[0] for key, values in parse_qs(parsed.query).items()}
+                )
+            elif parsed.path.startswith("/collections/"):
+                self.reply(catalogues[parsed.path.rsplit("/", 1)[1]].metadata.to_dict())
+            elif parsed.path == "/collections":
+                self.reply(
+                    {
+                        "collections": [
+                            entry.metadata.to_dict() for entry in catalogues.values()
+                        ],
+                        "links": [],
+                    }
+                )
+            else:
+                root = f"http://127.0.0.1:{self.server.server_port}"
+                self.reply(
+                    {
+                        "type": "Catalog",
+                        "stac_version": "1.0.0",
+                        "id": "local",
+                        "description": "Local test catalog",
+                        "conformsTo": [
+                            f"https://api.stacspec.org/v1.0.0/{kind}"
+                            for kind in ("core", "item-search", "collections")
+                        ],
+                        "links": [
+                            {"rel": "self", "href": root},
+                            {"rel": "root", "href": root},
+                            {
+                                "rel": "search",
+                                "href": root + "/search",
+                                "method": "POST",
+                                "type": "application/geo+json",
+                            },
+                            {"rel": "data", "href": root + "/collections"},
+                        ],
+                    }
+                )
+
+    server = ThreadingHTTPServer(("127.0.0.1", 0), Handler)
+    thread = Thread(target=server.serve_forever, daemon=True)
+    thread.start()
+    try:
+        yield f"http://127.0.0.1:{server.server_port}", queries, anchor
+    finally:
+        server.shutdown()
+        server.server_close()
+        thread.join()
+
+
+@pytest.fixture
+def catalog_http(monkeypatch):
+    """Keep native STAC parsing and replace only HTTP transport."""
+    visited = []
+    responses = {}
+
+    def send(session, request, **kwargs):
+        url = request.url
+        visited.append(url)
+        root = url.split("/collections")[0]
+        if "/collections/" in url:
+            document = {
+                "type": "Collection",
+                "stac_version": "1.0.0",
+                "id": url.rsplit("/", 1)[1],
+                "description": "Offline collection",
+                "license": "CC-BY-4.0",
+                "extent": {
+                    "spatial": {"bbox": [[-180, -90, 180, 90]]},
+                    "temporal": {"interval": [["2025-01-01T00:00:00Z", None]]},
+                },
+                "links": [],
+            }
+        else:
+            document = {
+                "type": "Catalog",
+                "stac_version": "1.0.0",
+                "id": "offline",
+                "description": "Offline catalog",
+                "conformsTo": [
+                    f"https://api.stacspec.org/v1.0.0/{kind}"
+                    for kind in ("core", "collections", "item-search")
+                ],
+                "links": [
+                    {"rel": "self", "href": root},
+                    {"rel": "root", "href": root},
+                    {"rel": "data", "href": root + "/collections"},
+                    {
+                        "rel": "search",
+                        "href": root + "/search",
+                        "method": "POST",
+                        "type": "application/geo+json",
+                    },
+                ],
+            }
+        result = responses.get(url, document)
+        if isinstance(result, Exception):
+            raise result
+        response = requests.Response()
+        response.url = url
+        response.status_code = result if isinstance(result, int) else 200
+        response._content = (
+            result.encode() if isinstance(result, str) else json.dumps(result).encode()
+        )
+        return response
+
+    monkeypatch.setattr(requests.Session, "send", send)
+    return visited, responses
