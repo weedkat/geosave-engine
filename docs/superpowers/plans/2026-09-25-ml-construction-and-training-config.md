@@ -628,3 +628,74 @@ git diff -- src/geosave_engine/ml src/geosave_engine/workflow src/geosave_engine
 git add docs/superpowers/plans/2026-09-25-ml-construction-and-training-config.md
 git commit -m "docs: record ML configuration verification"
 ```
+
+## Execution record — 2026-09-25
+
+Tasks 1–8 were completed through `de41665`. Task 9 integrated the approved
+pending workflow-core and task-postprocessing cleanup in `088f1df`, including
+the `workflow.Processor` export, owned-file lifecycle refinements, obsolete
+execution-module/test deletions, and the callback import of task-owned tensor
+postprocessing. No compatibility aliases were added.
+
+The audit corrected tuple-batch examples in the model README and two TileMerger
+docstrings. Only the docstring hunks were staged from the already dirty tiling
+file. The Task 7 deferred callback legend block was removed from training YAML;
+class names and colors remain in the workflow spec. The Task 2 deferred test now
+uses native `register_parameter` to verify direct chain parameters enter the
+default optimizer group, frozen parameters are omitted, and an optimizer step
+updates the direct parameter. It required no production hook or correction.
+
+All commands below used `UV_CACHE_DIR=/tmp/geosave-uv-cache` and
+`MPLCONFIGDIR=/tmp/geosave-mpl-cache`. Workflow and full-suite runs had approved
+local socket/persistence access for Prefect and Zarr.
+
+| Verification | Before staging | After staging |
+| --- | --- | --- |
+| `uv run pytest tests/ml/registry tests/ml/models/contract tests/ml/models/encoder/test_model_context.py tests/ml/tasks tests/ml/callbacks tests/geodata/datasets/test_tiles.py -q` | 166 passed, 13 warnings, 35.09s | 167 passed, 13 warnings, 34.48s |
+| `uv run pytest tests/workflow tests/cli/test_workspace.py -q` | 245 passed, 2 warnings, 52.48s | 245 passed, 2 warnings, 52.03s |
+
+The added direct-chain-parameter test also passed alone: 1 passed in 14.43s.
+No new production correction was needed in Task 9, so there is no new RED/GREEN
+implementation cycle; approved existing code was verified before and after
+staging. Documentation and commented-configuration cleanup changed no execution.
+
+The exact scoped lint command passed:
+
+```bash
+uv run ruff check src/geosave_engine/ml src/geosave_engine/workflow src/geosave_engine/geodata/datasets/tiles.py src/geosave_engine/templates/tasks tests/ml tests/workflow tests/geodata/datasets/test_tiles.py tests/cli/test_workspace.py
+git diff --check
+git diff --cached --check
+```
+
+`uv run pytest -q` completed with **1 failed, 1007 passed, 1 deselected,
+50 warnings in 109.11s**. The sole failure is
+`tests/geodata/test_layout_smoke.py::test_leaves_declaring_different_absent_pixels_join_without_one`.
+It expects `DroppedAttrsWarning` when joining distinct fill values, but
+`attrs.merge` raises `ValueError: 'nir' carries incompatible nodata metadata
+across the objects; align or remove it before joining them`. The test,
+`geodata/utils/io/layout.py`, and `geodata/attrs/xarray.py` have no diff against
+the plan's start commit `8f2afc8`. This is the same unrelated failure recorded
+by Tasks 4–7 and remains outside this migration.
+
+The prescribed removed-name/configuration searches and expanded path/batch
+searches found no remaining live consumers of removed APIs or old outer batch
+mappings. Remaining matches are the supported encoder/TileDataset
+`model_context` extractor API, the negative `build_model` export test, valid
+`StageSpec`/`ModelChain.stages` names, ordinary `init_args` and `lr_scheduler`
+fields, and historical spec/plan prose (including the 2026-09-22 geodata review
+and 2026-09-23 workflow plan). The sensors YAML reference to Clay's upstream
+`metadata.yaml` is unrelated to the removed workspace overlay.
+
+A fresh `git archive 088f1df` export in `/tmp/geosave-task9-snapshot.0JCrTP`,
+with its `src` first on `PYTHONPATH`, successfully imported `workflow.Processor`,
+loaded the template ModelSpec and its prediction legend, and imported the task,
+tensor postprocessing helpers, and threshold callback. The workflow import did
+not load Prefect or Lightning. This verifies the committed tree does not depend
+on the pending source edits for those imports.
+
+Final diff review confirmed selection remains an xarray view without pixel
+computation, the approved workflow edits were integrated intact, and no notebook,
+generated file, or cache was staged. The unrelated tiling implementation/test,
+value-declaration example test/fixture, and three prior design documents remain
+unstaged. Full-suite evidence includes the two unrelated pending tests; the clean
+archive smoke separately verifies committed source imports.
