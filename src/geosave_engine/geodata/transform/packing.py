@@ -54,7 +54,7 @@ def unpack(data: xr.DataArray | xr.Dataset) -> DataArray | Dataset:
     physical = {
         variable: _unpack_array(data[variable]) for variable in data.gs.variables
     }
-    return cast("Dataset", xr.Dataset(physical, attrs=dict(data.attrs)))
+    return cast("Dataset", data.assign(physical))
 
 
 def _unpack_array(array: xr.DataArray) -> xr.DataArray:
@@ -68,11 +68,20 @@ def _unpack_array(array: xr.DataArray) -> xr.DataArray:
         carries neither `scale_factor` nor `add_offset`.
 
     Raises:
-        ValueError: `array` still marks its nodata pixels with a fill value.
+        ValueError: `array` holds class codes, or still marks its nodata pixels
+            with a fill value.
     """
     packing = array.gs.attrs.root.get(attrs.Packing)
     if packing is None or (packing.scale_factor is None and packing.add_offset is None):
         return array
+
+    # A class code names a class, so scaling it yields a number naming none.
+    if attrs.flag_variables(array):
+        raise ValueError(
+            f"{str(array.name)!r} holds class codes and declares packing, which "
+            f"cannot both be true; drop its Legend or its Packing, whichever "
+            f"does not describe the pixels"
+        )
 
     fill = nodata.fill_value(array)
     if fill is not None:

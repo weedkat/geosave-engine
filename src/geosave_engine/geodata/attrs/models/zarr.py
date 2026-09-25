@@ -2,10 +2,12 @@
 
 from __future__ import annotations
 
-from collections.abc import Sequence
-from typing import ClassVar, Self
+from typing import Annotated, ClassVar
+
+from pydantic import BeforeValidator
 
 from geosave_engine.geodata.attrs.model import AttrsModel
+from geosave_engine.geodata.attrs.validate import parse_collection_text
 
 
 class ZarrOrder(AttrsModel):
@@ -20,28 +22,12 @@ class ZarrOrder(AttrsModel):
             written.
 
     Examples:
-        >>> ds.gs.attrs.root.get(ZarrOrder).zarr_variable_order
-        ('B04', 'B03', 'B02')
+        >>> ds.gs.attrs.root.get(ZarrOrder)
+        ZarrOrder(zarr_variable_order=('B04', 'B03', 'B02'))
     """
 
     NAME: ClassVar[str] = "zarr"
 
-    zarr_variable_order: tuple[str, ...] | None = None
-
-    @classmethod
-    def merge(cls, models: Sequence[AttrsModel | None]) -> tuple[Self, set[str]]:
-        """Merge written orders, dropping disagreements.
-
-        Args:
-            models: This model from each joined object, in call order, at
-                least one, None where an object carried none.
-
-        Returns:
-            Model carrying the order every object agreed on, and the attr keys
-            it could not keep.
-
-        Raises:
-            TypeError: An object carries a different model.
-            ValueError: `models` is empty.
-        """
-        return cls._merge_fields(models, must_agree=())
+    zarr_variable_order: Annotated[
+        tuple[str, ...] | None, BeforeValidator(parse_collection_text)
+    ] = None

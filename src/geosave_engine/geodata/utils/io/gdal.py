@@ -1,27 +1,27 @@
 """Read one GDAL-supported raster file into a Dataset of its bands.
 
-A band is one variable: GDAL writes its name and colour interpretation in the
-band's own metadata, which `GDALVariable` reads, and its `long_name` in the band
-description, which stays CF's. ``TIFFTAG_DATETIME`` becomes a scalar `time`.
+A band is one variable, named by the `GDALVariable.variable_name` it carries.
+The attrs GDAL header factory reads tags and native band properties alike,
+leaving rioxarray the pixels and the grid.
 """
 
 from __future__ import annotations
 
+from pathlib import PurePath
 from typing import TYPE_CHECKING, Any, TypedDict, Unpack, cast
 
 import rasterio
 import rioxarray  # noqa: F401  — registers the .rio accessor
 import xarray as xr
-from rasterio.enums import ColorInterp
 
 from geosave_engine.geodata.attrs import (
-    GDALVariable,
     GeoTIFFTags,
-    read as read_attrs,
     rebase,
 )
+from geosave_engine.geodata.attrs.headers.gdal import create_header
 
-from geosave_engine.geodata.core.convention import TIME_COORDINATE
+from geosave_engine.geodata.core.profile import TIME_COORDINATE
+from geosave_engine.geodata.utils.datetime import parse_stem_dates
 
 if TYPE_CHECKING:
     from os import PathLike
@@ -49,9 +49,9 @@ def read(
 ) -> Dataset:
     """Read any GDAL-readable raster as one variable per band.
 
-    A band naming itself in `GDALVariable.variable_name` becomes a variable of
-    that name; the rest keep rasterio's `band_1`, `band_2`. A band's other
-    metadata stays on its variable, the description among it as `long_name`.
+    A band naming itself in `GDALVariable.variable_name` becomes that variable,
+    spending the tag; the rest keep rasterio's `band_1`, `band_2`. Its metadata
+    stays on the variable, the description as `long_name` unless it is the name.
 
     Args:
         source: Local path or URI to a raster GDAL can open.
@@ -61,7 +61,10 @@ def read(
         **open_options: Supported rioxarray and rasterio open options.
 
     Returns:
-        Dataset holding one `(y, x)` variable per band.
+        Dataset holding one `(y, x)` variable per band, carrying a scalar
+        `time` where the file dates itself. ``TIFFTAG_DATETIME`` names that
+        instant; without it the filename stem does, a stem naming a whole
+        period placing the raster at its first instant.
 
     Raises:
         ValueError: The file cannot be read, holds subdatasets, or names one
@@ -70,10 +73,11 @@ def read(
     Examples:
         >>> read("scene.tif").gs.variables
         ('B04', 'B08')
+        >>> read("20190507_red.tif").time.item()
+        datetime.datetime(2019, 5, 7, 0, 0)
     """
     with rasterio.open(source) as src:
-        # rioxarray reads no colour interpretation, so it is taken here in band order.
-        band_colorinterp = tuple(band.name for band in src.colorinterp)
+        header = create_header(src)
         cube = rioxarray.open_rasterio(
             src,
             band_as_variable=True,
@@ -92,25 +96,31 @@ def read(
             f"band; open it with the reader for its own format"
         )
 
-    for var_name, colorinterp in zip(cube.data_vars, band_colorinterp, strict=True):
-        if colorinterp != ColorInterp.undefined.name:
-            cube = rebase(
-                cube, GDALVariable(colorinterp=colorinterp), target=str(var_name)
-            )
+    opened = cube
+    try:
+        # rioxarray names the bands by position; the header names them as they name themselves.
+        cube = cube.rename_vars(
+            dict(zip(cube.data_vars, header.data_vars, strict=True))
+        )
+        cube = rebase(cube, header)
+        if mask_and_scale:
+            # Decoded pixels are physical, so the file's packing lives in encoding alone.
+            cube = rebase(cube, target=list(cube.data_vars), packing=None, nodata=None)
 
-    # Renaming leaves the root alone, so one read serves both the bands and tags.
-    header = read_attrs(cube)
-    rename_map: dict[str, str] = {}
-    for var_name, namespace in header.data_vars.items():
-        identity = namespace.get(GDALVariable)
-        if identity is not None and identity.variable_name is not None:
-            rename_map[var_name] = identity.variable_name
+        tags = header.root.get(GeoTIFFTags)
+        if tags is not None and tags.TIFFTAG_DATETIME is not None:
+            cube = cube.assign_coords({TIME_COORDINATE: tags.TIFFTAG_DATETIME})
+        else:
+            # A file dating itself only in its name still places itself in time.
+            timespan = parse_stem_dates(PurePath(str(source)).stem)
+            if timespan is not None:
+                cube = cube.assign_coords({TIME_COORDINATE: timespan[0]})
+    except BaseException:
+        opened.close()
+        raise
 
-    # rename_vars refuses two bands naming one variable.
-    cube = cube.rename_vars(rename_map)
-
-    tags = header.root.get(GeoTIFFTags)
-    if tags is not None and tags.TIFFTAG_DATETIME is not None:
-        cube = cube.assign_coords({TIME_COORDINATE: tags.TIFFTAG_DATETIME})
+    # Xarray's derived Datasets do not retain the backend closer they still use.
+    if cube is not opened:
+        cube.set_close(opened.close)
 
     return cast("Dataset", cube)

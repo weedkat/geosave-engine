@@ -2,36 +2,38 @@
 
 from __future__ import annotations
 
-from abc import abstractmethod
-from collections.abc import Iterable, KeysView, Mapping, Sequence
+from collections.abc import KeysView, Mapping, Sequence
 from types import MappingProxyType
 from typing import Any, ClassVar, Self, get_args
 
-from pydantic import BaseModel, ConfigDict
+from pydantic import BaseModel, ConfigDict, TypeAdapter
+from xarray.core.duck_array_ops import array_equiv
 
-_REGISTRY: dict[str, type[AttrsModel]] = {}
+_MODEL_TYPES: dict[str, type[AttrsModel]] = {}
 
-# Attr key (xarray object) mapped to the field that fixed its type, which later ones must match.
-_ATTR_KEY_DEFINITIONS: dict[str, tuple[type[AttrsModel], str]] = {}
+# Each xarray attr key is owned by the first model field that defines its type.
+_FIELD_BY_ATTR_KEY: dict[str, tuple[type[AttrsModel], str]] = {}
 
 # Live views onto the registry, filled as models are registered.
-REGISTERED_MODELS: Mapping[str, type[AttrsModel]] = MappingProxyType(_REGISTRY)
-REGISTERED_ATTR_KEYS: KeysView[str] = _ATTR_KEY_DEFINITIONS.keys()
+REGISTERED_MODELS: Mapping[str, type[AttrsModel]] = MappingProxyType(_MODEL_TYPES)
+REGISTERED_ATTR_KEYS: KeysView[str] = _FIELD_BY_ATTR_KEY.keys()
 
 # rebase takes these as keywords, so no model may answer to them.
-RESERVED_NAMES = frozenset({"target", "inplace"})
+_RESERVED_MODEL_NAMES = frozenset({"target", "inplace"})
 
 
 class AttrsModel(BaseModel):
     """One named group of flat attr keys, read and written as typed fields.
 
-    Each field reads and writes one key in an xarray attrs mapping: the
-    field's `alias` where it has one, else the field's own name.
+    Each field reads and writes its own name in an xarray `.attrs` mapping
+    unless `field_keys` declares other keys.
 
     Attributes:
         NAME: Stable name, unique in the registry, used as `rebase`'s keyword.
-        attr_keys: Each field name mapped to the attr key it reads and writes,
-            filled in at registration.
+        field_keys: Model field names mapped to key names in a flat xarray
+            `.attrs` dictionary. It maps names, not attr values. Each field
+            may use more than one key; for example, `Nodata.fill_value` uses
+            `("_FillValue", "nodata")`.
 
     Args:
         **fields: Values for the concrete model's own fields.
@@ -40,8 +42,8 @@ class AttrsModel(BaseModel):
         ValidationError: A value does not satisfy its field.
 
     Examples:
-        An aliased field writes the alias, because `_FillValue` is the CF
-        spelling; an unaliased one writes its own name:
+        A field with several keys writes each of them; a plain field writes its
+        own name:
 
         >>> Nodata(fill_value=0).to_attrs()
         {'_FillValue': 0, 'nodata': 0}
@@ -49,22 +51,23 @@ class AttrsModel(BaseModel):
         {'scale_factor': 0.0001}
     """
 
+    # A reader may type a text tag by how it reads, so a string field takes a number.
     model_config = ConfigDict(
         extra="forbid",
         validate_assignment=True,
-        validate_by_name=True,
-        validate_by_alias=True,
+        coerce_numbers_to_str=True,
     )
 
     NAME: ClassVar[str]
-    attr_keys: ClassVar[Mapping[str, str]]
+    field_keys: ClassVar[Mapping[str, tuple[str, ...]]]
+    _field_parsers: ClassVar[Mapping[str, TypeAdapter[Any]]]
 
     @classmethod
     def __pydantic_init_subclass__(cls, **kwargs: Any) -> None:
         """Register a concrete model after Pydantic builds its fields.
 
-        A model needs a unique, unreserved name, at least one field, its own
-        `merge`, and field types matching any other model that already
+        A model needs a unique, unreserved name, at least one field,
+        and field types matching any other model that already
         writes one of its attr keys.
 
         Args:
@@ -72,83 +75,96 @@ class AttrsModel(BaseModel):
 
         Raises:
             ValueError: The name is empty, reserved, or registered; the model
-                has no fields or no `merge`; a field splits a validation and
-                serialization alias; or a shared attr key is typed differently
-                from where it was first defined.
+                has no fields; or a shared attr key is typed differently from
+                where it was first defined.
         """
         super().__pydantic_init_subclass__(**kwargs)
 
-        name = cls.__dict__.get("NAME")
-        if not isinstance(name, str) or not name or name != name.strip():
+        model_name = cls.__dict__.get("NAME")
+        if (
+            not isinstance(model_name, str)
+            or not model_name
+            or model_name != model_name.strip()
+        ):
             raise ValueError(
                 f"{cls.__name__} must declare a non-empty NAME without "
                 "surrounding whitespace"
             )
-        if name in RESERVED_NAMES:
+        if model_name in _RESERVED_MODEL_NAMES:
             raise ValueError(
-                f"{cls.__name__} may not be named {name!r}; rebase takes that "
+                f"{cls.__name__} may not be named {model_name!r}; rebase takes that "
                 f"as a keyword, so a model answering to it is unreachable"
             )
-        if name in _REGISTRY:
-            raise ValueError(f"attrs model name {name!r} is already registered")
+        if model_name in _MODEL_TYPES:
+            raise ValueError(
+                f"attrs model name {model_name!r} is already registered"
+            )
         if not cls.model_fields:
             raise ValueError(f"{cls.__name__} must carry at least one attrs field")
 
-        # merge is abstract, so a model missing it fails at first use; say so at import.
-        if cls.__abstractmethods__:
+        custom_keys = dict(getattr(cls, "field_keys", {}))
+        unknown_fields = custom_keys.keys() - cls.model_fields.keys()
+        if unknown_fields:
             raise ValueError(
-                f"{cls.__name__} must implement "
-                f"{sorted(cls.__abstractmethods__)}; every model writes its own "
-                f"merge policy"
+                f"{cls.__name__}.field_keys names unknown fields "
+                f"{sorted(unknown_fields)}"
             )
 
-        # An alias is the attr key to write; without one the field name is it.
-        field_attr_keys = {
-            field_name: field.alias or field_name
-            for field_name, field in cls.model_fields.items()
-        }
-        for field_name, field in cls.model_fields.items():
-            # Pydantic mirrors a plain alias both ways; a split alias would read one key and write another.
-            if not (field.alias == field.validation_alias == field.serialization_alias):
-                raise ValueError(
-                    f"{cls.__name__}.{field_name} must read and write one flat "
-                    "attr key; declare it with alias= instead of a validation "
-                    "or serialization alias"
-                )
-
-            attr_key = field_attr_keys[field_name]
-            definition = _ATTR_KEY_DEFINITIONS.get(attr_key)
-            if definition is None:
-                continue
-
-            # A shared key must mean one value, however it is read.
-            first_model, first_field = definition
-            defined = first_model.model_fields[first_field]
+        field_keys: dict[str, tuple[str, ...]] = {}
+        for field_name in cls.model_fields:
+            attr_keys = custom_keys.get(field_name, (field_name,))
             if (
-                field.annotation != defined.annotation
-                or field.metadata != defined.metadata
+                not isinstance(attr_keys, tuple)
+                or not attr_keys
+                or any(not isinstance(key, str) or not key for key in attr_keys)
             ):
                 raise ValueError(
-                    f"attr {attr_key!r} is typed one way by "
-                    f"{first_model.__name__}.{first_field} and another by "
-                    f"{cls.__name__}.{field_name}"
+                    f"{cls.__name__}.field_keys[{field_name!r}] must be a "
+                    "nonempty tuple of xarray attr key names"
                 )
-            if _has_field_converter(cls, field_name) or _has_field_converter(
-                first_model, first_field
-            ):
-                raise ValueError(
-                    f"attr {attr_key!r} is written by "
-                    f"{first_model.__name__}.{first_field} and "
-                    f"{cls.__name__}.{field_name}, one of them through a "
-                    "model-specific field validator or serializer; put shared "
-                    "conversion in one reusable Annotated type"
-                )
+            field_keys[field_name] = attr_keys
+
+        for field_name, field in cls.model_fields.items():
+            for attr_key in field_keys[field_name]:
+                owner = _FIELD_BY_ATTR_KEY.get(attr_key)
+                if owner is None:
+                    continue
+
+                # A shared key must mean one value, however it is read.
+                owner_model, owner_field_name = owner
+                owner_field = owner_model.model_fields[owner_field_name]
+                if (
+                    field.annotation != owner_field.annotation
+                    or field.metadata != owner_field.metadata
+                ):
+                    raise ValueError(
+                        f"attr {attr_key!r} is typed one way by "
+                        f"{owner_model.__name__}.{owner_field_name} and another by "
+                        f"{cls.__name__}.{field_name}"
+                    )
+                if _field_has_converter(cls, field_name) or _field_has_converter(
+                    owner_model, owner_field_name
+                ):
+                    raise ValueError(
+                        f"attr {attr_key!r} is written by "
+                        f"{owner_model.__name__}.{owner_field_name} and "
+                        f"{cls.__name__}.{field_name}, one of them through a "
+                        "model-specific field validator or serializer; put shared "
+                        "conversion in one reusable Annotated type"
+                    )
 
         # Publish only a model that passed every registration constraint.
-        _REGISTRY[name] = cls
-        cls.attr_keys = MappingProxyType(field_attr_keys)
-        for field_name, attr_key in field_attr_keys.items():
-            _ATTR_KEY_DEFINITIONS.setdefault(attr_key, (cls, field_name))
+        _MODEL_TYPES[model_name] = cls
+        cls.field_keys = MappingProxyType(field_keys)
+        cls._field_parsers = MappingProxyType(
+            {
+                field_name: TypeAdapter(field.rebuild_annotation())
+                for field_name, field in cls.model_fields.items()
+            }
+        )
+        for field_name, attr_keys in field_keys.items():
+            for attr_key in attr_keys:
+                _FIELD_BY_ATTR_KEY.setdefault(attr_key, (cls, field_name))
 
     def to_attrs(self) -> dict[str, Any]:
         """Read this model back as a flat attrs mapping.
@@ -162,126 +178,106 @@ class AttrsModel(BaseModel):
                 "<attr key>": its value, None where the field marks the attr
                     absent,
             }
-            Only fields that were explicitly set appear.
+            Only fields that were explicitly set appear, each under every key
+            it writes.
 
         Examples:
             >>> CFVariable(units="1").to_attrs()
             {'units': '1'}
         """
-        return self.model_dump(
+        dumped = self.model_dump(
             mode="json",
-            by_alias=True,
             exclude_unset=True,
             exclude_computed_fields=True,
         )
+        attrs: dict[str, Any] = {}
+        for field_name, value in dumped.items():
+            for attr_key in type(self).field_keys[field_name]:
+                attrs[attr_key] = value
+        return attrs
 
     @classmethod
-    def _merge_fields(
-        cls, models: Sequence[AttrsModel | None], *, must_agree: Iterable[str]
-    ) -> tuple[Self, set[str]]:
+    def merge(cls, models: Sequence[AttrsModel | None]) -> tuple[Self, set[str]]:
         """Keep the fields every object of a join set to the same value.
 
-        A field they set differently raises when `must_agree` names it, and
-        otherwise drops to None.
-
-        Args:
-            models: This model from each joined object, at least one, None
-                where an object carried none.
-            must_agree: Field names whose disagreement is an error rather than
-                a drop.
-
-        Returns:
-            (model the joined result carries, attr keys the dropped fields
-            write). A dropped field reads as None.
-
-        Raises:
-            TypeError: An object carries a different model.
-            ValueError: `models` is empty, or the objects set a field named by
-                `must_agree` differently.
-        """
-        if not models:
-            raise ValueError(f"merging {cls.NAME} needs at least one object")
-
-        present: list[Self] = []
-        wrong_types: set[str] = set()
-        for model in models:
-            if model is None:
-                continue
-            if isinstance(model, cls):
-                present.append(model)
-            else:
-                wrong_types.add(type(model).__name__)
-        if wrong_types:
-            raise TypeError(
-                f"merging {cls.NAME} needs {cls.__name__} instances, got "
-                f"{sorted(wrong_types)}"
-            )
-
-        # An object carrying no model agrees with nothing, so every field drops.
-        agreed: dict[str, Any] = {}
-        if len(present) == len(models):
-            first, *rest = present
-            for name in cls.model_fields:
-                value = getattr(first, name)
-                if all(values_agree(getattr(other, name), value) for other in rest):
-                    agreed[name] = value
-
-        refused = [name for name in must_agree if name not in agreed]
-        if refused:
-            disagreement = []
-            for name in refused:
-                per_object = [
-                    None if model is None else getattr(model, name) for model in models
-                ]
-                disagreement.append(f"{name}={per_object}")
-            raise ValueError(
-                f"objects disagree on {cls.NAME}: {'; '.join(disagreement)}; "
-                f"rebase one model before joining"
-            )
-
-        fields_set: set[str] = set()
-        for model in present:
-            fields_set.update(model.model_fields_set)
-
-        dropped_fields = sorted(fields_set - agreed.keys())
-
-        combined: dict[str, Any] = {}
-        # A dropped field is set to None, clearing the key a model had written.
-        for name in dropped_fields:
-            if type(None) in get_args(cls.model_fields[name].annotation):
-                combined[name] = None
-        # A field no object set stays unset, so the result clears nothing.
-        for name, value in agreed.items():
-            if name in fields_set:
-                combined[name] = value
-        return cls(**combined), {cls.attr_keys[name] for name in dropped_fields}
-
-    @classmethod
-    @abstractmethod
-    def merge(cls, models: Sequence[AttrsModel | None]) -> tuple[Self, set[str]]:
-        """Merge this model across the objects of a joining transform.
-
-        Abstract: every model writes its own policy — which fields refuse a
-        disagreement, which drop, which accumulate. `_merge_fields` covers
-        the refuse-or-drop case.
+        A field they set differently describes none of them, so it drops.
+        Override this where a field accumulates instead, as STAC provenance does.
 
         Args:
             models: This model from each joined object, in call order, at
                 least one, None where an object carried none.
 
         Returns:
-            (merged model, attr keys it could not keep)
+            (model the joined result carries, attr keys the dropped fields
+            write). A dropped field reads as None.
 
         Raises:
-            TypeError: An object carries a different model.
-            ValueError: `models` is empty, or the objects disagree on a field
-                this model refuses.
+            ValueError: `models` is empty.
 
         Examples:
             >>> Packing.merge([Packing(scale_factor=0.0001), Packing()])
-            Traceback (most recent call last):
-            ValueError: objects disagree on packing: scale_factor=[0.0001, None]
+            (Packing(scale_factor=None, add_offset=None), {'scale_factor'})
         """
+        if not models:
+            raise ValueError(f"merging {cls.NAME} needs at least one object")
+        present = [model for model in models if model is not None]
+
+        # An object carrying no model agrees with nothing, so every field drops.
+        shared: dict[str, Any] = {}
+        if len(present) == len(models):
+            first, *others = present
+            for field_name in cls.model_fields:
+                value = getattr(first, field_name)
+                if all(
+                    attrs_equal(getattr(other, field_name), value)
+                    for other in others
+                ):
+                    shared[field_name] = value
+
+        set_fields: set[str] = set()
+        for model in present:
+            set_fields.update(model.model_fields_set)
+
+        dropped_fields = sorted(set_fields - shared.keys())
+
+        merged: dict[str, Any] = {}
+        # A dropped field is set to None, clearing the key a model had written.
+        for field_name in dropped_fields:
+            if type(None) in get_args(cls.model_fields[field_name].annotation):
+                merged[field_name] = None
+        # A field no object set stays unset, so the result clears nothing.
+        for field_name, value in shared.items():
+            if field_name in set_fields:
+                merged[field_name] = value
+        dropped_keys: set[str] = set()
+        for field_name in dropped_fields:
+            dropped_keys.update(cls.field_keys[field_name])
+        return cls(**merged), dropped_keys
+
+
+def parse_field_value(model: type[AttrsModel], field: str, value: object) -> Any:
+    """Convert one stored attr to the Python type declared by one model field.
+
+    Some callers have only one field rather than enough values to construct the
+    whole model. This applies that field's type annotation, including annotated
+    validators, without running the model's decorator or model-level validators.
+
+    Args:
+        model: Attrs model declaring the field.
+        field: Declared field name.
+        value: Stored attr value.
+
+    Returns:
+        Parsed field value.
+
+    Raises:
+        ValidationError: The value does not satisfy the field.
+
+    Examples:
+        >>> parse_field_value(Nodata, "fill_value", "0")
+        0
+    """
+    return model._field_parsers[field].validate_python(value)
 
 
 def resolve_model(model: type[AttrsModel] | str) -> type[AttrsModel]:
@@ -303,36 +299,61 @@ def resolve_model(model: type[AttrsModel] | str) -> type[AttrsModel]:
     """
     if isinstance(model, str):
         try:
-            return _REGISTRY[model]
+            return _MODEL_TYPES[model]
         except KeyError:
             raise KeyError(f"no attrs model is registered as {model!r}") from None
-    name = getattr(model, "NAME", None)
-    if name is None or _REGISTRY.get(name) is not model:
+    model_name = getattr(model, "NAME", None)
+    if model_name is None or _MODEL_TYPES.get(model_name) is not model:
         raise TypeError(f"{model!r} is not a registered concrete AttrsModel")
     return model
 
 
-def values_agree(a: object, b: object) -> bool:
-    """Whether two attr values are the same, treating two NaNs as equal.
+def attrs_equal(left: object, right: object) -> bool:
+    """Compare values stored in xarray metadata without array broadcasting.
 
-    Plain `==` reads two NaNs as disagreeing, since `nan != nan`.
+    Array-like values must have the same shape and values. NaNs compare as
+    equal. Mappings must contain the same keys and recursively equal values.
+    A missing metadata value (`None`) only equals another `None`.
 
     Args:
-        a: First value.
-        b: Second value.
+        left: First attrs value.
+        right: Second attrs value.
 
     Returns:
-        True when `a` and `b` are the same value.
+        True when both metadata values represent the same value.
 
     Examples:
-        >>> values_agree(float("nan"), float("nan"))
+        >>> attrs_equal(float("nan"), float("nan"))
         True
     """
-    # NaN is the only value unequal to itself, so that doubles as the NaN test.
-    return bool(a == b) or (a != a and b != b)
+    if left is None or right is None:
+        return left is right
+
+    if isinstance(left, Mapping):
+        if not isinstance(right, Mapping):
+            return False
+        if left.keys() != right.keys():
+            return False
+        for key, value in left.items():
+            if not attrs_equal(value, right[key]):
+                return False
+        return True
+
+    if isinstance(right, Mapping):
+        return False
+
+    if isinstance(left, (list, tuple)) and isinstance(right, (list, tuple)):
+        if len(left) != len(right):
+            return False
+        for left_item, right_item in zip(left, right, strict=True):
+            if not attrs_equal(left_item, right_item):
+                return False
+        return True
+
+    return array_equiv(left, right)
 
 
-def _has_field_converter(model: type[AttrsModel], field: str) -> bool:
+def _field_has_converter(model: type[AttrsModel], field: str) -> bool:
     """Whether a model carries its own validator or serializer for one field.
 
     Args:
@@ -345,10 +366,7 @@ def _has_field_converter(model: type[AttrsModel], field: str) -> bool:
     """
     validators = model.__pydantic_decorators__.field_validators.values()
     serializers = model.__pydantic_decorators__.field_serializers.values()
-    return any(
-        field in decorator.info.fields or "*" in decorator.info.fields
-        for decorator in validators
-    ) or any(
-        field in decorator.info.fields or "*" in decorator.info.fields
-        for decorator in serializers
-    )
+    for decorator in (*validators, *serializers):
+        if field in decorator.info.fields or "*" in decorator.info.fields:
+            return True
+    return False

@@ -1,3 +1,15 @@
 {
-  "pythonVersion": "3.12"
+  "pythonVersion": "3.12",
+  "typeCheckingMode": "standard",
+  "include": [
+    "src/geosave_engine",
+    "tests"
+  ],
+  "exclude": [
+    "**/__pycache__",
+    "workspace",
+    "examples",
+    "src/geosave_engine/templates"
+  ],
+  "reportMissingTypeStubs": false
 }

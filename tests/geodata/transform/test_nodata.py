@@ -214,3 +214,33 @@ def test_blanking_leaves_the_packing_alone() -> None:
     packed = scene().gs.rebase(attrs.Packing(scale_factor=1e-4), target="red")
 
     assert to_nan(packed).red.attrs["scale_factor"] == 1e-4
+
+
+def test_odc_nodata_is_decoded_lazily_without_changing_input():
+    import dask.array as da
+
+    source = xr.DataArray(
+        da.from_array([0, 7], chunks=1), dims="x", attrs={"nodata": 0}
+    )
+    result = to_nan(source)
+    assert isinstance(result.data, da.Array)
+    np.testing.assert_allclose(result, [np.nan, 7], equal_nan=True)
+    assert "nodata" not in result.attrs
+    assert source.attrs == {"nodata": 0}
+
+
+def test_preparation_preserves_coordinates_on_independent_dimensions():
+    source = scene().assign_coords(class_label=("class", ["water", "land"]))
+    source.red.attrs["scale_factor"] = 0.01
+    result = source.gs.to_nan().gs.unpack()
+    xr.testing.assert_identical(result.class_label, source.class_label)
+
+
+def test_tree_mask_preserves_root_metadata_and_coordinates():
+    source = build_stack({"optical": scene()})
+    source.attrs = {"title": "my training scene"}
+    source.coords["site"] = "field-1"
+    masked = mask(source, classification().isin(CLEAR))
+    assert masked.attrs == source.attrs
+    xr.testing.assert_identical(masked.coords["site"], source.coords["site"])
+    assert list(masked["optical"].red.values[0]) == [7, 7, 0, 0]

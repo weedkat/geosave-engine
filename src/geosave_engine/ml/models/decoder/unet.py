@@ -5,7 +5,7 @@ import torch.nn as nn
 import torch.nn.functional as F
 
 from geosave_engine.ml.registry import register_model
-from geosave_engine.ml.models.contract import chain_step
+from geosave_engine.ml.models.contract import Published, chain_step
 
 
 class _ChannelProject(nn.Module):
@@ -159,22 +159,26 @@ class Unet(nn.Module):
     U-Net Decoder with a toggleable `vit_adapter` parameter.
     """
 
+    feature_channels: Published[int]
+
     def __init__(
         self,
-        encoder_out_channels: list[int],
-        encoder_output_strides: list[int],
+        pyramid_channels: list[int],
+        pyramid_strides: list[int],
         decoder_channels: tuple[int, ...] = (256, 128, 64, 32),
         use_norm: bool = True,
         vit_adapter: bool = True,
     ):
         super().__init__()
-        n = len(encoder_out_channels)
+        n = len(pyramid_channels)
 
-        # Calculate target channels to align with U-Net skips
-        reassemble_channels = [
-            decoder_channels[-(i + 1)] if i < n - 1 else decoder_channels[0]
-            for i in range(n)
-        ]
+        # Levels align with skips in reverse; the deepest feeds the first up-block.
+        reassemble_channels = []
+        for i in range(n):
+            if i < n - 1:
+                reassemble_channels.append(decoder_channels[-(i + 1)])
+            else:
+                reassemble_channels.append(decoder_channels[0])
 
         # --- 1. Encoder Integration (ViT vs CNN routing) ---
         if vit_adapter:
@@ -183,9 +187,9 @@ class Unet(nn.Module):
             self.encoder_adapter = nn.ModuleList(
                 [
                     _Reassemble(
-                        in_channels=encoder_out_channels[i],
+                        in_channels=pyramid_channels[i],
                         out_channels=reassemble_channels[i],
-                        src_stride=encoder_output_strides[i],
+                        src_stride=pyramid_strides[i],
                         tgt_stride=target_strides[i],
                     )
                     for i in range(n)
@@ -196,7 +200,7 @@ class Unet(nn.Module):
             self.encoder_adapter = nn.ModuleList(
                 [
                     _ChannelProject(
-                        in_channels=encoder_out_channels[i],
+                        in_channels=pyramid_channels[i],
                         out_channels=reassemble_channels[i],
                     )
                     for i in range(n)
@@ -221,34 +225,25 @@ class Unet(nn.Module):
             use_norm=use_norm,
         )
 
-        self.out_channels = decoder_channels[-1]
+        self.feature_channels = decoder_channels[-1]
 
-    def forward(self, features: list[torch.Tensor]) -> torch.Tensor:
-        # Step 1: Route through the correct adapter (Full Reassemble or just Channel Proj)
-        # (B, C_in, H_src, W_src) -> (B, reassemble_C, H_tgt, W_tgt)
-        pyramid = [block(f) for block, f in zip(self.encoder_adapter, features)]
-
-        x = pyramid[-1]
-
-        # Step 2: Progressive Upsampling
-        for i, block in enumerate(self.up_blocks):
-            skip = pyramid[len(pyramid) - 2 - i]
-            x = block(x, skip)
-
-        # Step 3: Final output resolution bump
-        x = self.final_up(x, skip=None)
-
-        return x
-
-    @chain_step()
-    def forward_feature_map(self, pyramid: list) -> tuple[torch.Tensor]:
-        """Fuse multi-scale pyramid into a single dense feature map.
+    @chain_step(outputs=("feature_map",))
+    def forward(self, pyramid: list[torch.Tensor]) -> torch.Tensor:
+        """Fuse a multi-scale pyramid into a single dense feature map.
 
         Args:
-            pyramid: List of per-level feature tensors.
+            pyramid: Per-level (B, C_in, H_src, W_src) features from the encoder.
 
         Returns:
-            (feature_map,) — (B, out_channels, H, W).
+            (B, decoder_channels[-1], 2H, 2W) dense feature map.
         """
-        feature_map = self.forward(pyramid)
-        return (feature_map,)
+        # Reassemble ViT levels, or just project hierarchical ones.
+        levels = [block(f) for block, f in zip(self.encoder_adapter, pyramid)]
+
+        x = levels[-1]  # (B, reassemble_C, H_tgt, W_tgt)
+
+        for i, block in enumerate(self.up_blocks):
+            skip = levels[len(levels) - 2 - i]
+            x = block(x, skip)  # (B, decoder_channels[i], 2H, 2W)
+
+        return self.final_up(x, skip=None)  # (B, decoder_channels[-1], 2H, 2W)

@@ -1,22 +1,12 @@
-import re
 from datetime import datetime
 import getpass
 from pathlib import Path
 import platform
 import tomlkit
 
+from geosave_engine.__about__ import __version__
 
-def get_version() -> str:
-    """Extract __version__ from __about__.py at Path(__file__).parents[2]."""
-    about_path = Path(__file__).parents[2] / "__about__.py"
-
-    if about_path.exists():
-        content = about_path.read_text(encoding="utf-8")
-        match = re.search(r'__version__\s*=\s*["\']([^"\']+)["\']', content)
-        if match:
-            return match.group(1)
-
-    return "0.1.0"  # Fallback version if file/match is missing
+_INITIAL_PROJECT_VERSION = "0.1.0"
 
 
 def create_toml(
@@ -26,30 +16,38 @@ def create_toml(
     method: str | None,
     description: str | None = None,
 ) -> Path:
-    """Generates a lean project anchor TOML file."""
+    """Write the `geosave.toml` anchoring one generated workspace.
+
+    Args:
+        target_dir: Workspace root the file is written into.
+        name: Project name.
+        task: Task the workspace was generated for, if any.
+        method: Method the workspace was generated for, if any.
+        description: Free-text project description.
+
+    Returns:
+        Path of the written file.
+    """
     toml_path = target_dir / "geosave.toml"
     doc = tomlkit.document()
 
-    # --- [project] ---
     project = tomlkit.table()
     project.add("name", name)
     if description:
         project.add("description", description)
-    project.add("version", get_version())
+    project.add("version", _INITIAL_PROJECT_VERSION)
     project.add("created_at", datetime.now().astimezone())
     project.add("created_by", getpass.getuser())
     doc.add("project", project)
 
-    # --- [workspace] ---
     workspace = tomlkit.table()
     if task and method:
         workspace.add("task", task)
         workspace.add("method", method)
     doc.add("workspace", workspace)
 
-    # --- [environment] ---
     env = tomlkit.table()
-    env.add("geosave_version", get_version())
+    env.add("geosave_version", __version__)
     env.add("python_version", platform.python_version())
     env.add("platform", platform.platform(terse=True))
     doc.add("environment", env)

@@ -5,7 +5,10 @@ import xarray as xr
 from odc.geo.geobox import GeoBox
 
 import geosave_engine.geodata.attrs as attrs
+from geosave_engine.geodata.core.anchor import GeoAnchor
 from geosave_engine.geodata.core.raster import raster as build_raster
+from geosave_engine.geodata.core.stack import stack as build_stack
+from geosave_engine.geodata.utils.geo.geolocator import Place
 
 pytest.importorskip("hvplot", reason="viz extra not installed")
 
@@ -13,6 +16,13 @@ import holoviews as hv  # noqa: E402
 
 matplotlib.use("agg")
 hv.extension("matplotlib")
+
+
+@pytest.fixture(autouse=True)
+def resolved_location(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setattr(
+        GeoAnchor, "location", property(lambda _: Place(city="Test City"))
+    )
 
 
 def geobox() -> GeoBox:
@@ -30,7 +40,7 @@ def optical() -> xr.Dataset:
     raster = build_raster({"B04": values}, geobox())
     return raster.gs.rebase(
         attrs.Packing(scale_factor=1e-4, add_offset=0.0),
-        attrs.Nodata(_FillValue=0),
+        attrs.Nodata(fill_value=0),
         target="B04",
     )
 
@@ -43,16 +53,27 @@ def labels() -> xr.Dataset:
     )
     raster = build_raster({"landcover": codes}, geobox())
     return raster.gs.rebase(
-        attrs.Legend(
-            class_map={0: "water", 1: "trees", 8: "snow"},
-            color_map={0: "#419bdf", 1: "#397d49", 8: "#b39fe1"},
-        ),
+        attrs.Legend(class_map={0: "water", 1: "trees", 8: "snow"}),
+        attrs.Legend(color_map={0: "#419bdf", 1: "#397d49", 8: "#b39fe1"}),
         target="landcover",
     )
 
 
+@pytest.fixture
+def rgb() -> xr.Dataset:
+    pixels = np.arange(16, dtype="uint16").reshape(4, 4)
+    raster = build_raster({"B04": pixels, "B03": pixels, "B02": pixels}, geobox())
+    for name, colour in (("B04", "red"), ("B03", "green"), ("B02", "blue")):
+        raster = raster.gs.rebase(attrs.GDALVariable(colorinterp=colour), target=name)
+    return raster
+
+
 def drawn_values(element) -> np.ndarray:
     return element.dimension_values(2)
+
+
+def panel_axes(element) -> list[matplotlib.axes.Axes]:
+    return [axis for axis in hv.render(element).axes if axis.get_xlabel()]
 
 
 class TestPacking:
@@ -89,9 +110,9 @@ class TestClassMap:
 
     def test_accepts_an_rgb_tuple_palette(self, labels: xr.Dataset) -> None:
         recoloured = labels.gs.rebase(
+            attrs.Legend(class_map={0: "water", 1: "trees", 8: "snow"}),
             attrs.Legend(
-                class_map={0: "water", 1: "trees", 8: "snow"},
-                color_map={0: (65, 155, 223), 1: (57, 125, 73), 8: (179, 159, 225)},
+                color_map={0: (65, 155, 223), 1: (57, 125, 73), 8: (179, 159, 225)}
             ),
             target="landcover",
         )
@@ -108,10 +129,8 @@ class TestClassMap:
         )
         raster = build_raster({"cover": codes}, geobox(), nodata=0)
         raster = raster.gs.rebase(
-            attrs.Legend(
-                class_map={1: "trees", 8: "snow"},
-                color_map={1: "#397d49", 8: "#b39fe1"},
-            ),
+            attrs.Legend(class_map={1: "trees", 8: "snow"}),
+            attrs.Legend(color_map={1: "#397d49", 8: "#b39fe1"}),
             target="cover",
         )
         drawn = drawn_values(raster.gs.plot("cover"))
@@ -121,7 +140,8 @@ class TestClassMap:
     def test_uncoloured_class_refuses(self) -> None:
         raster = build_raster({"cover": np.zeros((4, 4), dtype="uint8")}, geobox())
         raster = raster.gs.rebase(
-            attrs.Legend(class_map={0: "water", 1: "trees"}, color_map={0: "#419bdf"}),
+            attrs.Legend(class_map={0: "water", 1: "trees"}),
+            attrs.Legend(color_map={0: "#419bdf"}),
             target="cover",
         )
         with pytest.raises(ValueError, match="carry no colour"):
@@ -130,11 +150,14 @@ class TestClassMap:
 
 class TestConstraints:
     def test_unknown_variable_refuses(self, optical: xr.Dataset) -> None:
-        with pytest.raises(KeyError, match="not data variables"):
+        with pytest.raises(ValueError, match="not data variables"):
             optical.gs.plot("B99")
 
     def test_selecting_first_draws(self, optical: xr.Dataset) -> None:
         assert optical.expand_dims(time=3).isel(time=0).gs.plot("B04") is not None
+
+    def test_per_band_colour_interpretation_selects_rgb(self, rgb: xr.Dataset) -> None:
+        assert isinstance(rgb.gs.plot(), hv.RGB)
 
 
 class TestOutput:
@@ -151,3 +174,35 @@ class TestOutput:
         assert isinstance(
             optical.gs.plot("B04") + labels.gs.plot("landcover"), hv.Layout
         )
+
+    def test_time_and_location_caption_each_panel(self, rgb: xr.Dataset) -> None:
+        dated = rgb.expand_dims(
+            time=np.array(
+                ["2026-07-02T02:55:19", "2026-07-09T02:45:29"], "datetime64[s]"
+            )
+        )
+
+        axes = panel_axes(dated.gs.plot(cols=2))
+
+        assert [axis.get_title() for axis in axes] == ["", ""]
+        assert axes[0].get_xlabel().startswith("2026-07-02 02:55:19\nTest City")
+        assert axes[1].get_xlabel().startswith("2026-07-09 02:45:29\nTest City")
+
+    def test_explicit_title_stays_above_the_axes(self, optical: xr.Dataset) -> None:
+        axis = panel_axes(optical.gs.plot("B04", title="Optical"))[0]
+
+        assert axis.get_title() == "Optical"
+        assert axis.get_xlabel().startswith("Test City")
+
+    def test_stack_group_names_join_the_caption(
+        self, optical: xr.Dataset, labels: xr.Dataset
+    ) -> None:
+        scene = build_stack({"optical": optical, "labels": labels})
+
+        axes = panel_axes(scene.gs.plot(cols=2))
+
+        assert [axis.get_title() for axis in axes] == ["", ""]
+        assert {axis.get_xlabel().splitlines()[0] for axis in axes} == {
+            "labels",
+            "optical",
+        }

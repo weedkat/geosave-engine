@@ -2,15 +2,18 @@
 
 from __future__ import annotations
 
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, Any, Literal, overload
 
 import numpy as np
 import xarray as xr
 
 import geosave_engine.geodata.attrs as attrs
+from geosave_engine.geodata.utils.datetime import parse_daterange
+
+from .profile import TIME_COORDINATE
 
 if TYPE_CHECKING:
-    from collections.abc import Callable
+    from collections.abc import Callable, Mapping, Sequence
 
     import torch
     from numpy.typing import DTypeLike
@@ -18,7 +21,10 @@ if TYPE_CHECKING:
     from odc.geo.gcp import GCPGeoBox
     from odc.geo.geobox import GeoBox
 
-    from geosave_engine.geodata.attrs import AttrsHeader
+    from geosave_engine.geodata.attrs import AttrsHeader, AttrsModel
+    from geosave_engine.geodata.utils.datetime import DateRange
+
+    from .anchor import GeoAnchor
 
 
 def tensor(
@@ -154,4 +160,116 @@ class GeoAccessor[DataT: xr.Dataset | xr.DataArray | xr.DataTree]:
             Detached header, reread on every access because xarray attrs are
             mutable in place.
         """
-        return attrs.read(self._data)
+        return attrs.create_header(self._data)
+
+    @overload
+    def rebase(
+        self,
+        *models: AttrsModel,
+        target: str | Sequence[str] | None = None,
+        inplace: Literal[False] = False,
+        **model_kwargs: Mapping[str, Any] | None,
+    ) -> DataT: ...
+
+    @overload
+    def rebase(
+        self,
+        *models: AttrsModel,
+        target: str | Sequence[str] | None = None,
+        inplace: Literal[True],
+        **model_kwargs: Mapping[str, Any] | None,
+    ) -> None: ...
+
+    def rebase(
+        self,
+        *models: AttrsModel,
+        target: str | Sequence[str] | None = None,
+        inplace: bool = False,
+        **model_kwargs: Mapping[str, Any] | None,
+    ) -> DataT | None:
+        """Return a copy of this object carrying the supplied attrs.
+
+        A DataTree writes only its root; groups are rebased through
+        `stack["<group>"].gs.rebase`.
+
+        Args:
+            *models: Model instances to apply to `target`.
+            target: Variable or coordinate name the models describe, or
+                several of them. None writes to the object's own attrs.
+            inplace: Write into this object rather than returning a new one.
+            **model_kwargs: Model name mapped to its field values, or to None
+                to drop that model.
+
+        Returns:
+            New object carrying the attrs without copying pixel data, or None
+            when `inplace` is set.
+
+        Raises:
+            KeyError: A keyword names no registered model.
+            ValueError: `target` names neither a variable nor a coordinate.
+            ValidationError: A supplied value does not satisfy its field.
+
+        Examples:
+            >>> ds.gs.rebase(ACDD(title="Sentinel-2 Level-2A"))
+            >>> ds.gs.rebase(cf={"units": "1"}, target="B04")
+        """
+        if inplace:
+            attrs.rebase(
+                self._data, *models, target=target, inplace=True, **model_kwargs
+            )
+            return None
+        return attrs.rebase(
+            self._data, *models, target=target, inplace=False, **model_kwargs
+        )
+
+    @property
+    def timespan(self) -> DateRange | None:
+        """Read inclusive temporal coverage.
+
+        A resampled axis carries a `TimeSpec`, so a label standing for a month
+        covers that month. An axis carrying none covers what its labels spell:
+        `2018-12-26` is a whole date, `2018-12-26T10:30:31` one second.
+
+        Returns:
+            First and last covered instant, or None for timeless data.
+        """
+        coords = getattr(self._data, "coords", None)
+        if coords is None:
+            return None
+        if TIME_COORDINATE not in coords:
+            return None
+        labels = coords[TIME_COORDINATE].values
+        # A merge that dropped a disagreeing cadence leaves the model behind.
+        spec = self.attrs.coords[TIME_COORDINATE].get(attrs.TimeSpec)
+        if spec is not None and spec.time_freq is not None:
+            return spec.timespan(labels)
+
+        covered = [
+            parse_daterange(str(spelled))
+            for spelled in np.datetime_as_string(np.atleast_1d(labels), unit="auto")
+        ]
+        return min(start for start, _ in covered), max(end for _, end in covered)
+
+    @property
+    def anchor(self) -> GeoAnchor:
+        """Read exact spatial and temporal coverage.
+
+        Returns:
+            Anchor over this object's grid and time span, which names its
+            centroid, filename stem, and place.
+
+        Raises:
+            ValueError: This object carries no locatable grid.
+
+        Examples:
+            >>> ds["ndvi"].gs.anchor.stem
+            '13.0016E_45.0011N_5.12kmx5.12km_10m'
+        """
+        from odc.geo.geobox import GeoBox
+
+        from .anchor import GeoAnchor
+
+        geobox = self.geobox
+        if not isinstance(geobox, GeoBox):
+            raise ValueError(f"{type(self._data).__name__} carries no locatable grid")
+        return GeoAnchor(geobox, timespan=self.timespan)

@@ -5,7 +5,7 @@ import torch.nn.functional as F
 from typing import Literal
 
 from geosave_engine.ml.registry import register_model
-from geosave_engine.ml.models.contract import chain_step
+from geosave_engine.ml.models.contract import Published, chain_step
 
 
 class _ReadoutProjectBlock(nn.Module):
@@ -157,13 +157,14 @@ class _FusionBlock(nn.Module):
     def forward(
         self, x: torch.Tensor, prev: torch.Tensor | None = None
     ) -> torch.Tensor:
-        """
-        Inputs:
-            x: (B, C, H, W) - Feature map from the current scale.
-            prev: (B, C, H, W) or None - Fused feature map from the previous coarser scale.
+        """Fuse this scale with the coarser one and upsample.
 
-        Outputs:
-            (B, C, 2H, 2W) - Fused and upsampled feature map.
+        Args:
+            x: (B, C, H, W) feature map from the current scale.
+            prev: (B, C, H, W) fused map from the previous coarser scale, or None.
+
+        Returns:
+            (B, C, 2H, 2W) fused and upsampled feature map.
         """
         # (B, C, H, W) -> (B, C, H, W)
         x = self.res1(x)
@@ -192,39 +193,41 @@ class DPT(nn.Module):
     https://arxiv.org/pdf/2103.13413
 
     Args:
-        encoder_out_channels: List of channel dimensions for each encoder output scale.
-        encoder_output_strides: List of downsampling factors for each encoder output relative to the original image.
+        pyramid_channels: List of channel dimensions for each encoder output scale.
+        pyramid_strides: List of downsampling factors for each encoder output relative to the original image.
         readout: Method to integrate the CLS token ('cat', 'add', or 'ignore').
         intermediate_channels: Intermediate projection channels for each reassemble block.
         fusion_channels: The unified channel dimension used throughout the fusion process.
     """
 
+    feature_channels: Published[int]
+
     def __init__(
         self,
-        encoder_out_channels: list[int],
-        encoder_output_strides: list[int],
+        pyramid_channels: list[int],
+        pyramid_strides: list[int],
         readout: Literal["cat", "add", "ignore"] = "cat",
         intermediate_channels: tuple[int, ...] = (256, 512, 1024, 1024),
         fusion_channels: int = 256,
     ):
         super().__init__()
-        n = len(encoder_out_channels)
+        n = len(pyramid_channels)
 
         self.readout = readout
         if readout == "cat":
             self.readout_blocks = nn.ModuleList(
-                [_ReadoutProjectBlock(c) for c in encoder_out_channels]
+                [_ReadoutProjectBlock(c) for c in pyramid_channels]
             )
 
         # Calculate relative scale factors for reassembly targeting 1/4, 1/8, 1/16, 1/32 of original input
         scale_factors = [
-            stride / (2 ** (i + 2)) for i, stride in enumerate(encoder_output_strides)
+            stride / (2 ** (i + 2)) for i, stride in enumerate(pyramid_strides)
         ]
 
         self.reassemble_blocks = nn.ModuleList(
             [
                 _ReassembleBlock(
-                    encoder_out_channels[i],
+                    pyramid_channels[i],
                     intermediate_channels[i],
                     fusion_channels,
                     scale_factors[i],
@@ -237,23 +240,26 @@ class DPT(nn.Module):
             [_FusionBlock(fusion_channels) for _ in range(n)]
         )
 
-        self.out_channels: int = fusion_channels
+        self.feature_channels = fusion_channels
 
+    @chain_step(outputs=("feature_map",))
     def forward(
-        self, features: list[torch.Tensor], prefix_tokens: list[torch.Tensor | None]
+        self, pyramid: list[torch.Tensor], prefix_tokens: list[torch.Tensor | None]
     ) -> torch.Tensor:
-        """
+        """Fuse multi-scale ViT features into a single dense map.
+
         Args:
-            features: List of (B, C_i, H_i, W_i) - Multi-scale spatial features from the encoder.
-            prefix_tokens: List of (B, num_prefix, C_i) or None - Prefix tokens (including CLS) from the encoder.
+            pyramid: Per-level (B, C_i, H_i, W_i) spatial features from the encoder.
+            prefix_tokens: Per-level (B, num_prefix, C_i) prefix tokens, or None.
 
         Returns:
-            (B, fusion_channels, H_out, W_out) - The final fused dense prediction map (typically 1/2 resolution of the original image).
+            (B, fusion_channels, H_out, W_out) fused dense map, half the input
+            resolution.
         """
         processed = []
 
-        # --- Stage 1: Readout and Reassemble ---
-        for i, (feat, prefix) in enumerate(zip(features, prefix_tokens)):
+        # Readout and reassemble every level to one feature width.
+        for i, (feat, prefix) in enumerate(zip(pyramid, prefix_tokens)):
             # CLS token integration
             if self.readout == "cat" and prefix is not None:
                 # (B, C_i, H_i, W_i) -> (B, C_i, H_i, W_i)
@@ -264,34 +270,17 @@ class DPT(nn.Module):
                 # (B, C_i, H_i, W_i) + (B, C_i, 1, 1) -> (B, C_i, H_i, W_i)
                 feat = feat + cls
 
-            # Reassemble to uniform feature dimensions:
-            # (B, C_i, H_i, W_i) -> (B, fusion_channels, H_target, W_target)
-            feat = self.reassemble_blocks[i](feat)
+            # Reassemble every level to one feature width and target size.
+            feat = self.reassemble_blocks[i](
+                feat
+            )  # (B, fusion_channels, H_target, W_target)
             processed.append(feat)
 
-        # --- Stage 2: Progressive Fusion (Coarse to Fine) ---
+        # Fuse coarse to fine, so the deepest level enters first.
         fused: torch.Tensor | None = None
-
-        # Iterate backwards from the deepest (coarsest resolution) layer up to the shallowest (finest resolution) layer
         for fusion_block, feat in zip(self.fusion_blocks, reversed(processed)):
             # (B, fusion_channels, H, W) -> (B, fusion_channels, 2H, 2W)
             fused = fusion_block(feat, fused)
 
         assert fused is not None, "Fusion blocks should produce a fused output"
         return fused
-
-    @chain_step()
-    def forward_feature_map(
-        self, pyramid: list, prefix_tokens: list
-    ) -> tuple[torch.Tensor]:
-        """Fuse multi-scale ViT features into a single dense map.
-
-        Args:
-            pyramid: List of per-level feature tensors.
-            prefix_tokens: List of per-level prefix token tensors.
-
-        Returns:
-            (feature_map,) — (B, fusion_channels, H, W).
-        """
-        feature_map = self.forward(pyramid, prefix_tokens)
-        return (feature_map,)

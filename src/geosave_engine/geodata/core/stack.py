@@ -24,20 +24,18 @@ from __future__ import annotations
 
 from collections.abc import Mapping
 from pathlib import Path
-from typing import TYPE_CHECKING, Any, Literal, Unpack, cast, overload
+from typing import TYPE_CHECKING, Literal, Unpack, cast, overload
 
 import odc.geo.xr  # noqa: F401  — registers the .odc accessor
 import xarray as xr
 from odc.geo.geobox import GeoBox
 
-import geosave_engine.geodata.attrs as attrs
 from geosave_engine.geodata.transform import warp
 
 from .base import GeoAccessor
-from .convention import CRS_COORDINATE
+from .profile import CRS_COORDINATE
 
 if TYPE_CHECKING:
-    from collections.abc import Sequence
     from dask.delayed import Delayed
     from os import PathLike
     import holoviews as hv
@@ -49,13 +47,12 @@ if TYPE_CHECKING:
         NetCDFEngine,
         NetCDFWriteOptions,
     )
-    from geosave_engine.geodata.attrs import AttrsModel
     from geosave_engine.geodata.transform.warp import Resampling
     from geosave_engine.geodata.utils.datetime import DateRange
     from odc.geo import SomeResolution
     from geosave_engine.geodata import DataTree, Dataset
     from geosave_engine.geodata.utils.io.geotiff import COGWriteOptions
-    from geosave_engine.geodata.utils.io.layout import Layout
+    from geosave_engine.geodata.utils.io.layout import LeafPath
     from geosave_engine.geodata.utils.io.zarr import ZarrWriteOptions
 
     from .anchor import GeoAnchor
@@ -158,6 +155,15 @@ class GeoStack(GeoAccessor["DataTree"]):
             Direct child group names.
         """
         return tuple(self._data.children)
+
+    @property
+    def variables(self) -> tuple[str, ...]:
+        """Name every grouped data variable in stack order."""
+        return tuple(
+            f"{group}/{variable}"
+            for group, raster in self.rasters.items()
+            for variable in raster.gs.variables
+        )
 
     @property
     def grid_dims(self) -> tuple[str, str]:
@@ -357,7 +363,6 @@ class GeoStack(GeoAccessor["DataTree"]):
             resampling=resampling,
             resolution=warp.NATIVE if resolution == warp.NATIVE else None,
         )
-        aligned.attrs.update(self._data.attrs)
         if not inplace:
             return aligned
 
@@ -370,71 +375,12 @@ class GeoStack(GeoAccessor["DataTree"]):
         )
         return None
 
-    @overload
-    def rebase(
-        self,
-        *models: AttrsModel,
-        target: str | Sequence[str] | None = None,
-        inplace: Literal[False] = False,
-        **model_kwargs: Mapping[str, Any] | None,
-    ) -> DataTree: ...
-
-    @overload
-    def rebase(
-        self,
-        *models: AttrsModel,
-        target: str | Sequence[str] | None = None,
-        inplace: Literal[True],
-        **model_kwargs: Mapping[str, Any] | None,
-    ) -> None: ...
-
-    def rebase(
-        self,
-        *models: AttrsModel,
-        target: str | Sequence[str] | None = None,
-        inplace: bool = False,
-        **model_kwargs: Mapping[str, Any] | None,
-    ) -> DataTree | None:
-        """Return a copy of this stack whose root carries the supplied attrs.
-
-        Only the root is written; groups keep their own, rebased through
-        `rasters["<group>"].gs.rebase`.
-
-        Args:
-            *models: Model instances to apply to `target`.
-            target: Shared coordinate name the models describe, or several of
-                them. None writes to the root's own attrs.
-            inplace: Write into this stack rather than returning a new one.
-            **model_kwargs: Model name mapped to its field values, or to None
-                to drop that model.
-
-        Returns:
-            New DataTree carrying the attrs without copying pixel data, or None
-            when `inplace` is set.
-
-        Raises:
-            KeyError: A keyword names no registered model.
-            ValueError: `target` names no coordinate of the root.
-            ValidationError: A supplied value does not satisfy its field.
-
-        Examples:
-            >>> scene.gs.rebase(ACDD(title="Training scene"))
-            >>> scene.gs.rebase(coordinate={"axis": "Y"}, target="y")
-        """
-        if inplace:
-            attrs.rebase(
-                self._data, *models, target=target, inplace=True, **model_kwargs
-            )
-            return None
-        return attrs.rebase(
-            self._data, *models, target=target, inplace=False, **model_kwargs
-        )
-
     def plot(self, *, cols: int = 1) -> hv.Layout:
         """Draw every group down the page. Needs the `viz` extra.
 
-        Each group draws through `Dataset.gs.plot`, captioned with the group
-        name. A group spanning `time` contributes one panel per step.
+        Each group draws through `Dataset.gs.plot`. Its group name, time, and
+        location appear below the axes. A group spanning `time` contributes
+        one panel per step.
 
         Args:
             cols: Panels per row. Defaults to one, stacking them in a column.
@@ -444,8 +390,8 @@ class GeoStack(GeoAccessor["DataTree"]):
             group with no time axis.
 
         Raises:
-            ValueError: A group names nothing to draw; name each channel's
-                `GDALVariable.colorinterp` on it or plot it alone with
+            ValueError: A group names nothing to draw; name its channels with
+                `gs.write_rgb` first or plot it alone with
                 `stack["<group>"].to_dataset().gs.plot()`.
 
         Examples:
@@ -456,7 +402,10 @@ class GeoStack(GeoAccessor["DataTree"]):
         # A time facet is an NdLayout; mpl won't nest it, so take its panels.
         panels: list[hv.Element] = []
         for name in self.groups:
-            drawn = self._data[name].to_dataset().gs.plot(title=name)
+            raster = self._data[name].to_dataset()
+            place = raster.gs.anchor.location
+            caption = name if place is None else f"{name}\n{place.to_address()}"
+            drawn = raster.gs.plot(xlabel=caption)
             panels.extend(drawn.values() if isinstance(drawn, hv.NdLayout) else [drawn])
 
         return hv.Layout(panels).cols(cols)
@@ -520,7 +469,9 @@ class GeoStack(GeoAccessor["DataTree"]):
         self,
         destination: str | PathLike[str],
         *,
-        layout: Layout | Literal["nested", "flat"] = "nested",
+        layout: str | LeafPath = "nested",
+        split_bands: bool = False,
+        map_scale: float | None = None,
         overwrite: bool = False,
         **options: Unpack[COGWriteOptions],
     ) -> None:
@@ -531,14 +482,18 @@ class GeoStack(GeoAccessor["DataTree"]):
 
         Args:
             destination: Directory the groups are written into.
-            layout: `"nested"` or `"flat"` on their defaults, or a configured
-                `NestedLayout` or `FlatLayout`, applied to every group.
+            layout: `"nested"`, `"flat"`, or a callable placing one leaf,
+                applied to every group. Ignored unless `split_bands` is set.
+            split_bands: Give each variable its own single-band file, rather
+                than keeping them as bands of one file per instant.
+            map_scale: Map denominator used to write pixels per centimetre in
+                every leaf.
             overwrite: Replace leaves that already exist.
             **options: COG creation options passed to every leaf.
 
         Raises:
             FileExistsError: A leaf exists and `overwrite` is false.
-            KeyError: `layout` names neither `"nested"` nor `"flat"`.
+            KeyError: `layout` names no known arrangement.
             ValueError: A group spans a non-spatial axis other than time.
 
         Examples:
@@ -546,7 +501,14 @@ class GeoStack(GeoAccessor["DataTree"]):
         """
         root = Path(destination)
         for name, raster in self.rasters.items():
-            raster.gs.to_cog(root / name, layout=layout, overwrite=overwrite, **options)
+            raster.gs.to_cog(
+                root / name,
+                layout=layout,
+                split_bands=split_bands,
+                map_scale=map_scale,
+                overwrite=overwrite,
+                **options,
+            )
 
     def to_zarr(
         self,

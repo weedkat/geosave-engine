@@ -16,6 +16,7 @@ Examples:
 
 from __future__ import annotations
 
+from collections.abc import Callable
 from typing import TYPE_CHECKING, Any
 
 from torch.utils.data import Dataset
@@ -37,6 +38,9 @@ class TileDataset(Dataset[dict[str, Any]]):
         tiles: Cut to read. Select and order the variables a model expects
             before cutting, so the selection happens once rather than per tile.
         dtype: Tensor dtype. None casts to `torch.float32`.
+        model_context: Extract unbatched context tensors from each tile before
+            reading pixels. A stack callback must select the group it needs.
+            None adds no context to the sample.
 
     Examples:
         >>> samples = TileDataset(Tiles([scene[["B04", "B08"]]], (256, 256)))
@@ -44,10 +48,17 @@ class TileDataset(Dataset[dict[str, Any]]):
         (9, ['image', 'index'])
     """
 
-    def __init__(self, tiles: Tiles, *, dtype: torch.dtype | None = None) -> None:
+    def __init__(
+        self,
+        tiles: Tiles,
+        *,
+        dtype: torch.dtype | None = None,
+        model_context: Callable[..., dict[str, torch.Tensor]] | None = None,
+    ) -> None:
         """Read nothing yet, holding the cut its samples come from."""
         self.tiles = tiles
         self.dtype = dtype
+        self.model_context = model_context
 
     def __len__(self) -> int:
         """Count the samples, one per tile of the cut.
@@ -72,6 +83,8 @@ class TileDataset(Dataset[dict[str, Any]]):
                 "image": tensor shaped `(*axes, band, y, x)`, or one such
                     per group where the raster is a stack,
                 "index": the number this sample was asked by,
+                "model_context": unbatched tensors, only when an extractor
+                    was supplied; DataLoader collates them normally,
             }
 
         Raises:
@@ -81,7 +94,12 @@ class TileDataset(Dataset[dict[str, Any]]):
             >>> samples[3]["image"].shape
             torch.Size([2, 256, 256])
         """
-        return {
-            "image": self.tiles[index].gs.to_tensor(dtype=self.dtype),
+        tile = self.tiles[index]
+        context = self.model_context(tile) if self.model_context is not None else None
+        sample: dict[str, Any] = {
+            "image": tile.gs.to_tensor(dtype=self.dtype),
             "index": index,
         }
+        if context is not None:
+            sample["model_context"] = context
+        return sample

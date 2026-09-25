@@ -1,6 +1,7 @@
 from geosave_engine.geodata.errors.errors import (
     AnchorFetchError,
     DroppedAttrsWarning,
+    UnreadMaskWarning,
     DroppedBucketsWarning,
     DroppedInstantsWarning,
     DroppedPackingWarning,
@@ -17,6 +18,7 @@ from geosave_engine.geodata.errors.errors import (
 __all__ = [
     "AnchorFetchError",
     "DroppedAttrsWarning",
+    "UnreadMaskWarning",
     "DroppedBucketsWarning",
     "DroppedInstantsWarning",
     "DroppedPackingWarning",

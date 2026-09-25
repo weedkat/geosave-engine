@@ -2,14 +2,17 @@
 
 from __future__ import annotations
 
-from collections.abc import Sequence
 from datetime import datetime
-from typing import ClassVar, Literal, Self
+from typing import TYPE_CHECKING, ClassVar, Literal, Self
 
 import numpy as np
+from odc.geo.geobox import GeoBox
 from pydantic import field_serializer, field_validator
 
 from geosave_engine.geodata.attrs.model import AttrsModel
+
+if TYPE_CHECKING:
+    import xarray as xr
 
 DATETIME_FORMAT = "%Y:%m:%d %H:%M:%S"
 
@@ -51,6 +54,90 @@ class GeoTIFFTags(AttrsModel):
     TIFFTAG_XRESOLUTION: float | None = None
     TIFFTAG_YRESOLUTION: float | None = None
     TIFFTAG_RESOLUTIONUNIT: Literal[1, 2, 3] | None = None
+
+    @classmethod
+    def from_xarray(
+        cls,
+        obj: xr.Dataset | xr.DataArray,
+        *,
+        map_scale: float | None = None,
+    ) -> Self:
+        """Build the TIFF tags that describe one raster file.
+
+        Existing TIFF tags are retained. An ACDD summary supplies the image
+        description, a scalar time coordinate supplies the TIFF datetime, and
+        ``map_scale`` converts ground resolution to pixels per centimetre.
+
+        Args:
+            obj: Raster represented by this file.
+            map_scale: Map denominator, such as ``10_000`` for 1:10,000.
+
+        Returns:
+            Tags synchronized with the raster and requested map scale.
+
+        Raises:
+            ValueError: The scale is invalid, or physical resolution cannot be
+                calculated from a regular grid in a projected CRS.
+        """
+        # Local imports avoid making the model registry depend on itself while
+        # the attrs package is being imported.
+        from geosave_engine.geodata.attrs.models.acdd import ACDD
+        from geosave_engine.geodata.attrs.namespace import AttrsNamespace
+
+        namespace = AttrsNamespace.from_attrs(obj.attrs)
+        carried = namespace.get(cls) or cls()
+        values = carried.to_attrs()
+
+        acdd = namespace.get(ACDD)
+        if acdd is not None and acdd.summary is not None:
+            values["TIFFTAG_IMAGEDESCRIPTION"] = acdd.summary
+
+        time = obj.coords.get("time")
+        if time is not None and time.ndim == 0:
+            values["TIFFTAG_DATETIME"] = time.values
+
+        if map_scale is not None:
+            try:
+                scale = float(map_scale)
+            except (TypeError, ValueError):
+                raise ValueError("map_scale must be a positive finite number") from None
+            if not np.isfinite(scale) or scale <= 0:
+                raise ValueError("map_scale must be a positive finite number")
+
+            grid = obj.odc.geobox
+            if not isinstance(grid, GeoBox):
+                raise ValueError(
+                    "map_scale needs a regular grid with a projected CRS"
+                )
+            if grid.crs is None or not grid.crs.projected:
+                raise ValueError("map_scale needs a regular grid in a projected CRS")
+
+            axes = grid.crs.proj.axis_info
+            if len(axes) < 2:
+                raise ValueError(
+                    "map_scale needs a projected CRS with linear axis units"
+                )
+            x_factor = axes[0].unit_conversion_factor
+            y_factor = axes[1].unit_conversion_factor
+            if x_factor is None or y_factor is None:
+                raise ValueError(
+                    "map_scale needs a projected CRS with linear axis units"
+                )
+
+            x_metres = abs(grid.resolution.x) * x_factor
+            y_metres = abs(grid.resolution.y) * y_factor
+            if not np.isfinite(x_metres) or not np.isfinite(y_metres):
+                raise ValueError("map_scale needs finite ground resolution")
+            if x_metres <= 0 or y_metres <= 0:
+                raise ValueError("map_scale needs positive ground resolution")
+
+            values.update(
+                TIFFTAG_XRESOLUTION=scale / (100 * x_metres),
+                TIFFTAG_YRESOLUTION=scale / (100 * y_metres),
+                TIFFTAG_RESOLUTIONUNIT=3,
+            )
+
+        return cls.model_validate(values)
 
     @field_validator("TIFFTAG_DATETIME", mode="before")
     @classmethod
@@ -119,21 +206,3 @@ class GeoTIFFTags(AttrsModel):
             absent.
         """
         return None if value is None else value.strftime(DATETIME_FORMAT)
-
-    @classmethod
-    def merge(cls, models: Sequence[AttrsModel | None]) -> tuple[Self, set[str]]:
-        """Merge TIFF tags, dropping disagreements.
-
-        Args:
-            models: This model from each joined object, in call order, at
-                least one, None where an object carried none.
-
-        Returns:
-            Model carrying the fields every object agreed on, and the
-            attr keys it could not keep.
-
-        Raises:
-            TypeError: An object carries a different model.
-            ValueError: `models` is empty.
-        """
-        return cls._merge_fields(models, must_agree=())

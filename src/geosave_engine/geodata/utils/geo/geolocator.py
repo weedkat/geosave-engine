@@ -74,12 +74,13 @@ class Place:
             "country_code",
             "iso_state",
         }
-        parts = [
-            value
-            for field in fields(self)
-            if field.name not in excluded
-            and (value := getattr(self, field.name)) is not None
-        ]
+        parts = []
+        for field in fields(self):
+            if field.name in excluded:
+                continue
+            value = getattr(self, field.name)
+            if value is not None:
+                parts.append(value)
         return ", ".join(parts)
 
     def to_dict(self) -> dict[str, str | None]:

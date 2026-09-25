@@ -1,17 +1,17 @@
 from __future__ import annotations
 
 import torch
+import xarray as xr
 import torch.nn as nn
 from huggingface_hub import hf_hub_download
 from terratorch.models.backbones.clay_v15.model import Encoder
 
 from geosave_engine.ml.registry import register_model
-from geosave_engine.ml.models.contract import chain_step
+from geosave_engine.ml.models.contract import Published, chain_step
 
-# Only 'clay_v15_large' has a published checkpoint (verified: made-with-clay/Clay
-# HF repo has exactly one file, v1.5/clay-v1.5.ckpt; rslearn's own Clay port
-# skips the smaller sizes for the same reason) -- tiny/small/base stay in
-# MODEL_NAMES as real architectures to train from scratch, just absent here.
+from ..context.time import time_labels
+
+# Only the large variant has a published checkpoint.
 MODEL_SOURCE: dict[str, dict[str, str]] = {
     "clay_v15_large": {
         "repo_id": "made-with-clay/Clay",
@@ -19,25 +19,11 @@ MODEL_SOURCE: dict[str, dict[str, str]] = {
     },
 }
 
-# Real ckpt (downloaded + inspected once, then deleted -- see build_clay) is a
-# standard PyTorch Lightning checkpoint: ckpt['state_dict'] holds every
-# ClayMAE submodule (encoder/decoder/proj/teacher) flattened under
-# "model.<submodule>." prefixes. Stripping "model.encoder." gives exactly
-# Encoder.named_parameters()'s own names -- confirmed 1:1 (265/265) against a
-# real clay_v15_large Encoder, so build_clay loads with strict=True.
+# Extract only encoder weights from the Lightning checkpoint.
 _STATE_DICT_ENCODER_PREFIX: str = "model.encoder."
 
-# Encoder-only subset of terratorch's clay_mae_{tiny,small,base,large} kwargs
-# (clay_v15/model.py) -- copied by hand, not read off those factories: calling
-# them builds the full ClayMAE (Decoder + a timm SAM "teacher" downloaded with
-# pretrained=True unconditionally, no opt-out -- see Clay's class docstring),
-# and we only ever want the encoder dims.
-#
-# Real published checkpoint (made-with-clay/Clay HF repo) only covers the large
-# size -- tiny/small/base are architecture definitions with no pretrained
-# weights, kept here anyway since they're legitimate skeletons to train from
-# scratch. `pretrained=True` is only meaningful for 'clay_v15_large'.
-MODEL_NAMES: dict[str, dict] = {
+# Build only the encoder; TerraTorch MAE factories also construct a teacher.
+MODEL_SPECS: dict[str, dict] = {
     "clay_v15_tiny": {
         "dim": 192,
         "depth": 6,
@@ -135,7 +121,7 @@ def build_clay(
     """Build a Clay v1.5 `Encoder` for one architecture size, optionally with real weights.
 
     Args:
-        model_name: key of `MODEL_NAMES`.
+        model_name: key of `MODEL_SPECS`.
         pretrained: load real Clay v1.5 weights onto the built `Encoder`, from
             `checkpoint_path` if given, else HF Hub via `MODEL_SOURCE`. Only
             `model_name`s in `MODEL_SOURCE` have a published checkpoint.
@@ -149,12 +135,12 @@ def build_clay(
         blocks to hook), not part of building the architecture itself.
 
     Raises:
-        ValueError: `model_name` not in `MODEL_NAMES`, or `pretrained` is
+        ValueError: `model_name` not in `MODEL_SPECS`, or `pretrained` is
             `True` and `model_name` has no entry in `MODEL_SOURCE`.
     """
-    if model_name not in MODEL_NAMES:
+    if model_name not in MODEL_SPECS:
         raise ValueError(
-            f"{model_name!r} not in MODEL_NAMES; must be one of {list(MODEL_NAMES)}"
+            f"{model_name!r} not in MODEL_SPECS; must be one of {list(MODEL_SPECS)}"
         )
     if pretrained and checkpoint_path is None and model_name not in MODEL_SOURCE:
         raise ValueError(
@@ -162,7 +148,7 @@ def build_clay(
             f"works for {list(MODEL_SOURCE)}"
         )
 
-    spec = MODEL_NAMES[model_name]
+    spec = MODEL_SPECS[model_name]
     encoder = Encoder(
         mask_ratio=0.0,
         patch_size=spec["patch_size"],
@@ -192,31 +178,14 @@ def build_clay(
 
 @register_model("encoder", "clay")
 class Clay(nn.Module):
-    """Clay v1.5 ViT encoder, wavelength-conditioned per band.
+    """Clay v1.5 encoder conditioned on band wavelengths and geographic context.
 
-    Backbone is a plain ViT (`build_clay` builds terratorch's `Encoder` class,
-    not the official `ClayMAEModule` wrapper — that one drags in an unrelated
-    SAM "teacher" model, see `build_clay`'s docstring). Patch embedding is
-    `DynamicEmbedding`, conditioned on each band's real wavelength instead of a
-    fixed `in_channels` — so switching bands/sensors doesn't cost pretrained-
-    weight compatibility the way it does elsewhere in this package.
-
-    Sensor-agnostic on purpose: no `modality`/sensor-catalog lookup lives
-    here — `in_channels`/`waves`/`gsd` are the caller's own resolved numbers
-    (e.g. from `geodata.sensors`), same shape as `Prithvi`/`DINOv3` take
-    plain `in_channels`. Keeps sensor identity a geodata concern, not an ml one.
-
-    `forward_pyramid` reads intermediate blocks via `register_forward_hook` —
-    terratorch's `Transformer.forward` has no `out_indices` support of its own.
-
-    No `img_mean`/`img_std` (unlike `Prithvi`/`DINOv3`) — doesn't implement
-    `Normalization`, on purpose: `ImageProcessor` already has a real,
-    explicit path for this (`SemanticSegmentationTask`'s own `mean_norm`/
-    `std_norm` config), so a second, model-attribute fallback here would
-    just be a second place the same two numbers could come from. Set
-    `mean_norm`/`std_norm` explicitly in config (e.g. from
-    `geodata.sensors.band_mean`/`band_std`).
+    Supply prepared image tensors, ordered wavelengths in micrometres, and GSD
+    in metres. `model_context` reads time and location from one geodata sample.
     """
+
+    pyramid_channels: Published[list[int]]
+    pyramid_strides: Published[list[int]]
 
     waves: torch.Tensor
     gsd: torch.Tensor
@@ -236,12 +205,9 @@ class Clay(nn.Module):
         """Build a Clay v1.5 encoder, wavelength-conditioned on caller-supplied band stats.
 
         Args:
-            model_name: must be a key of module-level `MODEL_NAMES`. Only
-                `'clay_v15_large'` has a published checkpoint — see the class
-                docstring for why.
-            in_channels: input channel count. No default — Clay has no one
-                pretrained band spec to fall back to (see class docstring),
-                unlike `Prithvi`'s `in_channels=6`.
+            model_name: must be a key of module-level `MODEL_SPECS`. Only
+                `'clay_v15_large'` has a published checkpoint.
+            in_channels: Number of input bands, matching `waves`.
             input_size: input spatial size in pixels; `int` or `(h, w)`. Must
                 be square (`h == w`) — Clay's patch grid assumes it — and
                 evenly divisible by `model_name`'s patch size.
@@ -258,7 +224,7 @@ class Clay(nn.Module):
                 picks even quarters of `model_name`'s depth (see `build_clay`).
 
         Raises:
-            ValueError: `model_name` not in `MODEL_NAMES`; `waves` doesn't have
+            ValueError: `model_name` not in `MODEL_SPECS`; `waves` doesn't have
                 exactly `in_channels` values; `input_size` isn't square or
                 isn't evenly divisible by `model_name`'s patch size; or
                 `pretrained` is `True` with no published checkpoint for
@@ -297,8 +263,40 @@ class Clay(nn.Module):
         self.register_buffer("waves", torch.tensor(waves, dtype=torch.float32))
         self.register_buffer("gsd", torch.tensor(float(gsd)))
 
-        self.out_channels: list[int] = [dim] * len(self.out_indices)
-        self.output_strides: list[int] = [patch_size] * len(self.out_indices)
+        self.pyramid_channels = [dim] * len(self.out_indices)
+        self.pyramid_strides = [patch_size] * len(self.out_indices)
+
+    @staticmethod
+    def model_context(data: xr.Dataset | xr.DataArray) -> dict[str, torch.Tensor]:
+        """Read one time label and geographic centre for a Clay image.
+
+        Args:
+            data: One sample with exactly one datetime time label and a regular
+                grid. The label is encoded directly, including a temporal bucket
+                label; it is not replaced by the bucket midpoint.
+
+        Returns:
+            Unbatched float32 tensors shaped (2,): `time` holds ISO week and
+            hour; `latlon` holds latitude and longitude in degrees.
+
+        Raises:
+            TypeError: Input is not a Dataset or DataArray.
+            ValueError: Time labels or a regular georeferenced grid are missing
+                or invalid, or the sample contains multiple times.
+        """
+        times = time_labels(data)
+        if len(times) != 1:
+            raise ValueError(
+                "Clay requires one time label; select a single frame first"
+            )
+        when = times[0]
+        longitude, latitude = data.gs.anchor.geographic_centroid
+        return {
+            "time": torch.tensor(
+                [when.isocalendar().week, when.hour], dtype=torch.float32
+            ),
+            "latlon": torch.tensor([latitude, longitude], dtype=torch.float32),
+        }
 
     def forward(
         self,
@@ -387,18 +385,6 @@ class Clay(nn.Module):
     ) -> tuple[list, list]:
         """Extract multi-scale intermediate features from the ViT.
 
-        Calls `self.forward(image, ...)` under the hooks below instead of
-        rebuilding the datacube by hand.
-
-        `Transformer.forward` (clay_v15/backbone.py) is a plain block loop —
-        only the final block's output leaves the module, nothing intermediate
-        is collected. `register_forward_hook` on each target block's
-        `FeedForward` submodule captures its output as PyTorch calls it, no
-        need to reimplement the loop ourselves. A hook only sees that
-        submodule's own output (`ff(x)`, pre-residual) — the hook reconstructs
-        the true post-residual value as ``hook_input[0] + hook_output``,
-        verified against a manual copy of the real loop before relying on it.
-
         Args:
             image: (B, C, H, W) input tensor, C == this instance's `in_channels`.
             time: (B, 2) float32 raw `(iso_week, hour)`, or None for no time signal.
@@ -409,8 +395,9 @@ class Clay(nn.Module):
             maps, list of per-level (B, 1, D) CLS tokens.
         """
         target_modules = {
-            self.encoder.transformer.layers[i][1]: i for i in self.out_indices
-        }  # type: ignore
+            self.encoder.transformer.get_submodule(f"layers.{i}.1"): i
+            for i in self.out_indices
+        }
         captured: dict[int, torch.Tensor] = {}
 
         def hook(

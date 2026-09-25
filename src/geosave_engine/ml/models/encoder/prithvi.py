@@ -1,44 +1,28 @@
 from __future__ import annotations
 
+from typing import cast
+
 import torch
 import torch.nn as nn
-
-from typing import cast
+import xarray as xr
 from terratorch.models.backbones.prithvi_mae import PrithviViT
 from terratorch.registry import BACKBONE_REGISTRY
 
 from geosave_engine.ml.registry import register_model
-from geosave_engine.ml.models.contract import chain_step
+from geosave_engine.ml.models.contract import Published, chain_step
 
-# From terratorch.models.backbones.prithvi_vit — HLS S30 DN scale (reflectance x 10000).
-# terratorch never attaches these to the model itself (PrithviViT.__init__ takes no
-# mean/std param, swallows and discards them via **kwargs), so they're copied here.
-_V1_MEAN = [775.0, 1081.0, 1229.0, 2497.0, 2204.0, 1611.0]
-_V1_STD = [1282.0, 1270.0, 1399.0, 1368.0, 1292.0, 1155.0]
-_V2_MEAN = [1087.0, 1342.0, 1433.0, 2734.0, 1958.0, 1363.0]
-_V2_STD = [2248.0, 2179.0, 2178.0, 1850.0, 1242.0, 1049.0]
-_V1_VARIANTS = frozenset({"prithvi_eo_v1_100"})
+from ..context.time import time_labels
 
 
-@register_model("encoder", "prithvi")
-class Prithvi(nn.Module):
-    """A Prithvi-EO ViT model with band normalization stats attached.
+class _Prithvi(nn.Module):
+    """Shared Prithvi construction and geodata tensor layout."""
 
-    Non-temporal-location variants only — `forward_pyramid` takes just `image`.
-    For a `_tl` variant (real time/location conditioning), use
-    `PrithviTemporalLocation` instead. Kept as two separate classes rather than
-    one class with two `@chain_step` methods on `forward_pyramid`: both
-    methods would only ever depend on externally-supplied keys, so
-    `ContextChain` can't tell them apart by DAG depth — they'd always land in
-    the same generation and hit the "ambiguous" error. One method per class
-    sidesteps that: which `forward_pyramid` runs is decided by Python's normal
-    class/MRO lookup at `model_name` selection time, not by graph resolution.
-    """
+    pyramid_channels: Published[list[int]]
+    pyramid_strides: Published[list[int]]
+    input_size: Published[int | tuple[int, int]]
 
-    # out_indices are even quarters of each model's block depth (same convention
-    # as dinov3.py): depth=12 -> [2,5,8,11], depth=24 -> [5,11,17,23], depth=32 -> [7,15,23,31].
-    # prithvi_eo_tiny excluded: no public checkpoint, architecture-only debug variant.
-    MODEL_NAMES: dict[str, dict] = {
+    # Sample each transformer depth at even quarters.
+    MODEL_SPECS: dict[str, dict] = {
         "prithvi_eo_v1_100": {"out_indices": (2, 5, 8, 11)},
         "prithvi_eo_v2_300": {"out_indices": (5, 11, 17, 23)},
         "prithvi_eo_v2_600": {"out_indices": (7, 15, 23, 31)},
@@ -58,67 +42,46 @@ class Prithvi(nn.Module):
         vpt_n_tokens: int | None = None,
         vpt_dropout: float = 0.0,
     ):
-        """Build a terratorch Prithvi-EO backbone with band normalization stats attached.
-
-        No architecture-identity params (`embed_dim`/`depth`/`num_heads`/`mlp_ratio`/
-        `patch_size`/`norm_layer`/`coords_encoding`) exposed here on purpose — those
-        are exactly what `model_name` already picks, and overriding one independently
-        of `model_name` silently breaks pretrained-weight shape compatibility. Same
-        principle as `dinov3.py` not exposing `embed_dim`/`depth`: if a genuinely
-        different architecture is wanted, that's a different `model_name` (or a real
-        from-scratch build), not a kwarg on this class.
+        """Build a terratorch Prithvi-EO backbone.
 
         Args:
-            model_name: terratorch backbone registry name. Must be a key of `MODEL_NAMES`.
+            model_name: terratorch backbone registry name. Must be a key of `MODEL_SPECS`.
             pretrained: load pretrained weights from HuggingFace hub (or `ckpt_path`).
-            in_channels: input channel count. `6` (default) matches the checkpoint's
-                pretrained HLS S30 bands (BLUE, GREEN, RED, NIR_NARROW, SWIR_1, SWIR_2)
-                — real transferred weights. Any other count gets a patch-embed conv of
-                that width with randomly initialized weights (terratorch can only
-                weight-transfer by matching band identity, and a plain channel count
-                carries none — same as handing timm's dinov3 an off-spec in_channels).
-            input_size: input spatial size in pixels; tuple for non-square. Only
-                sizes `model_name`'s patch size evenly divides use every pixel —
-                anything else gets silently border-cropped by terratorch's PatchEmbed.
-                Doesn't have to match the actual tensor size passed to `forward`
-                later: the positional embedding is re-interpolated to whatever shape
-                shows up at call time, so this is just the size used to size that
-                buffer (and, at `pretrained=True`, the size the checkpoint itself used).
+            in_channels: input channel count. `6` matches the checkpoint's pretrained
+                HLS S30 bands (BLUE, GREEN, RED, NIR_NARROW, SWIR_1, SWIR_2) and
+                transfers their weights; any other count gets a randomly initialized
+                patch-embed conv of that width.
+            input_size: size the positional embedding buffer is built for, in pixels;
+                tuple for non-square. Sizes `model_name`'s patch size does not divide
+                are border-cropped. Call-time tensors may differ — the embedding is
+                re-interpolated to whatever shape arrives.
             num_frames: number of timesteps in the input (temporal stacking); `1` for
                 single-timestep imagery.
             drop_path_rate: stochastic depth rate.
             out_indices: which of the model's blocks to return features from. `None`
-                uses this `model_name`'s default (see `MODEL_NAMES`).
+                uses this `model_name`'s default (see `MODEL_SPECS`).
             ckpt_path: local checkpoint path; `None` fetches the public one from HF Hub.
             vpt: use Visual Prompt Tuning (freeze backbone, learn small prompt tokens
                 prepended per block) instead of full fine-tuning.
             vpt_n_tokens: prompt tokens per block. Required if `vpt` is True.
             vpt_dropout: dropout on VPT prompt tokens.
 
-        Returns:
-            terratorch PrithviViT model with `img_mean` and `img_std` attributes set.
-
         Raises:
-            ValueError: `model_name` not in `MODEL_NAMES`.
+            ValueError: `model_name` not in `MODEL_SPECS`.
         """
         super().__init__()
-        model_names = type(self).MODEL_NAMES
-        if model_name not in model_names:
+        model_specs = type(self).MODEL_SPECS
+        if model_name not in model_specs:
             raise ValueError(
-                f"{model_name!r} not in {type(self).__name__}.MODEL_NAMES; must be one of {list(model_names)}"
+                f"{model_name!r} not in {type(self).__name__}.MODEL_SPECS; must be one of {list(model_specs)}"
             )
 
-        # explicit annotation: nn.Module.__setattr__'s stub type (Tensor | Module) would
-        # otherwise override inference for every later self.out_indices read.
         self.out_indices: list[int] = (
             out_indices
             if out_indices is not None
-            else list(model_names[model_name]["out_indices"])
+            else list(model_specs[model_name]["out_indices"])
         )
-        # bands=None -> terratorch assumes the pretrained 6-band HLS S30 order itself
-        # (prithvi_vit.py: "model_bands is None -> model_bands = pretrained_bands").
-        # Any other in_channels needs an explicit same-length list; plain ints carry
-        # no band identity, so terratorch can't weight-transfer them — random-init.
+        # TerraTorch uses its pretrained band order when bands is None.
         bands = None if in_channels == 6 else list(range(in_channels))
 
         model = BACKBONE_REGISTRY.build(
@@ -134,64 +97,49 @@ class Prithvi(nn.Module):
             vpt_n_tokens=vpt_n_tokens,
             vpt_dropout=vpt_dropout,
         )
-        # explicit annotation: nn.Module.__setattr__'s stub type (Tensor | Module) would
-        # otherwise override cast()'s narrowing for every later self.model read.
         self.model: PrithviViT = cast(PrithviViT, model)
 
-        # ViT: same embed_dim/spatial stride at every block, unlike a CNN's per-stage
-        # channel growth + downsampling — still indexed per out_index for robustness.
-        self.out_channels: list[int] = [
-            self.model.out_channels[i] for i in self.out_indices
-        ]
+        self.pyramid_channels = [self.model.out_channels[i] for i in self.out_indices]
         model_patch_size = self.model.patch_embed.patch_size  # (t, h, w)
-        self.output_strides: list[int] = [model_patch_size[-1]] * len(self.out_indices)
+        self.pyramid_strides = [model_patch_size[-1]] * len(self.out_indices)
 
         self.input_size = input_size
-        mean, std = (
-            (_V1_MEAN, _V1_STD) if model_name in _V1_VARIANTS else (_V2_MEAN, _V2_STD)
-        )
-        self.img_mean = mean
-        self.img_std = std
 
-    def forward(
-        self,
-        x: torch.Tensor,
-    ) -> list[torch.Tensor]:
-        """Forward pass for the backbone — raw passthrough to the wrapped model.
+    def forward(self, image: torch.Tensor) -> list[torch.Tensor]:
+        """Run the backbone on geodata-ordered image tensors.
 
         Args:
-            x: Input tensor of shape (batch_size, in_chans, height, width).
+            image: (B, C, H, W) or (B, T, C, H, W) prepared pixels.
 
         Returns:
-            List of per-`out_indices` token tensors, each (B, 1 + N_patches, embed_dim)
-            — CLS token at index 0.
-
-        Examples:
-            >>> temporal_coords = torch.tensor([[[2024.0, 45.0]]])  # Feb 15 2024, single frame
-            >>> location_coords = torch.tensor([[52.5, 13.4]])  # Berlin
-            >>> features = enc.forward(image, temporal_coords, location_coords)
+            Per-block token tensors from the wrapped backbone.
         """
-        # (B, 1+N_patches, embed_dim) per block, full depth -- see forward_pyramid for the
-        # out_indices-sliced, spatially-reshaped version used by the actual pipeline.
-        return self.model(x, temporal_coords=None, location_coords=None)
+        if image.ndim == 5:
+            image = image.transpose(1, 2)  # (B, T, C, H, W) -> (B, C, T, H, W)
+        return self.model(image, temporal_coords=None, location_coords=None)
+
+
+@register_model("encoder", "prithvi")
+class Prithvi(_Prithvi):
+    """Prithvi encoder accepting prepared images in geodata axis order.
+
+    Inputs have shape (B, C, H, W) or (B, T, C, H, W). Constructor options
+    configure the shared Prithvi backbone.
+    """
 
     @chain_step()
     def forward_pyramid(self, image: torch.Tensor) -> tuple[list, list]:
         """Extract multi-scale intermediate features from the ViT.
 
-        Calls `forward_features` directly (not `self.model(image)`/`forward` — that's
-        the MAE-pretraining pass, masks most patches, wrong output shape entirely).
-        `forward_features` always returns every block's output (can't skip blocks,
-        each depends on the last), so the `out_indices` slice happens here, on our
-        side, not left to terratorch's own monkeypatched `model.forward`.
-
         Args:
-            image: (B, C, H, W) input tensor.
+            image: (B, C, H, W) or (B, T, C, H, W) prepared pixels.
 
         Returns:
             (pyramid, prefix_tokens) — list of per-level (B, C, H, W) feature
             maps, list of per-level (B, 1, C) CLS tokens.
         """
+        if image.ndim == 5:
+            image = image.transpose(1, 2)  # (B, T, C, H, W) -> (B, C, T, H, W)
         features = self.model.forward_features(
             image
         )  # list[depth] of (B, 1+N_patches, embed_dim), CLS at idx 0
@@ -208,17 +156,14 @@ class Prithvi(nn.Module):
 
 
 @register_model("encoder", "prithvi_tl")
-class PrithviTL(Prithvi):
-    """A Prithvi-EO ViT model conditioned on real time/location, HLS band stats attached.
+class PrithviTL(_Prithvi):
+    """Prithvi encoder conditioned on acquisition time and geographic location.
 
-    The `_tl` variants only — `forward_pyramid` here also takes `anchor`/
-    `temporal_coords`/`location_coords`, and actually uses them (`coords_encoding=["time",
-    "location"]` is baked into every one of `MODEL_NAMES` below). Everything else
-    (`__init__`, `forward`) is shared with `Prithvi` — see its docstring for why
-    this is a separate class rather than a second method on the same one.
+    `model_context` extracts raw coordinates from one geodata sample.
+    `forward_pyramid` accepts the tensors after DataLoader collation.
     """
 
-    MODEL_NAMES: dict[str, dict] = {
+    MODEL_SPECS: dict[str, dict] = {
         "prithvi_eo_v2_tiny_tl": {"out_indices": (2, 5, 8, 11)},
         "prithvi_eo_v2_100_tl": {"out_indices": (2, 5, 8, 11)},
         "prithvi_eo_v2_300_tl": {"out_indices": (5, 11, 17, 23)},
@@ -239,7 +184,7 @@ class PrithviTL(Prithvi):
         vpt_n_tokens: int | None = None,
         vpt_dropout: float = 0.0,
     ):
-        """Same as `Prithvi.__init__` (see there for full Args), just defaulting
+        """Same backbone options as `Prithvi`, defaulting
         `model_name` to a `_tl` variant."""
         super().__init__(
             model_name=model_name,
@@ -255,6 +200,34 @@ class PrithviTL(Prithvi):
             vpt_dropout=vpt_dropout,
         )
 
+    @staticmethod
+    def model_context(data: xr.Dataset | xr.DataArray) -> dict[str, torch.Tensor]:
+        """Read this raster's time labels and geographic centre for Prithvi.
+
+        Args:
+            data: One sample with datetime time labels and a regular grid.
+                Labels are encoded directly, including labels of temporal buckets.
+
+        Returns:
+            Unbatched float32 tensors: `temporal_coords` shaped (T, 2), holding
+            year and zero-indexed day-of-year; `location_coords` shaped (2,),
+            holding latitude and longitude in degrees.
+
+        Raises:
+            TypeError: Input is not a Dataset or DataArray.
+            ValueError: Time labels or a regular georeferenced grid are missing
+                or invalid.
+        """
+        times = time_labels(data)
+        longitude, latitude = data.gs.anchor.geographic_centroid
+        return {
+            "temporal_coords": torch.tensor(
+                [(when.year, when.timetuple().tm_yday - 1) for when in times],
+                dtype=torch.float32,
+            ),
+            "location_coords": torch.tensor([latitude, longitude], dtype=torch.float32),
+        }
+
     @chain_step()
     def forward_pyramid(
         self,
@@ -265,7 +238,7 @@ class PrithviTL(Prithvi):
         """Extract multi-scale intermediate features, conditioned on time/location.
 
         Args:
-            image: (B, C, H, W) input tensor.
+            image: (B, C, H, W) or (B, T, C, H, W) prepared pixels.
             temporal_coords: (B, num_frames, 2) float32 — (year, day-of-year) per
                 frame, day-of-year 0-indexed (Jan 1st = 0), real calendar values,
                 not normalized.
@@ -281,8 +254,10 @@ class PrithviTL(Prithvi):
             ...     'temporal_coords': torch.tensor([[[2024.0, 45.0]]]),  # Feb 15 2024, single frame
             ...     'location_coords': torch.tensor([[52.5, 13.4]]),  # Berlin
             ... }
-            >>> out = PrithviTL().forward_pyramid(ctx)
+            >>> out = PrithviTL().forward_pyramid(**ctx)
         """
+        if image.ndim == 5:
+            image = image.transpose(1, 2)  # (B, T, C, H, W) -> (B, C, T, H, W)
         features = self.model.forward_features(  # list[depth] of (B, 1+N_patches, embed_dim), CLS at idx 0 # type: ignore
             image, temporal_coords=temporal_coords, location_coords=location_coords
         )
@@ -292,11 +267,3 @@ class PrithviTL(Prithvi):
         ]  # list[len(out_indices)] of (B, 1, embed_dim) -- CLS only
         pyramid = self.model.prepare_features_for_image_model(features)  # type: ignore # list of (B, embed_dim, H/patch, W/patch)
         return pyramid, prefix_tokens
-
-
-if __name__ == "__main__":
-    from terratorch.registry import TERRATORCH_BACKBONE_REGISTRY
-
-    print(
-        "Models registered in terratorch:", list(TERRATORCH_BACKBONE_REGISTRY._registry)
-    )

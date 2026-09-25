@@ -1,143 +1,217 @@
-"""What a label raster's pixel values mean, and how they colour."""
+"""What a label variable's pixel values mean, and how they colour."""
 
 from __future__ import annotations
 
-from collections.abc import Sequence
-from typing import ClassVar, Self
+from typing import TYPE_CHECKING, Annotated, Any, ClassVar, NamedTuple, Self
 
-from pydantic import field_validator, model_validator
+from pydantic import BeforeValidator, model_validator
 
 from geosave_engine.geodata.attrs.model import AttrsModel
+from geosave_engine.geodata.attrs.validate import parse_collection_text
 from geosave_engine.utils.colorize import Palette
+
+if TYPE_CHECKING:
+    from collections.abc import Mapping
 
 
 class Legend(AttrsModel):
-    """What a label variable's pixel values mean, and how they colour.
+    """Say what a label variable's pixel values mean, and how they colour.
 
-    Keyed to pixel values, so it survives every operation that leaves the
-    values alone. `flag_values`/`flag_meanings` mirror `class_map` in CF form
-    and are derived, not set — only `class_map` makes a legend.
+    CF spells the listing two ways: `flag_values` enumerates the values a pixel
+    takes and `flag_masks` names the bits a value packs flags into. `class_map`
+    reads either back keyed by value, and a colour keys to a value it names.
 
     Args:
-        class_map: `{pixel value: class name}` for a label variable. Class
-            names carry no whitespace.
-        color_map: `{pixel value: hex or RGB}` for a label variable.
-        flag_values: Pixel values ascending, mirroring `class_map` keys. Set
-            directly only to check consistency against a foreign CF file;
-            it never populates `class_map`.
-        flag_meanings: Space-separated class names in `flag_values` order,
-            mirroring `class_map` values. Same caveat as `flag_values`.
+        flag_values: Pixel values, ascending and unique, one per class.
+        flag_masks: Bit masks, for values packing several flags at once.
+        flag_meanings: Space-separated class names, in `flag_values` order.
+        color_map: `{pixel value: hex or RGB}`, keyed to the values listed.
 
     Raises:
-        ValueError: A class name carries whitespace, or `flag_values` and
-            `flag_meanings` disagree with `class_map` or each other.
+        ValueError: The names and the codes differ in number, only one of the
+            two is set, `flag_values` is not ascending and unique, or a colour
+            keys to a value the listing does not name.
 
     Examples:
-        >>> ds.gs.rebase(
-        ...     Legend(class_map={0: "bg", 1: "palm"}), target="labels"
-        ... )
+        >>> legend = Legend(class_map={0: "bg", 1: "palm"})
+        >>> legend.flag_values, legend.flag_meanings
+        ([0, 1], 'bg palm')
+        >>> legend.class_map
+        {0: 'bg', 1: 'palm'}
     """
 
     NAME: ClassVar[str] = "legend"
 
-    class_map: dict[int, str] | None = None
-    color_map: Palette | None = None
-    flag_values: list[int] | None = None
+    flag_values: Annotated[
+        list[int] | None, BeforeValidator(parse_collection_text)
+    ] = None
+    flag_masks: Annotated[
+        list[int] | None, BeforeValidator(parse_collection_text)
+    ] = None
     flag_meanings: str | None = None
+    color_map: Annotated[Palette | None, BeforeValidator(parse_collection_text)] = None
 
-    @field_validator("class_map")
-    @classmethod
-    def _reject_whitespace_in_names(
-        cls, value: dict[int, str] | None
-    ) -> dict[int, str] | None:
-        """Refuse class names carrying whitespace.
+    if TYPE_CHECKING:
+        # `class_map` spells the two CF fields, so Pydantic signs no keyword for it.
+        def __init__(
+            self,
+            *,
+            flag_values: list[int] | None = None,
+            flag_masks: list[int] | None = None,
+            flag_meanings: str | None = None,
+            color_map: Palette | None = None,
+            class_map: Mapping[int, str] | None = None,
+        ) -> None: ...
+
+    @property
+    def class_map(self) -> dict[int, str] | None:
+        """Return each pixel value mapped to the class it names.
+
+        Returns:
+            {
+                <pixel value>: the class it names,
+            }
+            None where the listing enumerates no values, as a pure bitfield
+            does.
+        """
+        if self.flag_values is None or self.flag_meanings is None:
+            return None
+        return dict(zip(self.flag_values, self.flag_meanings.split(), strict=True))
+
+    @class_map.setter
+    def class_map(self, class_map: Mapping[int, str]) -> None:
+        """Rewrite the listing as a pixel-value-to-class mapping spells it.
+
+        The codes and the names are one fact in CF's spelling, so both are
+        written at once; writing either alone would name classes the other
+        does not.
 
         Args:
-            value: Proposed `class_map`.
-
-        Returns:
-            `value` unchanged.
+            class_map: Pixel value mapped to the class it names. Class names
+                carry no whitespace, which would split into stray
+                `flag_meanings` tokens.
 
         Raises:
-            ValueError: A class name is empty or contains whitespace, which
-                would split into stray `flag_meanings` tokens.
+            ValueError: A class name is empty or carries whitespace, or the
+                listing already masks a different number of classes.
         """
-        if value is None:
-            return None
-        bad = sorted(name for name in value.values() if name.split() != [name])
-        if bad:
-            raise ValueError(
-                f"class names {bad} are empty or carry whitespace; "
-                f"flag_meanings tokens are single words, so use '_'"
-            )
-        return value
+        spelled = _spelled(class_map)
+        # Constructing checks the pair; assigning one at a time would not.
+        listed = type(self)(
+            flag_values=spelled.flag_values,
+            flag_masks=self.flag_masks,
+            flag_meanings=spelled.flag_meanings,
+        )
+        object.__setattr__(self, "flag_values", listed.flag_values)
+        object.__setattr__(self, "flag_meanings", listed.flag_meanings)
+        self.__pydantic_fields_set__.update({"flag_values", "flag_meanings"})
+
+    @model_validator(mode="before")
+    @classmethod
+    def _spell_class_map(cls, data: Any) -> Any:
+        """Accept a class map at construction, in the fields CF stores it in.
+
+        Args:
+            data: Field values, which may name `class_map` instead of the
+                codes and names it spells out.
+
+        Returns:
+            The values with `class_map` replaced by the fields it fills.
+
+        Raises:
+            ValueError: A class name is empty or carries whitespace.
+        """
+        if not isinstance(data, dict) or "class_map" not in data:
+            return data
+        given = dict(data)
+        spelled = _spelled(given.pop("class_map"))
+        given["flag_values"] = spelled.flag_values
+        given["flag_meanings"] = spelled.flag_meanings
+        return given
 
     @model_validator(mode="after")
-    def _sync_flags(self) -> Self:
-        """Derive the CF flag attrs from `class_map`, checking any given flags agree.
-
-        Never the reverse: flags set directly are checked for internal
-        consistency, but never populate `class_map`.
+    def _check_the_listing_lines_up(self) -> Self:
+        """Refuse a listing whose names and codes do not describe one another.
 
         Returns:
-            The model with `flag_values`/`flag_meanings` derived from
-            `class_map` when it is set, or the given flags checked for
-            internal consistency when it is not.
+            This listing, unchanged.
 
         Raises:
-            ValueError: The flag pair disagrees with `class_map`, only one of
-                the pair is set, their lengths differ, or `flag_values` is not
+            ValueError: Names accompany no codes or the reverse, a code list
+                differs in length from the names, or `flag_values` is not
                 ascending and unique.
         """
-        if self.class_map is not None:
-            values = sorted(self.class_map)
-            meanings = " ".join(self.class_map[value] for value in values)
-            if self.flag_values not in (None, values):
-                raise ValueError(
-                    f"flag_values {self.flag_values} disagree with class_map "
-                    f"keys {values}"
-                )
-            if self.flag_meanings not in (None, meanings):
-                raise ValueError(
-                    f"flag_meanings {self.flag_meanings!r} disagree with "
-                    f"class_map names {meanings!r}"
-                )
-            if self.flag_values != values:
-                self.flag_values = values
-            if self.flag_meanings != meanings:
-                self.flag_meanings = meanings
-            return self
+        codes = {"flag_values": self.flag_values, "flag_masks": self.flag_masks}
+        listed = {name: found for name, found in codes.items() if found is not None}
 
-        if self.flag_values is None and self.flag_meanings is None:
+        if self.flag_meanings is None:
+            if listed:
+                raise ValueError(
+                    f"{sorted(listed)} list codes but flag_meanings names no "
+                    f"classes for them; set it"
+                )
             return self
-        if self.flag_values is None or self.flag_meanings is None:
+        if not listed:
             raise ValueError(
-                "flag_values and flag_meanings are set together or not at all"
+                "flag_meanings names classes that no flag_values or flag_masks "
+                "enumerate; set one of them"
             )
-        if len(self.flag_meanings.split()) != len(self.flag_values):
-            raise ValueError(
-                f"flag_values has {len(self.flag_values)} entries but "
-                f"flag_meanings has {len(self.flag_meanings.split())}"
-            )
-        if sorted(set(self.flag_values)) != self.flag_values:
+
+        names = self.flag_meanings.split()
+        for field_name, found in listed.items():
+            if len(found) != len(names):
+                raise ValueError(
+                    f"{field_name} lists {len(found)} codes but flag_meanings "
+                    f"names {len(names)} classes"
+                )
+        if self.flag_values is not None and sorted(set(self.flag_values)) != (
+            self.flag_values
+        ):
             raise ValueError(
                 f"flag_values {self.flag_values} are not ascending and unique"
             )
+
+        # A colour for a value the listing does not name paints nothing.
+        if self.color_map is not None and self.flag_values is not None:
+            unlisted = sorted(set(self.color_map) - set(self.flag_values))
+            if unlisted:
+                raise ValueError(
+                    f"colours {unlisted} key to values this listing does not "
+                    f"name; it lists {self.flag_values}"
+                )
         return self
 
-    @classmethod
-    def merge(cls, models: Sequence[AttrsModel | None]) -> tuple[Self, set[str]]:
-        """Merge a legend, refusing a different class map.
 
-        Args:
-            models: This model from each joined object, in call order, at
-                least one, None where an object carried none.
+class _Spelled(NamedTuple):
+    """One class map as the two fields CF stores it in.
 
-        Returns:
-            Merged model, and the attr keys it could not keep.
+    Args:
+        flag_values: The values ascending.
+        flag_meanings: Their names in that order.
+    """
 
-        Raises:
-            TypeError: An object carries a different model.
-            ValueError: `class_map` disagrees or `models` is empty.
-        """
-        return cls._merge_fields(models, must_agree=("class_map",))
+    flag_values: list[int]
+    flag_meanings: str
+
+
+def _spelled(class_map: Mapping[int, str]) -> _Spelled:
+    """Spell a pixel-value-to-class mapping in the fields CF stores it in.
+
+    Args:
+        class_map: Pixel value mapped to the class it names.
+
+    Returns:
+        The values ascending and their names in that order.
+
+    Raises:
+        ValueError: A class name is empty or carries whitespace, which would
+            split into stray `flag_meanings` tokens.
+    """
+    split = sorted(name for name in class_map.values() if name.split() != [name])
+    if split:
+        raise ValueError(
+            f"class names {split} are empty or carry whitespace; "
+            f"flag_meanings tokens are single words, so use '_'"
+        )
+    values = sorted(class_map)
+    return _Spelled(values, " ".join(class_map[value] for value in values))

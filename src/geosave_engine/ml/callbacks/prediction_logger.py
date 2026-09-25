@@ -8,6 +8,7 @@ from lightning.pytorch import LightningModule, Trainer
 from lightning.pytorch.callbacks import Callback
 from lightning.pytorch.loggers import MLFlowLogger, TensorBoardLogger
 from matplotlib import pyplot as plt
+from matplotlib.backends.backend_agg import FigureCanvasAgg
 from matplotlib.patches import Patch
 
 from geosave_engine.utils import colorize
@@ -23,26 +24,18 @@ def _fig_to_array(fig: plt.Figure) -> np.ndarray:
         Rendered pixels as uint8, shaped `(height, width, 3)`, alpha dropped
         because both loggers take three channels.
     """
-    fig.canvas.draw()
-    rgba = np.asarray(fig.canvas.buffer_rgba())  # (H, W, 4)
+    canvas = FigureCanvasAgg(fig)
+    canvas.draw()
+    rgba = np.asarray(canvas.buffer_rgba())  # (H, W, 4)
     return rgba[..., :3].copy()  # (H, W, 3)
 
 
 class DensePredictionLogger(Callback):
-    """Log a colorized label/prediction panel with a class legend, periodically, during val/test.
+    """Log label and argmax prediction panels to TensorBoard or MLflow.
 
-    Dense/per-pixel classification only — ``validation_step``/``test_step``
-    must return ``{'logits': ..., 'label': ...}``, ``logits`` shaped ``[B,
-    num_classes, H, W]``. A classification or object detection task needs a
-    different callback; its output isn't a per-pixel class map, so nothing
-    here would apply.
-
-    Reacts to Lightning's own per-batch hooks — no separate pass over data.
-    No ``pl_module`` calls of any kind: no postprocess, no per-class
-    thresholds, no nodata masking — those only reflect calibrated
-    thresholds, which don't exist until ``on_fit_end`` runs at the very end
-    of training, so applying them mid-training would just be a flat 0.5
-    cutoff, no more informative than argmax.
+    Validation and test steps must return logits shaped ``[B, C, H, W]`` and
+    labels shaped ``[B, H, W]`` or ``[B, 1, H, W]``. Only the first sample of
+    each loader is logged, on rank zero, outside sanity checks.
 
     Args:
         color_map: ``{class_id: hex_color}``.
@@ -53,7 +46,7 @@ class DensePredictionLogger(Callback):
     Raises:
         TypeError: ``validation_step``/``test_step`` didn't return a
             ``logits``/``label`` dict.
-        ValueError: ``logits`` aren't ``[B, num_classes, H, W]``.
+        ValueError: The epoch interval is not positive, or logits are not 4D.
     """
 
     def __init__(
@@ -63,6 +56,8 @@ class DensePredictionLogger(Callback):
         log_image_every_n_epochs: int = 2,
     ) -> None:
         super().__init__()
+        if log_image_every_n_epochs < 1:
+            raise ValueError("log_image_every_n_epochs must be positive")
         self.color_map = color_map
         self.class_map = class_map or {}
         self.log_image_every_n_epochs = log_image_every_n_epochs
@@ -96,12 +91,19 @@ class DensePredictionLogger(Callback):
         outputs: Mapping[str, Any] | torch.Tensor | None,
         batch_idx: int,
         prefix: str,
+        dataloader_idx: int,
     ) -> None:
+        if trainer.sanity_checking or not trainer.is_global_zero:
+            return
         if batch_idx != 0 or trainer.current_epoch % self.log_image_every_n_epochs != 0:
             return
-        # Exclude the other two union members instead of a positive Mapping/dict
-        # isinstance check — Tensor structurally overlaps enough of Mapping's
-        # protocol to confuse the checker's narrowing on a positive check.
+        loggers = [
+            logger
+            for logger in trainer.loggers
+            if isinstance(logger, (TensorBoardLogger, MLFlowLogger))
+        ]
+        if not loggers:
+            return
         if outputs is None or isinstance(outputs, torch.Tensor):
             raise TypeError(
                 f"{type(self).__name__} expects validation_step/test_step to return "
@@ -124,14 +126,19 @@ class DensePredictionLogger(Callback):
         preds = logits.argmax(dim=1)
         image = self._render(label[0], preds[0])
         step = trainer.current_epoch
-        for lg in trainer.loggers:
+        for lg in loggers:
             if isinstance(lg, TensorBoardLogger):
                 lg.experiment.add_image(
-                    f"{prefix}/prediction", image, step, dataformats="HWC"
+                    f"{prefix}/dataloader_{dataloader_idx}/prediction",
+                    image,
+                    step,
+                    dataformats="HWC",
                 )
             elif isinstance(lg, MLFlowLogger):
                 lg.experiment.log_image(
-                    lg.run_id, image, f"{prefix}_prediction_{step}.png"
+                    lg.run_id,
+                    image,
+                    f"{prefix}_dataloader_{dataloader_idx}_prediction_{step}.png",
                 )
 
     def on_validation_batch_end(
@@ -143,7 +150,7 @@ class DensePredictionLogger(Callback):
         batch_idx: int,
         dataloader_idx: int = 0,
     ) -> None:
-        self._log(trainer, outputs, batch_idx, "val")
+        self._log(trainer, outputs, batch_idx, "val", dataloader_idx)
 
     def on_test_batch_end(
         self,
@@ -154,4 +161,4 @@ class DensePredictionLogger(Callback):
         batch_idx: int,
         dataloader_idx: int = 0,
     ) -> None:
-        self._log(trainer, outputs, batch_idx, "test")
+        self._log(trainer, outputs, batch_idx, "test", dataloader_idx)

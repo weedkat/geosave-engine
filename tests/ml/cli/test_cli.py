@@ -20,9 +20,7 @@ def test_default_artifacts_use_tensorboard_only(
 
     cli.before_instantiate_classes()
 
-    checkpoint = config.trainer.callbacks[0]
-    assert checkpoint["class_path"] == "lightning.pytorch.callbacks.ModelCheckpoint"
-    assert "dirpath" not in checkpoint["init_args"]
+    assert config.trainer.callbacks is None
 
     assert [logger["class_path"] for logger in config.trainer.logger] == [
         "lightning.pytorch.loggers.TensorBoardLogger",

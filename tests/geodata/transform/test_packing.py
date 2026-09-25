@@ -158,3 +158,15 @@ def test_a_variable_marking_nodata_but_carrying_no_packing_is_left_alone() -> No
 
     assert physical.red.values[0, 0] == 1000
     assert is_fill(physical.red).values[0, 0] == np.False_
+
+
+def test_unpacking_refuses_a_variable_whose_values_are_class_codes() -> None:
+    labelled = attrs.rebase(
+        stored(1, scale=1e-4, nodata=None, dtype="int32"),
+        attrs.Legend(class_map={0: "bg", 1: "palm"}),
+        target="red",
+    )
+
+    # Packing decodes a measurement; a class code measures nothing.
+    with pytest.raises(ValueError, match="holds class codes and declares packing"):
+        unpack(labelled)

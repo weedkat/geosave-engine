@@ -14,7 +14,7 @@ import numpy as np
 import odc.geo.xr  # noqa: F401  — registers the .odc accessor
 import xarray as xr
 
-from geosave_engine.geodata.core.convention import BAND_DIMENSION, TIME_COORDINATE
+from geosave_engine.geodata.core.profile import BAND_DIMENSION, TIME_COORDINATE
 from matplotlib.colors import ListedColormap
 
 from geosave_engine.utils.colorize import parse_color
@@ -25,6 +25,42 @@ if TYPE_CHECKING:
     from geosave_engine.utils.colorize import Palette
 
 hv.extension("matplotlib")
+
+
+def _captioned(
+    drawn: hv.Element | hv.HoloMap,
+    array: xr.DataArray,
+    *,
+    cols: int,
+    title: str | None,
+    xlabel: str | None,
+) -> hv.Element | hv.Layout:
+    """Put panel metadata below the axes and caller titles above them."""
+
+    def decorate(panel: hv.Element, time: str | None) -> hv.Element:
+        lines = [] if time is None else [time]
+        if xlabel:
+            lines.append(xlabel)
+        options: dict[str, object] = {"show_title": title is not None}
+        if title is not None:
+            options["title"] = title
+        if lines:
+            options["xlabel"] = "\n".join(lines)
+        return panel.opts(**options)
+
+    if TIME_COORDINATE in array.dims:
+        layout = drawn.layout([TIME_COORDINATE])
+        time_dimension = layout.kdims[0]
+        panels = {
+            time: decorate(panel, time_dimension.pprint_value(time))
+            for time, panel in layout.items()
+        }
+        return hv.NdLayout(panels, kdims=layout.kdims).cols(cols)
+
+    time = None
+    if TIME_COORDINATE in array.coords and array[TIME_COORDINATE].ndim == 0:
+        time = hv.Dimension(TIME_COORDINATE).pprint_value(array[TIME_COORDINATE].values)
+    return decorate(drawn, time)
 
 
 def plot(
@@ -56,9 +92,9 @@ def plot(
         color_map: Pixel value mapped to hex or RGB, covering every class in
             `class_map`. Ignored without `class_map`.
         cols: Columns a `time` axis lays panels into. Ignored otherwise.
-        title: Panel title, above the axes. None leaves hvplot's own.
-        xlabel: Caption below the axes, e.g. a place name. None leaves
-            hvplot's own.
+        title: Panel title above the axes. None suppresses the title.
+        xlabel: Caption appended below each panel's timestamp. None adds no
+            caption.
 
     Returns:
         Image or RGB element over the array's grid, or a Layout of one panel
@@ -122,9 +158,9 @@ def continuous(
         cmap: Colormap. None leaves hvplot's own.
         clim: Colour limits. None reads them from the pixels.
         cols: Columns `time` lays panels into. Ignored without it.
-        title: Panel title, above the axes. None leaves hvplot's own.
-        xlabel: Caption below the axes, e.g. a place name. None leaves
-            hvplot's own.
+        title: Panel title above the axes. None suppresses the title.
+        xlabel: Caption appended below each panel's timestamp. None adds no
+            caption.
 
     Returns:
         Image over the band's grid, or a Layout of one panel per `time`
@@ -143,10 +179,10 @@ def continuous(
         dynamic=False,  # materialise every panel; there is no live kernel
         cmap=cmap,
         clim=clim,
-        title=title,
-        xlabel=xlabel,
     )
-    return drawn.layout([TIME_COORDINATE]).cols(cols) if has_time else drawn
+    # hvplot sets an aspect from its own frame size, squaring off the grid's own.
+    styled = drawn.opts(hv.opts.Image(aspect="equal"))
+    return _captioned(styled, array, cols=cols, title=title, xlabel=xlabel)
 
 
 def rgb(
@@ -172,9 +208,9 @@ def rgb(
             channels, leaving `uint8` and values already within `[0, 1]`
             untouched.
         cols: Columns `time` lays panels into. Ignored without it.
-        title: Panel title, above the axes. None leaves hvplot's own.
-        xlabel: Caption below the axes, e.g. a place name. None leaves
-            hvplot's own.
+        title: Panel title above the axes. None suppresses the title.
+        xlabel: Caption appended below each panel's timestamp. None adds no
+            caption.
 
     Returns:
         RGB element over the array's grid, or a Layout of one panel per
@@ -228,12 +264,7 @@ def rgb(
     drawn = hv.Dataset(frame, kdims=[x, y, *groupby], vdims=channels).to(
         hv.RGB, [x, y], channels, groupby or None
     )
-    overrides = {
-        n: v for n, v in (("title", title), ("xlabel", xlabel)) if v is not None
-    }
-    if overrides:
-        drawn = drawn.opts(hv.opts.RGB(**overrides))
-    return drawn.layout([TIME_COORDINATE]).cols(cols) if has_time else drawn
+    return _captioned(drawn, array, cols=cols, title=title, xlabel=xlabel)
 
 
 def classes(
@@ -257,9 +288,9 @@ def classes(
         class_map: Pixel value mapped to class name.
         color_map: Pixel value mapped to hex or RGB, covering every class.
         cols: Columns `time` lays panels into. Ignored without it.
-        title: Panel title, above the axes. None leaves hvplot's own.
-        xlabel: Caption below the axes, e.g. a place name. None leaves
-            hvplot's own.
+        title: Panel title above the axes. None suppresses the title.
+        xlabel: Caption appended below each panel's timestamp. None adds no
+            caption.
 
     Returns:
         Image drawing each class in its own colour and naming it on the
@@ -300,13 +331,14 @@ def classes(
         dynamic=False,  # materialise every panel; there is no live kernel
         clim=(-0.5, len(codes) - 0.5),
         colorbar=True,
-        xlabel=xlabel,
-        title=title,
     )
     # A bare list of colours breaks matplotlib's GridSpace.
     styled = drawn.opts(
         hv.opts.Image(
-            cmap=ListedColormap(hexes), color_levels=len(codes), cbar_ticks=ticks
+            aspect="equal",
+            cmap=ListedColormap(hexes),
+            color_levels=len(codes),
+            cbar_ticks=ticks,
         )
     )
-    return styled.layout([TIME_COORDINATE]).cols(cols) if has_time else styled
+    return _captioned(styled, array, cols=cols, title=title, xlabel=xlabel)

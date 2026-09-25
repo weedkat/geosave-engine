@@ -12,7 +12,7 @@ from odc.geo.geobox import GeoBox
 from odc.geo.geom import CRS
 
 from geosave_engine.geodata.core.raster import raster as build_raster
-from geosave_engine.geodata.errors import GeoSaveWarning
+from geosave_engine.geodata.errors import DroppedAttrsWarning, GeoSaveWarning
 from geosave_engine.geodata.transform.composite import mosaic
 
 UTM = "EPSG:32633"
@@ -63,6 +63,31 @@ def test_rasters_lay_onto_the_ground_they_jointly_cover() -> None:
     assert laid.odc.geobox.extent.boundingbox[2] == 60.0
 
 
+def test_attrs_describe_the_shared_pixels_and_the_output_grid() -> None:
+    first = granule()
+    second = granule(box((20, 0, 60, 40)))
+    for raster in (first, second):
+        raster.attrs.update({"license": "CC0", "title": "scene"})
+        raster.red.attrs["source_note"] = "shared"
+    second.attrs["title"] = "other"
+    second.red.attrs["source_note"] = "other"
+
+    with pytest.warns(DroppedAttrsWarning):
+        laid = mosaic([first, second])
+
+    assert laid.attrs["license"] == "CC0"
+    assert "title" not in laid.attrs
+    assert "source_note" not in laid.red.attrs
+    assert laid.x.attrs["axis"] == "X"
+    assert laid.y.attrs["axis"] == "Y"
+    stored = tuple(
+        float(value) for value in laid.spatial_ref.attrs["GeoTransform"].split()
+    )
+    assert Affine.from_gdal(*stored) == laid.gs.geobox.transform
+    assert first.attrs["title"] == "scene"
+    assert first.red.attrs["source_note"] == "shared"
+
+
 def test_the_first_raster_wins_an_overlapping_pixel() -> None:
     with quiet():
         laid = mosaic([granule(fill=7), granule(box((20, 0, 60, 40)), fill=9)])
@@ -77,6 +102,11 @@ def test_the_last_raster_wins_when_it_is_asked_to() -> None:
         )
 
     assert row(laid) == [7, 7, 9, 9, 9, 9]
+
+
+def test_an_unknown_preference_is_refused() -> None:
+    with pytest.raises(ValueError, match="not a mosaic method"):
+        mosaic([granule(fill=7), granule(fill=9)], method="frist")  # type: ignore[arg-type]
 
 
 def test_ground_no_raster_covers_holds_the_fill_value() -> None:
@@ -95,6 +125,14 @@ def test_a_nodata_pixel_is_filled_by_a_later_raster() -> None:
         laid = mosaic([covered, granule(fill=9)])
 
     assert row(laid) == [9, 7, 7, 7]
+
+
+def test_rasters_with_different_nodata_markers_are_refused() -> None:
+    first = granule(nodata=0)
+    second = granule(nodata=255)
+
+    with pytest.raises(ValueError, match=r"'red'.*nodata"):
+        mosaic([first, second])
 
 
 def test_three_rasters_lay_down_in_preference_order() -> None:

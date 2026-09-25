@@ -4,53 +4,39 @@ from pathlib import Path
 
 _EXCLUDED_TEMPLATE_NAMES = frozenset({"__pycache__", ".ipynb_checkpoints"})
 
-
-def templates_dir() -> Path:
-    """Return bundled workspace template directory."""
-    return Path(__file__).parents[2] / "templates"
-
-
-def common_dir() -> Path:
-    """Return bundled files copied into every workspace."""
-    return templates_dir() / "common"
+TEMPLATES_DIR = Path(__file__).parents[2] / "templates"
+COMMON_DIR = TEMPLATES_DIR / "common"
+TASK_DIR = TEMPLATES_DIR / "tasks"
+BOILERPLATE_DIR = TEMPLATES_DIR / "boilerplate"
 
 
-def task_dir() -> Path:
-    """Return bundled task template directory."""
-    return templates_dir() / "tasks"
+def _list_templates(root: Path, include_file: bool = False) -> dict[str, list[str]]:
+    """Map each template directory under `root` to the entries it offers.
 
+    Args:
+        root: Directory holding one subdirectory per template.
+        include_file: Also list files, not only subdirectories.
 
-def boilerplate_dir() -> Path:
-    """Return bundled component template directory."""
-    return templates_dir() / "boilerplate"
-
-
-def get_template(root: Path, include_file: bool = False) -> dict[str, list[str]]:
-    """Return a dictionary of tasks and their methods."""
-    templates = {}
+    Returns:
+        Template directory names mapped to their entry names.
+    """
+    templates: dict[str, list[str]] = {}
     for path in root.iterdir():
-        if path.is_dir() and path.name not in _EXCLUDED_TEMPLATE_NAMES:
-            for item in path.iterdir():
-                if item.name in _EXCLUDED_TEMPLATE_NAMES:
-                    continue
-                if item.is_dir():
-                    templates.setdefault(path.name, []).append(item.name)
-                elif include_file and item.is_file():
-                    templates.setdefault(path.name, []).append(item.name)
-
+        if not path.is_dir() or path.name in _EXCLUDED_TEMPLATE_NAMES:
+            continue
+        for item in path.iterdir():
+            if item.name in _EXCLUDED_TEMPLATE_NAMES:
+                continue
+            if item.is_dir() or (include_file and item.is_file()):
+                templates.setdefault(path.name, []).append(item.name)
     return templates
 
 
 def get_tasks() -> dict[str, list[str]]:
-    """Return a dictionary of tasks and their methods."""
-    return get_template(task_dir())
+    """Return each bundled task mapped to the methods it provides."""
+    return _list_templates(TASK_DIR)
 
 
 def get_boilerplate() -> dict[str, list[str]]:
-    """Return a dictionary of boilerplate and their files."""
-    return get_template(boilerplate_dir(), include_file=True)
-
-
-if __name__ == "__main__":
-    print(get_tasks())
-    print(get_boilerplate())
+    """Return each bundled boilerplate mapped to the files it provides."""
+    return _list_templates(BOILERPLATE_DIR, include_file=True)

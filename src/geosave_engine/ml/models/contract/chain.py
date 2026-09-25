@@ -1,371 +1,172 @@
+"""Compose model stages and save their construction recipe with their weights."""
+
 from __future__ import annotations
 
-from typing import Any
+import json
+from copy import deepcopy
+from pathlib import Path
+from typing import Any, Self
 
-import networkx as nx
+from huggingface_hub import PyTorchModelHubMixin
 import torch
-import torch.nn as nn
+from torch import nn
+
+from geosave_engine.ml.registry.base import BuildSpec
+from .graph import external_inputs, resolve_steps
 
 
-def _chain_step_methods(module: nn.Module) -> list[str]:
-    """Every @chain_step method name declared on one module (MRO-collapsed).
-
-    A module may declare more than one — e.g. several alternate accepted
-    shapes from upstream. Which one actually gets used is resolved by
-    `_solve_dag`, not here.
-
-    Args:
-        module: One chain-stage instance.
-
-    Returns:
-        Method names, in MRO order (base class first).
-    """
-    methods: list[str] = []
-    for klass in reversed(type(module).__mro__):
-        for name, val in vars(klass).items():
-            if (
-                callable(val)
-                and getattr(val, "_is_chain_step", False)
-                and name not in methods
-            ):
-                methods.append(name)
-    return methods
-
-
-def _build_graph(modules: list[nn.Module]) -> nx.DiGraph:
-    """Build the bipartite key/method graph for `modules` — pure wiring, no validation.
-
-    Two node kinds: key nodes (``(name, type)`` tuples, e.g.
-    ``('image', torch.Tensor)``) and method nodes (``(module, method_name)``
-    tuples). Every module's every ``@chain_step`` method becomes one
-    method node, wired ``key -> method`` for each of its ``requires`` and
-    ``method -> key`` for each of its ``provides``. Nothing here checks
-    whether a `requires` key is ever actually produced by anything — that's
-    resolution's job, done separately by walking this graph outward from
-    whatever keys the caller supplies. A terminal method (``provides``
-    empty, returns a raw ``torch.Tensor``) ends up with no outgoing edges —
-    a plain graph sink, not a separately-flagged concept.
-
-    Key identity is ``(name, type)``, not just ``name`` — two methods that
-    use the same key name but declare different types end up as two
-    distinct, unconnected key nodes rather than a caught collision. If
-    that split leaves a method's ``('image', list)`` requirement with no
-    producer, it just surfaces as an extra entry in `ContextChain.required_keys`
-    — same as any other unproduced key — not an error.
+class ModelChain(nn.Module, PyTorchModelHubMixin, library_name="geosave-engine"):
+    """Run one declared method per stage in dependency order.
 
     Args:
-        modules: nn.Module instances to include. Order doesn't matter for
-            building the graph — only resolution (walking it afterward)
-            cares about order.
-
-    Returns:
-        Bipartite ``nx.DiGraph``. Method nodes carry ``kind='method'``,
-        ``requires``, ``provides`` (the method's own dicts, for resolution
-        to read without re-deriving them); key nodes carry ``kind='key'``,
-        ``name``, ``type``.
+        *args: Modules named stage_0, stage_1, and so on.
+        stages: Ordered construction specifications for a saveable model.
+            Cannot be combined with module instances.
+        **modules: Module instances under explicit stage names.
 
     Raises:
-        TypeError: A module has no `@chain_step` method at all.
-    """
-    graph = nx.DiGraph()
-
-    for module in modules:
-        names = _chain_step_methods(module)
-        if not names:
-            raise TypeError(f"{type(module).__name__}: no @chain_step method found.")
-
-        for name in names:
-            method = getattr(module, name)
-            requires: dict[str, type] = getattr(method, "_requires", {})
-            provides: dict[str, type] = getattr(method, "_provides", {})
-            node = (module, name)
-            graph.add_node(node, kind="method", requires=requires, provides=provides)
-
-            for key, expected in requires.items():
-                graph.add_node((key, expected), kind="key", name=key, type=expected)
-                graph.add_edge((key, expected), node)
-            for key, expected in provides.items():
-                graph.add_node((key, expected), kind="key", name=key, type=expected)
-                graph.add_edge(node, (key, expected))
-    return graph
-
-
-def _solve_dag(graph: nx.DiGraph) -> nx.DiGraph:
-    """Prune `graph` down to exactly one @chain_step method per module.
-
-    `graph` may hold several candidate methods per module; walk it by
-    `nx.topological_generations` (networkx's Kahn's algorithm) and keep
-    only whichever candidate surfaces first for its module — cut the rest.
-    Two candidates surfacing in the same generation can't be cut down to
-    one — that's a genuine ambiguity, not decided here.
-
-    Args:
-        graph: Full bipartite graph from `_build_graph` — may contain
-            multiple candidate method nodes per module, not yet resolved.
-
-    Returns:
-        The induced subgraph on exactly the chosen method nodes plus the
-        key nodes actually connecting them — one method node per module.
-        `nx.topological_sort` on this gives the execution order.
-
-    Raises:
-        nx.NetworkXUnfeasible: `graph` has a cycle — no valid order exists.
-        TypeError: A module has more than one candidate method surfacing
-            in the same generation.
-    """
-    chosen: dict[nn.Module, tuple[nn.Module, str]] = {}
-
-    for generation in nx.topological_generations(graph):
-        methods_by_module: dict[nn.Module, list[tuple[nn.Module, str]]] = {}
-        for node in generation:
-            if graph.nodes[node]["kind"] != "method":
-                continue
-            module, _ = node
-            if module in chosen:
-                continue
-            methods_by_module.setdefault(module, []).append(node)
-
-        for module, methods in methods_by_module.items():
-            if len(methods) > 1:
-                raise TypeError(
-                    f"{type(module).__name__}: {len(methods)} methods surfaced in the "
-                    f"same generation — ambiguous: {[m[1] for m in methods]}"
-                )
-            chosen[module] = methods[0]
-
-    chosen_nodes = set(chosen.values())
-    key_nodes: set[tuple[str, type]] = set()
-    for node in chosen_nodes:
-        for mapping in (graph.nodes[node]["requires"], graph.nodes[node]["provides"]):
-            for name, expected in mapping.items():
-                key_nodes.add((name, expected))
-
-    return graph.subgraph(chosen_nodes | key_nodes).copy()
-
-
-def _graph_to_chain(graph: nx.DiGraph) -> list[tuple[nn.Module, str]]:
-    """Linearize a resolved graph (from `_solve_dag`) into execution order.
-
-    `nx.topological_sort` gives one valid order over every node — key nodes
-    and method nodes both, since the graph is bipartite. Only method nodes
-    are what `ContextChain.forward` actually calls; key nodes are filtered
-    out here, their position is already implied by the method nodes around
-    them.
-
-    Args:
-        graph: A resolved graph (exactly one method node per module) from
-            `_solve_dag` — not the full graph from `_build_graph`.
-
-    Returns:
-        (module, method_name) pairs, in the order `ContextChain.forward`
-        should call them.
-    """
-    return [
-        node
-        for node in nx.topological_sort(graph)
-        if graph.nodes[node]["kind"] == "method"
-    ]
-
-
-class ContextChain(nn.Module):
-    """nn.Module that wires submodules together via their @chain_step methods.
-
-    Takes named (or auto-named) modules, registers each as a named submodule,
-    then resolves call order from the modules themselves — not from argument
-    order. `_build_graph` builds a bipartite key/method dependency graph from
-    every module's `@chain_step` method(s) (``requires -> method``,
-    ``method -> provides``); `_solve_dag` walks it by
-    `nx.topological_generations` (Kahn's algorithm) to pick exactly one method
-    per module — raising if more than one of a module's candidate methods
-    becomes ready in the same generation (genuine ambiguity, not decidable
-    from the graph alone); `_graph_to_chain` linearizes the resolved graph
-    into the order `forward` calls modules in.
-
-    A module offering several `@chain_step` methods (alternate accepted
-    input shapes) is fine — whichever one's `requires` the graph can satisfy
-    gets picked automatically. Branching (independent modules each consuming
-    caller-supplied input directly) and merging (a later module requiring
-    outputs from more than one earlier module) both fall out of the same
-    graph walk, no special-casing needed for either.
-
-    Each module receives the shared ``dict[str, Any]`` context and returns a
-    dict of its outputs. These are merged immutably into the context
-    (``ctx = {**ctx, **result}``) before the next module runs — prior keys are
-    preserved without mutation, so branching and intermediate inspection are safe.
-
-    A terminal module (typically a head) returns a ``torch.Tensor`` directly
-    instead of a dict — its result isn't merged into ctx. More than one
-    terminal module is fine (e.g. two task heads sharing one encoder); see
-    ``forward`` for the return shape in that case.
-
-    Args:
-        *args: Positional modules, auto-named ``stage_0``, ``stage_1``, ...
-            Mix freely with ``**modules`` as long as names don't collide.
-            Argument order doesn't affect resolution — the graph decides call
-            order, not how modules were passed in.
-        **modules: Name → module, e.g. ``encoder=enc, decoder=dec, head=hd``.
-
-    Raises:
-        ValueError: A positional arg's auto-generated name (``stage_N``)
-            collides with an explicit keyword name.
-        TypeError: A module has no `@chain_step` method at all, or more
-            than one of a module's candidate methods becomes ready in the
-            same DAG generation (see `_solve_dag`).
-        nx.NetworkXUnfeasible: The requires/provides graph has a cycle — no
-            valid execution order exists.
+        ValueError: Construction forms are mixed or stage/output names collide.
+        TypeError: A stage has no step or ambiguous alternatives.
+        graphlib.CycleError: Required inputs form a dependency cycle.
 
     Examples:
-        >>> chain = ContextChain(encoder=enc, decoder=dec, head=hd)
-        >>> chain.required_keys  # {'image': torch.Tensor} -- what forward() needs
-        >>> logits = chain(x)          # positional, in required_keys order, or...
-        >>> logits = chain(image=x)    # ...keyword -- enc → dec → hd; head returns Tensor
+        >>> model = ModelChain(stages={
+        ...     "encoder": {"name": "dinov3", "init_args": {"pretrained": False}},
+        ... })
+        >>> model.save_pretrained("artifacts/model")
+        >>> restored = ModelChain.from_pretrained("artifacts/model")
     """
 
-    def __init__(self, *args: nn.Module, **modules: nn.Module) -> None:
+    def __init__(
+        self,
+        *args: nn.Module,
+        stages: dict[str, BuildSpec] | None = None,
+        **modules: nn.Module,
+    ) -> None:
         super().__init__()
-        positional = {f"stage_{i}": module for i, module in enumerate(args)}
-        collision = set(positional) & set(modules)
-        if collision:
-            raise ValueError(
-                f"positional arg auto-name(s) {collision} collide with explicit "
-                "keyword name(s) — rename the keyword or don't mix"
-            )
-        named = {**positional, **modules}
+        self._hub_mixin_config = None
+        if stages is not None:
+            from geosave_engine.ml.registry.model import build_stages
 
-        for name, module in named.items():
+            if args or modules:
+                raise ValueError("Supply stages or module instances, not both")
+            built = build_stages(stages)
+            modules = built.modules
+            self._hub_mixin_config = {"stages": built.config}
+        positional = {f"stage_{index}": module for index, module in enumerate(args)}
+        if positional.keys() & modules.keys():
+            raise ValueError("Positional stage names collide with named modules")
+        modules = positional | modules
+        for name, module in modules.items():
             self.add_module(name, module)
-
-        graph = _build_graph(list(named.values()))
-        self._dag = _solve_dag(graph)
-
-        # Precomputed once here, not re-derived per forward() call (forward() runs every
-        # step, every batch): stage_name (for naming a head's slot in a multi-head result)
-        # and is_head (empty `provides` — see _build_graph's docstring on terminal methods)
-        # both come straight off the resolved graph, so forward() never has to inspect a
-        # step's actual returned value's type to know whether it just ran a head.
-        module_to_name = {module: name for name, module in named.items()}
-        self._chain: list[tuple[nn.Module, str, str, bool]] = [
-            (
-                module,
-                method_name,
-                module_to_name[module],
-                not self._dag.nodes[(module, method_name)]["provides"],
-            )
-            for module, method_name in _graph_to_chain(self._dag)
-        ]
-
-    def __repr__(self) -> str:
-        """Required keys + resolved data flow, combined with nn.Module's own child-module tree."""
-
-        def sig(types: dict[str, type]) -> str:
-            return ", ".join(
-                f"{key}: {getattr(t, '__name__', t)}" for key, t in types.items()
-            )
-
-        lines = [f"required_keys: {sig(self.required_keys)}", "", "data flow:"]
-        for module, method_name, stage_name, is_head in self._chain:
-            method = getattr(module, method_name)
-            requires = sig(getattr(method, "_requires", {}))
-            out = (
-                "Tensor" if is_head else f"{{{sig(getattr(method, '_provides', {}))}}}"
-            )
-            lines.append(
-                f"  {stage_name}: {type(module).__name__}.{method_name}({requires}) -> {out}"
-            )
-        flow = "\n".join(lines)
-        return f"{flow}\n\n{super().__repr__()}"
+        self._steps = resolve_steps(modules)
+        self._inputs = external_inputs(self._steps, list(modules))
 
     @property
-    def required_keys(self) -> dict[str, type]:
-        """Keys ``forward()``'s ctx must already contain before calling it.
-
-        Generation 0 of the resolved DAG — key nodes with no producer
-        inside this chain, read straight off the graph (see `_solve_dag`),
-        not re-derived after the fact by diffing the flattened chain.
-        Includes every such key, not just whichever entry method
-        topological order happened to place first — branching means more
-        than one method can independently need something from the caller.
-        A method with no `requires` at all lands in generation 0 too;
-        filtered out here since it's not a key.
-        """
-        first_generation = next(nx.topological_generations(self._dag))
-        return {
-            self._dag.nodes[node]["name"]: self._dag.nodes[node]["type"]
-            for node in first_generation
-            if self._dag.nodes[node]["kind"] == "key"
-        }
-
-    def _resolve_ctx(
-        self, args: tuple[Any, ...], kwargs: dict[str, Any]
-    ) -> dict[str, Any]:
-        """Turn forward()/summary()'s positional+keyword args into one ctx dict.
-
-        Args:
-            args: Required context values, in `required_keys` order.
-            kwargs: Required context values by name.
+    def stage_specs(self) -> dict[str, BuildSpec]:
+        """Return an independent copy of the ordered construction specifications.
 
         Returns:
-            Merged ctx dict.
+            Stage selectors and resolved constructor arguments.
 
         Raises:
-            TypeError: More positional args than `required_keys` has entries,
-                or a key given both positionally and by keyword.
+            ValueError: The chain was constructed directly from module instances.
         """
-        required = list(self.required_keys)
-        if len(args) > len(required):
-            raise TypeError(
-                f"{type(self).__name__} takes at most {len(required)} positional "
-                f"argument(s) ({', '.join(required)}), got {len(args)}"
-            )
-        positional = dict(zip(required, args))
-        collision = set(positional) & set(kwargs)
-        if collision:
-            raise TypeError(
-                f"{type(self).__name__}: got both a positional and keyword value for {sorted(collision)}"
-            )
-        return {**positional, **kwargs}
+        if not isinstance(self._hub_mixin_config, dict):
+            raise ValueError("Build with stages or build_model() before saving")
+        return deepcopy(self._hub_mixin_config["stages"])
+
+    @property
+    def inputs(self) -> dict[str, type]:
+        """Return required external names and types, in positional argument order."""
+        return dict(self._inputs)
 
     def forward(
-        self, *args: Any, **kwargs: Any
-    ) -> dict[str, Any] | dict[str, torch.Tensor] | torch.Tensor:
-        """Run the resolved chain. Required keys can be positional, keyword, or both.
-
-        Positional args map onto `required_keys` in that fixed order (the
-        same order `required_keys` itself reports — see there) — real named
-        parameters by position, not an opaque blob, so `chain(image)` works
-        as well as `chain(image=image)`.
-
-        Runs every step, including every head — a chain can have more than
-        one independent terminal module (e.g. two task heads off a shared
-        encoder), and each one's own result is collected, not just the first.
+        self, *args: object, **kwargs: object
+    ) -> dict[str, object] | torch.Tensor:
+        """Route external inputs through the selected stage methods.
 
         Args:
-            *args: Required context values, in `required_keys` order.
-            **kwargs: Required context values by name — a key given both
-                positionally and by keyword raises, rather than picking one
-                silently.
+            *args: Required external values in inputs order.
+            **kwargs: External values by name, including optional model context.
 
         Returns:
-            One head ran: that head's bare ``torch.Tensor``. More than one
-            head ran: ``{stage_name: Tensor}`` for each. No head at all:
-            the merged context dict.
+            A single head's Tensor, multiple heads keyed by stage, or the merged
+            context when the chain has no head.
 
         Raises:
-            TypeError: More positional args than `required_keys` has
-                entries, or a key given both positionally and by keyword.
+            TypeError: Positional arguments exceed inputs or repeat keyword values;
+                a step receives or returns a value of the wrong type.
+            KeyError: A required input is missing.
         """
-        ctx = self._resolve_ctx(args, kwargs)
-
-        head_results: dict[str, torch.Tensor] = {}
-        for module, method_name, stage_name, is_head in self._chain:
-            result = getattr(module, method_name)(ctx)
-            if is_head:
-                head_results[stage_name] = result
+        if len(args) > len(self._inputs):
+            raise TypeError(
+                f"ModelChain takes at most {len(self._inputs)} positional arguments"
+            )
+        positional = dict(zip(self._inputs, args))
+        repeated = positional.keys() & kwargs.keys()
+        if repeated:
+            raise TypeError(
+                f"Values supplied both a positional and keyword way: {sorted(repeated)}"
+            )
+        context = positional | kwargs
+        heads: dict[str, object] = {}
+        for step in self._steps:
+            result = step.method.invoke(step.module, context)
+            if isinstance(result, torch.Tensor):
+                heads[step.stage] = result
             else:
-                ctx = {**ctx, **result}
+                context.update(result)
+        if len(heads) == 1:
+            result = next(iter(heads.values()))
+            assert isinstance(result, torch.Tensor)
+            return result
+        return heads if heads else context
 
-        if len(head_results) == 1:
-            return next(iter(head_results.values()))
-        if head_results:
-            return head_results
-        return ctx
+    def _save_pretrained(self, save_directory: Path) -> None:
+        """Save weights and the ordered construction recipe.
+
+        Args:
+            save_directory: Directory created by Hugging Face.
+
+        Raises:
+            ValueError: The model was built without construction specifications.
+            TypeError: Constructor arguments are not JSON serializable.
+        """
+        if self._hub_mixin_config is None:
+            raise ValueError("Build with stages or build_model() before saving")
+        config = json.dumps(self._hub_mixin_config, indent=2, allow_nan=False)
+        super()._save_pretrained(save_directory)
+        # Published constructor arguments depend on stage order; the mixin sorts keys.
+        (save_directory / "config.json").write_text(config, encoding="utf-8")
+
+    @classmethod
+    def _from_pretrained(cls, *, strict: bool = True, **kwargs: Any) -> Self:
+        """Rebuild a model through Hugging Face and strictly load its weights.
+
+        Args:
+            strict: Reject missing or unexpected state keys when True.
+            **kwargs: Loading arguments supplied by the Hugging Face mixin.
+
+        Returns:
+            Restored model in evaluation mode.
+        """
+        return super()._from_pretrained(strict=strict, **kwargs)
+
+    def __repr__(self) -> str:
+        """Return external inputs, resolved method order, and registered modules."""
+
+        def describe(values: dict[str, type]) -> str:
+            return ", ".join(
+                f"{name}: {getattr(kind, '__name__', kind)}"
+                for name, kind in values.items()
+            )
+
+        lines = [f"inputs: {describe(self._inputs)}", "", "data flow:"]
+        for step in self._steps:
+            method = step.method
+            output = "Tensor" if method.head else f"{{{describe(method.outputs)}}}"
+            lines.append(
+                f"  {step.stage}: {step.name}({describe(method.inputs)}) -> {output}"
+            )
+        return "\n".join(lines) + f"\n\n{super().__repr__()}"

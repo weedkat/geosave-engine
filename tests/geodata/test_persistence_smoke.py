@@ -3,10 +3,12 @@ from __future__ import annotations
 from pathlib import Path
 
 import numpy as np
+import orjson
 import pytest
 import xarray as xr
 from dask.delayed import Delayed
 
+from geosave_engine.geodata.attrs import Nodata, rebase
 from geosave_engine.geodata.utils.io import netcdf
 from geosave_engine.geodata.utils.io import zarr
 
@@ -183,3 +185,25 @@ def test_netcdf_deferred_write_returns_a_delayed_result(tmp_path: Path) -> None:
     assert isinstance(deferred, Delayed)
     deferred.compute()
     assert netcdf.read(destination).gs.geobox == build_raster().gs.geobox
+
+
+def test_a_zarr_array_holds_the_fill_value_a_gdal_reader_masks_on(
+    tmp_path: Path,
+) -> None:
+    written = rebase(build_raster(), Nodata(fill_value=255), target=["red", "nir"])
+
+    destination = zarr.write(written, tmp_path / "scene.zarr")
+
+    # A CF attr is not the array's own fill value, and GDAL masks on the latter.
+    stored = orjson.loads((destination / "red" / "zarr.json").read_bytes())
+    assert stored["fill_value"] == 255
+    assert zarr.read(destination).red.attrs["_FillValue"] == 255
+
+
+def test_a_variable_declaring_no_fill_leaves_zarr_its_own_default(
+    tmp_path: Path,
+) -> None:
+    destination = zarr.write(build_raster(), tmp_path / "scene.zarr")
+
+    stored = orjson.loads((destination / "red" / "zarr.json").read_bytes())
+    assert stored["fill_value"] == 0

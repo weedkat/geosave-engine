@@ -7,7 +7,7 @@ from typing import TYPE_CHECKING, Literal, cast
 import xarray as xr
 
 import geosave_engine.geodata.attrs as attrs
-from geosave_engine.geodata.core.convention import TIME_COORDINATE
+from geosave_engine.geodata.core.profile import TIME_COORDINATE
 from geosave_engine.geodata.transform import nodata
 
 if TYPE_CHECKING:
@@ -90,22 +90,20 @@ def concat_time[T: xr.DataArray | xr.Dataset | xr.DataTree](
                     f"holds {sorted(groups)}, so they name different rasters to lay "
                     f"end to end; concatenate stacks carrying the same groups"
                 )
-        return cast(
-            "T",
-            stack(
-                {
-                    name: concat_time(
-                        [tree.gs.rasters[name] for tree in trees],
-                        join=join,
-                        compat=compat,
-                        data_vars=data_vars,
-                        coords=coords,
-                        fill_value=fill_value,
-                    )
-                    for name in groups
-                }
-            ),
+        combined = stack(
+            {
+                name: concat_time(
+                    [tree.gs.rasters[name] for tree in trees],
+                    join=join,
+                    compat=compat,
+                    data_vars=data_vars,
+                    coords=coords,
+                    fill_value=fill_value,
+                )
+                for name in groups
+            }
         )
+        return cast("T", attrs.rebase(combined, attrs.merge(trees).root))
 
     bands = cast("Sequence[xr.DataArray | xr.Dataset]", rasters)
     # Grid axes are `join`'s to settle; a CRS it never reads, so check it here.

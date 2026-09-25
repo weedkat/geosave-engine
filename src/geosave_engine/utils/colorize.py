@@ -1,7 +1,11 @@
 from __future__ import annotations
 
+from typing import TYPE_CHECKING
+
 import numpy as np
-import torch
+
+if TYPE_CHECKING:
+    import torch
 
 Palette = dict[int, tuple[int, int, int]] | dict[int, str]
 
@@ -41,6 +45,9 @@ def colorize(
         ``(H, W, 3)`` uint8 numpy array suitable for JPEG/PNG saving or logger
         consumption.
     """
+    # Imported here so the CLI, which reaches this package for file_ops, stays torch-free.
+    import torch
+
     if isinstance(mask, torch.Tensor):
         mask = mask.cpu().numpy()
 

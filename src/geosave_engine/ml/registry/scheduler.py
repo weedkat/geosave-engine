@@ -1,34 +1,31 @@
 from __future__ import annotations
 
+from collections.abc import Callable, Mapping
+
 from torch.optim import Optimizer
-from torch.optim.lr_scheduler import (
-    LRScheduler,
-    CosineAnnealingLR,
-)
+from torch.optim.lr_scheduler import CosineAnnealingLR, LRScheduler
 
-from geosave_engine.ml.registry.base import builder
+from geosave_engine.ml.registry.base import BuildSpec, resolve
 
-SCHEDULERS = {
-    "LRScheduler": LRScheduler,
+SCHEDULERS: dict[str, Callable[..., LRScheduler]] = {
     "CosineAnnealingLR": CosineAnnealingLR,
 }
 
 
 def build_scheduler(
-    name: str, optimizer: Optimizer, config: dict, registry: dict = SCHEDULERS
+    spec: BuildSpec,
+    optimizer: Optimizer,
+    registry: Mapping[str, Callable[..., LRScheduler]] = SCHEDULERS,
 ) -> LRScheduler:
-    """Build LR scheduler by name from registry.
+    """Construct a scheduler for an existing optimizer.
 
     Args:
-        name: Registry key (e.g. ``"CosineAnnealingLR"``).
-        optimizer: Optimizer passed to scheduler constructor.
-        config: Keyword args passed to the scheduler constructor.
-        registry: Mapping of name → scheduler class. Defaults to ``SCHEDULERS``.
+        spec: Name or class path with optional init_args.
+        optimizer: Optimizer whose learning rate the scheduler controls.
+        registry: Named scheduler factories.
 
     Returns:
-        Instantiated ``LRScheduler``, or ``None`` if ``name`` is ``None``.
-
-    Raises:
-        ValueError: If ``name`` not found in registry.
+        Scheduler attached to the supplied optimizer.
     """
-    return builder(name, {**config, "optimizer": optimizer}, registry)
+    factory = resolve(spec, registry, LRScheduler)
+    return factory(optimizer=optimizer, **spec.get("init_args", {}))

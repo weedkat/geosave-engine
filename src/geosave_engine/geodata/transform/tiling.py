@@ -24,7 +24,7 @@ from odc.geo.geobox import GeoBox
 from odc.geo.xr import xr_coords
 
 from geosave_engine.geodata.core.array import array
-from geosave_engine.geodata.core.convention import BAND_DIMENSION, CRS_COORDINATE
+from geosave_engine.geodata.core.profile import BAND_DIMENSION, CRS_COORDINATE
 from geosave_engine.geodata.core.stack import stack
 
 if TYPE_CHECKING:
@@ -86,7 +86,7 @@ def _frame(tile_shape: tuple[int, int], overlap: int) -> list[tuple[int, int]]:
     return [(int(near), int(far)) for near, far in layout.calculate_padding()[1]]
 
 
-def _cut_pixels[T: (xr.Dataset, xr.DataArray)](
+def _cut_pixels[T: xr.Dataset | xr.DataArray](
     pixels: T,
     window: dict[str, slice],
     widths: dict[str, tuple[int, int]],
@@ -139,9 +139,6 @@ def _cut(
                 for name, group in raster.gs.rasters.items()
             }
         )
-    # Narrowed one kind at a time: _reshape keeps its kind, so takes no union.
-    if isinstance(raster, xr.Dataset):
-        return _cut_pixels(raster, window, widths, mode, coords)
     return _cut_pixels(raster, window, widths, mode, coords)
 
 
@@ -464,6 +461,7 @@ class TileMerger:
         self._mergers: dict[_Raster, Merger] = {}
         self._tile_ids: dict[_Raster, set[int]] = {}
         self._leading_shapes: dict[_Raster, tuple[int, ...]] = {}
+        self._completed: set[_Raster] = set()
 
     def __repr__(self) -> str:
         """Describe how many of the cut's rasters have taken a result."""
@@ -489,13 +487,19 @@ class TileMerger:
             IndexError: A number falls outside the cut.
             ValueError: A result's leading axes do not match `leading_dims`
                 (or, without one, number more than one); a raster's results
-                disagree on their leading shape; or a result does not match
-                the tile shape.
+                disagree on their leading shape; a result does not match the
+                tile shape; or a tile already supplied a result. The whole
+                batch is validated before any result is accepted.
 
         Examples:
             >>> merger.add({3: prediction})
             >>> merger.add(dict(zip(batch["index"].tolist(), predictions)))
         """
+        prepared: list[tuple[_Raster, int, tuple[int, ...], np.ndarray]] = []
+        leading_shapes = dict(self._leading_shapes)
+        accepted = {
+            raster: set(tile_ids) for raster, tile_ids in self._tile_ids.items()
+        }
         for number, result in results.items():
             pixels = np.asarray(result)
             if pixels.ndim < 2:
@@ -519,13 +523,24 @@ class TileMerger:
                     f"axes but leading_dims names {list(self._leading_dims)}; "
                     f"make the result and leading_dims agree"
                 )
+            if pixels.shape[-2:] != self._tiles.tile_shape:
+                raise ValueError(
+                    f"tile {number}'s result shape {pixels.shape[-2:]} does not "
+                    f"match tile shape {self._tiles.tile_shape}"
+                )
 
             ordinal, tile_id = self._tiles.locate(int(number))
             raster = self._tiles._rasters[ordinal]
+            if raster in self._completed:
+                raise ValueError(f"tile {number} already has a result")
+            tile_ids = accepted.setdefault(raster, set())
+            if tile_id in tile_ids:
+                raise ValueError(f"tile {number} already has a result")
+            tile_ids.add(tile_id)
 
-            expected = self._leading_shapes.get(raster)
+            expected = leading_shapes.get(raster)
             if expected is None:
-                self._leading_shapes[raster] = leading
+                leading_shapes[raster] = leading
             elif leading != expected:
                 raise ValueError(
                     f"tile {number}'s result carries leading axes {leading}, "
@@ -534,9 +549,13 @@ class TileMerger:
                 )
 
             flat = pixels.reshape(-1, *pixels.shape[-2:]) if leading else pixels
+            prepared.append((raster, tile_id, leading, flat))
+
+        for raster, tile_id, leading, flat in prepared:
             if raster not in self._mergers:
                 self._mergers[raster] = self._build_merger(raster, flat)
                 self._tile_ids[raster] = set()
+                self._leading_shapes[raster] = leading
             self._mergers[raster].add(tile_id, flat)
             self._tile_ids[raster].add(tile_id)
 
@@ -575,7 +594,7 @@ class TileMerger:
 
         Examples:
             >>> for ordinal, prediction in merger.merge().items():
-            ...     prediction.gs.to_cog(f"{ordinal}.tif")
+            ...     prediction.rename("prediction").gs.to_cog(f"{ordinal}.tif")
             >>> merger.pending
             {}
         """
@@ -590,6 +609,7 @@ class TileMerger:
             )
             leading = self._leading_shapes.pop(raster)
             del self._tile_ids[raster]
+            self._completed.add(raster)
 
             if leading:
                 pixels = pixels.reshape(*leading, *pixels.shape[-2:])

@@ -1,7 +1,8 @@
-"""Cloud masks for Sentinel-2, each safe to run chunk by chunk."""
+"""Cloud and validity masks derived from Sentinel-2 rasters."""
 
 from __future__ import annotations
 
+from collections.abc import Sequence
 from functools import lru_cache
 
 import numpy as np
@@ -9,159 +10,224 @@ import xarray as xr
 from scipy.ndimage import gaussian_filter, uniform_filter
 from s2cloudless.cloud_detector import S2PixelCloudDetector
 
-from geosave_engine.geodata.utils.dask import map_blocks_with_halo
+from geosave_engine.geodata.utils.xarray import map_spatial_overlap
+
+from ._raster import feature_raster, prepared_reflectance
 
 
-S2C_BAND_ORDER = ("b01", "b02", "b04", "b05", "b08", "b8a", "b09", "b10", "b11", "b12")
-SCL_CLOUD_CLASSES = (
-    0,  # no data,
-    1,  # saturated/defective,
-    3,  # shadow,
-    8,  # cloud med/high,
-    9,  # cirrus
-    10,
+S2C_BAND_ORDER = (
+    "b01",
+    "b02",
+    "b04",
+    "b05",
+    "b08",
+    "b8a",
+    "b09",
+    "b10",
+    "b11",
+    "b12",
+)
+SCL_VALID_CLASSES = (
+    2,  # dark area
+    4,  # vegetation
+    5,  # bare soil
+    6,  # water
+    7,  # unclassified
+    11,  # snow/ice
 )
 
 
-@lru_cache(maxsize=4)
-def _detector(prob_threshold: float) -> S2PixelCloudDetector:
-    """Load the s2cloudless model once per threshold, per process.
-
-    Args:
-        prob_threshold: Probability above which a pixel counts as cloud.
-
-    Returns:
-        Detector reading the ten-band subset.
-    """
-    return S2PixelCloudDetector(threshold=prob_threshold, all_bands=False)
-
-
-def _local_var(arr: np.ndarray, size: int | tuple[int, int, int] = 7) -> np.ndarray:
-    """Local spatial variance over a (size x size) window.
-
-    Args:
-        arr: Pixel block.
-        size: Spatial window size, with a leading time size when present.
-
-    Returns:
-        Variance per pixel, same shape.
-    """
-    # scipy accepts int or a per-axis sequence (see its own docstring); its stub is narrower.
-    mean = uniform_filter(arr, size=size)  # pyright: ignore[reportArgumentType]
-    mean_sq = uniform_filter(arr**2, size=size)  # pyright: ignore[reportArgumentType]
-    return mean_sq - mean**2
-
-
-def compute_s2c_mask(
+def s2cloudless_mask(
+    raster: xr.Dataset,
     *,
-    b01: xr.DataArray,
-    b02: xr.DataArray,
-    b04: xr.DataArray,
-    b05: xr.DataArray,
-    b08: xr.DataArray,
-    b8a: xr.DataArray,
-    b09: xr.DataArray,
-    b10: xr.DataArray,
-    b11: xr.DataArray,
-    b12: xr.DataArray,
-    prob_threshold: float = 0.4,
-) -> xr.DataArray:
-    """Cloud mask via s2cloudless, one chunk at a time.
+    name: str,
+    b01: str,
+    b02: str,
+    b04: str,
+    b05: str,
+    b08: str,
+    b8a: str,
+    b09: str,
+    b10: str,
+    b11: str,
+    b12: str,
+    probability_threshold: float = 0.4,
+) -> xr.Dataset:
+    """Derive a named s2cloudless mask raster, one chunk at a time.
 
-    Needs Sentinel-2 L1C TOA reflectance in [0, 1]; a band carrying `Packing`
-    is unpacked automatically, one carrying raw DN and no `Packing` still
-    produces a meaningless mask. Bands are ordered into `S2C_BAND_ORDER` here.
+    Needs Sentinel-2 L1C TOA reflectance in [0, 1]. Prepare stored bands
+    explicitly with `.gs.to_nan().gs.unpack()` first. Bands are ordered into
+    `S2C_BAND_ORDER` here.
 
     Args:
-        b01: Coastal aerosol reflectance.
-        b02: Blue reflectance.
-        b04: Red reflectance.
-        b05: Red-edge 1 reflectance.
-        b08: Near-infrared reflectance.
-        b8a: Narrow near-infrared reflectance.
-        b09: Water vapour reflectance.
-        b10: Cirrus reflectance.
-        b11: Shortwave-infrared 1 reflectance.
-        b12: Shortwave-infrared 2 reflectance.
-        prob_threshold: Cloud probability above which a pixel is flagged.
+        raster: Prepared Sentinel-2 reflectance raster.
+        name: Output variable name.
+        b01: Coastal aerosol variable name.
+        b02: Blue variable name.
+        b04: Red variable name.
+        b05: Red-edge 1 variable name.
+        b08: Near-infrared variable name.
+        b8a: Narrow near-infrared variable name.
+        b09: Water vapour variable name.
+        b10: Cirrus variable name.
+        b11: Shortwave-infrared 1 variable name.
+        b12: Shortwave-infrared 2 variable name.
+        probability_threshold: Cloud probability above which a pixel is flagged.
 
     Returns:
-        (y, x) uint8 mask, 1 where cloud, lazy when the inputs are.
-
-    Examples:
-        >>> mask = compute_s2c_mask(b01=ds.gs["B01"], b02=ds.gs["B02"], ...)
+        One-variable bool raster, True where cloud, lazy when the input is.
     """
-    b01, b02, b04, b05, b08, b8a, b09, b10, b11, b12 = (
-        band.gs.unpack() for band in (b01, b02, b04, b05, b08, b8a, b09, b10, b11, b12)
+    bands = prepared_reflectance(
+        raster, b01, b02, b04, b05, b08, b8a, b09, b10, b11, b12
     )
-    return map_blocks_with_halo(
-        _s2c_block,
-        b01,
-        b02,
-        b04,
-        b05,
-        b08,
-        b8a,
-        b09,
-        b10,
-        b11,
-        b12,
+    field = map_spatial_overlap(
+        _s2cloudless_block,
+        *bands,
         depth=3,
-        dtype="uint8",
-        prob_threshold=prob_threshold,
+        dtype="bool",
+        probability_threshold=probability_threshold,
     )
+    return feature_raster(raster, field, name=name, reference=bands[0])
 
 
-def _s2c_block(*bands: np.ndarray, prob_threshold: float) -> np.ndarray:
-    """Run the detector over one block's ten bands.
-
-    Args:
-        *bands: One block per band, in `S2C_BAND_ORDER`.
-        prob_threshold: Cloud probability above which a pixel is flagged.
-
-    Returns:
-        Mask block, 1 where cloud.
-    """
-    stacked = np.stack(bands, axis=-1).astype(np.float32)
-    batch = stacked[np.newaxis] if stacked.ndim == 3 else stacked
-    masks = _detector(prob_threshold).get_cloud_masks(batch)
-    return masks[0] if stacked.ndim == 3 else masks
-
-
-def compute_cdi_mask(
+def cdi_cloud_mask(
+    raster: xr.Dataset,
     *,
-    b07: xr.DataArray,
-    b08: xr.DataArray,
-    b8a: xr.DataArray,
+    name: str,
+    b07: str,
+    b08: str,
+    b8a: str,
     cdi_threshold: float = -0.5,
     eps: float = 1e-6,
-) -> xr.DataArray:
-    """Cloud Displacement Index mask (Frantz / Zupanc formulation).
+) -> xr.Dataset:
+    """Derive a named Cloud Displacement Index mask raster.
 
     CDI = (V(B07/B8A) - V(B08/B8A)) / (V(B07/B8A) + V(B08/B8A)), where V is
     local variance. B08 is pre-smoothed to match B07/B8A's coarser native
-    resolution.
+    resolution. Missing observations are excluded from neighborhood estimates;
+    an unavailable center pixel is not flagged as cloud.
 
     Args:
-        b07: Band 7 reflectance.
-        b08: Band 8 reflectance.
-        b8a: Band 8A reflectance.
+        raster: Prepared reflectance raster.
+        name: Output variable name.
+        b07: Band 7 variable name.
+        b08: Band 8 variable name.
+        b8a: Band 8A variable name.
         cdi_threshold: CDI below this is flagged as cloud.
         eps: Guards division by zero.
 
     Returns:
-        (y, x) bool mask, True where cloud, lazy when the inputs are.
+        One-variable bool raster, True where cloud, lazy when the input is.
     """
-    return map_blocks_with_halo(
+    b07_band, b08_band, b8a_band = prepared_reflectance(raster, b07, b08, b8a)
+    field = map_spatial_overlap(
         _cdi_block,
-        b07,
-        b08,
-        b8a,
+        b07_band,
+        b08_band,
+        b8a_band,
         depth=8,
         dtype="bool",
         cdi_threshold=cdi_threshold,
         eps=eps,
     )
+    return feature_raster(raster, field, name=name, reference=b07_band)
+
+
+def cirrus_cloud_mask(
+    raster: xr.Dataset,
+    *,
+    name: str,
+    b10: str,
+    reflectance_threshold: float = 0.01,
+) -> xr.Dataset:
+    """Derive a named cirrus mask from Sentinel-2 Band B10 reflectance.
+
+    Args:
+        raster: Prepared reflectance raster.
+        name: Output variable name.
+        b10: Band 10 variable name.
+        reflectance_threshold: Reflectance above which cirrus is flagged.
+
+    Returns:
+        One-variable bool raster, True where cirrus, lazy when the input is.
+    """
+    (band,) = prepared_reflectance(raster, b10)
+    field = band > reflectance_threshold
+    return feature_raster(raster, field, name=name, reference=band)
+
+
+def scl_valid_mask(
+    raster: xr.Dataset,
+    *,
+    name: str,
+    scl: str,
+    valid_classes: Sequence[int] = SCL_VALID_CLASSES,
+) -> xr.Dataset:
+    """Derive pixels valid under Sentinel-2 L2A's Scene Classification Layer.
+
+    Sen2Cor's own per-pixel classification: 0=no data, 1=saturated, 2=dark,
+    3=cloud shadow, 4=vegetation, 5=bare soil, 6=water, 7=unclassified,
+    8/9=cloud med/high prob, 10=cirrus, 11=snow/ice.
+
+    Args:
+        raster: Raster carrying a Scene Classification Layer.
+        name: Output variable name.
+        scl: Scene Classification Layer variable name.
+        valid_classes: SCL values retained as valid. The default includes dark
+            areas and snow; pass a narrower set such as 4, 5, 6, and 7 when
+            those should be excluded.
+
+    Returns:
+        One-variable bool raster, True where pixels are valid, lazy when the
+        input is.
+    """
+    field = raster[scl].isin(valid_classes)
+    return feature_raster(raster, field, name=name, reference=raster[scl])
+
+
+@lru_cache(maxsize=4)
+def _s2cloudless_detector(
+    probability_threshold: float,
+) -> S2PixelCloudDetector:
+    """Load one detector per probability threshold and process."""
+    return S2PixelCloudDetector(
+        threshold=probability_threshold,
+        all_bands=False,
+    )
+
+
+def _s2cloudless_block(
+    *bands: np.ndarray,
+    probability_threshold: float,
+) -> np.ndarray:
+    """Run s2cloudless over one block in `S2C_BAND_ORDER`."""
+    stacked = np.stack(bands, axis=-1).astype(np.float32)
+    batch = stacked[np.newaxis] if stacked.ndim == 3 else stacked
+    masks = _s2cloudless_detector(probability_threshold).get_cloud_masks(batch)
+    return masks[0] if stacked.ndim == 3 else masks
+
+
+def _local_variance(
+    values: np.ndarray,
+    size: int | tuple[int, int, int] = 7,
+) -> np.ndarray:
+    """Compute finite-weighted local spatial variance."""
+    valid = np.isfinite(values)
+    observed = np.where(valid, values, 0)
+    weight = uniform_filter(valid.astype(np.float32), size=size)
+    mean = np.divide(
+        uniform_filter(observed, size=size),
+        weight,
+        out=np.full_like(values, np.nan),
+        where=weight > 0,
+    )
+    mean_sq = np.divide(
+        uniform_filter(observed**2, size=size),
+        weight,
+        out=np.full_like(values, np.nan),
+        where=weight > 0,
+    )
+    return mean_sq - mean**2
 
 
 def _cdi_block(
@@ -172,61 +238,23 @@ def _cdi_block(
     cdi_threshold: float,
     eps: float,
 ) -> np.ndarray:
-    """Compute CDI over one block.
-
-    Args:
-        b07: Band 7 block.
-        b08: Band 8 block.
-        b8a: Band 8A block.
-        cdi_threshold: CDI below this is flagged as cloud.
-        eps: Guards division by zero.
-
-    Returns:
-        Bool mask block.
-    """
+    """Compute a CDI cloud mask over one block."""
     b07 = b07.astype(np.float32)
     b8a = b8a.astype(np.float32)
     sigma = (0.0, 1.0, 1.0) if b08.ndim == 3 else 1.0
     window = (1, 7, 7) if b08.ndim == 3 else 7
-    b08 = gaussian_filter(b08.astype(np.float32), sigma=sigma)
+    valid = np.isfinite(b07) & np.isfinite(b08) & np.isfinite(b8a)
+    observed = np.isfinite(b08)
+    weight = gaussian_filter(observed.astype(np.float32), sigma=sigma)
+    b08 = np.divide(
+        gaussian_filter(np.where(observed, b08, 0).astype(np.float32), sigma=sigma),
+        weight,
+        out=np.full_like(b08, np.nan),
+        where=weight > 0,
+    )
+    b08 = np.where(observed, b08, np.nan)
 
-    v8a7 = _local_var(b07 / (b8a + eps), size=window)
-    v8a8 = _local_var(b08 / (b8a + eps), size=window)
-    return ((v8a7 - v8a8) / (v8a7 + v8a8 + eps)) < cdi_threshold
-
-
-def compute_b10_mask(b10: xr.DataArray, *, b10_threshold: float = 0.01) -> xr.DataArray:
-    """Cirrus mask from Sentinel-2 Band B10 reflectance.
-
-    Args:
-        b10: Band 10 TOA reflectance.
-        b10_threshold: Reflectance above which cirrus is flagged.
-
-    Returns:
-        (y, x) bool mask, True where cirrus. Elementwise, so lazy when
-        input is.
-    """
-    return b10.astype(np.float32) > b10_threshold
-
-
-def compute_scl_mask(
-    scl: xr.DataArray,
-    *,
-    invalid_classes: tuple[int, ...] = SCL_CLOUD_CLASSES,
-) -> xr.DataArray:
-    """Cloud/shadow/invalid mask from Sentinel-2 L2A's Scene Classification Layer.
-
-    Sen2Cor's own per-pixel classification: 0=no data, 1=saturated, 2=dark,
-    3=cloud shadow, 4=vegetation, 5=bare soil, 6=water, 7=unclassified,
-    8/9=cloud med/high prob, 10=cirrus, 11=snow/ice.
-
-    Args:
-        scl: Scene Classification Layer values.
-        invalid_classes: SCL values flagged as cloud/shadow/invalid. Default
-            excludes snow (11) — pass it explicitly if snow should count too.
-
-    Returns:
-        (y, x) bool mask, True where flagged. Elementwise, so lazy when
-        input is.
-    """
-    return scl.isin(invalid_classes)
+    variance_b07 = _local_variance(b07 / (b8a + eps), size=window)
+    variance_b08 = _local_variance(b08 / (b8a + eps), size=window)
+    cdi = (variance_b07 - variance_b08) / (variance_b07 + variance_b08 + eps)
+    return valid & (cdi < cdi_threshold)

@@ -10,7 +10,7 @@ from torchmetrics.functional.classification import (
     multiclass_jaccard_index,
 )
 
-from geosave_engine.ml.inference.thresholding import softmax_argmax
+from geosave_engine.ml.postprocessing.segmentation import softmax_argmax
 
 _METRIC_FNS: dict[str, Callable[..., torch.Tensor]] = {
     "f1": multiclass_f1_score,
@@ -43,8 +43,7 @@ def _sweep(
     """
     new_thresholds = torch.full((num_classes,), 0.5)
 
-    # Remap GT nodata (ignore_index) → num_classes so values stay in [0, num_classes].
-    # num_classes acts as the abstain/ignore slot; metric ignores it via ignore_index=num_classes.
+    # num_classes is the abstain slot, which the metric then ignores.
     labels_r = labels.clone()
     labels_r[labels_r == ignore_index] = num_classes
 
@@ -74,26 +73,11 @@ def _sweep(
 
 
 class ThresholdCalibrator(Callback):
-    """Calibrate per-class confidence thresholds from validation data, once, near the end of training.
+    """Sweep per-class confidence thresholds on the last validation epoch.
 
-    Reacts to the same ``on_validation_batch_end`` outputs
-    ``DensePredictionLogger`` reads (``{'logits': ..., 'label': ...}``) — no
-    manual forward pass, no ``eval()``/``no_grad()``/dataloader plumbing, no
-    ``image_key``/``label_key`` coupling.
-
-    Only accumulates on the last validation epoch (``current_epoch ==
-    max_epochs - 1``) — every earlier epoch's ``on_validation_batch_end``
-    is a no-op, so there's no per-epoch clearing to manage. Skips
-    Lightning's own pre-training sanity check validation pass, which fires
-    the same hooks with the same ``current_epoch`` before any training has
-    happened.
-
-    Sweeps and writes ``pl_module.class_thresholds`` from ``on_validation_end``,
-    not ``on_fit_end`` — ``on_fit_end`` fires after every ``ModelCheckpoint``
-    save for that run, so a calibrated buffer written there would never reach
-    a saved checkpoint. ``GeosaveCLI`` appends ``ModelCheckpoint`` after
-    user-declared callbacks (so this one runs first), meaning the buffer is
-    already updated by the time that epoch's checkpoint save happens.
+    Reads the ``{'logits': ..., 'label': ...}`` dict ``validation_step``
+    returns, then writes ``pl_module.class_thresholds`` from
+    ``on_validation_end``, before that epoch's checkpoint is saved.
 
     Args:
         num_classes: Number of classes to calibrate a threshold for.
@@ -155,9 +139,7 @@ class ThresholdCalibrator(Callback):
     ) -> None:
         if not self._is_last_epoch(trainer):
             return
-        # Exclude the other two union members instead of a positive Mapping/dict
-        # isinstance check — Tensor structurally overlaps enough of Mapping's
-        # protocol to confuse the checker's narrowing on a positive check.
+        # Tensor overlaps Mapping's protocol, so narrow by excluding the other arms.
         if outputs is None or isinstance(outputs, torch.Tensor):
             raise TypeError(
                 f"{type(self).__name__} expects validation_step to return "

@@ -303,3 +303,39 @@ def format_stem_dates(value: DateRange) -> str:
     start_token = _compact_token(start, _min_depth(start, 0))
     end_token = _compact_token(end, _min_depth(end, 1))
     return f"{start_token}-{end_token}"
+
+
+def parse_stem_dates(stem: str) -> DateRange | None:
+    """Read the period a filename stem names, off the date tokens it carries.
+
+    Reads `format_stem_dates` back, and any stem spelling its dates that same
+    compact way. Every token parsing as a datetime counts, a four-digit
+    identifier among them, as the year it spells.
+
+    Args:
+        stem: Filename stem, its parts separated by `"_"` or `"-"`.
+
+    Returns:
+        First and last instant the stem's date tokens cover, or None where it
+        carries no date token.
+
+    Examples:
+        >>> parse_stem_dates("tile-20190507")
+        (datetime.datetime(2019, 5, 7, 0, 0),
+         datetime.datetime(2019, 5, 7, 23, 59, 59, 999999))
+        >>> parse_stem_dates("20190507-20190509")
+        (datetime.datetime(2019, 5, 7, 0, 0),
+         datetime.datetime(2019, 5, 9, 23, 59, 59, 999999))
+        >>> parse_stem_dates("dem") is None
+        True
+    """
+    covered: list[DateRange] = []
+    for token in re.split(r"[_-]", stem):
+        try:
+            covered.append(_parse_daterange(token))
+        except ValueError:
+            continue
+
+    if not covered:
+        return None
+    return min(start for start, _ in covered), max(end for _, end in covered)

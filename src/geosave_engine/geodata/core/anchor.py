@@ -34,8 +34,6 @@ if TYPE_CHECKING:
 
     from geosave_engine.geodata.utils.geo.geolocator import Place
 
-    from .vector import GeoVector
-
 
 @dataclass(frozen=True, eq=False)
 class GeoAnchor:
@@ -352,61 +350,6 @@ class GeoAnchor:
             ),
             shape=(height, width),
             crs=grid_crs,
-            anchor=anchor,
-            timespan=timespan,
-        )
-
-    @classmethod
-    def from_vector(
-        cls,
-        vector: GeoVector,
-        *,
-        resolution: float | None = None,
-        shape: int | tuple[int, int] | None = None,
-        pad: float = 0.0,
-        crs: str | CRS | OdcCRS | None = None,
-        anchor: GridAnchor = "edge",
-        timespan: AnchorDatetime | None = None,
-    ) -> Self:
-        """Build an anchor on a grid covering a vector's full extent.
-
-        The grid always covers the vector. A projected vector keeps its CRS by
-        default; a geographic vector is placed on its local UTM or UPS CRS.
-
-        Args:
-            vector: Geometries the grid must cover.
-            resolution: Pixel size in grid CRS units.
-            shape: Pixels to divide the extent into — one value spans the
-                longest axis at square pixels, or `(height, width)` spans both.
-            pad: Grid CRS units added to every side of the vector's extent.
-            crs: CRS to place the grid in. None keeps a projected vector CRS
-                or selects local UTM/UPS for a geographic vector.
-            anchor: Where pixel edges fall relative to the CRS origin.
-                `"edge"` puts them on multiples of `resolution`, so grids built
-                from different extents share one lattice and compose.
-                `"floating"` fits the extent exactly instead, at a phase
-                nothing else shares.
-            timespan: Temporal coverage, as `parse_daterange` accepts it. None
-                leaves the anchor timeless.
-
-        Returns:
-            Anchor whose geobox covers the padded extent.
-
-        Raises:
-            ValueError: Neither or both of `resolution` and `shape` are given,
-                or a measurement is not positive.
-
-        Examples:
-            >>> plots = GeoVector(gpd.read_file("plots.geojson"))
-            >>> GeoAnchor.from_vector(plots, resolution=10, pad=250).geobox.crs
-            CRS('EPSG:32749')
-        """
-        return cls.from_geometry(
-            vector.footprint,
-            resolution=resolution,
-            shape=shape,
-            pad=pad,
-            crs=crs,
             anchor=anchor,
             timespan=timespan,
         )

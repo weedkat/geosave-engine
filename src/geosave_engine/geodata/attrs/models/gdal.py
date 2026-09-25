@@ -2,8 +2,7 @@
 
 from __future__ import annotations
 
-from collections.abc import Sequence
-from typing import TYPE_CHECKING, Annotated, ClassVar, Self
+from typing import TYPE_CHECKING, Annotated, ClassVar
 
 from pydantic import Field, field_validator
 from rasterio.enums import ColorInterp
@@ -36,14 +35,15 @@ class GDALVariable(AttrsModel):
 
     Examples:
         >>> ds.gs.rebase(GDALVariable(variable_name="B04", colorinterp="red"))
-        >>> ds.gs.attrs.data_vars["B04"].get(GDALVariable).colorinterp
-        'red'
+        >>> ds.gs.attrs.data_vars["B04"].get(GDALVariable)
+        GDALVariable(variable_name='B04', colorinterp='red')
     """
 
     NAME: ClassVar[str] = "gdal"
 
     variable_name: Annotated[str, Field(min_length=1)] | None = None
     colorinterp: str | None = None
+    description: Annotated[str, Field(min_length=1)] | None = None
 
     @field_validator("colorinterp", mode="before")
     @classmethod
@@ -102,26 +102,10 @@ class GDALVariable(AttrsModel):
         absent = [colour for colour in _RGB if colour not in measures]
         if absent:
             raise ValueError(
-                f"this raster measures no {absent} among {list(ds.data_vars)}, so "
-                f"it composes no true colour of its own; name three bands to "
-                f"compose any other, as ds.gs.plot(('B08', 'B04', 'B03')) does"
+                f"no band of {list(ds.data_vars)} draws {absent}, so this raster "
+                f"composes no colour of its own; name its channels once with "
+                f"ds.gs.write_rgb('B04', 'B03', 'B02'), or name three bands for "
+                f"one drawing with ds.gs.plot(('B08', 'B04', 'B03'))"
             )
         red, green, blue = (measures.index(colour) for colour in _RGB)
         return red, green, blue
-
-    @classmethod
-    def merge(cls, models: Sequence[AttrsModel | None]) -> tuple[Self, set[str]]:
-        """Merge band identities, refusing disagreements.
-
-        Args:
-            models: This model from each joined object, in call order, at
-                least one, None where an object carried none.
-
-        Returns:
-            Merged model, and the attr keys it could not keep.
-
-        Raises:
-            TypeError: An object carries a different model.
-            ValueError: The identity disagrees or `models` is empty.
-        """
-        return cls._merge_fields(models, must_agree=cls.model_fields)

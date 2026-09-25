@@ -13,14 +13,16 @@ Examples:
         samples = tiling.Tiles([monthly], (256, 256), overlap=32)
 """
 
-from . import composite, concat, nodata, packing, tiling, time, warp
+from . import composite, concat, merge, nodata, packing, tiling, time, vector, warp
 
 __all__ = [
     "composite",
     "concat",
+    "merge",
     "nodata",
     "packing",
     "tiling",
     "time",
+    "vector",
     "warp",
 ]

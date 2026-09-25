@@ -16,8 +16,8 @@ from .core import (
 )
 from .utils import io
 from .utils.gdal_env import configure_gdal
-from .utils.io import read
-from .utils.io.layout import FlatLayout, NestedLayout
+from .utils.io import read_raster, read_stack, read_vector
+from .utils.io.layout import LAYOUTS, write_tree
 
 
 if TYPE_CHECKING:
@@ -56,7 +56,7 @@ else:
 
 
 __all__ = [
-    "FlatLayout",
+    "LAYOUTS",
     "GeoAnchor",
     "GeoArray",
     "DataArray",
@@ -65,11 +65,13 @@ __all__ = [
     "GeoRaster",
     "GeoStack",
     "GeoVector",
-    "NestedLayout",
+    "write_tree",
     "configure_gdal",
     "io",
     "raster",
-    "read",
+    "read_raster",
+    "read_stack",
+    "read_vector",
     "stack",
     "transform",
 ]

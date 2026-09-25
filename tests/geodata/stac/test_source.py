@@ -6,6 +6,8 @@ from typing import Any
 import dask.array as da
 import numpy as np
 import pytest
+
+from geosave_engine.geodata.attrs import AttrsHeader
 import xarray as xr
 from odc.geo.geobox import GeoBox
 
@@ -48,7 +50,9 @@ def test_load_returns_dask_backed_arrays_by_default(
         return loaded.chunk(options["chunks"])
 
     monkeypatch.setattr(source_module.odc.stac, "load", fake_load)
-    monkeypatch.setattr(source_module, "stamp_stac", lambda ds, *args, **kwargs: ds)
+    monkeypatch.setattr(
+        source_module, "create_header", lambda *args, **kwargs: AttrsHeader()
+    )
     anchor = GeoAnchor.from_coordinates(
         -6.5914,
         107.8416,
@@ -69,4 +73,52 @@ def test_chunks_none_remains_an_explicit_eager_mode() -> None:
     source.set_config(chunks=None)
 
     assert source.config.chunks is None
-    assert source._load_options()["chunks"] is None
+    assert source.config.to_load_kwargs()["chunks"] is None
+
+
+def test_with_properties_forwards_odc_native_requests() -> None:
+    source = StacSource(FakeClient(), collection="example").set_config(  # type: ignore[arg-type]
+        with_properties=(
+            "platform",
+            {
+                "key": "view:sun_azimuth",
+                "name": "sun_azimuth",
+                "dtype": "float32",
+                "units": "degree",
+            },
+        )
+    )
+
+    assert source.config.to_load_kwargs()["with_properties"] == [
+        "platform",
+        {
+            "key": "view:sun_azimuth",
+            "name": "sun_azimuth",
+            "dtype": "float32",
+            "units": "degree",
+        },
+    ]
+
+
+def test_effective_nodata_follows_loaded_pixels(local_source):
+    source, anchor = local_source
+    loaded = source.set_config(dtype="float32", nodata=-9999).load(anchor)
+
+    assert isinstance(loaded.red.data, da.Array)
+    assert loaded.red.values[0, 0, 0] == -9999
+    assert loaded.red.attrs["_FillValue"] == -9999
+    prepared = loaded.gs.to_nan().gs.unpack()
+    assert np.isnan(prepared.red.values[0, 0, 0])
+    assert prepared.red.values[0, 1, 1] == pytest.approx(0.2)
+
+
+def test_aliases_resolve_each_multiband_asset_index(local_source):
+    source, anchor = local_source
+    loaded = source.set_config(chunks=None).load(anchor)
+
+    assert isinstance(loaded.red.data, np.ndarray)
+    assert loaded.red.attrs["scale_factor"] == 0.0001
+    assert loaded.nir.attrs["scale_factor"] == 0.0002
+    assert loaded.nir.attrs["add_offset"] == -0.1
+    assert loaded.gs.geobox == anchor.geobox
+    assert loaded.gs.to_nan().gs.unpack().nir.values[0, 1, 1] == pytest.approx(1.1)

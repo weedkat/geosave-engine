@@ -5,7 +5,7 @@ from __future__ import annotations
 import os
 from typing import Literal
 
-from geosave_engine.utils.fn import UNSET, Unset
+from geosave_engine.utils.sentinel import UNSET, Unset
 
 
 def _bool_env(value: bool | Unset) -> str | Unset:

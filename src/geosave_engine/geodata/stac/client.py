@@ -30,21 +30,13 @@ class StacClient:
     """
 
     def __init__(self, client: Client) -> None:
-        """Bind the session and set its retry policy.
+        """Bind the caller-owned session.
 
         Args:
             client: Open pystac-client session.
         """
         self._client = client
         self._collections: dict[str, pystac.Collection] = {}
-        self._client._stac_io = StacApiIO(
-            max_retries=Retry(
-                total=5,
-                backoff_factor=1,
-                status_forcelist=[502, 503, 504],
-                allowed_methods=["GET", "POST"],
-            )
-        )
 
     @classmethod
     def cdse(cls) -> StacClient:
@@ -53,7 +45,7 @@ class StacClient:
         Returns:
             Client for the CDSE STAC API.
         """
-        return cls(Client.open(CDSE_URL))
+        return cls(Client.open(CDSE_URL, stac_io=_default_io()))
 
     @classmethod
     def planetary_computer(cls) -> StacClient:
@@ -64,7 +56,9 @@ class StacClient:
         """
         return cls(
             Client.open(
-                PLANETARY_COMPUTER_URL, modifier=planetary_computer.sign_inplace
+                PLANETARY_COMPUTER_URL,
+                modifier=planetary_computer.sign_inplace,
+                stac_io=_default_io(),
             )
         )
 
@@ -75,7 +69,7 @@ class StacClient:
         Returns:
             Client for the Earth Search STAC API.
         """
-        return cls(Client.open(ELEMENT84_URL))
+        return cls(Client.open(ELEMENT84_URL, stac_io=_default_io()))
 
     def search(self, query: StacQuery | dict[str, Any]) -> list[pystac.Item]:
         """Run one search to completion.
@@ -139,3 +133,15 @@ class StacClient:
         """
         self.collection(collection)
         return StacSource(self, collection=collection)
+
+
+def _default_io() -> StacApiIO:
+    """Configure retries before a built-in catalog session is opened."""
+    return StacApiIO(
+        max_retries=Retry(
+            total=5,
+            backoff_factor=1,
+            status_forcelist=[502, 503, 504],
+            allowed_methods=["GET", "POST"],
+        )
+    )

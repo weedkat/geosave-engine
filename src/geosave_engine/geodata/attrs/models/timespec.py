@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-from collections.abc import Sequence
 from datetime import datetime as dt, timedelta
 from typing import ClassVar, Literal, Self
 
@@ -86,36 +85,6 @@ class TimeSpec(AttrsModel):
             )
         return self
 
-    @classmethod
-    def instants(cls) -> Self:
-        """Build the spec of an axis whose labels are instants, not buckets.
-
-        Returns:
-            Spec carrying no cadence, which a raster without its own reads as.
-
-        Examples:
-            >>> TimeSpec.instants().time_freq is None
-            True
-        """
-        return cls()
-
-    @classmethod
-    def merge(cls, models: Sequence[AttrsModel | None]) -> tuple[Self, set[str]]:
-        """Merge a time specification, refusing disagreements.
-
-        Args:
-            models: This model from each joined object, in call order, at
-                least one, None where an object carried none.
-
-        Returns:
-            Merged model, and the attr keys it could not keep.
-
-        Raises:
-            TypeError: An object carries a different model.
-            ValueError: A time field disagrees or `models` is empty.
-        """
-        return cls._merge_fields(models, must_agree=cls.model_fields)
-
     def bounds(self, labels: np.ndarray) -> np.ndarray:
         """Half-open `[start, end)` edges of the bucket each label names.
 
@@ -124,16 +93,17 @@ class TimeSpec(AttrsModel):
         of instants spans the one microsecond it names.
 
         Args:
-            labels: The `time` coordinate.
+            labels: The `time` coordinate, a scalar one holding its one label.
 
         Returns:
             `(len(labels), 2)` `datetime64[us]` array, row `i` holding label
-            `i`'s bucket start and next edge.
+            `i`'s bucket start and next edge. A scalar coordinate gives one row.
 
         Raises:
             ValueError: pandas doesn't know this spec's own `time_freq`.
         """
-        index = pd.DatetimeIndex(labels)
+        # A raster at one instant carries time as a scalar, which names one label.
+        index = pd.DatetimeIndex(np.atleast_1d(labels))
         if self.time_freq is None:
             edges = index.to_numpy("datetime64[us]")
             return np.stack([edges, edges + np.timedelta64(1, "us")], axis=1)

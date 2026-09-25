@@ -3,19 +3,37 @@ model_name: my_model
 trainer:
   max_epochs: 100
   log_every_n_steps: 10
-  callbacks:                  # left blank on purpose — GeosaveCLI fills in
-                               # ModelCheckpoint/LearningRateMonitor/RichProgressBar.
+  callbacks:
+    - class_path: lightning.pytorch.callbacks.ModelCheckpoint
+      init_args:
+        monitor: val_loss
+        mode: min
+        save_top_k: 1
+        filename: "epoch={epoch:02d}-val_loss={val_loss:.4f}"
+        save_last: true
+    - class_path: lightning.pytorch.callbacks.LearningRateMonitor
+      init_args:
+        logging_interval: epoch
+    - class_path: lightning.pytorch.callbacks.RichProgressBar
+    # Optional prediction visualization:
+    # - class_path: geosave_engine.ml.callbacks.DensePredictionLogger
+    #   init_args:
+    #     color_map: {0: "#000000"}
+    #     class_map: {0: background}
+    #     log_image_every_n_epochs: 2
 
 model:
   class_path: geosave_engine.ml.tasks.SemanticSegmentationTask
   init_args:
     stages:
-      encoder: dinov3
-      decoder: dpt
-      head: dense
-    optimizer: AdamW.split
-    scheduler: CosineAnnealingLR
-    loss: CELoss
-    config:
-      optimizer: {weight_decay: 0.01, encoder_lr: 0.0001, decoder_lr: 0.001}
-      scheduler: {T_max: 100}
+      encoder: {name: dinov3}
+      decoder: {name: dpt}
+      head: {name: dense}
+    optimizer:
+      name: AdamW.split
+      init_args: {weight_decay: 0.01, encoder_lr: 0.0001, decoder_lr: 0.001}
+    scheduler:
+      name: CosineAnnealingLR
+      init_args: {T_max: 100}
+    loss:
+      name: CELoss

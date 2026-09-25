@@ -1,23 +1,23 @@
 from __future__ import annotations
 
+from typing import ClassVar
+
 import pytest
 import xarray as xr
 
 from geosave_engine.geodata.attrs import (
     ACDD,
+    REGISTERED_MODELS,
     AttrsHeader,
+    AttrsModel,
     AttrsNamespace,
     CFCoordinate,
     CFVariable,
     GDALVariable,
-    GeoTIFFTags,
     Legend,
     Nodata,
-    Packing,
-    StacMetadata,
-    TimeSpec,
+    create_header,
     merge,
-    read,
     rebase,
 )
 from geosave_engine.geodata.errors import DroppedAttrsWarning
@@ -49,25 +49,73 @@ def test_namespace_owns_flat_attrs_lifecycle() -> None:
     assert dropped == {"provider"}
 
 
-def test_every_registered_model_declares_its_merge_method() -> None:
-    models = (
-        ACDD,
-        CFCoordinate,
-        CFVariable,
-        GeoTIFFTags,
-        Legend,
-        GDALVariable,
-        Nodata,
-        Packing,
-        StacMetadata,
-        TimeSpec,
-    )
+def test_only_the_accumulating_model_writes_its_own_merge() -> None:
+    stating_a_policy = {
+        model.__name__
+        for model in REGISTERED_MODELS.values()
+        if "merge" in model.__dict__
+    }
 
-    assert all("merge" in model.__dict__ for model in models)
+    assert stating_a_policy == {"StacMetadata"}
+
+
+def test_a_model_keeps_what_the_objects_agree_on_and_drops_the_rest() -> None:
+    agreed, dropped = Nodata.merge([Nodata(fill_value=0), Nodata(fill_value=0)])
+    assert (agreed.fill_value, dropped) == (0, set())
+
+    conflicting, dropped = Nodata.merge([Nodata(fill_value=0), Nodata(fill_value=-1)])
+    assert conflicting.fill_value is None
+    assert dropped == {"_FillValue", "nodata"}
+
+
+def test_one_field_writes_every_spelling_it_declares() -> None:
+    assert Nodata.field_keys["fill_value"] == ("_FillValue", "nodata")
+    assert Nodata(fill_value=0).to_attrs() == {"_FillValue": 0, "nodata": 0}
+
+
+@pytest.mark.parametrize(
+    ("suffix", "keys"),
+    [
+        ("string", "stored"),
+        ("non_string", ("stored", 1)),
+        ("empty_string", ("",)),
+        ("empty", ()),
+    ],
+)
+def test_field_keys_are_nonempty_tuples_of_attr_names(suffix, keys) -> None:
+    from geosave_engine.geodata.attrs import model as registry
+
+    model_name = f"test_bad_field_keys_{suffix}"
+    try:
+        with pytest.raises(ValueError, match="field_keys"):
+
+            class BadFieldKeys(AttrsModel):
+                NAME: ClassVar[str] = model_name
+                field_keys: ClassVar = {"value": keys}
+
+                value: int = 0
+    finally:
+        registry._MODEL_TYPES.pop(model_name, None)
+        for attr_key, owner in list(registry._FIELD_BY_ATTR_KEY.items()):
+            if owner[0].NAME == model_name:
+                del registry._FIELD_BY_ATTR_KEY[attr_key]
+
+
+def test_either_spelling_alone_names_the_absent_pixels() -> None:
+    cf = AttrsNamespace.from_attrs({"_FillValue": -9999})
+    odc = AttrsNamespace.from_attrs({"nodata": -9999})
+
+    assert cf.get(Nodata).fill_value == -9999
+    assert odc.get(Nodata) == cf.get(Nodata)
+
+
+def test_spellings_set_to_different_values_are_refused() -> None:
+    with pytest.raises(ValueError, match="they spell one Nodata.fill_value"):
+        AttrsNamespace.from_attrs({"_FillValue": 0, "nodata": -9999})
 
 
 def test_rebase_header_round_trips_typed_and_foreign_attrs() -> None:
-    header = read(_source())
+    header = create_header(_source())
     target = xr.Dataset(
         {"red": ("x", [3, 4], {"_FillValue": -1, "stale": True})},
         coords={"x": ("x", [0, 1], {"stale": True})},
@@ -105,26 +153,55 @@ def test_merge_keeps_agreeing_foreign_attrs() -> None:
     assert header.coords["x"].foreign == {"axis_note": "east"}
 
 
-def test_merge_flattens_variables_into_one_namespace() -> None:
-    first = xr.Variable(("x",), [1, 2], attrs={"title": "shared", "note": "a"})
-    second = xr.Variable(("x",), [3, 4], attrs={"title": "shared", "note": "b"})
+def test_merging_namespaces_keeps_only_what_they_carry_alike() -> None:
+    first = AttrsNamespace.from_attrs({"title": "shared", "note": "a"})
+    second = AttrsNamespace.from_attrs({"title": "shared", "note": "b"})
 
-    with pytest.warns(DroppedAttrsWarning, match="carried differently"):
-        namespace = merge([first, second])
+    namespace, dropped = AttrsNamespace.merge([first, second])
 
     assert namespace.to_attrs() == {"title": "shared"}
+    assert dropped == {"note"}
 
 
-def test_merge_variables_uses_action_in_the_warning() -> None:
-    first = xr.Variable(("x",), [1, 2], attrs={"note": "a"})
-    second = xr.Variable(("x",), [3, 4], attrs={"note": "b"})
+def test_merging_variables_drops_their_per_variable_gdal_identity() -> None:
+    red = AttrsNamespace.from_attrs({"variable_name": "B04", "colorinterp": "red"})
+    green = AttrsNamespace.from_attrs({"variable_name": "B03", "colorinterp": "green"})
 
-    with pytest.warns(DroppedAttrsWarning, match="stacking"):
-        merge([first, second], action="stacking")
+    namespace, _ = AttrsNamespace.merge([red, green])
+
+    assert namespace.get(GDALVariable) == GDALVariable(
+        variable_name=None, colorinterp=None
+    )
+    assert namespace.to_attrs() == {}
+
+
+def test_merging_one_variable_keeps_its_gdal_identity() -> None:
+    variable = AttrsNamespace.from_attrs({"variable_name": "B04", "colorinterp": "red"})
+
+    namespace, dropped = AttrsNamespace.merge([variable])
+
+    assert namespace.get(GDALVariable) == GDALVariable(
+        variable_name="B04", colorinterp="red"
+    )
+    assert dropped == set()
+
+
+def test_header_merge_drops_conflicting_gdal_identity() -> None:
+    first = rebase(
+        _source(), GDALVariable(variable_name="B04", colorinterp="red"), target="red"
+    )
+    second = rebase(
+        _source(), GDALVariable(variable_name="B08", colorinterp="nir"), target="red"
+    )
+
+    with pytest.warns(DroppedAttrsWarning, match="red.variable_name"):
+        header = merge([first, second])
+
+    assert header.data_vars["red"].get(GDALVariable).variable_name is None
 
 
 def test_rebase_header_prevalidates_targets_before_an_inplace_write() -> None:
-    header = read(_source())
+    header = create_header(_source())
     target = xr.Dataset({"red": ("y", [3, 4])}, attrs={"stale": True})
 
     with pytest.raises(ValueError, match="'x' is neither"):
@@ -133,11 +210,14 @@ def test_rebase_header_prevalidates_targets_before_an_inplace_write() -> None:
     assert target.attrs == {"stale": True}
 
 
-def test_rebase_header_rejects_foreign_keys_owned_by_a_model() -> None:
-    header = AttrsHeader(root=AttrsNamespace(foreign={"title": "untyped"}))
-
+def test_a_namespace_rejects_foreign_keys_owned_by_a_model() -> None:
     with pytest.raises(ValueError, match="collide"):
-        rebase(xr.Dataset(), header)
+        AttrsNamespace(foreign={"title": "untyped"})
+
+
+def test_a_namespace_rejects_a_model_filed_under_another_name() -> None:
+    with pytest.raises(TypeError, match="must be ACDD"):
+        AttrsNamespace(models={ACDD.NAME: Nodata(fill_value=0)})
 
 
 def test_rebase_rejects_target_alongside_a_header() -> None:
@@ -191,10 +271,90 @@ def test_rebase_rejects_keyword_models_alongside_a_namespace() -> None:
 
 def test_rebase_header_preserves_registered_model_serialization() -> None:
     header = AttrsHeader(
-        variables={"red": AttrsNamespace(models={Nodata.NAME: Nodata(fill_value=0)})},
-        var_names=frozenset({"red"}),
+        data_vars={"red": AttrsNamespace(models={Nodata.NAME: Nodata(fill_value=0)})}
     )
     stamped = rebase(xr.Dataset({"red": ("x", [1, 2])}), header)
 
     # Nodata mirrors the fill across odc's spelling too, so both keys land.
     assert stamped.red.attrs == {"_FillValue": 0, "nodata": 0}
+
+
+@pytest.mark.parametrize("as_namespace", [False, True])
+def test_invalid_later_target_leaves_all_attrs_unchanged(as_namespace: bool) -> None:
+    ds = _source()
+    before = ds.copy(deep=True)
+    model = Nodata(fill_value=255)
+    patch = AttrsNamespace(models={model.NAME: model}) if as_namespace else model
+
+    with pytest.raises(ValueError, match="missing"):
+        rebase(ds, patch, target=["red", "missing"], inplace=True)
+
+    xr.testing.assert_identical(ds, before)
+
+
+def test_header_serialization_failure_leaves_all_attrs_unchanged() -> None:
+    ds = _source()
+    before = ds.copy(deep=True)
+    conflicting = AttrsNamespace(
+        models={"cf": CFVariable(units="m"), "coordinate": CFCoordinate(units="km")}
+    )
+    header = AttrsHeader(
+        root=AttrsNamespace.from_attrs({"title": "changed"}),
+        data_vars={"red": conflicting},
+    )
+
+    with pytest.raises(ValueError, match="units"):
+        rebase(ds, header, inplace=True)
+
+    xr.testing.assert_identical(ds, before)
+
+
+def test_ordered_model_edits_remain_explicit_overrides() -> None:
+    ds = _source()
+
+    result = rebase(
+        ds,
+        Nodata(fill_value=255),
+        Nodata(fill_value=None),
+        target="red",
+        nodata={"fill_value": 10},
+    )
+
+    assert result.red.attrs == {"_FillValue": 10, "nodata": 10, "source_band": "B04"}
+    assert ds.red.attrs == {"_FillValue": 0, "source_band": "B04"}
+
+
+def test_keyword_none_clears_every_key_owned_by_the_model() -> None:
+    source = xr.Dataset(
+        {"red": ("x", [1], {"_FillValue": 0, "nodata": 0, "kept": True})}
+    )
+
+    result = rebase(source, target="red", nodata=None)
+
+    assert result.red.attrs == {"kept": True}
+
+
+def test_metadata_edits_keep_lazy_pixels_and_coordinate_metadata() -> None:
+    import dask.array as da
+    from dask.callbacks import Callback
+
+    ds = _source().chunk({"x": 1})
+    tasks = []
+    with Callback(pretask=lambda *args: tasks.append(args)):
+        result = rebase(ds, Nodata(fill_value=255), target="red")
+
+    assert tasks == []
+    assert isinstance(result.red.data, da.Array)
+    assert result.red.data is ds.red.data
+    xr.testing.assert_identical(result.x, ds.x)
+
+
+def test_bulk_model_targets_keep_independent_mutable_metadata() -> None:
+    ds = xr.Dataset({"red": ("x", [0, 1]), "nir": ("x", [0, 1])})
+    legend = Legend(flag_values=[0, 1], flag_meanings="water land")
+    result = rebase(ds, legend, target=["red", "nir"])
+
+    result.red.attrs["flag_values"].append(2)
+
+    assert result.nir.attrs["flag_values"] == [0, 1]
+    assert legend.flag_values == [0, 1]

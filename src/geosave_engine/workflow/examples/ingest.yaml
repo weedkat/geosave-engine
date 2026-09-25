@@ -1,0 +1,20 @@
+sources:
+  optical:
+    url: https://earth-search.aws.element84.com/v1/
+    collection: sentinel-2-l2a
+    load:
+      bands: [red, nir]
+      chunks: {x: 1024, y: 1024}
+      with_properties:
+        - key: view:sun_azimuth
+          name: sun_azimuth
+          dtype: float32
+          units: degree
+anchor:
+  type: coordinates
+  latitude: -8.05
+  longitude: 112.15
+  shape: [512, 512]
+  resolution: 10
+  timespan: 2025-01
+output: raw.zarr

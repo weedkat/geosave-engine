@@ -5,15 +5,14 @@ from .geotiff import GeoTIFFTags
 from .legend import Legend
 from .nodata import Nodata
 from .packing import Packing
-from .stac import StacItem, StacMetadata, read_asset_fields
-from .statistics import BandStatistics
+from .stac import StacItem, StacMetadata
+from .stacked import StackedAttrs
 from .timespec import TimeSpec
 from .zarr import ZarrOrder
 
 __all__ = [
     "ACDD",
     "CELL_METHODS",
-    "BandStatistics",
     "CFCoordinate",
     "CFVariable",
     "GDALVariable",
@@ -23,7 +22,7 @@ __all__ = [
     "Packing",
     "StacItem",
     "StacMetadata",
+    "StackedAttrs",
     "TimeSpec",
     "ZarrOrder",
-    "read_asset_fields",
 ]

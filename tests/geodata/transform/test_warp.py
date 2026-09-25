@@ -37,7 +37,9 @@ def landcover() -> xr.Dataset:
     box = utm_box()
     coded = build_raster({"landcover": np.ones(box.shape, "uint8")}, box)
     return attrs.rebase(
-        coded, attrs.Legend(class_map={1: "water", 2: "urban"}), target="landcover"
+        coded,
+        attrs.Legend(class_map={1: "water", 2: "urban"}),
+        target="landcover",
     )
 
 

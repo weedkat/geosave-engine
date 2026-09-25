@@ -9,7 +9,12 @@ from typing import TYPE_CHECKING, Any, TypedDict, Unpack, Literal, cast, overloa
 import xarray as xr
 from xarray.core.types import T_Chunks
 
-from geosave_engine.geodata.attrs import ZarrOrder, read as read_attrs, rebase
+from geosave_engine.geodata.attrs import (
+    Nodata,
+    ZarrOrder,
+    create_header,
+    rebase,
+)
 
 
 if TYPE_CHECKING:
@@ -97,7 +102,7 @@ def read(
     options.setdefault("consolidated", False)
     # A grid mapping variable is a coordinate; the CF default leaves it a data variable.
     options.setdefault("decode_coords", "all")
-    cube = xr.open_dataset(
+    opened = xr.open_dataset(
         source,
         engine="zarr",
         group=group,
@@ -105,7 +110,30 @@ def read(
         mask_and_scale=mask_and_scale,
         **options,
     )
-    return cast("Dataset", _in_written_order(cube))
+    try:
+        cube = _in_written_order(opened)
+    except BaseException:
+        opened.close()
+        raise
+    if cube is not opened:
+        cube.set_close(opened.close)
+    return cast("Dataset", cube)
+
+
+def _recording_order(ds: xr.Dataset) -> xr.Dataset:
+    """Write the Dataset's own variable order into its attrs.
+
+    Args:
+        ds: Raster about to be written, or a node of a stack about to be.
+
+    Returns:
+        The same raster carrying `ZarrOrder`, or `ds` itself where it holds no
+        variables to order, as a stack's root does.
+    """
+    if not ds.data_vars:
+        return ds
+    names = tuple(str(name) for name in ds.data_vars)
+    return rebase(ds, ZarrOrder(zarr_variable_order=names))
 
 
 def _in_written_order(ds: xr.Dataset) -> xr.Dataset:
@@ -122,7 +150,7 @@ def _in_written_order(ds: xr.Dataset) -> xr.Dataset:
         Dataset holding the same variables, ordered as written, or `ds` itself
         where the store names no order.
     """
-    order = read_attrs(ds).root.get(ZarrOrder)
+    order = create_header(ds).root.get(ZarrOrder)
     if order is None or order.zarr_variable_order is None:
         return ds
     named = [name for name in order.zarr_variable_order if name in ds.data_vars]
@@ -160,13 +188,20 @@ def read_stack(
     options.setdefault("consolidated", False)
     # A grid mapping variable is a coordinate; the CF default leaves it a data variable.
     options.setdefault("decode_coords", "all")
-    stack = xr.open_datatree(
+    opened = xr.open_datatree(
         source,
         engine="zarr",
         chunks=chunks,
         mask_and_scale=mask_and_scale,
         **options,
     )
+    try:
+        stack = opened.map_over_datasets(_in_written_order)
+    except BaseException:
+        opened.close()
+        raise
+    if stack is not opened:
+        stack.set_close(opened.close)
     return cast("DataTree", stack)
 
 
@@ -234,16 +269,18 @@ def write(
     if path.suffix != _STORE_SUFFIX:
         raise ValueError(f"destination {path.name!r} must end in {_STORE_SUFFIX!r}")
 
-    # A Zarr group records no member order, so the Dataset's own travels in attrs.
+    # A Zarr group records no member order, so every node's own travels in attrs.
     if isinstance(raster_or_stack, xr.Dataset):
-        raster_or_stack = rebase(
-            raster_or_stack,
-            ZarrOrder(
-                zarr_variable_order=tuple(str(n) for n in raster_or_stack.data_vars)
-            ),
-        )
+        raster_or_stack = _recording_order(raster_or_stack)
+    else:
+        raster_or_stack = raster_or_stack.map_over_datasets(_recording_order)
 
     options: dict[str, Any] = dict(write_options)
+    # A Zarr array holds its own fill value, which is what a GDAL reader masks on.
+    options["encoding"] = {
+        **fill_encoding(raster_or_stack),
+        **dict(options.get("encoding") or {}),
+    }
     options.setdefault("consolidated", False)
     mode: Literal["w", "w-"] = "w" if overwrite else "w-"
     # Passing the literal lets xarray's overloads say what each call returns.
@@ -259,3 +296,47 @@ def write(
         path, mode=mode, zarr_format=_STORE_ZARR_FORMAT, compute=True, **options
     )
     return path
+
+
+def fill_encoding(
+    raster_or_stack: xr.Dataset | xr.DataTree,
+) -> dict[str, dict[str, Any]]:
+    """Say which fill value each variable's Zarr array should hold.
+
+    A Zarr array carries a fill value of its own, defaulting to zero, and that
+    is what a GDAL reader masks on — the CF `_FillValue` attr rides alongside
+    for a CF reader but is not read as the array's own.
+
+    Args:
+        raster_or_stack: Raster Dataset, or raster-stack DataTree.
+
+    Returns:
+        {
+            "<variable name>": {"fill_value": the value it calls absent},
+        }
+        Variables declaring none are absent, leaving Zarr its own default. A
+        DataTree nests each group's variables under the group's path. Existing
+        CF grid-mapping references accompany each generated fill encoding.
+
+    Examples:
+        >>> fill_encoding(raster)
+        {'lc': {'fill_value': 255}}
+    """
+    if isinstance(raster_or_stack, xr.DataTree):
+        grouped: dict[str, dict[str, Any]] = {}
+        for node in raster_or_stack.subtree:
+            fills = fill_encoding(node.dataset)
+            if fills:
+                grouped[node.path] = fills
+        return grouped
+
+    declared: dict[str, dict[str, Any]] = {}
+    for name, namespace in create_header(raster_or_stack).data_vars.items():
+        nodata = namespace.get(Nodata)
+        if nodata is not None and nodata.fill_value is not None:
+            # xarray consumes coordinates before backend options, but grid_mapping after.
+            encoding = raster_or_stack[name].encoding
+            declared[name] = {"fill_value": nodata.fill_value}
+            if "grid_mapping" in encoding:
+                declared[name]["grid_mapping"] = encoding["grid_mapping"]
+    return declared

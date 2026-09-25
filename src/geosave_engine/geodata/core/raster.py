@@ -5,7 +5,7 @@ omits, which `write_crs` writes.
 
 Examples:
     A raster carrying no CRS holds pixels without claiming ground position, so
-    `GeoRaster.geobox` refuses, and every member reading the grid with it.
+    `GeoRaster.geobox` is None, and members needing ground position refuse.
     Variable access still works:
 
     >>> png
@@ -48,7 +48,7 @@ Examples:
 from __future__ import annotations
 
 from pathlib import Path
-from typing import TYPE_CHECKING, Any, Literal, Unpack, cast, overload
+from typing import TYPE_CHECKING, Any, NamedTuple, Unpack, cast
 
 import numpy as np
 import odc.geo.xr  # noqa: F401  — registers the .odc accessor
@@ -56,11 +56,13 @@ import xarray as xr
 from odc.geo.geobox import GeoBox
 
 import geosave_engine.geodata.attrs as attrs
+from geosave_engine.geodata.attrs.headers.geobox import (
+    create_header as create_geobox_header,
+)
 from geosave_engine.geodata.transform import nodata, packing, warp
 
-from .anchor import GeoAnchor
 from .base import GeoAccessor, tensor
-from .convention import (
+from .profile import (
     BAND_DIMENSION,
     CRS_COORDINATE,
     NOT_GEOREFERENCED_DIMENSIONS,
@@ -79,16 +81,13 @@ if TYPE_CHECKING:
 
     import torch
 
-    from geosave_engine.geodata.attrs import AttrsModel
-
     from geosave_engine.geodata.utils.io.netcdf import (
         NetCDFEngine,
         NetCDFWriteOptions,
     )
     from geosave_engine.geodata.utils.io.geotiff import COGWriteOptions
-    from geosave_engine.geodata.utils.io.layout import Layout
+    from geosave_engine.geodata.utils.io.layout import LeafPath
     from geosave_engine.geodata.utils.io.zarr import ZarrWriteOptions
-    from geosave_engine.geodata.utils.datetime import DateRange
 
     import holoviews as hv
 
@@ -97,6 +96,18 @@ if TYPE_CHECKING:
 
 # One variable's pixels, alone or paired with the axes it carries.
 type RasterVariable = np.ndarray | tuple[np.ndarray, Sequence[str]]
+
+
+class AxisExtent(NamedTuple):
+    """How long one axis is, and which variable said so.
+
+    Args:
+        sized_by: Name of the first variable that gave the axis its length.
+        length: Positions along the axis.
+    """
+
+    sized_by: str
+    length: int
 
 
 def raster(
@@ -174,15 +185,15 @@ def raster(
     grid_coords = (*spatial_dims, CRS_COORDINATE)
     raster_axes = tuple(coords)
 
-    shadowed = sorted(set(raster_axes) & set(grid_coords))
-    if shadowed:
+    collisions = sorted(set(raster_axes) & set(grid_coords))
+    if collisions:
         raise ValueError(
-            f"{shadowed} name coordinates this grid already supplies "
+            f"{collisions} name coordinates this grid already supplies "
             f"{list(grid_coords)}; name the leading axes something else"
         )
 
     # An axis is as long as the variables along it say, and they must agree.
-    axis_length: dict[str, tuple[str, int]] = {}
+    axis_extent: dict[str, AxisExtent] = {}
     data_vars: dict[str, xr.DataArray | tuple[tuple[str, ...], np.ndarray]] = {}
 
     for name, value in variables.items():
@@ -212,11 +223,13 @@ def raster(
 
         variable_dims = (*variable_axes, *spatial_dims)
         for position, axis in enumerate(variable_dims):
-            first, length = axis_length.setdefault(axis, (name, pixels.shape[position]))
-            if length != pixels.shape[position]:
+            extent = axis_extent.setdefault(
+                axis, AxisExtent(name, pixels.shape[position])
+            )
+            if extent.length != pixels.shape[position]:
                 raise ValueError(
                     f"{name!r} makes axis {axis!r} {pixels.shape[position]} long but "
-                    f"{first!r} makes it {length}; one axis is one length"
+                    f"{extent.sized_by!r} makes it {extent.length}; one axis is one length"
                 )
 
         if geobox is None:
@@ -226,18 +239,22 @@ def raster(
                 pixels, geobox, dims=variable_dims, axis=len(variable_axes)
             )
 
-    empty_axes = [axis for axis in raster_axes if axis not in axis_length]
+    empty_axes = [axis for axis in raster_axes if axis not in axis_extent]
     if empty_axes:
         raise ValueError(
             f"{empty_axes} are named but no variable lies along them; drop them "
             f"or name them on a variable"
         )
 
-    miscounted = [
-        f"{axis!r} got {len(labels)} labels for an axis of {axis_length[axis][1]}"
-        for axis, labels in coords.items()
-        if labels is not None and len(labels) != axis_length[axis][1]
-    ]
+    miscounted = []
+    for axis, labels in coords.items():
+        if labels is None:
+            continue
+        length = axis_extent[axis].length
+        if len(labels) != length:
+            miscounted.append(
+                f"{axis!r} got {len(labels)} labels for an axis of {length}"
+            )
     if miscounted:
         raise ValueError(
             f"{'; '.join(miscounted)}; label an axis once per value along it"
@@ -302,6 +319,22 @@ class GeoRaster(GeoAccessor["Dataset"]):
         """
         return tuple(str(name) for name in self._data.data_vars)
 
+    def _require_variables(self, names: Sequence[str]) -> None:
+        """Refuse names this raster carries no data variable for.
+
+        Args:
+            names: Data variable names the caller supplied.
+
+        Raises:
+            ValueError: A name is not a data variable of this raster.
+        """
+        unknown = sorted(set(names) - set(self.variables))
+        if unknown:
+            raise ValueError(
+                f"{unknown} are not data variables of this raster; it carries "
+                f"{list(self.variables)}"
+            )
+
     @property
     def times(self) -> np.ndarray | None:
         """Read the time coordinate labels.
@@ -312,96 +345,6 @@ class GeoRaster(GeoAccessor["Dataset"]):
         if TIME_COORDINATE not in self._data.coords:
             return None
         return self._data.variables[TIME_COORDINATE].values
-
-    @property
-    def timespan(self) -> DateRange | None:
-        """Read inclusive temporal coverage.
-
-        A resampled axis carries a `TimeSpec`, so a label standing for a month
-        covers that month. An axis carrying none names instants.
-
-        Returns:
-            First and last covered instant, or None for timeless data.
-        """
-        labels = self.times
-        if labels is None:
-            return None
-        spec = attrs.AttrsNamespace.from_attrs(
-            self._data.variables[TIME_COORDINATE].attrs
-        ).get(attrs.TimeSpec)
-        return (spec or attrs.TimeSpec.instants()).timespan(labels)
-
-    @property
-    def anchor(self) -> GeoAnchor:
-        """Read exact spatial and temporal coverage.
-
-        Returns:
-            Anchor over this raster's grid and time span.
-
-        Raises:
-            ValueError: The Dataset carries no locatable grid.
-        """
-        geobox = self.geobox
-        if not isinstance(geobox, GeoBox):
-            raise ValueError(f"{type(self._data).__name__} carries no locatable grid")
-        return GeoAnchor(geobox, timespan=self.timespan)
-
-    @overload
-    def rebase(
-        self,
-        *models: AttrsModel,
-        target: str | Sequence[str] | None = None,
-        inplace: Literal[False] = False,
-        **model_kwargs: Mapping[str, Any] | None,
-    ) -> Dataset: ...
-
-    @overload
-    def rebase(
-        self,
-        *models: AttrsModel,
-        target: str | Sequence[str] | None = None,
-        inplace: Literal[True],
-        **model_kwargs: Mapping[str, Any] | None,
-    ) -> None: ...
-
-    def rebase(
-        self,
-        *models: AttrsModel,
-        target: str | Sequence[str] | None = None,
-        inplace: bool = False,
-        **model_kwargs: Mapping[str, Any] | None,
-    ) -> Dataset | None:
-        """Return a copy of this raster carrying the supplied attrs.
-
-        Args:
-            *models: Model instances to apply to `target`.
-            target: Variable or coordinate name the models describe, or
-                several of them. None writes to the Dataset's own attrs.
-            inplace: Write into this raster rather than returning a new one.
-            **model_kwargs: Model name mapped to its field values, or to None
-                to drop that model.
-
-        Returns:
-            New Dataset carrying the attrs without copying pixel data, or None
-            when `inplace` is set.
-
-        Raises:
-            KeyError: A keyword names no registered model.
-            ValueError: `target` names neither a variable nor a coordinate.
-            ValidationError: A supplied value does not satisfy its field.
-
-        Examples:
-            >>> ds.gs.rebase(ACDD(title="Sentinel-2 Level-2A"))
-            >>> ds.gs.rebase(cf={"units": "1"}, target="B04")
-        """
-        if inplace:
-            attrs.rebase(
-                self._data, *models, target=target, inplace=True, **model_kwargs
-            )
-            return None
-        return attrs.rebase(
-            self._data, *models, target=target, inplace=False, **model_kwargs
-        )
 
     def write_crs(self, crs: SomeCRS | None = None) -> Dataset:
         """Write onto the spatial coordinates what they measure.
@@ -440,8 +383,8 @@ class GeoRaster(GeoAccessor["Dataset"]):
                 f"raster is placed by {type(geobox).__name__}, not a regular "
                 f"grid, so its axes measure no CF coordinate"
             )
-        for name, semantics in attrs.CFCoordinate.from_geobox(geobox).items():
-            result = result.gs.rebase(semantics, target=name)
+        for name, semantics in create_geobox_header(geobox).coords.items():
+            result = attrs.rebase(result, semantics, target=name)
         return cast("Dataset", result)
 
     def write_nodata(
@@ -478,29 +421,60 @@ class GeoRaster(GeoAccessor["Dataset"]):
         else:
             var_names = tuple(target)
 
-        unknown = sorted(set(var_names) - set(self.variables))
-        if unknown:
-            raise ValueError(
-                f"{unknown} are not data variables of this raster; it carries "
-                f"{list(self.variables)}"
-            )
+        self._require_variables(var_names)
 
-        # astype wraps, so an unheld -1 would name the pixel 65535 on uint16.
-        for name in var_names if value is not None else ():
-            dtype = self._data[name].dtype
-            with np.errstate(invalid="ignore"):
-                stored = np.asarray(value).astype(dtype)
-            if not np.array_equal(stored, np.asarray(value), equal_nan=True):
-                raise ValueError(
-                    f"{value!r} marks no pixel of {name!r}, which is {dtype} and "
-                    f"stores it as {stored.item()!r}; CF asks a fill value to have "
-                    f"the variable's own type"
-                )
+        if value is not None:
+            for name in var_names:
+                nodata.check_fill_fits(value, self._data[name].dtype, name)
 
         # Nodata owns both spellings of a fill value, and mirrors them.
         return attrs.rebase(
-            self._data, attrs.Nodata(_FillValue=value), target=var_names
+            self._data, attrs.Nodata(fill_value=value), target=var_names
         )
+
+    def write_rgb(self, red: str, green: str, blue: str) -> Dataset:
+        """Name the three variables a true-colour composite draws.
+
+        What a band measures does not say which channel draws it, a false
+        colour composite drawing near-infrared as red. Recording the choice is
+        also the only way a `GeoStack` panel can name its own bands.
+
+        Args:
+            red: Variable drawn as the red channel.
+            green: Variable drawn as the green channel.
+            blue: Variable drawn as the blue channel.
+
+        Returns:
+            New Dataset whose three named variables carry their channel, every
+            other variable left uninterpreted.
+
+        Raises:
+            ValueError: A name is not a data variable, or one variable is named
+                for two channels.
+
+        Examples:
+            >>> ds.gs.write_rgb("B04", "B03", "B02").gs.plot()
+        """
+        channels = dict(zip(("red", "green", "blue"), (red, green, blue), strict=True))
+
+        self._require_variables(tuple(channels.values()))
+        if len(set(channels.values())) < len(channels):
+            raise ValueError(
+                f"one variable cannot draw two channels, but these name "
+                f"{channels}; give each channel its own variable"
+            )
+
+        # A band left interpreted would compose a second, stale colour.
+        written = attrs.rebase(
+            self._data,
+            attrs.GDALVariable(colorinterp=None),
+            target=self.variables,
+        )
+        for colour, name in channels.items():
+            written = attrs.rebase(
+                written, attrs.GDALVariable(colorinterp=colour), target=name
+            )
+        return written
 
     def unpack(self) -> Dataset:
         """Read physical values out of every variable's stored digital numbers.
@@ -649,42 +623,40 @@ class GeoRaster(GeoAccessor["Dataset"]):
     def to_array(self, *, dtype: DTypeLike | None = None) -> DataArray:
         """Stack every variable this raster carries into one array.
 
-        Applies no packing and no display scaling — stretching a composite is
-        `viz.plot.rgb`'s job, at draw time. Select and order the variables with
-        xarray before stacking them.
+        No packing or display scaling is applied. A multi-band array keeps
+        names on `band`, and `GeoArray.to_raster` stacks it back apart.
 
         Args:
             dtype: Cast applied to the stacked array. None keeps the source
                 dtype, which every stacked variable must then share.
 
         Returns:
-            Array shaped `(*axes, band, y, x)`, carrying this raster's
-            own attrs, its coordinates' attrs, and the models every stacked
-            variable carries alike. A variable's attrs win a key collision.
+            Array shaped `(*axes, band, y, x)`, carrying this raster's own
+            attrs and, on its own attrs, what every stacked variable carries
+            identically — an attr they carry differently describes no band of
+            the stack. Each variable's own attrs ride on the `band`
+            coordinate as `StackedAttrs`, so nothing is lost.
 
         Raises:
             ValueError: This raster carries no variables or already spans the
                 stacked axis, the variables carry different non-spatial
-                dimensions, they differ in dtype while `dtype` is None, or they
-                carry a model field one array cannot hold two of, such as two
-                scale factors.
-
-        Warns:
-            DroppedAttrsWarning: The variables carry a field differently and
-                its model drops rather than refuses the disagreement.
+                dimensions, or they differ in dtype while `dtype` is None.
+            TypeError: A variable carries an attr with no JSON spelling.
 
         Examples:
             >>> ds[["ndvi"]].gs.to_array()
             >>> ds[["B04", "B03", "B02"]].gs.to_array()
         """
         stacked = self._stacked(dtype)
+        carried = {
+            name: dict(self._data.variables[name].attrs) for name in self.variables
+        }
 
-        # Stacking drops the variables' own attrs; the rest of the raster's survive it.
-        merged = attrs.merge(
-            [self._data.variables[name] for name in self.variables],
-            action="stacking",
+        parked = attrs.StackedAttrs.from_variables(
+            carried, dataset_attrs=self._data.attrs
         )
-        attrs.rebase(stacked, merged, target=None, inplace=True)
+        attrs.rebase(stacked, parked.shared(), target=None, inplace=True)
+        attrs.rebase(stacked, parked, target=BAND_DIMENSION, inplace=True)
         return cast("DataArray", stacked)
 
     def plot(
@@ -710,20 +682,20 @@ class GeoRaster(GeoAccessor["Dataset"]):
             clim: Bounds mapped onto the full display range: colour limits for
                 an Image, the composite's stretch onto `[0, 1]`.
             cols: Columns a `time` axis lays panels into. Ignored otherwise.
-            title: Panel title, above the axes. None leaves hvplot's own.
-            xlabel: Caption below the axes, e.g. a place name. None leaves
-                hvplot's own.
+            title: Panel title above the axes. None suppresses automatic
+                titles.
+            xlabel: Location caption below the axes. None uses the raster's
+                reverse-geocoded location; an empty string suppresses it.
 
         Returns:
             Image or RGB element over this raster's grid, or a Layout of one
             panel per `time` value, `cols` wide.
 
         Raises:
-            KeyError: A named variable is absent.
-            ValueError: `variable` is None while this raster carries more than
-                one variable and measures no red, green, and blue among them,
-                two variables measure one colour, or the drawing refuses the
-                raster.
+            ValueError: A named variable is absent, `variable` is None while
+                this raster carries more than one variable and measures no
+                red, green, and blue among them, two variables measure one
+                colour, or the drawing refuses the raster.
 
         Examples:
             >>> hv.save(ds.gs.plot("ndvi"), "ndvi.png")
@@ -744,30 +716,30 @@ class GeoRaster(GeoAccessor["Dataset"]):
                 names[band] for band in attrs.GDALVariable.rgb_indices(self._data)
             )
 
-        absent = [name for name in selected if name not in self._data.data_vars]
-        if absent:
-            raise KeyError(
-                f"{absent} are not data variables of this raster; it carries "
-                f"{self.variables}"
-            )
+        self._require_variables(selected)
         array = self._data[list(selected)].gs.to_array()
 
         # A composite carries colour rather than class codes, so it draws no legend.
+        flags = None
         legend = None
         if len(selected) == 1:
-            legend = attrs.AttrsNamespace.from_attrs(
+            namespace = attrs.AttrsNamespace.from_attrs(
                 self._data.variables[selected[0]].attrs
-            ).get(attrs.Legend)
+            )
+            flags = namespace.get(attrs.Legend)
+            legend = namespace.get(attrs.Legend)
 
+        place = self.anchor.location if xlabel is None else None
+        caption = place.to_address() if place is not None else xlabel
         return draw(
             array,
             cmap=cmap,
             clim=clim,
-            class_map=legend.class_map if legend else None,
+            class_map=flags.class_map if flags else None,
             color_map=legend.color_map if legend else None,
             cols=cols,
             title=title,
-            xlabel=xlabel,
+            xlabel=caption,
         )
 
     def to_numpy(self, *, dtype: DTypeLike | None = None) -> np.ndarray:
@@ -896,7 +868,9 @@ class GeoRaster(GeoAccessor["Dataset"]):
         self,
         destination: str | PathLike[str],
         *,
-        layout: Layout | Literal["nested", "flat"] = "nested",
+        layout: str | LeafPath = "nested",
+        split_bands: bool = False,
+        map_scale: float | None = None,
         overwrite: bool = False,
         **options: Unpack[COGWriteOptions],
     ) -> None:
@@ -907,30 +881,38 @@ class GeoRaster(GeoAccessor["Dataset"]):
 
         Args:
             destination: Directory the tree is written into, or the file path
-                when the raster is one instant written as one file.
-            layout: `"nested"` or `"flat"` on their defaults, or a configured
-                `NestedLayout` or `FlatLayout`.
+                when the raster carries no time axis and `split_bands` is off,
+                which writes it as one file.
+            layout: `"nested"`, `"flat"`, or a callable placing one leaf from
+                its instant and variable. Ignored unless `split_bands` is set.
+            split_bands: Give each variable its own single-band file, rather
+                than keeping them as bands of one file per instant.
+            map_scale: Map denominator used to write pixels per centimetre in
+                every leaf.
             overwrite: Replace leaves that already exist.
             **options: COG creation options passed to every leaf.
 
         Raises:
             FileExistsError: A leaf exists and `overwrite` is false.
-            KeyError: `layout` names neither `"nested"` nor `"flat"`.
+            KeyError: `layout` names no known arrangement.
             ValueError: This raster carries no locatable grid, or spans a
                 non-spatial axis other than time.
 
         Examples:
-            >>> ds.gs.to_cog("scene")  # scene/20250601T103031/B04.tif, ...
-            >>> ds.gs.to_cog("scene", layout=FlatLayout(split_bands=False))
+            >>> ds.gs.to_cog("scene")  # scene/20250601T103031.tif, ...
+            >>> ds.gs.to_cog("scene", layout="flat", split_bands=True)
         """
-        from geosave_engine.geodata.utils.io.layout import FlatLayout, NestedLayout
+        from geosave_engine.geodata.utils.io.layout import write_tree
 
-        layouts: dict[str, type[Layout]] = {
-            "nested": NestedLayout,
-            "flat": FlatLayout,
-        }
-        chosen = layouts[layout]() if isinstance(layout, str) else layout
-        chosen.write(self._data, destination, overwrite=overwrite, **options)
+        write_tree(
+            self._data,
+            destination,
+            layout=layout,
+            split_bands=split_bands,
+            map_scale=map_scale,
+            overwrite=overwrite,
+            **options,
+        )
 
     def to_zarr(
         self,

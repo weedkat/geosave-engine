@@ -59,7 +59,7 @@ def to_nan(data: xr.DataArray | xr.Dataset) -> DataArray | Dataset:
     blanked = {
         variable: _to_nan_array(data[variable]) for variable in data.gs.variables
     }
-    return cast("Dataset", xr.Dataset(blanked, attrs=dict(data.attrs)))
+    return cast("Dataset", data.assign(blanked))
 
 
 def _to_nan_array(array: xr.DataArray) -> xr.DataArray:
@@ -76,8 +76,10 @@ def _to_nan_array(array: xr.DataArray) -> xr.DataArray:
     if nodata is None or nodata.fill_value is None:
         return array
 
-    # xarray copies the attrs it reads today; the copy keeps that promise ours.
-    blanked = CFMaskCoder().decode(array.variable.copy(deep=False), name=array.name)
+    variable = array.variable.copy(deep=False)
+    # Normalize supported spellings before the native CF codec reads the fill.
+    variable.attrs.update(nodata.to_attrs())
+    blanked = CFMaskCoder().decode(variable, name=array.name)
     # The coder knows CF's spelling of nodata, not odc's.
     kept = {key: value for key, value in blanked.attrs.items() if key != "nodata"}
     return xr.DataArray(blanked, coords=array.coords, name=array.name, attrs=kept)
@@ -141,15 +143,12 @@ def mask[T: xr.DataArray | xr.Dataset | xr.DataTree](
         )
 
     if isinstance(data, xr.DataTree):
-        from geosave_engine.geodata.core.stack import stack
-
         return cast(
             "T",
-            stack(
-                {
-                    name: mask(raster, valid, fill=fill)
-                    for name, raster in data.gs.rasters.items()
-                }
+            data.map_over_datasets(
+                lambda dataset: (
+                    mask(dataset, valid, fill=fill) if dataset.data_vars else dataset
+                )
             ),
         )
 
@@ -188,8 +187,7 @@ def mask[T: xr.DataArray | xr.Dataset | xr.DataTree](
         str(name): array.where(valid, _written_fill(array))
         for name, array in raster.data_vars.items()
     }
-    blanked = xr.Dataset(masked, attrs=dict(raster.attrs))
-    return cast("T", blanked.assign_coords(raster.coords))
+    return cast("T", raster.assign(masked))
 
 
 def fill_value(array: xr.DataArray) -> float | int | None:
@@ -205,6 +203,29 @@ def fill_value(array: xr.DataArray) -> float | int | None:
     if nodata is None or nodata.fill_value is None:
         return None
     return nodata.fill_value
+
+
+def check_fill_fits(value: float | int, dtype: np.dtype, name: str) -> None:
+    """Refuse a fill value a variable's own type cannot hold.
+
+    Args:
+        value: Stored value proposed as the variable's nodata marker.
+        dtype: The variable's stored type.
+        name: Variable name, for the error message.
+
+    Raises:
+        ValueError: `dtype` stores `value` as a different number, so it would
+            mark pixels the caller did not mean.
+    """
+    # astype wraps, so an unheld -1 would name the pixel 65535 on uint16.
+    with np.errstate(invalid="ignore"):
+        stored = np.asarray(value).astype(dtype)
+    if not np.array_equal(stored, np.asarray(value), equal_nan=True):
+        raise ValueError(
+            f"{value!r} marks no pixel of {name!r}, which is {dtype} and "
+            f"stores it as {stored.item()!r}; CF asks a fill value to have "
+            f"the variable's own type"
+        )
 
 
 def required_fill_value(array: xr.DataArray) -> float | int:
@@ -310,4 +331,6 @@ def is_fill(array: xr.DataArray) -> xr.DataArray:
             f"{str(array.name)!r} carries no fill value, so nodata has no "
             f"spelling to test against; write one before mosaicking"
         )
-    return array != array if fill != fill else array == fill
+    if np.isnan(fill):
+        return array.isnull()
+    return array == fill

@@ -159,11 +159,13 @@ def _group_resampling(
     if not isinstance(resampling, Mapping):
         return resampling
     qualifier = f"{group}/"
-    return {
-        key.removeprefix(qualifier): kernel
-        for key, kernel in resampling.items()
-        if key.startswith(qualifier) or key == "*"
-    }
+    scoped: dict[str, Resampling] = {}
+    for key, kernel in resampling.items():
+        if key == "*":
+            scoped["*"] = kernel
+        elif key.startswith(qualifier):
+            scoped[key.removeprefix(qualifier)] = kernel
+    return scoped
 
 
 def _finest(grids: Sequence[GeoBox]) -> GeoBox:
@@ -373,20 +375,18 @@ def reproject[T: xr.DataArray | xr.Dataset | xr.DataTree](
         lattice = _target_geobox(
             source, target, None if resolution == NATIVE else resolution
         )
-        return cast(
-            "T",
-            stack(
-                {
-                    name: reproject(
-                        raster,
-                        lattice,
-                        resampling=_group_resampling(resampling, name),
-                        resolution=resolution,
-                    )
-                    for name, raster in rasters.items()
-                }
-            ),
+        warped = stack(
+            {
+                name: reproject(
+                    raster,
+                    lattice,
+                    resampling=_group_resampling(resampling, name),
+                    resolution=resolution,
+                )
+                for name, raster in rasters.items()
+            }
         )
+        return cast("T", attrs.rebase(warped, data.gs.attrs.root))
 
     geobox = _target_geobox(source, target, resolution)
     if geobox == source:
@@ -416,7 +416,8 @@ def reproject[T: xr.DataArray | xr.Dataset | xr.DataTree](
         data_vars[str(variable)] = values.odc.reproject(
             geobox, resampling=_variable_resampling(resampling, str(variable))
         )
-    return cast("T", xr.Dataset(data_vars, attrs=dict(raster.attrs)).gs.write_crs())
+    warped = xr.Dataset(data_vars).gs.write_crs()
+    return cast("T", attrs.rebase(warped, raster.gs.attrs.root))
 
 
 def common_grid(
@@ -481,14 +482,13 @@ def common_grid(
         grids.append(geobox)
 
     # The finest raster is the reference, so none is coarsened for its place.
-    basis = _finest(grids)
-    reference = basis
+    reference = _finest(grids)
     if target is not None:
         reference = _target_geobox(
-            basis, target, None if resolution == NATIVE else resolution
+            reference, target, None if resolution == NATIVE else resolution
         )
-    elif resolution not in (None, NATIVE) and basis.crs is not None:
-        reference = _target_geobox(basis, basis.crs, resolution)
+    elif resolution not in (None, NATIVE) and reference.crs is not None:
+        reference = _target_geobox(reference, reference.crs, resolution)
 
     crs = reference.crs
     if crs is None:

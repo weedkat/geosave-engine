@@ -11,6 +11,7 @@ from affine import Affine
 from odc.geo.geobox import GeoBox
 from odc.geo.geom import CRS
 
+import geosave_engine.geodata.attrs as attrs
 from geosave_engine.geodata.core.raster import raster as build_raster
 from geosave_engine.geodata.core.stack import stack
 from geosave_engine.geodata.errors import DroppedAttrsWarning, GeoSaveWarning
@@ -105,6 +106,48 @@ def test_shared_attrs_survive_and_conflicting_ones_are_dropped() -> None:
 
     assert joined.attrs["license"] == "CC0"
     assert "title" not in joined.attrs
+
+
+@pytest.mark.parametrize(
+    ("first_model", "second_model", "semantic"),
+    [
+        (attrs.Nodata(fill_value=0), attrs.Nodata(fill_value=255), "nodata"),
+        (
+            attrs.Packing(scale_factor=0.1),
+            attrs.Packing(scale_factor=0.01),
+            "packing",
+        ),
+        (attrs.CFVariable(units="m"), attrs.CFVariable(units="ft"), "cf.units"),
+        (
+            attrs.Legend(class_map={7: "forest"}),
+            attrs.Legend(class_map={7: "water"}),
+            "legend",
+        ),
+    ],
+    ids=["nodata", "packing", "units", "legend"],
+)
+def test_incompatible_pixel_semantics_are_refused(
+    first_model: attrs.AttrsModel,
+    second_model: attrs.AttrsModel,
+    semantic: str,
+) -> None:
+    first = series("2024-01-05", nodata=None).gs.rebase(
+        first_model, target="red"
+    )
+    second = series("2024-02-10", nodata=None).gs.rebase(
+        second_model, target="red"
+    )
+
+    with pytest.raises(ValueError, match=rf"'red'.*{semantic}"):
+        concat_time([first, second])
+
+
+def test_incompatible_dataarray_semantics_are_refused() -> None:
+    first = series("2024-01-05", nodata=0).red
+    second = series("2024-02-10", nodata=255).red
+
+    with pytest.raises(ValueError, match=r"'red'.*nodata"):
+        concat_time([first, second])
 
 
 def test_the_dtype_and_laziness_of_the_rasters_survive() -> None:

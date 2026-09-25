@@ -29,6 +29,10 @@ class UnreferencedGridWarning(GeoSaveWarning):
     """Opened raster is indexed in pixels, carrying no transform onto any ground."""
 
 
+class UnreadMaskWarning(GeoSaveWarning):
+    """A band marks absence with a mask band, which GeoSave does not read."""
+
+
 class DroppedAttrsWarning(GeoSaveWarning):
     """Joined rasters carried an attr differently, so the result carries neither value."""
 

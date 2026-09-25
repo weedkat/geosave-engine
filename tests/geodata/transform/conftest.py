@@ -6,6 +6,8 @@ import xarray as xr
 from odc.geo.geobox import GeoBox
 from odc.geo.xr import xr_coords
 
+import geosave_engine.geodata.attrs as attrs
+
 
 UTM = "EPSG:32633"
 
@@ -72,7 +74,9 @@ def build(
     if packed:
         raster["red"].attrs["scale_factor"] = 1e-4
     if labelled:
-        raster["cls"].attrs["class_map"] = {0: "bg", 1: "crop"}
+        raster["cls"].attrs.update(
+            attrs.Legend(class_map={0: "bg", 1: "crop"}).to_attrs()
+        )
 
     stamped = raster.gs.write_crs()
     return stamped.chunk(chunks) if chunks else stamped

@@ -5,6 +5,7 @@ import pytest
 import xarray as xr
 from pydantic import ValidationError
 
+import geosave_engine.geodata.core.raster  # noqa: F401  — registers the .gs accessor
 from geosave_engine.geodata.attrs import GDALVariable, rebase
 
 
@@ -52,7 +53,7 @@ def test_rgb_indices_takes_the_first_of_two_bands_measuring_one_colour() -> None
 
 def test_rgb_indices_refuses_a_raster_measuring_no_true_colour() -> None:
     # A false-colour composite draws NIR as red, so no band measures blue.
-    with pytest.raises(ValueError, match=r"measures no \['blue'\]"):
+    with pytest.raises(ValueError, match=r"draws \['blue'\]"):
         GDALVariable.rgb_indices(build_bands("nir", "red", "green"))
 
 
@@ -64,3 +65,40 @@ def test_colorinterp_takes_gdals_own_names() -> None:
 def test_colorinterp_refuses_a_name_gdal_does_not_know() -> None:
     with pytest.raises(ValidationError, match="names no GDAL colour interpretation"):
         GDALVariable(colorinterp="chartreuse")
+
+
+def test_write_rgb_names_the_channels_a_composite_draws() -> None:
+    raster = build_bands(None, None, None, None)
+
+    written = raster.gs.write_rgb("b2", "b1", "b0")
+
+    assert GDALVariable.rgb_indices(written) == (2, 1, 0)
+    assert "colorinterp" not in written.b3.attrs
+
+
+def test_write_rgb_repoints_the_channels_it_replaces() -> None:
+    raster = build_bands("red", "green", "blue", None)
+
+    written = raster.gs.write_rgb("b3", "b0", "b1")
+
+    assert GDALVariable.rgb_indices(written) == (3, 0, 1)
+    # b2 drew blue and no longer does, so it must not compose a stale colour.
+    assert "colorinterp" not in written.b2.attrs
+
+
+def test_write_rgb_leaves_its_source_alone() -> None:
+    raster = build_bands(None, None, None)
+
+    raster.gs.write_rgb("b0", "b1", "b2")
+
+    assert all("colorinterp" not in raster[name].attrs for name in raster.data_vars)
+
+
+def test_write_rgb_refuses_a_name_the_raster_does_not_carry() -> None:
+    with pytest.raises(ValueError, match="not data variables"):
+        build_bands(None, None).gs.write_rgb("b0", "b1", "b2")
+
+
+def test_write_rgb_refuses_one_variable_on_two_channels() -> None:
+    with pytest.raises(ValueError, match="cannot draw two channels"):
+        build_bands(None, None).gs.write_rgb("b0", "b0", "b1")

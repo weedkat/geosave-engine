@@ -2,20 +2,24 @@
 
 from __future__ import annotations
 
-from collections.abc import Callable, Sequence
+from collections.abc import Callable, Mapping, Sequence
 from dataclasses import replace
 from datetime import datetime as dt
 from typing import TYPE_CHECKING, Any, Literal, Protocol, Self
 
 import odc.stac
+from odc.stac.model import PropertyLoadRequest
 from pydantic import BaseModel, ConfigDict, Field
 
-from geosave_engine.geodata.attrs import read_asset_fields
+from geosave_engine.geodata.attrs import rebase
+from geosave_engine.geodata.attrs.headers.stac import (
+    StacGroupby,
+    create_header,
+    read_asset_fields,
+)
 from geosave_engine.geodata.errors import AnchorFetchError
 
 from .query import StacQuery
-
-from .stamp import StacGroupby, stamp_stac
 
 if TYPE_CHECKING:
     import pystac
@@ -58,6 +62,9 @@ class StacSourceConfig(BaseModel):
         item_properties: Item properties captured per acquisition, e.g.
             `("platform", "eo:cloud_cover")`. Empty captures identity only;
             None captures every property each item publishes.
+        with_properties: Native odc-stac item-property requests loaded along
+            `time`, as property names or request mappings with `key` and optional
+            `name`, `dtype`, `nodata`, `units`, and `fuser`.
         asset_fields: Asset fields captured onto the variable they describe.
             Empty captures none; None captures every field each asset publishes.
         stac_cfg: Per-collection band overrides odc-stac applies, correcting
@@ -78,17 +85,29 @@ class StacSourceConfig(BaseModel):
     bands: Bands | None = None
     groupby: StacGroupby = "solar_day"
     chunks: dict[str, ChunkSize] | None = Field(default_factory=_default_chunks)
-    resampling: Resampling | None = None
+    resampling: Resampling | dict[str, Resampling] | None = None
     dtype: str | None = None
     nodata: float | None = None
     fail_on_error: bool = True
     item_properties: tuple[str, ...] | None = ()
+    with_properties: tuple[str | dict[str, Any], ...] | None = None
     asset_fields: tuple[str, ...] | None = ()
     stac_cfg: dict[str, Any] | None = None
     pool: int | None = None
     progress: Any | None = None
     patch_url: Callable[[str], str] | None = None
     preserve_original_order: bool = False
+
+    def to_load_kwargs(self) -> dict[str, Any]:
+        """Return native odc-stac settings, excluding provenance selection."""
+        options = self.model_dump(
+            exclude={"item_properties", "asset_fields"}, exclude_none=True
+        )
+        # None explicitly selects eager loading; ODC otherwise chooses its default.
+        options["chunks"] = self.chunks
+        if self.with_properties is not None:
+            options["with_properties"] = list(self.with_properties)
+        return options
 
 
 _UNSET: Any = object()
@@ -132,11 +151,12 @@ class StacSource:
         bands: Bands | None = _UNSET,
         groupby: StacGroupby = _UNSET,
         chunks: dict[str, ChunkSize] | None = _UNSET,
-        resampling: Resampling | None = _UNSET,
+        resampling: Resampling | dict[str, Resampling] | None = _UNSET,
         dtype: str | None = _UNSET,
         nodata: float | None = _UNSET,
         fail_on_error: bool = _UNSET,
         item_properties: Sequence[str] | None = _UNSET,
+        with_properties: Sequence[str | Mapping[str, Any]] | None = _UNSET,
         asset_fields: Sequence[str] | None = _UNSET,
         stac_cfg: dict[str, Any] | None = _UNSET,
         pool: int | None = _UNSET,
@@ -163,6 +183,7 @@ class StacSource:
                 raising.
             item_properties: Item properties captured per acquisition. Empty
                 captures identity only; None captures every property.
+            with_properties: Native odc-stac item properties loaded along time.
             asset_fields: Asset fields captured onto the variable they
                 describe. Empty captures none; None captures every field each
                 asset publishes.
@@ -192,6 +213,7 @@ class StacSource:
             "nodata": nodata,
             "fail_on_error": fail_on_error,
             "item_properties": item_properties,
+            "with_properties": with_properties,
             "asset_fields": asset_fields,
             "stac_cfg": stac_cfg,
             "pool": pool,
@@ -330,8 +352,8 @@ class StacSource:
         """Load this collection onto an anchor's grid.
 
         Collection metadata becomes `ACDD` and the matched items become
-        `StacMetadata`. Each variable carries its own asset's `CFVariable` and
-        `Nodata` and `Packing`, so pixels stay the published DN.
+        `StacMetadata`. Each variable carries effective loader nodata and units, plus its
+        resolved source band's packing. Pixels stay the published DN.
 
         Args:
             anchor: Grid and datetime window to load.
@@ -356,16 +378,28 @@ class StacSource:
                 f"no {self.collection!r} items matched the anchor's extent and window"
             )
 
-        data = odc.stac.load(matched, geobox=anchor.geobox, **self._load_options())
-        described = stamp_stac(
-            data,
+        data = odc.stac.load(
+            matched, geobox=anchor.geobox, **self.config.to_load_kwargs()
+        )
+        if self.config.with_properties:
+            property_names = [
+                request.output_name
+                for request in PropertyLoadRequest.from_user_input(
+                    self.config.with_properties
+                )
+            ]
+            # odc-stac loads auxiliary properties as time-indexed variables.
+            data = data.set_coords(property_names)
+        header = create_header(
             matched,
             self.client.collection(self.collection),
+            data,
             groupby=self.config.groupby,
             item_properties=self.config.item_properties,
             asset_fields=self.config.asset_fields,
+            stac_cfg=self.config.stac_cfg,
         )
-        return described.gs.write_crs()
+        return rebase(data, header).gs.write_crs()
 
     def _search_query(self, anchor: GeoAnchor) -> StacQuery:
         """Narrow this source's search to one anchor.
@@ -385,23 +419,3 @@ class StacSource:
             self.query.datetime if self.query.datetime is not None else anchor.timespan
         )
         return replace(self.query, bbox=bbox, datetime=window)
-
-    def _load_options(self) -> dict[str, Any]:
-        """Assemble the keyword arguments odc-stac's load takes.
-
-        Returns:
-            Load settings, excluding the items and the geobox.
-        """
-        options: dict[str, Any] = {
-            "bands": self.config.bands,
-            "groupby": self.config.groupby,
-            "chunks": self.config.chunks,
-            "resampling": self.config.resampling,
-            "fail_on_error": self.config.fail_on_error,
-            "preserve_original_order": self.config.preserve_original_order,
-        }
-        for name in ("dtype", "nodata", "stac_cfg", "pool", "progress", "patch_url"):
-            value = getattr(self.config, name)
-            if value is not None:
-                options[name] = value
-        return options

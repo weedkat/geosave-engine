@@ -1,9 +1,4 @@
-"""Importing this package recursively imports every module under it, so
-every @register_model decorator runs and populates
-geosave_engine.ml.registry.model.MODEL_REGISTRY — no per-file import to
-remember. build_model imports this package lazily before any registry
-lookup — see registry.model._resolve_stage_cls.
-"""
+"""Import model adapters to register their named factories."""
 
 from __future__ import annotations
 
@@ -13,13 +8,9 @@ from typing import Sequence
 
 
 def _import_all_submodules(package_name: str, package_path: Sequence[str]) -> None:
-    """Recursively import every module/subpackage under one package.
+    """Recursively import every module and subpackage under one package.
 
-    Uses ``pkgutil.iter_modules`` (lists names, imports nothing itself)
-    plus a plain ``importlib.import_module`` call, not
-    ``pkgutil.walk_packages`` — that helper silently swallows ImportError
-    for anything that fails to import, which would hide a genuinely broken
-    model file instead of raising it.
+    A module that fails to import raises; nothing is swallowed.
 
     Args:
         package_name: Dotted name of the package to walk (e.g. this package's ``__name__``).

@@ -1,10 +1,23 @@
+"""What an xarray object's attrs mean, as typed models.
+
+Flat attrs are a namespace odc, rioxarray and user code all write to. This
+package does not own that namespace; it decodes, encodes, and says what a key
+means. Whoever changes the data owns the attrs describing it.
+"""
+
 from .header import AttrsHeader, DroppedAttr
+from .headers.xarray import create_header
 from .namespace import AttrsNamespace
-from .model import REGISTERED_MODELS, AttrsModel, resolve_model
+from .model import (
+    REGISTERED_MODELS,
+    AttrsModel,
+    attrs_equal,
+    parse_field_value,
+    resolve_model,
+)
 from .models import (
     ACDD,
     CELL_METHODS,
-    BandStatistics,
     CFCoordinate,
     CFVariable,
     GDALVariable,
@@ -14,11 +27,11 @@ from .models import (
     Packing,
     StacItem,
     StacMetadata,
+    StackedAttrs,
     TimeSpec,
     ZarrOrder,
-    read_asset_fields,
 )
-from .xarray import flag_variables, merge, read, rebase
+from .xarray import flag_variables, merge, rebase
 
 __all__ = [
     "ACDD",
@@ -26,7 +39,6 @@ __all__ = [
     "AttrsHeader",
     "AttrsNamespace",
     "AttrsModel",
-    "BandStatistics",
     "CFCoordinate",
     "CFVariable",
     "DroppedAttr",
@@ -37,13 +49,15 @@ __all__ = [
     "Packing",
     "StacItem",
     "StacMetadata",
+    "StackedAttrs",
     "TimeSpec",
     "ZarrOrder",
     "flag_variables",
     "merge",
-    "read",
+    "attrs_equal",
+    "create_header",
     "rebase",
     "REGISTERED_MODELS",
     "resolve_model",
-    "read_asset_fields",
+    "parse_field_value",
 ]

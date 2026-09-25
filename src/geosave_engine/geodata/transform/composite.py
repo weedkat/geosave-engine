@@ -23,7 +23,7 @@ from odc.geo.geobox import GeoBox, geobox_union_conservative
 from xarray.core.resample import DataArrayResample, DatasetResample
 
 import geosave_engine.geodata.attrs as attrs
-from geosave_engine.geodata.core.convention import TIME_COORDINATE
+from geosave_engine.geodata.core.profile import TIME_COORDINATE
 from geosave_engine.geodata.transform import nodata, warp
 from geosave_engine.geodata.utils.datetime import freq_offset
 
@@ -68,15 +68,20 @@ def mosaic(rasters: Sequence[xr.Dataset], *, method: MosaicMethod = "first") -> 
         raster carried a value.
 
     Raises:
-        ValueError: `rasters` is empty, one sits on no locatable grid, or no
-            one grid holds them all because they disagree on CRS, resolution
-            or pixel phase.
+        ValueError: `rasters` is empty, `method` names no mosaic method, one
+            raster sits on no locatable grid, or no one grid holds them all
+            because they disagree on CRS, resolution or pixel phase.
 
     Examples:
         >>> scene = mosaic([granule_32TNS, granule_32TPS])
     """
     if not rasters:
         raise ValueError("no rasters to mosaic; pass at least one")
+    if method not in ("first", "last"):
+        raise ValueError(
+            f"{method!r} is not a mosaic method; prefer the first available "
+            f"pixel with 'first' or the last with 'last'"
+        )
 
     header = attrs.merge(rasters)
     fills = nodata.required_fill_values(rasters[0], header.data_vars)
@@ -117,16 +122,18 @@ def mosaic(rasters: Sequence[xr.Dataset], *, method: MosaicMethod = "first") -> 
 
     covering = tuple(warp.reproject(raster, covered) for raster in rasters)
     sources = covering if method == "first" else covering[::-1]
-    composite = sources[0]
+    merged = sources[0]
     for source in sources[1:]:
-        gaps = xr.Dataset({name: nodata.is_fill(composite[name]) for name in fills})
-        composite = xr.where(gaps, source, composite)
+        gaps = xr.Dataset({name: nodata.is_fill(merged[name]) for name in fills})
+        merged = xr.where(gaps, source, merged)
 
-    # Coordinate attrs are each raster's own tile-specific grid; the union's own are already right.
-    composite_header = attrs.AttrsHeader(
-        root=header.root, variables=header.data_vars, var_names=header.var_names
+    return cast(
+        "Dataset",
+        attrs.rebase(
+            merged,
+            attrs.AttrsHeader(root=header.root, data_vars=header.data_vars),
+        ).gs.write_crs(),
     )
-    return cast("Dataset", attrs.rebase(composite, composite_header).gs.write_crs())
 
 
 @overload
@@ -332,7 +339,7 @@ def interpolate(
             f"it holds no buckets to fill; resample its time axis first"
         )
 
-    header = attrs.read(data)
+    header = attrs.create_header(data)
     timespec = header.coords[TIME_COORDINATE].get(attrs.TimeSpec)
     if timespec is None or timespec.time_freq is None:
         raise ValueError(

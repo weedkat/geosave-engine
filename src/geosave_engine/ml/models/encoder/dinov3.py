@@ -2,18 +2,14 @@ import timm
 import torch
 import torch.nn as nn
 
-from typing import cast, Literal
+from typing import cast
 from timm.models.eva import Eva
 
 from geosave_engine.ml.registry import register_model
-from geosave_engine.ml.models.contract import chain_step
+from geosave_engine.ml.models.contract import Published, chain_step
 
-# out_indices are even quarters of each model's block depth:
-#   depth=12 (S, S+, B) -> [2, 5, 8, 11]
-#   depth=24 (L)        -> [5, 11, 17, 23]
-#   depth=32 (H+)       -> [7, 15, 23, 31]
-#   depth=40 (7B)       -> [9, 19, 29, 39]
-TIMM_MODELS: dict[str, dict] = {
+# Sample each model's block depth at even quarters.
+MODEL_SPECS: dict[str, dict] = {
     "vit_small_patch16_dinov3.lvd1689m": {"out_indices": (2, 5, 8, 11)},
     "vit_small_patch16_dinov3_qkvb.lvd1689m": {"out_indices": (2, 5, 8, 11)},
     "vit_small_plus_patch16_dinov3.lvd1689m": {"out_indices": (2, 5, 8, 11)},
@@ -30,33 +26,18 @@ TIMM_MODELS: dict[str, dict] = {
     "vit_7b_patch16_dinov3.sat493m": {"out_indices": (9, 19, 29, 39)},
 }
 
-TimmModelName = Literal[
-    "vit_small_patch16_dinov3.lvd1689m",
-    "vit_small_patch16_dinov3_qkvb.lvd1689m",
-    "vit_small_plus_patch16_dinov3.lvd1689m",
-    "vit_small_plus_patch16_dinov3_qkvb.lvd1689m",
-    "vit_base_patch16_dinov3.lvd1689m",
-    "vit_base_patch16_dinov3_qkvb.lvd1689m",
-    "vit_large_patch16_dinov3.lvd1689m",
-    "vit_large_patch16_dinov3_qkvb.lvd1689m",
-    "vit_large_patch16_dinov3.sat493m",
-    "vit_large_patch16_dinov3_qkvb.sat493m",
-    "vit_huge_plus_patch16_dinov3.lvd1689m",
-    "vit_huge_plus_patch16_dinov3_qkvb.lvd1689m",
-    "vit_7b_patch16_dinov3.lvd1689m",
-    "vit_7b_patch16_dinov3.sat493m",
-]
-
 
 @register_model("encoder", "dinov3")
 class DINOv3(nn.Module):
-    """A DINOv3 model with ImageNet normalization stats attached."""
+    """A DINOv3 encoder for caller-prepared image tensors."""
 
-    MODEL_NAMES = TIMM_MODELS
+    pyramid_channels: Published[list[int]]
+    pyramid_strides: Published[list[int]]
+    input_size: Published[int | tuple[int, int]]
 
     def __init__(
         self,
-        model_name: TimmModelName = "vit_base_patch16_dinov3.lvd1689m",
+        model_name: str = "vit_base_patch16_dinov3.lvd1689m",
         pretrained: bool = True,
         in_channels: int = 3,
         input_size: int | tuple[int, int] = 224,
@@ -68,16 +49,10 @@ class DINOv3(nn.Module):
         dynamic_img_size: bool = True,
         dynamic_img_pad: bool = False,
     ):
-        """Build a timm DINOv3 backbone with ImageNet normalization stats attached.
-
-        `num_reg_tokens` not exposed on purpose — it's a real shape-affecting param
-        (register-token embeddings are `(1, num_reg_tokens, embed_dim)`), and every
-        released DINOv3 checkpoint uses 4; overriding it with `pretrained=True` would
-        silently break weight loading, same reasoning as not exposing `embed_dim`/
-        `depth` on `prithvi.py`'s `Prithvi`.
+        """Build a timm DINOv3 backbone.
 
         Args:
-            model_name: timm model name. Must be a key of `TIMM_MODELS`.
+            model_name: timm model name. Must be a key of `MODEL_SPECS`.
             pretrained: load pretrained weights from timm hub.
             in_channels: input image channel count.
             input_size: input spatial size; tuple for non-square.
@@ -89,14 +64,11 @@ class DINOv3(nn.Module):
                 load time, so it never affects `pretrained=True` weight compatibility.
             dynamic_img_size: interpolate positional embeddings for variable input sizes.
             dynamic_img_pad: pad input to nearest patch multiple when dynamic sizing.
-
-        Returns:
-            timm Eva model with `img_mean` and `img_std` attributes set.
         """
         super().__init__()
-        if model_name not in TIMM_MODELS:
+        if model_name not in MODEL_SPECS:
             raise ValueError(
-                f"{model_name!r} not in TIMM_MODELS; must be one of {list(TIMM_MODELS)}"
+                f"{model_name!r} not in MODEL_SPECS; must be one of {list(MODEL_SPECS)}"
             )
 
         model = timm.create_model(
@@ -109,48 +81,37 @@ class DINOv3(nn.Module):
             proj_drop_rate=proj_drop_rate,
             attn_drop_rate=attn_drop_rate,
             init_values=init_values,
-            num_reg_tokens=4,  # every released DINOv3 checkpoint uses 4, not user-overridable -- see docstring
+            # Shapes the register-token embedding, so an off-spec count breaks loading.
+            num_reg_tokens=4,
             dynamic_img_size=dynamic_img_size,
             dynamic_img_pad=dynamic_img_pad,
         )
         self.model = cast(Eva, model)
 
         self.out_indices: list[int] = out_indices or list(
-            TIMM_MODELS[model_name]["out_indices"]
+            MODEL_SPECS[model_name]["out_indices"]
         )
 
-        # Extract channel dimensions and spatial strides dynamically from the timm model
         feature_info: list = self.model.feature_info
-        self.out_channels: list[int] = [
+        self.pyramid_channels = [
             int(feature_info[i]["num_chs"]) for i in self.out_indices
         ]
-        self.output_strides: list[int] = [  # [16, 16, 16, 16]
+        self.pyramid_strides = [  # [16, 16, 16, 16]
             int(feature_info[i]["reduction"]) for i in self.out_indices
         ]
 
         self.input_size = input_size
-        self.img_mean = [0.485, 0.456, 0.406]
-        self.img_std = [0.229, 0.224, 0.225]
 
-    def forward(
-        self,
-        x,
-        rope: torch.Tensor | None = None,
-        attn_mask: torch.Tensor | None = None,
-        is_causal: bool = False,
-    ):
-        """Forward pass for the attention module.
+    def forward(self, image: torch.Tensor) -> torch.Tensor:
+        """Pool the ViT into one embedding per image.
 
         Args:
-            x: Input tensor of shape (batch_size, sequence_length, embedding_dim)
-            rope: Rotary position embeddings tensor for position-aware attention
-            attn_mask: Optional attention mask to apply during attention computation
-            is_causal: If True, use causal (autoregressive) masking
+            image: (B, C, H, W) prepared pixels.
 
         Returns:
-            Tensor of shape (batch_size, sequence_length, embedding_dim)
+            (B, embed_dim) pooled embeddings.
         """
-        return self.model(x, rope=rope, attn_mask=attn_mask, is_causal=is_causal)
+        return self.model(image)
 
     @chain_step()
     def forward_pyramid(self, image: torch.Tensor) -> tuple[list, list]:

@@ -104,6 +104,45 @@ def test_results_of_several_rasters_may_arrive_in_one_batch() -> None:
     assert np.array_equal(rebuilt[1].values, rasters[1].B.values)
 
 
+def test_a_tile_result_is_accepted_exactly_once() -> None:
+    tiles = Tiles([_raster(6, 8)], (4, 4), overlap=2)
+    merger = tiles.merger()
+    empty = np.zeros((4, 4), "float32")
+
+    merger.add({0: empty})
+    with pytest.raises(ValueError, match="already has a result"):
+        merger.add({0: np.full((4, 4), 10, "float32")})
+    merger.add({index: empty for index in range(1, len(tiles))})
+
+    np.testing.assert_array_equal(merger.merge()[0].values, np.zeros((6, 8)))
+
+
+def test_a_merged_tile_cannot_be_accepted_again() -> None:
+    tiles = Tiles([_raster(6, 8)], (4, 4), overlap=2)
+    merger = tiles.merger()
+    empty = np.zeros((4, 4), "float32")
+    merger.add({index: empty for index in range(len(tiles))})
+    merger.merge()
+
+    with pytest.raises(ValueError, match="already has a result"):
+        merger.add({0: empty})
+
+
+def test_an_invalid_batch_adds_none_of_its_results() -> None:
+    tiles = Tiles([_raster(6, 8)], (4, 4), overlap=2)
+    merger = tiles.merger()
+
+    with pytest.raises(ValueError, match="does not match tile shape"):
+        merger.add(
+            {
+                0: np.zeros((4, 4), "float32"),
+                1: np.zeros((3, 4), "float32"),
+            }
+        )
+
+    assert merger.pending == {}
+
+
 def test_bands_ride_a_leading_axis_through_the_merge() -> None:
     tiles = Tiles([_raster(600, 600)], (256, 256), overlap=32)
     merger = tiles.merger()

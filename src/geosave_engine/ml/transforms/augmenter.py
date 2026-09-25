@@ -57,8 +57,6 @@ DataKey = Literal[
     "label",  # Alias for class
 ]
 
-# (Keep your build_augmentation_pipeline function here)
-
 
 def yolo_to_xyxy(boxes: torch.Tensor, height: int, width: int) -> torch.Tensor:
     """Convert normalized YOLO [cx, cy, w, h] to absolute [x_min, y_min, x_max, y_max]."""
@@ -86,12 +84,11 @@ def xyxy_to_yolo(boxes: torch.Tensor, height: int, width: int) -> torch.Tensor:
 
 
 class ImageAugmenter(torch.nn.Module):
-    """Universal stochastic Kornia transforms for training.
+    """Apply stochastic Kornia transforms, routed by ``data_keys``.
 
-    Dynamically routes inputs based on ``data_keys``. Supports classification,
-    semantic segmentation, pixel-wise regression, and object detection. Natively
-    intercepts and processes YOLO-formatted bounding boxes (normalized cx, cy, w, h)
-    by mapping them to Kornia's absolute coordinates internally.
+    Serves classification, semantic segmentation, pixelwise regression and
+    object detection. YOLO boxes are un-normalized to Kornia's absolute
+    coordinates on the way in and normalized again on the way out.
 
     Args:
         augmentations: List of augmentation config dicts containing ``"name"`` and
@@ -178,8 +175,7 @@ class ImageAugmenter(torch.nn.Module):
         # 2. Run Kornia Pipeline
         out = self.pipeline(*args_list)
 
-        # 3. Post-process XYXY -> YOLO
-        # Normalize Kornia's output to a mutable list based on input length
+        # Kornia returns a bare tensor for one input, a tuple for several.
         out_list = [out] if len(args) == 1 else list(out)
         _, _, new_h, new_w = out_list[self.img_idx].shape
 

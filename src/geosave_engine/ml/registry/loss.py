@@ -1,29 +1,30 @@
 from __future__ import annotations
 
-import torch.nn as nn
-from torch.nn import CrossEntropyLoss
+from collections.abc import Callable, Mapping
+
+from torch import nn
 
 from geosave_engine.ml.loss import ProbOhemCrossEntropy2d
-from geosave_engine.ml.registry.base import builder
+from geosave_engine.ml.registry.base import BuildSpec, resolve
 
-LOSSES = {
-    "CELoss": CrossEntropyLoss,
+LOSSES: dict[str, Callable[..., nn.Module]] = {
+    "CELoss": nn.CrossEntropyLoss,
     "OHEMLoss": ProbOhemCrossEntropy2d,
 }
 
 
-def build_loss(name: str, config: dict, registry: dict = LOSSES) -> nn.Module:
-    """Build loss by name from registry.
+def build_loss(
+    spec: BuildSpec,
+    registry: Mapping[str, Callable[..., nn.Module]] = LOSSES,
+) -> nn.Module:
+    """Construct a loss from a registered factory or imported class.
 
     Args:
-        name: Registry key (e.g. ``"CELoss"``).
-        config: Keyword args passed to the constructor.
-        registry: Mapping of name → loss class. Defaults to ``LOSSES``.
+        spec: Name or class path with optional init_args.
+        registry: Named loss factories.
 
     Returns:
-        Instantiated loss ``nn.Module``.
-
-    Raises:
-        ValueError: If ``name`` not found in registry.
+        Configured loss module.
     """
-    return builder(name, config, registry)
+    factory = resolve(spec, registry, nn.Module)
+    return factory(**spec.get("init_args", {}))

@@ -1,280 +1,209 @@
-"""Spectral indices over named reflectance bands."""
+"""Named spectral-index rasters derived from prepared reflectance."""
 
 from __future__ import annotations
 
 import numpy as np
 import xarray as xr
 
+from ._raster import feature_raster, prepared_reflectance
 
-def compute_ndvi(
-    *, nir: xr.DataArray, red: xr.DataArray, eps: float = 1e-6
-) -> xr.DataArray:
-    """Compute NDVI.
+
+def _bands(raster: xr.Dataset, **selectors: str) -> tuple[xr.DataArray, ...]:
+    """Select prepared reflectance variables in semantic argument order."""
+    return prepared_reflectance(raster, *selectors.values())
+
+
+def _ratio(numerator: xr.DataArray, denominator: xr.DataArray) -> xr.DataArray:
+    """Divide, answering NaN where the denominator vanishes."""
+    return numerator / denominator.where(denominator != 0)
+
+
+def _normalized_difference(
+    raster: xr.Dataset,
+    *,
+    name: str,
+    a: str,
+    b: str,
+    eps: float,
+) -> xr.Dataset:
+    """Return one named normalized-difference raster."""
+    first, second = _bands(raster, a=a, b=b)
+    field = _ratio(first - second, first + second + eps)
+    return feature_raster(raster, field, name=name, reference=first)
+
+
+def ndvi(
+    raster: xr.Dataset, *, name: str, nir: str, red: str, eps: float = 0.0
+) -> xr.Dataset:
+    """Derive a normalized difference vegetation index raster.
 
     Args:
-        nir: Near-infrared reflectance.
-        red: Red reflectance.
-        eps: Denominator guard.
+        raster: Prepared reflectance raster.
+        name: Output variable name.
+        nir: Near-infrared variable name.
+        red: Red variable name.
+        eps: Added to the denominator; zero leaves a dead pixel as NaN.
 
     Returns:
-        NDVI over the inputs' own grid.
-
-    Examples:
-        >>> compute_ndvi(nir=ds["B08"], red=ds["B04"])
+        One-variable NDVI raster on the input grid.
     """
-    nir, red = nir.astype(np.float32), red.astype(np.float32)
-    return (nir - red) / (nir + red + eps)
+    return _normalized_difference(raster, name=name, a=nir, b=red, eps=eps)
 
 
-def compute_evi(
+def evi(
+    raster: xr.Dataset,
     *,
-    nir: xr.DataArray,
-    red: xr.DataArray,
-    blue: xr.DataArray,
+    name: str,
+    nir: str,
+    red: str,
+    blue: str,
     g: float = 2.5,
     c1: float = 6.0,
     c2: float = 7.5,
     L: float = 1.0,
-    eps: float = 1e-6,
-) -> xr.DataArray:
-    """Compute EVI.
-
-    Args:
-        nir: Near-infrared reflectance.
-        red: Red reflectance.
-        blue: Blue reflectance.
-        g: Gain factor.
-        c1: Red aerosol-resistance coefficient.
-        c2: Blue aerosol-resistance coefficient.
-        L: Canopy-background adjustment.
-        eps: Denominator guard.
-
-    Returns:
-        EVI over the inputs' own grid.
-    """
-    nir, red, blue = (
-        nir.astype(np.float32),
-        red.astype(np.float32),
-        blue.astype(np.float32),
+    eps: float = 0.0,
+) -> xr.Dataset:
+    """Derive an enhanced vegetation index raster."""
+    nir_band, red_band, blue_band = _bands(raster, nir=nir, red=red, blue=blue)
+    field = g * _ratio(
+        nir_band - red_band,
+        nir_band + c1 * red_band - c2 * blue_band + L + eps,
     )
-    return g * (nir - red) / (nir + c1 * red - c2 * blue + L + eps)
+    return feature_raster(raster, field, name=name, reference=nir_band)
 
 
-def compute_evi2(
+def evi2(
+    raster: xr.Dataset,
     *,
-    nir: xr.DataArray,
-    red: xr.DataArray,
+    name: str,
+    nir: str,
+    red: str,
     g: float = 2.5,
     c: float = 2.4,
     L: float = 1.0,
-    eps: float = 1e-6,
-) -> xr.DataArray:
-    """Compute EVI2, the two-band EVI needing no blue band.
-
-    Args:
-        nir: Near-infrared reflectance.
-        red: Red reflectance.
-        g: Gain factor.
-        c: Red coefficient.
-        L: Canopy-background adjustment.
-        eps: Denominator guard.
-
-    Returns:
-        EVI2 over the inputs' own grid.
-    """
-    nir, red = nir.astype(np.float32), red.astype(np.float32)
-    return g * (nir - red) / (nir + c * red + L + eps)
+    eps: float = 0.0,
+) -> xr.Dataset:
+    """Derive the two-band enhanced vegetation index raster."""
+    nir_band, red_band = _bands(raster, nir=nir, red=red)
+    field = g * _ratio(nir_band - red_band, nir_band + c * red_band + L + eps)
+    return feature_raster(raster, field, name=name, reference=nir_band)
 
 
-def compute_savi(
-    *, nir: xr.DataArray, red: xr.DataArray, L: float = 0.5, eps: float = 1e-6
-) -> xr.DataArray:
-    """Compute SAVI.
-
-    Args:
-        nir: Near-infrared reflectance.
-        red: Red reflectance.
-        L: Soil-brightness adjustment.
-        eps: Denominator guard.
-
-    Returns:
-        SAVI over the inputs' own grid.
-    """
-    nir, red = nir.astype(np.float32), red.astype(np.float32)
-    return ((nir - red) / (nir + red + L + eps)) * (1.0 + L)
-
-
-def compute_msavi2(*, nir: xr.DataArray, red: xr.DataArray) -> xr.DataArray:
-    """Compute MSAVI2, which needs no soil-brightness constant.
-
-    Args:
-        nir: Near-infrared reflectance.
-        red: Red reflectance.
-
-    Returns:
-        MSAVI2 over the inputs' own grid.
-    """
-    nir, red = nir.astype(np.float32), red.astype(np.float32)
-    term = np.clip((2.0 * nir + 1.0) ** 2 - 8.0 * (nir - red), 0.0, None)
-    return (2.0 * nir + 1.0 - np.sqrt(term)) / 2.0
-
-
-def compute_ndre(
-    *, nir: xr.DataArray, red_edge: xr.DataArray, eps: float = 1e-6
-) -> xr.DataArray:
-    """Compute NDRE.
-
-    Args:
-        nir: Near-infrared reflectance.
-        red_edge: Red-edge reflectance.
-        eps: Denominator guard.
-
-    Returns:
-        NDRE over the inputs' own grid.
-    """
-    nir, red_edge = nir.astype(np.float32), red_edge.astype(np.float32)
-    return (nir - red_edge) / (nir + red_edge + eps)
-
-
-def compute_bsi(
+def savi(
+    raster: xr.Dataset,
     *,
-    swir1: xr.DataArray,
-    red: xr.DataArray,
-    nir: xr.DataArray,
-    blue: xr.DataArray,
-    eps: float = 1e-6,
-) -> xr.DataArray:
-    """Compute BSI.
-
-    Args:
-        swir1: Shortwave-infrared 1 reflectance.
-        red: Red reflectance.
-        nir: Near-infrared reflectance.
-        blue: Blue reflectance.
-        eps: Denominator guard.
-
-    Returns:
-        BSI over the inputs' own grid.
-    """
-    swir1, red = swir1.astype(np.float32), red.astype(np.float32)
-    nir, blue = nir.astype(np.float32), blue.astype(np.float32)
-    return ((swir1 + red) - (nir + blue)) / ((swir1 + red) + (nir + blue) + eps)
+    name: str,
+    nir: str,
+    red: str,
+    L: float = 0.5,
+    eps: float = 0.0,
+) -> xr.Dataset:
+    """Derive a soil-adjusted vegetation index raster."""
+    nir_band, red_band = _bands(raster, nir=nir, red=red)
+    field = _ratio(nir_band - red_band, nir_band + red_band + L + eps) * (1 + L)
+    return feature_raster(raster, field, name=name, reference=nir_band)
 
 
-def compute_ndbi(
-    *, swir1: xr.DataArray, nir: xr.DataArray, eps: float = 1e-6
-) -> xr.DataArray:
-    """Compute NDBI.
-
-    Args:
-        swir1: Shortwave-infrared 1 reflectance.
-        nir: Near-infrared reflectance.
-        eps: Denominator guard.
-
-    Returns:
-        NDBI over the inputs' own grid.
-    """
-    swir1, nir = swir1.astype(np.float32), nir.astype(np.float32)
-    return (swir1 - nir) / (swir1 + nir + eps)
+def msavi2(raster: xr.Dataset, *, name: str, nir: str, red: str) -> xr.Dataset:
+    """Derive a modified soil-adjusted vegetation index raster."""
+    nir_band, red_band = _bands(raster, nir=nir, red=red)
+    term = np.clip((2 * nir_band + 1) ** 2 - 8 * (nir_band - red_band), 0.0, None)
+    field = (2 * nir_band + 1 - np.sqrt(term)) / 2
+    return feature_raster(raster, field, name=name, reference=nir_band)
 
 
-def compute_ndwi(
-    *, green: xr.DataArray, nir: xr.DataArray, eps: float = 1e-6
-) -> xr.DataArray:
-    """Compute NDWI.
-
-    Args:
-        green: Green reflectance.
-        nir: Near-infrared reflectance.
-        eps: Denominator guard.
-
-    Returns:
-        NDWI over the inputs' own grid.
-    """
-    green, nir = green.astype(np.float32), nir.astype(np.float32)
-    return (green - nir) / (green + nir + eps)
+def ndre(
+    raster: xr.Dataset,
+    *,
+    name: str,
+    nir: str,
+    red_edge: str,
+    eps: float = 0.0,
+) -> xr.Dataset:
+    """Derive a normalized difference red-edge index raster."""
+    return _normalized_difference(raster, name=name, a=nir, b=red_edge, eps=eps)
 
 
-def compute_mndwi(
-    *, green: xr.DataArray, swir1: xr.DataArray, eps: float = 1e-6
-) -> xr.DataArray:
-    """Compute MNDWI.
-
-    Args:
-        green: Green reflectance.
-        swir1: Shortwave-infrared 1 reflectance.
-        eps: Denominator guard.
-
-    Returns:
-        MNDWI over the inputs' own grid.
-    """
-    green, swir1 = green.astype(np.float32), swir1.astype(np.float32)
-    return (green - swir1) / (green + swir1 + eps)
-
-
-def compute_ndci(
-    *, red_edge: xr.DataArray, red: xr.DataArray, eps: float = 1e-6
-) -> xr.DataArray:
-    """Compute NDCI.
-
-    Args:
-        red_edge: Red-edge reflectance.
-        red: Red reflectance.
-        eps: Denominator guard.
-
-    Returns:
-        NDCI over the inputs' own grid.
-    """
-    red_edge, red = red_edge.astype(np.float32), red.astype(np.float32)
-    return (red_edge - red) / (red_edge + red + eps)
+def bsi(
+    raster: xr.Dataset,
+    *,
+    name: str,
+    swir1: str,
+    red: str,
+    nir: str,
+    blue: str,
+    eps: float = 0.0,
+) -> xr.Dataset:
+    """Derive a bare soil index raster."""
+    swir, red_band, nir_band, blue_band = _bands(
+        raster, swir1=swir1, red=red, nir=nir, blue=blue
+    )
+    field = _ratio(
+        (swir + red_band) - (nir_band + blue_band),
+        (swir + red_band) + (nir_band + blue_band) + eps,
+    )
+    return feature_raster(raster, field, name=name, reference=swir)
 
 
-def compute_ndmi(
-    *, nir: xr.DataArray, swir1: xr.DataArray, eps: float = 1e-6
-) -> xr.DataArray:
-    """Compute NDMI.
-
-    Args:
-        nir: Near-infrared reflectance.
-        swir1: Shortwave-infrared 1 reflectance.
-        eps: Denominator guard.
-
-    Returns:
-        NDMI over the inputs' own grid.
-    """
-    nir, swir1 = nir.astype(np.float32), swir1.astype(np.float32)
-    return (nir - swir1) / (nir + swir1 + eps)
+def ndbi(
+    raster: xr.Dataset, *, name: str, swir1: str, nir: str, eps: float = 0.0
+) -> xr.Dataset:
+    """Derive a normalized difference built-up index raster."""
+    return _normalized_difference(raster, name=name, a=swir1, b=nir, eps=eps)
 
 
-def compute_nbr(
-    *, nir: xr.DataArray, swir2: xr.DataArray, eps: float = 1e-6
-) -> xr.DataArray:
-    """Compute NBR.
-
-    Args:
-        nir: Near-infrared reflectance.
-        swir2: Shortwave-infrared 2 reflectance.
-        eps: Denominator guard.
-
-    Returns:
-        NBR over the inputs' own grid.
-    """
-    nir, swir2 = nir.astype(np.float32), swir2.astype(np.float32)
-    return (nir - swir2) / (nir + swir2 + eps)
+def ndwi(
+    raster: xr.Dataset, *, name: str, green: str, nir: str, eps: float = 0.0
+) -> xr.Dataset:
+    """Derive a normalized difference water index raster."""
+    return _normalized_difference(raster, name=name, a=green, b=nir, eps=eps)
 
 
-def compute_ndsi(
-    *, green: xr.DataArray, swir1: xr.DataArray, eps: float = 1e-6
-) -> xr.DataArray:
-    """Compute NDSI.
+def mndwi(
+    raster: xr.Dataset,
+    *,
+    name: str,
+    green: str,
+    swir1: str,
+    eps: float = 0.0,
+) -> xr.Dataset:
+    """Derive a modified normalized difference water index raster."""
+    return _normalized_difference(raster, name=name, a=green, b=swir1, eps=eps)
 
-    Args:
-        green: Green reflectance.
-        swir1: Shortwave-infrared 1 reflectance.
-        eps: Denominator guard.
 
-    Returns:
-        NDSI over the inputs' own grid.
-    """
-    green, swir1 = green.astype(np.float32), swir1.astype(np.float32)
-    return (green - swir1) / (green + swir1 + eps)
+def ndci(
+    raster: xr.Dataset,
+    *,
+    name: str,
+    red_edge: str,
+    red: str,
+    eps: float = 0.0,
+) -> xr.Dataset:
+    """Derive a normalized difference chlorophyll index raster."""
+    return _normalized_difference(raster, name=name, a=red_edge, b=red, eps=eps)
+
+
+def ndmi(
+    raster: xr.Dataset, *, name: str, nir: str, swir1: str, eps: float = 0.0
+) -> xr.Dataset:
+    """Derive a normalized difference moisture index raster."""
+    return _normalized_difference(raster, name=name, a=nir, b=swir1, eps=eps)
+
+
+def nbr(
+    raster: xr.Dataset, *, name: str, nir: str, swir2: str, eps: float = 0.0
+) -> xr.Dataset:
+    """Derive a normalized burn ratio raster."""
+    return _normalized_difference(raster, name=name, a=nir, b=swir2, eps=eps)
+
+
+def ndsi(
+    raster: xr.Dataset,
+    *,
+    name: str,
+    green: str,
+    swir1: str,
+    eps: float = 0.0,
+) -> xr.Dataset:
+    """Derive a normalized difference snow index raster."""
+    return _normalized_difference(raster, name=name, a=green, b=swir1, eps=eps)

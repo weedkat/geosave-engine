@@ -1,40 +1,76 @@
 from __future__ import annotations
 
-import torch.nn as nn
+from typing import Any
+
+import torch.optim
+from torch import nn
 from torch.optim import Optimizer
 
-from geosave_engine.ml.registry.base import method_builder
+from geosave_engine.ml.optimizer import STRATEGIES
+from geosave_engine.ml.registry.base import BuildSpec, resolve
 
-import geosave_engine.ml.optimizer.adamw as adamw
-import geosave_engine.ml.optimizer.adam as adam
-import geosave_engine.ml.optimizer.sgd as sgd
-import geosave_engine.ml.optimizer.rmsprop as rmsprop
-import geosave_engine.ml.optimizer.adagrad as adagrad
+# Optimizer classes reachable by name, each taking per-group lr and weight_decay.
+OPTIMIZERS: tuple[str, ...] = ("AdamW", "Adam", "SGD", "RMSprop", "Adagrad")
 
-OPTIMIZERS = {
-    "AdamW": adamw,
-    "Adam": adam,
-    "SGD": sgd,
-    "RMSprop": rmsprop,
-    "Adagrad": adagrad,
+# Only where this project's default differs from the torch class's own.
+OPTIMIZER_DEFAULTS: dict[str, dict[str, Any]] = {
+    "SGD": {"lr": 1e-2, "momentum": 0.9, "weight_decay": 1e-4},
+    "RMSprop": {"lr": 1e-3},
 }
 
 
-def build_optimizer(
-    name: str, model: nn.Module, config: dict, registry: dict = OPTIMIZERS
-) -> Optimizer:
-    """Build optimizer by name from registry.
+def build_optimizer(spec: BuildSpec, model: nn.Module) -> Optimizer:
+    """Construct an optimizer from a registered name or an imported class.
+
+    A name is `"<Optimizer>"` or `"<Optimizer>.<strategy>"`, such as `"AdamW"`
+    or `"SGD.freeze_encoder"`; every strategy composes with every optimizer. A
+    class path instead imports the class and takes every parameter as one group.
 
     Args:
-        name: Registry key; supports dot notation (e.g. ``"AdamW.split"``).
-        config: Keyword args passed to the optimizer constructor.
-        model: Model whose parameters are passed to the optimizer.
-        registry: Mapping of name → optimizer module. Defaults to ``OPTIMIZERS``.
+        spec: Name or class path with optional init_args.
+        model: Module whose parameters will be optimized.
 
     Returns:
-        Instantiated ``Optimizer``.
+        Optimizer containing the selected model parameters.
 
     Raises:
-        ValueError: If ``name`` not found in registry.
+        ValueError: The name gives no known optimizer or strategy, or the
+            specification is malformed.
+
+    Examples:
+        >>> build_optimizer({"name": "AdamW", "init_args": {"lr": 1e-3}}, model)
+        AdamW (...)
+        >>> build_optimizer(
+        ...     {"name": "SGD.split", "init_args": {"encoder_lr": 1e-4, "decoder_lr": 1e-2}},
+        ...     model,
+        ... )
+        SGD (...)
     """
-    return method_builder(name, {**config, "model": model}, registry)
+    init_args: dict[str, Any] = dict(spec.get("init_args", {}))
+
+    if "class_path" in spec:
+        imported = resolve(spec, {}, Optimizer)
+        return imported(model.parameters(), **init_args)
+
+    name = spec.get("name")
+    if not isinstance(name, str) or not name:
+        raise ValueError("name must be a non-empty registered optimizer name")
+
+    optimizer_name, _, strategy_name = name.partition(".")
+    matched = {known.casefold(): known for known in OPTIMIZERS}
+    if optimizer_name.casefold() not in matched:
+        raise ValueError(
+            f"Unknown optimizer {optimizer_name!r} in {name!r}; available: "
+            f"{list(OPTIMIZERS)}"
+        )
+    if strategy_name not in STRATEGIES:
+        available = [key for key in STRATEGIES if key]
+        raise ValueError(
+            f"Unknown strategy {strategy_name!r} in {name!r}; available: {available}"
+        )
+
+    optimizer_name = matched[optimizer_name.casefold()]
+    arguments = {**OPTIMIZER_DEFAULTS.get(optimizer_name, {}), **init_args}
+    return STRATEGIES[strategy_name](
+        getattr(torch.optim, optimizer_name), model, **arguments
+    )

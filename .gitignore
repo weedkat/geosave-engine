@@ -214,6 +214,7 @@ __marimo__/
 
 # Local files
 config/
+!src/geosave_engine/workflow/config/
 dataset/
 
 # Local logs

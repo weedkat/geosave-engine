@@ -27,7 +27,8 @@ import numpy as np
 import pandas as pd
 import xarray as xr
 
-from geosave_engine.geodata.core.convention import TIME_COORDINATE
+import geosave_engine.geodata.attrs as attrs
+from geosave_engine.geodata.core.profile import TIME_COORDINATE
 from geosave_engine.geodata.core.stack import stack
 from geosave_engine.geodata.errors import (
     DroppedInstantsWarning,
@@ -308,7 +309,8 @@ def _joint_axis(
         )
 
     # An instant naming the same scene in every group as the one before says nothing new.
-    return table[table.ne(table.shift()).any(axis=1)]
+    changed = table.ne(table.shift()).any(axis=1)
+    return table[changed]
 
 
 def window_stack(
@@ -436,16 +438,15 @@ def window_stack(
                 )
             skips += 1
             continue
-        windows.append(
-            stack(
-                {
-                    name: raster.isel({TIME_COORDINATE: rows[name].to_numpy()})
-                    if name in series
-                    else raster
-                    for name, raster in rasters.items()
-                }
-            )
+        selected = stack(
+            {
+                name: raster.isel({TIME_COORDINATE: rows[name].to_numpy()})
+                if name in series
+                else raster
+                for name, raster in rasters.items()
+            }
         )
+        windows.append(attrs.rebase(selected, tree.gs.attrs.root))
     if skips:
         warnings.warn(
             f"{skips} of {skips + len(windows)} windows cover an instant some "
