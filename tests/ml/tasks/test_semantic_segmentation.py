@@ -11,7 +11,7 @@ import yaml
 
 from geosave_engine.ml.cli import GeosaveCLI
 from geosave_engine.ml.models.contract import chain_step
-from geosave_engine.ml.registry import BuildSpec
+from geosave_engine.ml.registry import StageSpec
 from geosave_engine.ml.tasks import SemanticSegmentationTask
 
 
@@ -43,12 +43,12 @@ class Samples(Dataset):
 
 
 @pytest.fixture
-def stages() -> dict[str, BuildSpec]:
+def stages() -> dict[str, StageSpec]:
     return {"model": {"class_path": f"{__name__}.SegmentationModel"}}
 
 
 def test_forward_preserves_prepared_inputs_and_routes_context(
-    stages: dict[str, BuildSpec],
+    stages: dict[str, StageSpec],
 ) -> None:
     task = SemanticSegmentationTask(
         stages=stages,
@@ -71,7 +71,7 @@ def test_forward_preserves_prepared_inputs_and_routes_context(
 
 
 def test_training_and_checkpoint_reload_preserve_construction(
-    stages: dict[str, BuildSpec], tmp_path: Path
+    stages: dict[str, StageSpec], tmp_path: Path
 ) -> None:
     task = SemanticSegmentationTask(
         stages=stages,
@@ -126,7 +126,7 @@ def test_training_and_checkpoint_reload_preserve_construction(
 
 
 def test_lightning_cli_parses_nested_construction_specs(
-    stages: dict[str, BuildSpec], tmp_path: Path
+    stages: dict[str, StageSpec], tmp_path: Path
 ) -> None:
     cli = GeosaveCLI(
         SemanticSegmentationTask,
