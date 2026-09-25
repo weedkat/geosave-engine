@@ -22,10 +22,15 @@ def coordinate_anchor():
 
 
 def requirement(collection="sentinel-2-l2a"):
-    return RasterRequirement(
-        channels=3,
-        collection=collection,
-        endpoints=("https://primary.test/stac", "https://backup.test/stac"),
+    return RasterRequirement.model_validate(
+        {
+            "channels": 3,
+            "collection": collection,
+            "endpoints": [
+                "https://primary.test/stac",
+                "https://backup.test/stac",
+            ],
+        }
     )
 
 
@@ -165,14 +170,22 @@ def test_lazy_asset_failure_does_not_try_another_endpoint(catalog_http, local_st
         "links": [],
     }
     loader = RasterLoader(
-        RasterRequirement(
-            variables=("red",),
-            collection="optical",
-            endpoints=("https://primary.test/stac", "https://backup.test/stac"),
+        RasterRequirement.model_validate(
+            {
+                "variables": ["red"],
+                "collection": "optical",
+                "endpoints": [
+                    "https://primary.test/stac",
+                    "https://backup.test/stac",
+                ],
+            }
         )
     )
 
-    raster = loader.load(SourceConfig(load={"groupby": "time"}), coordinate_anchor())
+    raster = loader.load(
+        SourceConfig.model_validate({"load": {"groupby": "time"}}),
+        coordinate_anchor(),
+    )
 
     with pytest.raises(RasterioIOError):
         raster.red.compute()

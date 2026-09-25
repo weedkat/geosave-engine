@@ -53,23 +53,30 @@ def test_loading_never_imports_inference_calls(tmp_path):
 
 
 def test_python_and_yaml_round_trip_preserves_references_and_literals(tmp_path):
-    spec = ModelSpec(
-        schema_version=2,
-        sources={},
-        preprocessing={
-            "selected": CallSpec(
-                call=Ref("optical.__getitem__"),
-                kwargs={"key": ["red", "nir"]},
-            ),
-            "result": CallSpec(
-                call="missing_package.for_this_stage",
-                kwargs={
-                    "items": [Ref("selected"), {"ref": "literal"}],
-                    "label": "!ref selected",
+    spec = ModelSpec.model_validate(
+        {
+            "schema_version": 2,
+            "sources": {},
+            "preprocessing": {
+                "selected": CallSpec(
+                    call=Ref("optical.__getitem__"),
+                    kwargs={"key": ["red", "nir"]},
+                ),
+                "result": CallSpec(
+                    call="missing_package.for_this_stage",
+                    kwargs={
+                        "items": [Ref("selected"), {"ref": "literal"}],
+                        "label": "!ref selected",
+                    },
+                ),
+            },
+            "inference": {
+                "logits": {
+                    "call": Ref("model"),
+                    "kwargs": {"image": Ref("image")},
                 },
-            ),
-        },
-        inference={"logits": {"call": Ref("model"), "kwargs": {"image": Ref("image")}}},
+            },
+        }
     )
     assert ModelSpec.model_validate(spec.model_dump()) == spec
     (tmp_path / "weights.bin").write_bytes(b"weights")
@@ -157,7 +164,7 @@ def test_invalid_python_declarations_fail(change):
 
 def test_schema_version_is_explicit():
     with pytest.raises(ValueError):
-        ModelSpec(sources={})
+        ModelSpec.model_validate({"sources": {}})
 
 
 def test_yaml_reference_support_does_not_modify_safe_loader():

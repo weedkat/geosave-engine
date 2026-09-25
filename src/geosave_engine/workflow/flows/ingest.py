@@ -1,7 +1,6 @@
 """Deployable ingestion flow from primitive parameters to a completed stack."""
 
 from prefect import flow
-from prefect.task_runners import ThreadPoolTaskRunner
 from pydantic import JsonValue
 
 from geosave_engine.workflow.configs import IngestConfig
@@ -11,7 +10,6 @@ from geosave_engine.workflow.tasks import load_raster, save_stack
 
 @flow(
     name="ingest",
-    task_runner=ThreadPoolTaskRunner(max_workers=4),
     persist_result=False,
 )
 def ingest(

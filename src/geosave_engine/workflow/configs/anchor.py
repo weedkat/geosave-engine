@@ -1,5 +1,6 @@
 """Primitive spatial parameters converted to native anchors on demand."""
 
+from os import PathLike
 from pathlib import Path
 from typing import Annotated, Literal, Self
 
@@ -44,6 +45,8 @@ class GeoJSONAnchorConfig(ConfigModel):
     @classmethod
     def validate_path(cls, value: object) -> Path:
         """Require local GeoJSON syntax without opening the file."""
+        if not isinstance(value, (str, PathLike)):
+            raise TypeError("GeoJSON anchor path must be a local path")
         if "://" in str(value):
             raise ValueError("GeoJSON anchor requires a local path")
         path = Path(value)

@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import xarray as xr
 from prefect import task
+from prefect.cache_policies import NO_CACHE
 from pystac_client import Client
 from pystac_client.exceptions import APIError
 from requests.exceptions import RequestException
@@ -19,8 +20,12 @@ class RasterLoader:
 
     def __init__(self, requirement: RasterRequirement) -> None:
         self.requirement = RasterRequirement.model_validate(requirement)
-        if self.requirement.collection is None or self.requirement.endpoints is None:
+        collection = self.requirement.collection
+        endpoints = self.requirement.endpoints
+        if collection is None or endpoints is None:
             raise ValueError("Raster source needs collection and endpoints")
+        self.collection = collection
+        self.endpoints = endpoints
 
     @staticmethod
     def endpoint_unavailable(error: Exception) -> bool:
@@ -45,15 +50,15 @@ class RasterLoader:
         """Open the first endpoint that publishes the required collection."""
         failures = []
         last_error: Exception | None = None
-        for endpoint in self.requirement.endpoints:
+        for endpoint in self.endpoints:
             url = str(endpoint)
             try:
                 client = Client.open(url)
                 try:
-                    collection = client.get_collection(self.requirement.collection)
+                    collection = client.get_collection(self.collection)
                 except KeyError as error:
                     expected = (
-                        f"Collection {self.requirement.collection} not found on catalog",
+                        f"Collection {self.collection} not found on catalog",
                     )
                     if error.args != expected:
                         raise
@@ -65,11 +70,11 @@ class RasterLoader:
             else:
                 if (
                     collection is not None
-                    and collection.id == self.requirement.collection
+                    and collection.id == self.collection
                 ):
                     return StacClient(client)
                 last_error = LookupError(
-                    f"Collection {self.requirement.collection!r} not found"
+                    f"Collection {self.collection!r} not found"
                 )
             status = getattr(last_error, "status_code", None)
             cause = (
@@ -85,8 +90,8 @@ class RasterLoader:
     def load(self, config: SourceConfig, anchor: AnchorConfig) -> xr.Dataset:
         """Load, select, and validate the required raster lazily."""
         client = self.open_client()
-        source = StacSource(client, collection=self.requirement.collection)
-        source.query = config.query.to_query(self.requirement.collection)
+        source = StacSource(client, collection=self.collection)
+        source.query = config.query.to_query(self.collection)
         settings = config.load.model_dump()
         if self.requirement.variables is not None:
             settings["bands"] = self.requirement.variables
@@ -95,7 +100,7 @@ class RasterLoader:
         return self.requirement.select_raster(raster)
 
 
-@task(cache_policy=None, persist_result=False)
+@task(cache_policy=NO_CACHE, persist_result=False)
 def load_raster(
     name: str,
     source: SourceConfig,

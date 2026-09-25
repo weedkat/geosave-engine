@@ -1,6 +1,7 @@
 import dask.array as da
-from dask import delayed
+from dask.delayed import delayed
 import numpy as np
+from prefect.cache_policies import NO_CACHE
 import pytest
 
 from geosave_engine.geodata.utils import io
@@ -9,9 +10,9 @@ from geosave_engine.workflow.tasks.save import save_stack
 
 
 def test_native_results_are_not_cached_or_persisted():
-    assert load_raster.cache_policy is None
+    assert load_raster.cache_policy is NO_CACHE
     assert load_raster.persist_result is False
-    assert save_stack.cache_policy is None
+    assert save_stack.cache_policy is NO_CACHE
     assert save_stack.persist_result is False
 
 

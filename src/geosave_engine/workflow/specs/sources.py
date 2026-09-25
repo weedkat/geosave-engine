@@ -269,12 +269,18 @@ class RasterRequirement(SpecModel):
 
     def _select_variables(self, raster: xr.Dataset) -> xr.Dataset:
         """Select named data variables in their declared order."""
-        if missing := set(self.variables) - raster.data_vars.keys():
+        variables = self.variables
+        if variables is None:
+            raise ValueError("Named variable selection requires variables")
+        if missing := set(variables) - raster.data_vars.keys():
             raise ValueError(f"Missing raster variables: {sorted(missing)}")
-        return raster[list(self.variables)]
+        return raster[list(variables)]
 
     def _select_channels(self, raster: xr.Dataset) -> xr.Dataset:
         """Select channels from ordinary variables or a single band variable."""
+        channels = self.channels
+        if channels is None:
+            raise ValueError("Positional selection requires channels")
         names = list(raster.data_vars)
         if any("band" in variable.dims for variable in raster.data_vars.values()):
             if len(names) != 1:
@@ -282,16 +288,16 @@ class RasterRequirement(SpecModel):
                     "Positional channels are ambiguous with multiple band variables"
                 )
             count = raster.sizes["band"]
-            if count < self.channels:
+            if count < channels:
                 raise ValueError(
-                    f"Raster requires {self.channels} channels, got {count}"
+                    f"Raster requires {channels} channels, got {count}"
                 )
-            return raster.isel(band=slice(self.channels))
-        if len(names) < self.channels:
+            return raster.isel(band=slice(channels))
+        if len(names) < channels:
             raise ValueError(
-                f"Raster requires {self.channels} channels, got {len(names)}"
+                f"Raster requires {channels} channels, got {len(names)}"
             )
-        return raster[names[: self.channels]]
+        return raster[names[:channels]]
 
     def _validate_variables(self, raster: xr.Dataset) -> None:
         """Check dimensions and stored dtypes of the selected variables."""

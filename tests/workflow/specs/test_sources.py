@@ -34,10 +34,12 @@ def test_source_identity_requires_collection_and_unique_http_endpoints(settings)
 
 
 def test_endpoints_preserve_priority_and_serialize_as_strings():
-    requirement = RasterRequirement(
-        channels=3,
-        collection="sentinel-2-l2a",
-        endpoints=("https://primary.test/stac", "http://backup.test/stac"),
+    requirement = RasterRequirement.model_validate(
+        {
+            "channels": 3,
+            "collection": "sentinel-2-l2a",
+            "endpoints": ["https://primary.test/stac", "http://backup.test/stac"],
+        }
     )
     assert requirement.model_dump()["endpoints"] == (
         "https://primary.test/stac",
@@ -88,8 +90,12 @@ def test_exactly_one_nonempty_source_selector_is_required(selector):
 
 def test_positional_metadata_accepts_only_wildcard_variable_names():
     with pytest.raises(ValidationError, match="Metadata"):
-        RasterRequirement(channels=2, attrs={"data_vars": {"red": {}}})
-    RasterRequirement(channels=2, attrs={"data_vars": {"*": {}}})
+        RasterRequirement.model_validate(
+            {"channels": 2, "attrs": {"data_vars": {"red": {}}}}
+        )
+    RasterRequirement.model_validate(
+        {"channels": 2, "attrs": {"data_vars": {"*": {}}}}
+    )
 
 
 @pytest.mark.parametrize(
@@ -103,13 +109,17 @@ def test_selection_preserves_order_arrays_and_packing_without_computation(
     selector, names
 ):
     source = packed()
-    requirement = RasterRequirement(
-        **selector,
-        dims=("y", "x"),
-        dtypes=("float64",),
-        attrs={
-            "data_vars": {"*": {"models": {"packing": {"required": ["scale_factor"]}}}}
-        },
+    requirement = RasterRequirement.model_validate(
+        {
+            **selector,
+            "dims": ["y", "x"],
+            "dtypes": ["float64"],
+            "attrs": {
+                "data_vars": {
+                    "*": {"models": {"packing": {"required": ["scale_factor"]}}}
+                }
+            },
+        }
     )
     tasks = []
     with Callback(pretask=lambda *args: tasks.append(args)):
@@ -124,7 +134,7 @@ def test_selection_preserves_order_arrays_and_packing_without_computation(
 
 
 def test_positional_band_selection_preserves_positions_and_lazy_graph():
-    data = da.arange(18, chunks=6).reshape((3, 2, 3))
+    data = da.from_array(np.arange(18), chunks="auto").reshape((3, 2, 3))
     source = xr.Dataset(
         {"image": (("band", "y", "x"), data, {"scale_factor": 0.01})},
         coords={"band": [8, 4, 2]},
@@ -325,9 +335,8 @@ def test_missing_variables_dimensions_and_dtype_fail_without_conversion():
     ],
 )
 def test_foreign_array_metadata_matches_sequences(value, predicate):
-    requirement = RasterRequirement(
-        variables=("red",),
-        attrs={"root": {"foreign": predicate}},
+    requirement = RasterRequirement.model_validate(
+        {"variables": ["red"], "attrs": {"root": {"foreign": predicate}}}
     )
     data = packed()
     data.attrs["calibration"] = value
@@ -347,9 +356,11 @@ def test_foreign_array_metadata_matches_sequences(value, predicate):
 def test_registered_datetime_uses_the_same_typed_representation_on_both_sides(
     predicate,
 ):
-    requirement = RasterRequirement(
-        variables=("red",),
-        attrs={"root": {"models": {"geotiff": predicate}}},
+    requirement = RasterRequirement.model_validate(
+        {
+            "variables": ["red"],
+            "attrs": {"root": {"models": {"geotiff": predicate}}},
+        }
     )
     data = packed()
     data.attrs["TIFFTAG_DATETIME"] = "2026:09:23 12:00:00"
@@ -368,17 +379,19 @@ def test_crs_requirement_applies_to_selected_variables_not_an_unused_raster():
 
 
 def test_partial_predicates_use_attrs_field_parsing_without_constructing_whole_models():
-    requirement = RasterRequirement(
-        variables=("red",),
-        attrs={
-            "data_vars": {
+    requirement = RasterRequirement.model_validate(
+        {
+            "variables": ["red"],
+            "attrs": {
+                "data_vars": {
                 "red": {
                     "models": {
                         "legend": {"equals": {"flag_values": "[0, 1]"}},
                     }
                 }
-            }
-        },
+                }
+            },
+        }
     )
     data = packed()
     data.red.attrs.update(flag_values=[0, 1], flag_meanings="background water")
@@ -386,10 +399,11 @@ def test_partial_predicates_use_attrs_field_parsing_without_constructing_whole_m
 
 
 def test_registered_predicate_consistency_uses_parsed_field_values():
-    requirement = RasterRequirement(
-        variables=("red",),
-        attrs={
-            "data_vars": {
+    requirement = RasterRequirement.model_validate(
+        {
+            "variables": ["red"],
+            "attrs": {
+                "data_vars": {
                 "red": {
                     "models": {
                         "packing": {
@@ -398,8 +412,9 @@ def test_registered_predicate_consistency_uses_parsed_field_values():
                         },
                     }
                 }
-            }
-        },
+                }
+            },
+        }
     )
     requirement.validate_raster(packed())
     restored = RasterRequirement.model_validate(
@@ -418,9 +433,11 @@ def test_registered_predicate_consistency_uses_parsed_field_values():
 )
 def test_invalid_parsed_predicates_fail_at_spec_creation(predicate):
     with pytest.raises(ValidationError):
-        RasterRequirement(
-            variables=("red",),
-            attrs={"data_vars": {"red": {"models": predicate}}},
+        RasterRequirement.model_validate(
+            {
+                "variables": ["red"],
+                "attrs": {"data_vars": {"red": {"models": predicate}}},
+            }
         )
 
 

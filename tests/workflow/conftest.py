@@ -3,6 +3,7 @@ from datetime import datetime, timezone
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 import json
 from threading import Thread
+from typing import Any, cast
 from urllib.parse import parse_qs, urlparse
 
 import dask.array as da
@@ -64,7 +65,14 @@ def anchor(raw):
 @pytest.fixture
 def source():
     # These unit tests replace loading; constructing a source performs no I/O.
-    return StacSource(client=None, collection="example").set_config(
+    class EmptyCatalog:
+        def search(self, query: object) -> list[pystac.Item]:
+            return []
+
+        def collection(self, collection: str) -> pystac.Collection:
+            raise KeyError(collection)
+
+    return StacSource(client=EmptyCatalog(), collection="example").set_config(
         bands=("unused",), chunks={"x": 2, "y": 2}, item_properties=("platform",)
     )
 
@@ -178,7 +186,7 @@ def stac_server(local_stac):
     queries = []
 
     class Handler(BaseHTTPRequestHandler):
-        def log_message(self, *args):
+        def log_message(self, format: str, *args: Any) -> None:
             pass
 
         def reply(self, data):
@@ -229,7 +237,8 @@ def stac_server(local_stac):
                     }
                 )
             else:
-                root = f"http://127.0.0.1:{self.server.server_port}"
+                server = cast(ThreadingHTTPServer, self.server)
+                root = f"http://127.0.0.1:{server.server_port}"
                 self.reply(
                     {
                         "type": "Catalog",

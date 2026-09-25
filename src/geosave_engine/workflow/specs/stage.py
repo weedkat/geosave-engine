@@ -1,6 +1,7 @@
 """Ordered call declarations for one model processing stage."""
 
-from collections.abc import Collection, Iterator, Mapping
+from collections.abc import Collection, Mapping
+from typing import Any
 
 from pydantic import Field, RootModel
 
@@ -16,7 +17,7 @@ class StageSpec(RootModel[dict[Name, CallSpec]], Mapping[str, CallSpec]):
     def __getitem__(self, name: str) -> CallSpec:
         return self.root[name]
 
-    def __iter__(self) -> Iterator[str]:
+    def __iter__(self) -> Any:
         return iter(self.root)
 
     def __len__(self) -> int:
