@@ -9,7 +9,7 @@ from terratorch.models.backbones.prithvi_mae import PrithviViT
 from terratorch.registry import BACKBONE_REGISTRY
 
 from geosave_engine.ml.registry import register_model
-from geosave_engine.ml.models.contract import Published, chain_step
+from geosave_engine.ml.model_chain import Published, chain_step
 
 from ..context.time import time_labels
 

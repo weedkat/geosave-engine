@@ -1,4 +1,4 @@
-"""Build-time contract: attributes one stage offers the stages built after it."""
+"""Values one model stage offers stages built after it."""
 
 from __future__ import annotations
 

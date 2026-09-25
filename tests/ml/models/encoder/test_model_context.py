@@ -13,7 +13,7 @@ from geosave_engine.geodata import DataTree, Dataset, raster, stack
 from geosave_engine.geodata.attrs import TimeSpec
 from geosave_engine.geodata.datasets import TileDataset
 from geosave_engine.geodata.transform.tiling import Tiles
-from geosave_engine.ml.models.contract import ModelChain
+from geosave_engine.ml.model_chain import ModelChain
 from geosave_engine.ml.models.encoder.clay import Clay
 from geosave_engine.ml.models.encoder.prithvi import (
     BACKBONE_REGISTRY,

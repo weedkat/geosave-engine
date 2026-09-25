@@ -8,7 +8,7 @@ import pytest
 import torch
 import torch.nn as nn
 
-from geosave_engine.ml.models.contract import ModelChain, chain_step
+from geosave_engine.ml.model_chain import ModelChain, chain_step
 
 
 class Encode(nn.Module):
@@ -316,3 +316,18 @@ def test_a_producer_and_consumer_must_agree_on_the_value_type():
 
     with pytest.raises(TypeError, match="feature_map.*producer declares"):
         ModelChain(Encode(), Consumer())
+
+
+def test_direct_chain_has_no_construction_recipe():
+    chain = ModelChain(encoder=Encode(), decoder=Decode(), head=Head())
+
+    with pytest.raises(ValueError, match="stage specifications"):
+        _ = chain.stage_specs
+
+
+def test_model_chain_has_no_huggingface_mixin_methods():
+    chain = ModelChain(encoder=Encode(), decoder=Decode(), head=Head())
+
+    assert not hasattr(chain, "save_pretrained")
+    assert not hasattr(chain, "from_pretrained")
+    assert not hasattr(chain, "push_to_hub")

@@ -6,8 +6,8 @@ import pytest
 import torch
 import torch.nn as nn
 
-from geosave_engine.ml.models.contract import chain_step
-from geosave_engine.ml.models.contract.step import Step
+from geosave_engine.ml.model_chain import chain_step
+from geosave_engine.ml.model_chain.step import Step
 
 
 def contract(method) -> Step:
@@ -231,7 +231,7 @@ def test_a_class_with_no_readable_source_is_refused_with_a_clear_message():
     generated = (
         "import torch\n"
         "import torch.nn as nn\n"
-        "from geosave_engine.ml.models.contract import chain_step\n"
+        "from geosave_engine.ml.model_chain import chain_step\n"
         "class Generated(nn.Module):\n"
         "    @chain_step()\n"
         "    def run(self, image: torch.Tensor) -> torch.Tensor:\n"
@@ -276,7 +276,7 @@ def test_explicit_outputs_do_not_require_source(x):
     namespace = {}
     exec(
         "import torch\n"
-        "from geosave_engine.ml.models.contract import chain_step\n"
+        "from geosave_engine.ml.model_chain import chain_step\n"
         "@chain_step(outputs=('encoded',))\n"
         "def encode(self, image: torch.Tensor) -> torch.Tensor:\n"
         "    return image * 3\n",

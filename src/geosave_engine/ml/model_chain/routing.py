@@ -31,7 +31,7 @@ class BoundStep:
         return f"{type(self.module).__name__}.{self.method.name}"
 
 
-def _dependencies(steps: list[BoundStep]) -> dict[BoundStep, set[BoundStep]]:
+def dependencies(steps: list[BoundStep]) -> dict[BoundStep, set[BoundStep]]:
     """Connect matching output and input names with identical declared types.
 
     Args:
@@ -52,7 +52,7 @@ def _dependencies(steps: list[BoundStep]) -> dict[BoundStep, set[BoundStep]]:
     return dependencies
 
 
-def resolve_steps(modules: Mapping[str, nn.Module]) -> list[BoundStep]:
+def ordered_steps(modules: Mapping[str, nn.Module]) -> list[BoundStep]:
     """Choose each stage's earliest available method and sort the resulting chain.
 
     Args:
@@ -77,7 +77,7 @@ def resolve_steps(modules: Mapping[str, nn.Module]) -> list[BoundStep]:
             raise TypeError(f"{type(module).__name__}: no @chain_step method found")
         candidates.extend(BoundStep(stage, module, method) for method in declared)
 
-    graph = TopologicalSorter(_dependencies(candidates))
+    graph = TopologicalSorter(dependencies(candidates))
     try:
         graph.prepare()
     except CycleError as error:
@@ -112,10 +112,10 @@ def resolve_steps(modules: Mapping[str, nn.Module]) -> list[BoundStep]:
                     f"Output {name!r} is produced by both {outputs[name]} and {step.name}"
                 )
             outputs[name] = step.name
-    return list(TopologicalSorter(_dependencies(steps)).static_order())
+    return list(TopologicalSorter(dependencies(steps)).static_order())
 
 
-def external_inputs(steps: list[BoundStep], stages: list[str]) -> dict[str, type]:
+def required_inputs(steps: list[BoundStep], stages: list[str]) -> dict[str, type]:
     """Find required inputs that the selected chain does not produce.
 
     Args:

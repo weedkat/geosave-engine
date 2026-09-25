@@ -9,9 +9,9 @@ from torch.optim.lr_scheduler import LRScheduler
 from lightning import LightningModule
 from lightning.pytorch.utilities.types import OptimizerLRScheduler
 
-from geosave_engine.ml.registry import StageSpec
+from geosave_engine.ml.model_chain import ModelChain
+from geosave_engine.ml.registry import build_model
 from geosave_engine.ml.metrics.semantic_segmentation import SemanticSegmentationMetrics
-from geosave_engine.ml.models.contract import ModelChain
 
 
 def softmax_argmax(logits: torch.Tensor) -> tuple[torch.Tensor, torch.Tensor]:
@@ -140,7 +140,7 @@ class SemanticSegmentationTask(LightningModule):
         *,
         in_channels: int,
         num_classes: int,
-        model_chain: dict[str, StageSpec] | None = None,
+        model_chain: dict[str, dict[str, Any]] | None = None,
         input_size: int | tuple[int, int] = 224,
         ignore_index: int = 255,
         criterion: ModuleSpec | None = None,
@@ -207,7 +207,7 @@ class SemanticSegmentationTask(LightningModule):
             **stage_specs[last].get("init_args", {}),
             "num_classes": self.num_classes,
         }
-        self.model = ModelChain(stages=stage_specs)
+        self.model = build_model(stage_specs)
 
         initial = (
             torch.tensor(self._initial_class_thresholds)

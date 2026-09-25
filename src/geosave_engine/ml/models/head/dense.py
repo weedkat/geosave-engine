@@ -5,7 +5,7 @@ import torch.nn as nn
 import torch.nn.functional as F
 
 from geosave_engine.ml.registry import register_model
-from geosave_engine.ml.models.contract import chain_step
+from geosave_engine.ml.model_chain import chain_step
 
 
 @register_model("head", "dense")

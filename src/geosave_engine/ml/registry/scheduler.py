@@ -11,17 +11,17 @@ from torch.optim.lr_scheduler import (
     StepLR,
 )
 
-from geosave_engine.ml.registry.factory import BuildSpec, resolve
+from geosave_engine.ml.registry.factory import BuildSpec
 
 
-class SchedulerSpec(BuildSpec, total=False):
+class SchedulerSpec(BuildSpec):
     """Configure a scheduler and its Lightning metadata."""
 
-    interval: Literal["step", "epoch"]
-    frequency: int
-    monitor: str
-    strict: bool
-    scheduler_name: str
+    interval: Literal["step", "epoch"] | None = None
+    frequency: int | None = None
+    monitor: str | None = None
+    strict: bool | None = None
+    scheduler_name: str | None = None
 
 
 SCHEDULERS: dict[str, Callable[..., LRScheduler]] = {
@@ -32,7 +32,7 @@ SCHEDULERS: dict[str, Callable[..., LRScheduler]] = {
 
 
 def build_scheduler(
-    spec: SchedulerSpec,
+    spec: SchedulerSpec | Mapping[str, Any],
     optimizer: Optimizer,
     registry: Mapping[str, Callable[..., LRScheduler]] = SCHEDULERS,
 ) -> dict[str, Any]:
@@ -46,24 +46,13 @@ def build_scheduler(
     Returns:
         Lightning scheduler configuration.
     """
-    metadata_fields = {"interval", "frequency", "monitor", "strict"}
-    allowed = {"name", "class_path", "init_args", "scheduler_name", *metadata_fields}
-    unknown = set(spec) - allowed
-    if unknown:
-        raise ValueError(f"Unknown scheduler fields: {sorted(unknown)}")
-
-    selector: BuildSpec = {
-        key: spec[key]
-        for key in ("name", "class_path", "init_args")
-        if key in spec
-    }
-    factory = resolve(selector, registry, LRScheduler)
-    scheduler = factory(optimizer, **spec.get("init_args", {}))
-    configured = {
-        key: spec[key]
-        for key in metadata_fields
-        if key in spec
-    }
-    if "scheduler_name" in spec:
-        configured["name"] = spec["scheduler_name"]
-    return {"scheduler": scheduler, **configured}
+    configured = SchedulerSpec.model_validate(spec)
+    factory = configured.resolve(registry, LRScheduler)
+    scheduler = factory(optimizer, **configured.init_args)
+    metadata = configured.model_dump(
+        include={"interval", "frequency", "monitor", "strict"},
+        exclude_none=True,
+    )
+    if configured.scheduler_name is not None:
+        metadata["name"] = configured.scheduler_name
+    return {"scheduler": scheduler, **metadata}

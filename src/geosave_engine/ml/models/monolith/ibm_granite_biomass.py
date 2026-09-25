@@ -6,7 +6,7 @@ from huggingface_hub import hf_hub_download
 from terratorch.datasets.utils import HLSBands
 from terratorch.tasks import PixelwiseRegressionTask
 
-from geosave_engine.ml.models.contract import chain_step
+from geosave_engine.ml.model_chain import chain_step
 from geosave_engine.ml.registry import register_model
 
 _REPO_ID = "ibm-granite/granite-geospatial-biomass"

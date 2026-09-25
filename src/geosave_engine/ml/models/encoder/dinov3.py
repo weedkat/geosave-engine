@@ -6,7 +6,7 @@ from typing import cast
 from timm.models.eva import Eva
 
 from geosave_engine.ml.registry import register_model
-from geosave_engine.ml.models.contract import Published, chain_step
+from geosave_engine.ml.model_chain import Published, chain_step
 
 # Sample each model's block depth at even quarters.
 MODEL_SPECS: dict[str, dict] = {

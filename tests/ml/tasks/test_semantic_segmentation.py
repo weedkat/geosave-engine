@@ -11,7 +11,7 @@ from torch.utils.data import DataLoader, Dataset
 import yaml
 
 from geosave_engine.ml.cli import GeosaveCLI
-from geosave_engine.ml.models.contract import chain_step
+from geosave_engine.ml.model_chain import chain_step
 from geosave_engine.ml.registry import StageSpec
 from geosave_engine.ml.tasks import SemanticSegmentationTask
 

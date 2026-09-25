@@ -51,13 +51,17 @@ encoder implementation.
 ## Registry Ownership
 
 `geosave_engine.ml.registry` owns construction from configuration parsed by
-LightningCLI. A shared resolver validates exactly one registered `name` or
-importable `class_path`, validates `init_args`, checks imported classes against
-their required PyTorch base type, and returns the selected factory.
+LightningCLI. `BuildSpec` is a Pydantic value model that validates exactly one
+registered `name` or importable `class_path`, validates `init_args`, and resolves
+itself against a named registry and required PyTorch base type.
+
+Lightning-facing constructors retain plain mapping annotations because
+jsonargparse interprets Pydantic model annotations as subclass specifications.
+Each registry builder normalizes that mapping once with `model_validate`.
 
 The public registry interface includes:
 
-- `BuildSpec` and shared factory resolution.
+- `BuildSpec` with validation, resolution, and serialization.
 - `CriterionSpec` and `build_criterion`.
 - `StageSpec`, `register_model`, `list_models`, and `build_model`.
 - `OptimizerSpec` and `build_optimizer`.

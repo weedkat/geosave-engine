@@ -17,7 +17,7 @@ _P = ParamSpec("_P")
 _R = TypeVar("_R")
 
 
-def _check_value(value: object, expected: type, where: str) -> None:
+def _validate_value(value: object, expected: type, where: str) -> None:
     """Check the outer runtime type of one annotated value.
 
     Args:
@@ -84,7 +84,7 @@ class Step:
                 if name in self.inputs:
                     raise KeyError(f"{where}: missing input {name!r}")
                 continue
-            _check_value(value, expected, f"{where}: input {name!r}")
+            _validate_value(value, expected, f"{where}: input {name!r}")
             kwargs[name] = value
 
         # Calling the module preserves PyTorch hooks when its step is forward.
@@ -102,11 +102,11 @@ class Step:
             values = (result,)
         outputs = dict(zip(self.outputs, values))
         for name, expected in self.outputs.items():
-            _check_value(outputs[name], expected, f"{where}: output {name!r}")
+            _validate_value(outputs[name], expected, f"{where}: output {name!r}")
         return outputs
 
 
-def _return_names(method: Callable[..., object]) -> tuple[str, ...]:
+def _infer_output_names(method: Callable[..., object]) -> tuple[str, ...]:
     """Infer names from one return statement in the method's own scope.
 
     Args:
@@ -217,7 +217,7 @@ def chain_step(
                 raise TypeError(
                     f"{method.__qualname__}: return types must be fixed-arity"
                 )
-            names = _return_names(method) if outputs is None else outputs
+            names = _infer_output_names(method) if outputs is None else outputs
             if (
                 not isinstance(names, tuple)
                 or not names

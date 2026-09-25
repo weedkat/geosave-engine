@@ -5,8 +5,12 @@ from __future__ import annotations
 import pytest
 import torch.nn as nn
 
-from geosave_engine.ml.models.contract import Published, published_attrs
-from geosave_engine.ml.models.contract.published import accepts, published_kwargs
+from geosave_engine.ml.model_chain import Published
+from geosave_engine.ml.model_chain.published import (
+    accepts,
+    published_attrs,
+    published_kwargs,
+)
 
 
 class Encoder(nn.Module):

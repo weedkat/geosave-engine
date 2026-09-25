@@ -3,16 +3,17 @@ from __future__ import annotations
 from collections.abc import Callable, Mapping
 from typing import Any
 
+from pydantic import Field
 from torch import nn
 from torch.optim import Adagrad, Adam, AdamW, Optimizer, RMSprop, SGD
 
-from geosave_engine.ml.registry.factory import BuildSpec, resolve
+from geosave_engine.ml.registry.factory import BuildSpec
 
 
-class OptimizerSpec(BuildSpec, total=False):
+class OptimizerSpec(BuildSpec):
     """Configure an optimizer and exact direct-child parameter groups."""
 
-    groups: dict[str, dict[str, Any]]
+    groups: dict[str, dict[str, Any]] = Field(default_factory=dict)
 
 
 OPTIMIZERS: dict[str, Callable[..., Optimizer]] = {
@@ -25,7 +26,7 @@ OPTIMIZERS: dict[str, Callable[..., Optimizer]] = {
 
 
 def build_optimizer(
-    spec: OptimizerSpec,
+    spec: OptimizerSpec | Mapping[str, Any],
     model: nn.Module,
     registry: Mapping[str, Callable[..., Optimizer]] = OPTIMIZERS,
 ) -> Optimizer:
@@ -43,13 +44,8 @@ def build_optimizer(
         TypeError: If group configuration is not a mapping.
         ValueError: If groups are unknown, overlap, or no parameters train.
     """
-    unknown = set(spec) - {"name", "class_path", "init_args", "groups"}
-    if unknown:
-        raise ValueError(f"Unknown optimizer fields: {sorted(unknown)}")
-
-    groups = spec.get("groups", {})
-    if not isinstance(groups, Mapping):
-        raise TypeError("groups must map direct child names to optimizer options")
+    configured = OptimizerSpec.model_validate(spec)
+    groups = configured.groups
 
     children = dict(model.named_children())
     unknown_groups = set(groups) - set(children)
@@ -59,8 +55,6 @@ def build_optimizer(
     selected: set[int] = set()
     parameter_groups: list[dict[str, Any]] = []
     for child_name, options in groups.items():
-        if not isinstance(options, Mapping):
-            raise TypeError(f"Optimizer group {child_name!r} options must be a mapping")
         if "params" in options:
             raise ValueError(f"Optimizer group {child_name!r} cannot override params")
 
@@ -87,10 +81,5 @@ def build_optimizer(
     if not parameter_groups:
         raise ValueError("Cannot build an optimizer without trainable parameters")
 
-    selector: BuildSpec = {
-        key: spec[key]
-        for key in ("name", "class_path", "init_args")
-        if key in spec
-    }
-    factory = resolve(selector, registry, Optimizer)
-    return factory(parameter_groups, **spec.get("init_args", {}))
+    factory = configured.resolve(registry, Optimizer)
+    return factory(parameter_groups, **configured.init_args)

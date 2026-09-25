@@ -8,7 +8,8 @@ import torch
 from transformers import AutoConfig, AutoModel, PretrainedConfig, PreTrainedModel
 from transformers.initialization import no_init_weights
 
-from geosave_engine.ml.models.contract import ModelChain
+from geosave_engine.ml.model_chain import ModelChain
+from geosave_engine.ml.registry import build_model
 from geosave_engine.ml.registry.model import StageSpec
 
 
@@ -66,7 +67,7 @@ class GeoSaveModel(PreTrainedModel):
         specs = {entry["stage"]: entry["spec"] for entry in config.stages}
         if chain is not None and list(chain.stage_specs.items()) != list(specs.items()):
             raise ValueError("Chain construction specifications do not match config")
-        self.chain = chain if chain is not None else ModelChain(stages=specs)
+        self.chain = chain if chain is not None else build_model(specs)
         # Stage constructors own initialization; wrapping must preserve trained weights.
         with no_init_weights():
             self.post_init()

@@ -45,7 +45,7 @@
 - Create: `tests/ml/registry/test_builders.py`
 
 **Interfaces:**
-- Produces: `BuildSpec`, `resolve`, `CriterionSpec`, `OptimizerSpec`, `SchedulerSpec`, `build_criterion`, `build_optimizer`, and `build_scheduler`.
+- Produces: `BuildSpec`, `CriterionSpec`, `OptimizerSpec`, `SchedulerSpec`, `build_criterion`, `build_optimizer`, and `build_scheduler`.
 - Consumes: registered callables, importable PyTorch classes, `nn.Module`, and `Optimizer` instances.
 
 - [ ] **Step 1: Write failing shared resolver and criterion tests**
@@ -62,9 +62,9 @@
         {"class_path": "torch.nn.CrossEntropyLoss", "init_args": []},
     ],
 )
-def test_resolve_rejects_invalid_specs(spec):
-    with pytest.raises((TypeError, ValueError)):
-        resolve(spec, {"CROSS_ENTROPY": nn.CrossEntropyLoss}, nn.Module)
+def test_build_spec_rejects_invalid_specs(spec):
+    with pytest.raises(ValidationError):
+        BuildSpec.model_validate(spec)
 
 
 @pytest.mark.parametrize(
@@ -97,46 +97,35 @@ Run: `uv run pytest tests/ml/registry/test_builders.py -q`
 
 Expected: collection fails because the public builders do not exist.
 
-- [ ] **Step 3: Implement `BuildSpec`, `resolve`, and the criterion package**
+- [ ] **Step 3: Implement Pydantic `BuildSpec` and the criterion package**
 
 ```python
-class BuildSpec(TypedDict, total=False):
-    name: str
-    class_path: str
-    init_args: dict[str, Any]
+class BuildSpec(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    name: str | None = Field(default=None, min_length=1)
+    class_path: str | None = None
+    init_args: dict[str, Any] = Field(default_factory=dict)
 
+    @model_validator(mode="after")
+    def validate_selector(self) -> Self:
+        if (self.name is None) == (self.class_path is None):
+            raise ValueError("Specify exactly one of name or class_path")
+        return self
 
-def resolve[T](
-    spec: BuildSpec,
-    registry: Mapping[str, Callable[..., T]],
-    base: type[T],
-) -> Callable[..., T]:
-    unknown = set(spec) - {"name", "class_path", "init_args"}
-    if unknown:
-        raise ValueError(f"Unknown construction fields: {sorted(unknown)}; use init_args")
-    if ("name" in spec) == ("class_path" in spec):
-        raise ValueError("Specify exactly one of name or class_path")
-    if not isinstance(spec.get("init_args", {}), dict):
-        raise TypeError("init_args must be a dict of constructor arguments")
-    if "name" in spec:
-        name = spec["name"]
-        if not isinstance(name, str) or not name:
-            raise ValueError("name must be a non-empty registered factory name")
-        matched = {key.casefold(): factory for key, factory in registry.items()}
-        if name.casefold() not in matched:
-            raise ValueError(f"Unknown name {name!r}; available: {list(registry)}")
-        return matched[name.casefold()]
-    path = spec.get("class_path")
-    if not isinstance(path, str) or "." not in path:
-        raise ValueError(f"class_path must include a module and class: {path!r}")
-    module, _, attribute = path.rpartition(".")
-    factory = getattr(import_module(module), attribute, None)
-    if not isinstance(factory, type) or not issubclass(factory, base):
-        raise TypeError(f"{path!r} must name a {base.__name__} subclass")
-    return factory
+    def resolve[T](self, registry, base: type[T]) -> Callable[..., T]:
+        if self.name is not None:
+            factories = {key.casefold(): value for key, value in registry.items()}
+            if self.name.casefold() not in factories:
+                raise ValueError(f"Unknown name {self.name!r}")
+            return factories[self.name.casefold()]
+        module, _, attribute = self.class_path.rpartition(".")
+        factory = getattr(import_module(module), attribute, None)
+        if not isinstance(factory, type) or not issubclass(factory, base):
+            raise TypeError(f"{self.class_path!r} must name a {base.__name__} subclass")
+        return factory
 ```
 
-Define `CriterionSpec(BuildSpec)` and register `CROSS_ENTROPY` plus `OHEM` in `registry/criterion/__init__.py`. `build_criterion` resolves `nn.Module` and forwards `init_args` unchanged.
+Define `CriterionSpec(BuildSpec)` and register `CROSS_ENTROPY` plus `OHEM` in `registry/criterion/__init__.py`. Builders accept models or mappings, normalize with `model_validate`, call the spec's `resolve`, and forward `init_args` unchanged.
 
 - [ ] **Step 4: Write failing optimizer and scheduler tests**
 

@@ -7,7 +7,7 @@ from huggingface_hub import hf_hub_download
 from terratorch.models.backbones.clay_v15.model import Encoder
 
 from geosave_engine.ml.registry import register_model
-from geosave_engine.ml.models.contract import Published, chain_step
+from geosave_engine.ml.model_chain import Published, chain_step
 
 from ..context.time import time_labels
 

@@ -1,10 +1,11 @@
 from __future__ import annotations
 
 from collections.abc import Callable, Mapping
+from typing import Any
 
 from torch import nn
 
-from geosave_engine.ml.registry.factory import BuildSpec, resolve
+from geosave_engine.ml.registry.factory import BuildSpec
 
 from .ohem import ProbOhemCrossEntropy2d
 
@@ -20,7 +21,7 @@ CRITERIA: dict[str, Callable[..., nn.Module]] = {
 
 
 def build_criterion(
-    spec: CriterionSpec,
+    spec: CriterionSpec | Mapping[str, Any],
     registry: Mapping[str, Callable[..., nn.Module]] = CRITERIA,
 ) -> nn.Module:
     """Construct a loss from a registered name or imported class.
@@ -32,8 +33,9 @@ def build_criterion(
     Returns:
         Configured loss module.
     """
-    factory = resolve(spec, registry, nn.Module)
-    return factory(**spec.get("init_args", {}))
+    configured = CriterionSpec.model_validate(spec)
+    factory = configured.resolve(registry, nn.Module)
+    return factory(**configured.init_args)
 
 
 __all__ = [

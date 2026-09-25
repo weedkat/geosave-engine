@@ -4,13 +4,14 @@ from typing import Any
 
 import pytest
 import torch
+from pydantic import ValidationError
 from torch import nn
 
 from geosave_engine.ml.registry import (
+    BuildSpec,
     build_criterion,
     build_optimizer,
     build_scheduler,
-    resolve,
 )
 from geosave_engine.ml.registry.criterion import ProbOhemCrossEntropy2d
 
@@ -20,15 +21,30 @@ from geosave_engine.ml.registry.criterion import ProbOhemCrossEntropy2d
     [
         {},
         {"name": "cross_entropy", "class_path": "torch.nn.CrossEntropyLoss"},
-        {"name": "missing"},
         {"class_path": "CrossEntropyLoss"},
         {"class_path": "torch.nn.CrossEntropyLoss", "unknown": True},
         {"class_path": "torch.nn.CrossEntropyLoss", "init_args": []},
     ],
 )
 def test_resolve_rejects_invalid_specs(spec: dict[str, Any]) -> None:
-    with pytest.raises((TypeError, ValueError)):
-        resolve(spec, {"CROSS_ENTROPY": nn.CrossEntropyLoss}, nn.Module)
+    with pytest.raises(ValidationError):
+        BuildSpec.model_validate(spec)
+
+
+def test_build_spec_resolves_registered_names() -> None:
+    spec = BuildSpec(name="CrOsS_EnTrOpY")
+
+    assert (
+        spec.resolve({"CROSS_ENTROPY": nn.CrossEntropyLoss}, nn.Module)
+        is nn.CrossEntropyLoss
+    )
+
+
+def test_build_spec_rejects_unknown_registered_names() -> None:
+    spec = BuildSpec(name="missing")
+
+    with pytest.raises(ValueError, match="Unknown name"):
+        spec.resolve({"CROSS_ENTROPY": nn.CrossEntropyLoss}, nn.Module)
 
 
 @pytest.mark.parametrize(
