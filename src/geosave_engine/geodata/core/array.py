@@ -353,9 +353,7 @@ class GeoArray(GeoAccessor["DataArray"]):
         ordered = self._data.transpose(*ahead, *self.grid_dims).values
         return ordered if dtype is None else ordered.astype(dtype)
 
-    def to_tensor(
-        self, *, dtype: str | torch.dtype | None = None
-    ) -> torch.Tensor:
+    def to_tensor(self, *, dtype: str | torch.dtype | None = None) -> torch.Tensor:
         """Read this band as one model-input tensor.
 
         Args:

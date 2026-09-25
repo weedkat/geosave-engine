@@ -839,9 +839,7 @@ class GeoRaster(GeoAccessor["Dataset"]):
         )
         return stacked if dtype is None else stacked.astype(dtype)
 
-    def to_tensor(
-        self, *, dtype: str | torch.dtype | None = None
-    ) -> torch.Tensor:
+    def to_tensor(self, *, dtype: str | torch.dtype | None = None) -> torch.Tensor:
         """Stack every variable this raster carries into one model-input tensor.
 
         Select and order the variables with xarray before stacking them.

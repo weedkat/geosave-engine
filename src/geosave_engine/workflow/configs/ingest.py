@@ -47,7 +47,12 @@ class IngestConfig(ConfigModel):
         """Require exact source bindings without opening any source."""
         if not requirements:
             raise ValueError("At least one model source is required")
-        if missing := requirements.keys() - self.sources.keys():
-            raise ValueError(f"Source bindings are missing: {sorted(missing)}")
-        if extra := self.sources.keys() - requirements.keys():
-            raise ValueError(f"Unknown source bindings: {sorted(extra)}")
+        missing = requirements.keys() - self.sources.keys()
+        extra = self.sources.keys() - requirements.keys()
+        if missing or extra:
+            problems = []
+            if missing:
+                problems.append(f"Source bindings are missing: {sorted(missing)}")
+            if extra:
+                problems.append(f"Unknown source bindings: {sorted(extra)}")
+            raise ValueError("; ".join(problems))

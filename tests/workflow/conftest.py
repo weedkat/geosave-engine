@@ -8,6 +8,8 @@ from urllib.parse import parse_qs, urlparse
 import dask.array as da
 import numpy as np
 from odc.geo.geobox import GeoBox
+from prefect.settings import temporary_settings
+from prefect.testing.utilities import prefect_test_harness
 import pytest
 import pystac
 from pystac.extensions.projection import ProjectionExtension
@@ -19,6 +21,15 @@ from geosave_engine.geodata.core.raster import raster
 from geosave_engine.geodata.stac.query import StacQuery
 from geosave_engine.geodata.stac.source import StacSource
 from geosave_engine.workflow.specs import ModelSpec, RasterRequirement
+
+
+@pytest.fixture(scope="module")
+def prefect_server():
+    with (
+        temporary_settings({"server.analytics_enabled": False}),
+        prefect_test_harness(),
+    ):
+        yield
 
 
 @pytest.fixture
