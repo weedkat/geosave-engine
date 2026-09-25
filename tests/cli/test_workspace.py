@@ -2,6 +2,7 @@
 
 from importlib import import_module
 import runpy
+import subprocess
 import sys
 
 from litdata import StreamingDataLoader, StreamingDataset
@@ -14,6 +15,7 @@ from geosave_engine.cli.core.workspace import create_workspace
 from geosave_engine.ml.cli import GeosaveCLI
 from geosave_engine.ml.tasks import SemanticSegmentationTask
 from geosave_engine.workflow.spec import ModelSpec
+from geosave_engine.cli.core.templates import get_tasks
 
 
 @pytest.fixture
@@ -144,3 +146,37 @@ def test_generated_entrypoint_parses_model_and_augmentation_configs(
         {"name": "RandomHorizontalFlip", "init_args": {"p": 0.5}},
         {"name": "RandomVerticalFlip", "init_args": {"p": 0.5}},
     ]
+
+
+def test_custom_lightning_workspace_runs_one_train_and_validation_batch(tmp_path):
+    assert "lightning" in get_tasks()["custom"]
+    create_workspace(tmp_path, "custom", "lightning")
+    script = """
+from modules.data import CustomDataModule
+from modules.task import CustomTask
+from geosave_engine.ml.cli import GeosaveCLI
+
+cli = GeosaveCLI(
+    run=False,
+    args=["--config", "configs/model.yaml"],
+    save_config_callback=None,
+    auto_configure_optimizers=False,
+    subclass_mode_model=True,
+    subclass_mode_data=True,
+)
+assert isinstance(cli.model, CustomTask)
+assert isinstance(cli.datamodule, CustomDataModule)
+cli.datamodule.setup("fit")
+train_batch = next(iter(cli.datamodule.train_dataloader()))
+validation_batch = next(iter(cli.datamodule.val_dataloader()))
+assert cli.model.training_step(train_batch, 0).ndim == 0
+assert cli.model.validation_step(validation_batch, 0).ndim == 0
+"""
+    result = subprocess.run(
+        [sys.executable, "-c", script],
+        cwd=tmp_path,
+        check=False,
+        capture_output=True,
+        text=True,
+    )
+    assert result.returncode == 0, result.stderr

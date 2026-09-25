@@ -1,0 +1,27 @@
+model_name: custom_task
+
+trainer:
+  accelerator: cpu
+  devices: 1
+  max_epochs: 1
+  limit_train_batches: 1
+  limit_val_batches: 1
+  logger: false
+  enable_checkpointing: false
+  enable_progress_bar: false
+  enable_model_summary: false
+
+model:
+  class_path: modules.task.CustomTask
+  init_args:
+    input_size: 4
+    hidden_size: 8
+    learning_rate: 0.001
+
+data:
+  class_path: modules.data.CustomDataModule
+  init_args:
+    train_size: 16
+    val_size: 8
+    batch_size: 4
+    num_workers: 0
