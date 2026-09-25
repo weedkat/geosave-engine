@@ -1,4 +1,4 @@
-# Model contracts
+# Model composition
 
 ```python
 class Encoder(nn.Module):
@@ -31,11 +31,12 @@ attribute; ambiguous sources and incompatible annotations raise errors.
 
 | File | Responsibility |
 | --- | --- |
-| `step.py` | Method declarations, input routing, and runtime value checks |
-| `graph.py` | Method selection and dependency ordering |
-| `published.py` | Constructor attribute declarations and argument wiring |
-| `chain.py` | Registered modules, execution, and Hugging Face persistence |
-| `../../registry/model.py` | Factory registration, construction, and saved arguments |
+| `../model_chain/step.py` | Method declarations and runtime value checks |
+| `../model_chain/routing.py` | Method selection and dependency ordering |
+| `../model_chain/published.py` | Constructor attribute declarations and argument wiring |
+| `../model_chain/chain.py` | Registered modules and execution |
+| `../registry/model.py` | Factory registration, construction, and saved arguments |
+| `../huggingface.py` | Transformers saving, loading, and Hub publication |
 
 ## Geospatial context
 
@@ -74,37 +75,44 @@ normalization is separate and remains caller-owned.
 ## Saving, uploading, and loading
 
 ```python
-from geosave_engine.ml.models.contract import ModelChain
-from geosave_engine.ml.registry import StageSpec
+from transformers import AutoModel
 
-stages: dict[str, StageSpec] = {
+from geosave_engine.ml.huggingface import GeoSaveModel
+from geosave_engine.ml.registry import build_model
+
+stages = {
     "encoder": {
         "name": "prithvi_tl",
         "init_args": {"pretrained": False, "num_frames": 2},
     },
 }
-model = ModelChain(stages=stages)
-model.save_pretrained("artifacts/model")
-restored = ModelChain.from_pretrained("artifacts/model", local_files_only=True)
+model = build_model(stages)
+published = GeoSaveModel.from_chain(model)
+published.save_pretrained("artifacts/model")
+restored = AutoModel.from_pretrained("artifacts/model", local_files_only=True)
 
 # Run these when publishing to your own repository:
-model.push_to_hub("your-account/your-model")
-restored = ModelChain.from_pretrained("your-account/your-model", revision="main")
-samples = TileDataset(tiles, model_context=restored.encoder.model_context)
+published.push_to_hub("your-account/your-model")
+restored = AutoModel.from_pretrained("your-account/your-model", revision="main")
+samples = TileDataset(
+    tiles,
+    model_context=restored.chain.encoder.model_context,
+)
 ```
 
-Construct publishable chains from stage specifications. Their artifact contains
-`config.json`, `model.safetensors`, and a generated model card. Configuration
-records stage order, selectors, constructor defaults, and resolved Published
-arguments. The saved `pretrained` flags are false: the exported weights supply
-the model state. Loading is strict by default.
+`build_model` constructs reproducible chains from stage specifications.
+`GeoSaveModel.from_chain` is the only persistence boundary. Its artifact contains
+`config.json`, `model.safetensors`, adapter source, and a generated model card.
+Configuration records stage order, selectors, constructor defaults, and resolved
+Published arguments. Saved `pretrained` flags are false because exported weights
+supply the model state.
 
 The receiving environment needs GeoSave Engine and the stage implementations.
 Built-in named factories are registered by the package. Custom named factories
 must be registered by their package; custom `class_path` classes must be
-importable. The mixin does not bundle Python source or pickle extractor functions.
-An encoder's `model_context` method returns with its class. Coordinates for a
-particular image are extracted after loading, not stored in the model artifact.
+importable. The adapter does not pickle extractor functions. An encoder's
+`model_context` method returns with its class. Coordinates for a particular
+image are extracted after loading, not stored in the model artifact.
 
 ## Releasing a trained model
 
@@ -136,8 +144,6 @@ output = model(image=image, **model_context)
 Alternatively, loading without importing the integration uses the exported
 adapter code: `AutoModel.from_pretrained(repo_id, revision=commit_sha,
 trust_remote_code=True)`. Both forms require GeoSave and custom stage packages.
-The original mixin format still loads through `ModelChain.from_pretrained`;
-it is a separate format from the Transformers export.
 
 A Lightning `.ckpt` records training state and is appropriate for resuming or
 reproducing training. It may be shared for that purpose, but the inference

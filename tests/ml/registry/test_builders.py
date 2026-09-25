@@ -13,7 +13,7 @@ from geosave_engine.ml.registry import (
     build_optimizer,
     build_scheduler,
 )
-from geosave_engine.ml.registry.criterion import ProbOhemCrossEntropy2d
+from geosave_engine.ml.criterion import ProbOhemCrossEntropy2d
 
 
 @pytest.mark.parametrize(

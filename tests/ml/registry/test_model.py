@@ -8,7 +8,7 @@ import torch
 from torch import nn
 
 from geosave_engine.ml.model_chain import Published, chain_step
-from geosave_engine.ml.registry import StageSpec, build_model, register_model
+from geosave_engine.ml.registry import BuildSpec, build_model, register_model
 from geosave_engine.ml.registry.model import MODEL_REGISTRY
 
 
@@ -50,7 +50,7 @@ def model_factories(monkeypatch: pytest.MonkeyPatch) -> None:
 def test_build_model_builds_serializable_stages_and_wires_published_values(
     use_path: bool, model_factories: None
 ) -> None:
-    stages: dict[str, StageSpec] = {
+    stages: dict[str, dict[str, str]] = {
         "encoder": {"name": "test"},
         "head": {"name": "test"},
     }
@@ -110,7 +110,7 @@ def test_empty_model_is_rejected() -> None:
     ],
 )
 def test_model_chain_rejects_malformed_stage_selectors(
-    spec: StageSpec, model_factories: None
+    spec: dict[str, object], model_factories: None
 ) -> None:
     with pytest.raises((TypeError, ValueError)):
         build_model({"encoder": spec})
@@ -119,7 +119,7 @@ def test_model_chain_rejects_malformed_stage_selectors(
 def test_build_model_records_an_independent_resolved_recipe(
     model_factories: None,
 ) -> None:
-    specs: dict[str, StageSpec] = {
+    specs: dict[str, dict[str, str]] = {
         "encoder": {"name": "test"},
         "head": {"name": "test"},
     }
@@ -127,6 +127,17 @@ def test_build_model_records_an_independent_resolved_recipe(
     model = build_model(specs)
     specs.clear()
     assert list(model.stage_specs) == ["encoder", "head"]
+
+
+def test_build_model_accepts_validated_build_specs(model_factories: None) -> None:
+    model = build_model(
+        {
+            "encoder": BuildSpec(name="test"),
+            "head": BuildSpec(name="test"),
+        }
+    )
+
+    torch.testing.assert_close(model(torch.tensor(3.0)), torch.tensor(8.0))
     copied = model.stage_specs
     copied.clear()
     assert list(model.stage_specs) == ["encoder", "head"]

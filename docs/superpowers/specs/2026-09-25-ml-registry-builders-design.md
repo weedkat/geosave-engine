@@ -15,6 +15,8 @@ and the final supervised dataset representation remain separate future work.
 
 ```text
 src/geosave_engine/ml/
+├── criterion/
+│   └── ohem.py
 ├── data/
 │   └── semantic_segmentation.py
 ├── encoding/
@@ -63,7 +65,7 @@ The public registry interface includes:
 
 - `BuildSpec` with validation, resolution, and serialization.
 - `CriterionSpec` and `build_criterion`.
-- `StageSpec`, `register_model`, `list_models`, and `build_model`.
+- `register_model`, `list_models`, and `build_model` over ordered `BuildSpec` values.
 - `OptimizerSpec` and `build_optimizer`.
 - `SchedulerSpec` and `build_scheduler`.
 
@@ -76,6 +78,8 @@ arguments point to the actual PyTorch constructor.
 
 `build_criterion` resolves concise registered names for GeoSave and common
 PyTorch criteria or an importable `nn.Module` class, then passes `init_args`.
+Concrete loss implementations live under `ml.criterion`; the registry module
+owns only configuration and construction.
 
 ### Model
 
@@ -147,9 +151,8 @@ because it has no reproducible construction recipe. Local saving, remote upload,
 AutoModel registration, and remote-code export are tested only through
 `GeoSaveModel`.
 
-After removing `PyTorchModelHubMixin`, the direct `huggingface-hub` runtime
-dependency is removed if no other base installation path imports it. Transformers
-and its Hub dependency remain under the existing `hub` optional dependency.
+The direct `huggingface-hub` runtime dependency remains because built-in model
+implementations use `hf_hub_download` independently of the Transformers adapter.
 
 ## Built-in Lightning Pair
 

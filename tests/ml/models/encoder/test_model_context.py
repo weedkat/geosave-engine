@@ -8,12 +8,14 @@ import torch
 from odc.geo.geobox import GeoBox
 from torch import nn
 from torch.utils.data import DataLoader
+from transformers import AutoModel
 
 from geosave_engine.geodata import DataTree, Dataset, raster, stack
 from geosave_engine.geodata.attrs import TimeSpec
 from geosave_engine.geodata.datasets import TileDataset
 from geosave_engine.geodata.transform.tiling import Tiles
-from geosave_engine.ml.model_chain import ModelChain
+from geosave_engine.ml.huggingface import GeoSaveModel
+from geosave_engine.ml.registry import build_model
 from geosave_engine.ml.models.encoder.clay import Clay
 from geosave_engine.ml.models.encoder.prithvi import (
     BACKBONE_REGISTRY,
@@ -195,15 +197,15 @@ def test_stack_context_selects_its_source_explicitly(scene: Dataset) -> None:
     )
 
 
-def test_hub_reload_restores_prithvi_context_extractor(
+def test_transformers_reload_restores_prithvi_context_extractor(
     scene: Dataset, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     def build(*args: object, **kwargs: object) -> Backbone:
         return Backbone()
 
     monkeypatch.setattr(BACKBONE_REGISTRY, "build", build)
-    model = ModelChain(
-        stages={
+    model = build_model(
+        {
             "encoder": {
                 "name": "prithvi_tl",
                 "init_args": {
@@ -221,10 +223,11 @@ def test_hub_reload_restores_prithvi_context_extractor(
     assert isinstance(original_backbone, Backbone)
     with torch.no_grad():
         original_backbone.scale.fill_(7.0)
-    model.save_pretrained(tmp_path)
+    GeoSaveModel.from_chain(model).save_pretrained(tmp_path)
 
-    restored = ModelChain.from_pretrained(tmp_path, local_files_only=True)
-    restored_encoder = restored.get_submodule("encoder")
+    restored = AutoModel.from_pretrained(tmp_path, local_files_only=True)
+    assert isinstance(restored, GeoSaveModel)
+    restored_encoder = restored.chain.get_submodule("encoder")
     assert isinstance(restored_encoder, PrithviTL)
     assert restored_encoder.model is not original_backbone
     torch.testing.assert_close(

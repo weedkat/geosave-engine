@@ -19,7 +19,7 @@
 - Keep native constructor exceptions intact after registry validation.
 - Do not implement model-spec inference inputs, postprocessing, dense merging, threshold export, or the concrete supervised dataset in this phase.
 - Preserve unrelated workflow/spec changes already in the worktree.
-- Reuse the user's in-progress move of OHEM into `ml/registry/criterion/ohem.py`; remove only the conflicting empty `criterion.py` and misspelled empty `scheduier.py` files.
+- Keep concrete loss implementations under `ml/criterion`; registry modules own only configured construction.
 
 ## Review Focus
 
@@ -35,11 +35,11 @@
 
 **Files:**
 - Create: `src/geosave_engine/ml/registry/factory.py`
-- Modify: `src/geosave_engine/ml/registry/criterion/__init__.py`
-- Keep: `src/geosave_engine/ml/registry/criterion/ohem.py`
+- Create: `src/geosave_engine/ml/registry/criterion.py`
+- Create: `src/geosave_engine/ml/criterion/__init__.py`
+- Move: `src/geosave_engine/ml/registry/criterion/ohem.py` to `src/geosave_engine/ml/criterion/ohem.py`
 - Modify: `src/geosave_engine/ml/registry/optimizer.py`
 - Create: `src/geosave_engine/ml/registry/scheduler.py`
-- Delete: `src/geosave_engine/ml/registry/criterion.py`
 - Delete: `src/geosave_engine/ml/registry/scheduier.py`
 - Modify: `src/geosave_engine/ml/registry/__init__.py`
 - Create: `tests/ml/registry/test_builders.py`
@@ -125,7 +125,7 @@ class BuildSpec(BaseModel):
         return factory
 ```
 
-Define `CriterionSpec(BuildSpec)` and register `CROSS_ENTROPY` plus `OHEM` in `registry/criterion/__init__.py`. Builders accept models or mappings, normalize with `model_validate`, call the spec's `resolve`, and forward `init_args` unchanged.
+Define `CriterionSpec(BuildSpec)` and register `CROSS_ENTROPY` plus `OHEM` in `registry/criterion.py`. Builders accept models or mappings, normalize with `model_validate`, call the spec's `resolve`, and forward `init_args` unchanged. Keep the OHEM implementation under `ml.criterion`.
 
 - [ ] **Step 4: Write failing optimizer and scheduler tests**
 
@@ -234,7 +234,7 @@ git commit -m "feat: restore configurable ML builders"
 
 ```python
 from geosave_engine.ml.model_chain import ModelChain, Published, chain_step
-from geosave_engine.ml.registry import StageSpec, build_model
+from geosave_engine.ml.registry import BuildSpec, build_model
 
 
 def test_build_model_records_an_independent_resolved_recipe(model_factories):
@@ -276,7 +276,7 @@ Move `graph.py` to `routing.py`; use names that state effects (`ordered_steps`, 
 
 - [ ] **Step 4: Refactor the model registry around `build_model`**
 
-Make `StageSpec` extend `BuildSpec`, delegate selector validation to `resolve`, retain published-value/default snapshot logic, and construct the final chain from built modules. Set the chain's internal recipe to an independent copy of resolved stage specifications before returning it. `model_chain` must not import `registry`, avoiding a construction/execution cycle.
+Use `BuildSpec` directly for each stage; model stages add no fields and do not need an empty subtype. Retain published-value/default snapshot logic and construct the final chain from built modules. Set the chain's internal recipe to an independent copy of resolved stage specifications before returning it. `model_chain` must not import `registry`, avoiding a construction/execution cycle.
 
 - [ ] **Step 5: Migrate every live import and verify no old path remains**
 
@@ -307,8 +307,8 @@ git commit -m "refactor: separate model construction from execution"
 - Move reusable test models into: `tests/ml/model_chain/conftest.py`
 - Modify: `tests/ml/models/encoder/test_model_context.py`
 - Modify: `src/geosave_engine/ml/models/README.md`
-- Modify: `pyproject.toml`
-- Modify mechanically: `uv.lock`
+- Audit: `pyproject.toml`
+- Audit: `uv.lock`
 
 **Interfaces:**
 - Consumes: configured `ModelChain.stage_specs` and `registry.build_model`.
@@ -349,9 +349,9 @@ Expected: adapter reconstruction still calls `ModelChain(stages=...)` or tests r
 
 Import `ModelChain` from `ml.model_chain` and `build_model` from `ml.registry`. In `GeoSaveModel.__init__`, reconstruct omitted chains with `build_model(specs)`. Keep `from_chain` sharing the supplied modules and state. Preserve `no_init_weights()` around `post_init()`.
 
-- [ ] **Step 4: Remove the direct Hub dependency and obsolete documentation**
+- [ ] **Step 4: Remove obsolete publication documentation and audit dependencies**
 
-Remove `huggingface-hub` from base dependencies, run `uv lock`, and remove every claim that a plain `ModelChain` saves or uploads. Document `GeoSaveModel.from_chain(...).save_pretrained(...)` as the only publication path.
+Remove every claim that a plain `ModelChain` saves or uploads. Document `GeoSaveModel.from_chain(...).save_pretrained(...)` as the only publication path. Retain the direct `huggingface-hub` dependency because built-in model implementations use `hf_hub_download` independently of the adapter.
 
 - [ ] **Step 5: Run adapter tests to verify GREEN**
 
@@ -362,7 +362,7 @@ Expected: all tests pass, including the fresh offline process.
 - [ ] **Step 6: Commit Hugging Face separation**
 
 ```bash
-git add src/geosave_engine/ml/huggingface.py tests/ml pyproject.toml uv.lock src/geosave_engine/ml/models/README.md
+git add src/geosave_engine/ml/huggingface.py tests/ml src/geosave_engine/ml/models/README.md
 git commit -m "refactor: isolate Hugging Face publication"
 ```
 

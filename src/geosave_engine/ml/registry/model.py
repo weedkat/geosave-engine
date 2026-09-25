@@ -3,31 +3,20 @@ from __future__ import annotations
 import inspect
 from collections.abc import Callable, Mapping
 from copy import deepcopy
-from dataclasses import dataclass
-from typing import TYPE_CHECKING, Any, TypeVar
+from typing import Any
 
 import torch.nn as nn
 
+from geosave_engine.ml.model_chain import ModelChain
+from geosave_engine.ml.model_chain.published import published_kwargs
 from geosave_engine.ml.registry.factory import BuildSpec
 
-if TYPE_CHECKING:
-    from geosave_engine.ml.model_chain import ModelChain
-
-type ModelFactory = Callable[..., nn.Module]
-_Factory = TypeVar("_Factory", bound=ModelFactory)
-MODEL_REGISTRY: dict[str, dict[str, ModelFactory]] = {}
+MODEL_REGISTRY: dict[str, dict[str, Callable[..., nn.Module]]] = {}
 
 
-class StageSpec(BuildSpec):
-    """Describe one model stage selected by registered name or class path.
-
-    Args:
-        name: Registered factory name, matched without case sensitivity.
-        class_path: Dotted import path to an ``nn.Module`` subclass.
-        init_args: Keyword arguments passed to the selected stage constructor.
-    """
-
-def register_model(stage: str, name: str) -> Callable[[_Factory], _Factory]:
+def register_model[Factory: Callable[..., nn.Module]](
+    stage: str, name: str
+) -> Callable[[Factory], Factory]:
     """Register a model factory under a stage and name.
 
     Args:
@@ -41,7 +30,7 @@ def register_model(stage: str, name: str) -> Callable[[_Factory], _Factory]:
         ValueError: The stage and name already identify another factory.
     """
 
-    def decorator(factory: _Factory) -> _Factory:
+    def decorator(factory: Factory) -> Factory:
         key = name.upper()
         existing = MODEL_REGISTRY.get(stage, {}).get(key)
         if existing is not None and existing is not factory:
@@ -68,81 +57,8 @@ def list_models(stage: str | None = None) -> dict[str, list[str]]:
     return {name: list(factories) for name, factories in MODEL_REGISTRY.items()}
 
 
-@dataclass(frozen=True)
-class BuiltStages:
-    """Constructed stages and their reproducible initialization arguments.
-
-    Args:
-        modules: Stage names mapped to module instances in construction order.
-        config: Construction specifications with defaults and Published values.
-    """
-
-    modules: dict[str, nn.Module]
-    config: dict[str, dict[str, Any]]
-
-
-def _resolve_stage(
-    spec: StageSpec,
-    factories: Mapping[str, ModelFactory],
-) -> ModelFactory:
-    """Resolve a model-stage selector to its factory."""
-    return spec.resolve(factories, nn.Module)
-
-
-def build_stages(
-    stages: Mapping[str, StageSpec | Mapping[str, Any]],
-) -> BuiltStages:
-    """Construct stages and record the arguments needed to reconstruct them.
-
-    Args:
-        stages: Ordered factory or class specifications. Explicit arguments
-            override attributes published by earlier stages.
-
-    Returns:
-        Modules and independent construction specifications with defaults filled.
-        Saved pretrained arguments are False; exported weights supply the state.
-
-    Raises:
-        ValueError: Stages are empty or a construction specification is invalid.
-        TypeError: Constructor arguments or Published attributes are incompatible.
-    """
-    from geosave_engine.ml.model_chain.published import published_kwargs
-
-    if not stages:
-        raise ValueError("Supply at least one model stage")
-    modules: dict[str, nn.Module] = {}
-    config: dict[str, dict[str, Any]] = {}
-    for stage, spec in stages.items():
-        configured = StageSpec.model_validate(spec)
-        factory = _resolve_stage(configured, MODEL_REGISTRY.get(stage, {}))
-        try:
-            kwargs = published_kwargs(factory, modules, configured.init_args)
-            signature = inspect.signature(factory)
-            bound = signature.bind(**kwargs)
-            bound.apply_defaults()
-            init_args: dict[str, object] = {}
-            for name, value in bound.arguments.items():
-                kind = signature.parameters[name].kind
-                if kind is inspect.Parameter.VAR_KEYWORD:
-                    init_args.update(value)
-                elif kind is not inspect.Parameter.VAR_POSITIONAL:
-                    init_args[name] = value
-            # Snapshot before construction: factories may mutate mutable arguments.
-            init_args = deepcopy(init_args)
-            modules[stage] = factory(**kwargs)
-        except TypeError as error:
-            raise TypeError(f"Building stage {stage!r} failed: {error}") from error
-        if "pretrained" in signature.parameters:
-            init_args["pretrained"] = False
-        config[stage] = {
-            **configured.model_dump(exclude_none=True),
-            "init_args": init_args,
-        }
-    return BuiltStages(modules=modules, config=config)
-
-
 def build_model(
-    stages: Mapping[str, StageSpec | Mapping[str, Any]],
+    stages: Mapping[str, BuildSpec | Mapping[str, Any]],
 ) -> ModelChain:
     """Construct a reproducible model chain from ordered stage specifications.
 
@@ -152,9 +68,40 @@ def build_model(
     Returns:
         Model chain with an independent resolved construction recipe.
     """
-    from geosave_engine.ml.model_chain import ModelChain
+    import geosave_engine.ml.models  # noqa: F401
 
-    built = build_stages(stages)
-    model = ModelChain(**built.modules)
-    model._stage_specs = deepcopy(built.config)
+    if not stages:
+        raise ValueError("Supply at least one model stage")
+
+    modules: dict[str, nn.Module] = {}
+    recipe: dict[str, dict[str, Any]] = {}
+    for stage, value in stages.items():
+        spec = value if isinstance(value, BuildSpec) else BuildSpec.model_validate(value)
+        factory = spec.resolve(MODEL_REGISTRY.get(stage, {}), nn.Module)
+        try:
+            kwargs = published_kwargs(factory, modules, spec.init_args)
+            signature = inspect.signature(factory)
+            bound = signature.bind(**kwargs)
+            bound.apply_defaults()
+            init_args: dict[str, object] = {}
+            for name, argument in bound.arguments.items():
+                kind = signature.parameters[name].kind
+                if kind is inspect.Parameter.VAR_KEYWORD:
+                    init_args.update(argument)
+                elif kind is not inspect.Parameter.VAR_POSITIONAL:
+                    init_args[name] = argument
+            init_args = deepcopy(init_args)
+            modules[stage] = factory(**kwargs)
+        except TypeError as error:
+            raise TypeError(f"Building stage {stage!r} failed: {error}") from error
+
+        if "pretrained" in signature.parameters:
+            init_args["pretrained"] = False
+        recipe[stage] = {
+            **spec.model_dump(exclude_none=True),
+            "init_args": init_args,
+        }
+
+    model = ModelChain(**modules)
+    model._stage_specs = deepcopy(recipe)
     return model
