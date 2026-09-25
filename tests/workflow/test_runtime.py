@@ -384,20 +384,29 @@ def test_null_collection_uses_next_endpoint(catalog_http, monkeypatch):
     ]
 
 
-def test_static_catalog_missing_collection_uses_next_endpoint(catalog_http):
+@pytest.mark.parametrize("children", [[], ["other"]], ids=["empty", "nonempty"])
+def test_static_catalog_missing_collection_uses_next_endpoint(catalog_http, children):
     visited, responses = catalog_http
     responses["https://primary.test/stac"] = {
         "type": "Catalog",
         "stac_version": "1.0.0",
-        "id": "empty",
+        "id": "static",
         "description": "Static catalog without the requested collection",
-        "links": [],
+        "links": [
+            {
+                "rel": "child",
+                "href": f"https://primary.test/stac/collections/{name}",
+                "type": "application/json",
+            }
+            for name in children
+        ],
     }
     with pytest.warns(UserWarning):
         sources = open_sources({"imagery": {}}, {"imagery": requirement()})
     assert sources["imagery"].collection == "sentinel-2-l2a"
     assert visited == [
         "https://primary.test/stac",
+        *(f"https://primary.test/stac/collections/{name}" for name in children),
         "https://backup.test/stac",
         "https://backup.test/stac/collections/sentinel-2-l2a",
     ]

@@ -202,7 +202,7 @@ def _open_client(requirement: RasterRequirement) -> StacClient:
                 raise
             last_error = error
         else:
-            if collection is not None:
+            if collection is not None and collection.id == requirement.collection:
                 return StacClient(client)
             last_error = LookupError(f"Collection {requirement.collection!r} not found")
         status = getattr(last_error, "status_code", None)
