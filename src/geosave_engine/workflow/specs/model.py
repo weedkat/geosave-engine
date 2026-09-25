@@ -7,11 +7,13 @@ from typing import ClassVar, Literal, Self
 
 from pydantic import Field
 import yaml
+from yaml.nodes import ScalarNode
 
 from .base import Name, SpecModel
+from .call import Ref
 from .postprocessing import PostprocessingSpec
-from .preprocessing import OperationSpec, Ref
 from .sources import RasterRequirement
+from .stage import StageSpec
 
 
 class _Loader(yaml.SafeLoader):
@@ -38,7 +40,12 @@ class _Dumper(yaml.SafeDumper):
         return super().represent_data(data)
 
 
-_Loader.add_constructor("!ref", lambda loader, node: Ref(loader.construct_scalar(node)))
+def _construct_ref(loader: _Loader, node: ScalarNode) -> Ref:
+    """Construct one inert scalar reference."""
+    return Ref(loader.construct_scalar(node))
+
+
+_Loader.add_constructor("!ref", _construct_ref)
 
 
 class ModelSpec(SpecModel):
@@ -48,8 +55,8 @@ class ModelSpec(SpecModel):
 
     schema_version: Literal[2]
     sources: dict[Name, RasterRequirement]
-    preprocessing: dict[Name, OperationSpec] = Field(default_factory=dict)
-    inference: dict[Name, OperationSpec] = Field(default_factory=dict)
+    preprocessing: StageSpec = Field(default_factory=StageSpec)
+    inference: StageSpec = Field(default_factory=StageSpec)
     postprocessing: PostprocessingSpec = Field(default_factory=PostprocessingSpec)
 
     def validated_copy(self) -> Self:

@@ -4,7 +4,6 @@ from .base import Name, SpecModel, Text
 from .call import CallSpec, CallValue, Ref
 from .model import ModelSpec
 from .postprocessing import PostprocessingSpec
-from .preprocessing import OperationSpec
 from .stage import StageSpec
 from .sources import (
     AttrsRequirement,
@@ -21,7 +20,6 @@ __all__ = [
     "ModelSpec",
     "Name",
     "NamespaceRequirement",
-    "OperationSpec",
     "PostprocessingSpec",
     "RasterRequirement",
     "Ref",

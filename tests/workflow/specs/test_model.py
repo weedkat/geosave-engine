@@ -4,7 +4,7 @@ import pytest
 from pydantic import ValidationError
 import yaml
 
-from geosave_engine.workflow.specs import ModelSpec, OperationSpec, Ref
+from geosave_engine.workflow.specs import CallSpec, ModelSpec, Ref, StageSpec
 
 
 def test_inference_reuses_explicit_call_declarations(tmp_path):
@@ -25,6 +25,8 @@ def test_inference_reuses_explicit_call_declarations(tmp_path):
 
     path = spec.save(tmp_path)
 
+    assert isinstance(spec.preprocessing, StageSpec)
+    assert isinstance(spec.inference, StageSpec)
     assert ModelSpec.load(path) == spec
 
 
@@ -55,11 +57,11 @@ def test_python_and_yaml_round_trip_preserves_references_and_literals(tmp_path):
         schema_version=2,
         sources={},
         preprocessing={
-            "selected": OperationSpec(
+            "selected": CallSpec(
                 call=Ref("optical.__getitem__"),
                 kwargs={"key": ["red", "nir"]},
             ),
-            "result": OperationSpec(
+            "result": CallSpec(
                 call="missing_package.for_this_stage",
                 kwargs={
                     "items": [Ref("selected"), {"ref": "literal"}],
@@ -165,7 +167,7 @@ def test_yaml_reference_support_does_not_modify_safe_loader():
 
 def test_save_revalidates_mutated_declarations(tmp_path):
     spec = ModelSpec(schema_version=2, sources={})
-    spec.preprocessing["bad.name"] = OperationSpec(call="builtins.dict")
+    spec.preprocessing.root["bad.name"] = CallSpec(call="builtins.dict")
 
     with pytest.raises(ValueError):
         spec.save(tmp_path)
