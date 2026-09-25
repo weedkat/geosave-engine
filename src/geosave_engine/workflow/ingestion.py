@@ -24,7 +24,8 @@ def stac_config(
         defaults: Existing settings, including chunking and metadata capture.
 
     Returns:
-        A new native configuration with bands in the required order.
+        A new configuration with named bands selected, or runtime bands preserved
+        for positional channel requirements.
 
     Examples:
         >>> config = stac_config(spec.sources["optical"])
@@ -33,9 +34,10 @@ def stac_config(
     """
     requirement = RasterRequirement.model_validate(requirement)
     settings = defaults if defaults is not None else StacSourceConfig()
-    return StacSourceConfig.model_validate(
-        {**settings.model_dump(), "bands": requirement.variables}
-    )
+    config = settings.model_dump()
+    if requirement.variables is not None:
+        config["bands"] = requirement.variables
+    return StacSourceConfig.model_validate(config)
 
 
 def acquire(
@@ -97,10 +99,9 @@ def acquire(
         raster = _acquire_raster(source, anchor, config=config)
         if requirement is not None:
             try:
-                requirement.validate_raster(raster)
+                raster = requirement.select_raster(raster)
             except (TypeError, ValueError) as error:
                 raise ValueError(f"Source raster {name!r}: {error}") from error
-            raster = raster[list(requirement.variables)]
         rasters[name] = raster
     return stack(rasters)
 

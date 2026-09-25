@@ -168,10 +168,11 @@ class AttrsRequirement(SpecModel):
 
 
 class RasterRequirement(SpecModel):
-    """Describe a named raster using native variables, dimensions, and metadata.
+    """Select and validate a raster using native variables or positional channels.
 
     Args:
-        variables: Required data variables, in their selected order.
+        variables: Required data variables in their selected order.
+        channels: First N channels; mutually exclusive with variables.
         dims: Exact dimension order required for each selected variable, if set.
         dtypes: Accepted stored dtypes, if constrained.
         require_crs: Require a locatable geospatial grid.
@@ -179,7 +180,8 @@ class RasterRequirement(SpecModel):
         attrs: Metadata requirements in the existing attrs vocabulary.
     """
 
-    variables: Annotated[tuple[Text, ...], Field(min_length=1)]
+    variables: Annotated[tuple[Text, ...], Field(min_length=1)] | None = None
+    channels: Annotated[int, Field(gt=0)] | None = None
     dims: Annotated[tuple[Text, ...], Field(min_length=1)] | None = None
     dtypes: Annotated[tuple[Text, ...], Field(min_length=1)] | None = None
     require_crs: bool = False
@@ -192,7 +194,10 @@ class RasterRequirement(SpecModel):
 
     @model_validator(mode="after")
     def _validate_structure(self) -> Self:
-        unique(self.variables, "variables")
+        if (self.variables is None) == (self.channels is None):
+            raise ValueError("Exactly one of variables or channels is required")
+        if self.variables is not None:
+            unique(self.variables, "variables")
         if self.dims is not None:
             unique(self.dims, "dims")
         if self.dtypes is not None:
@@ -201,7 +206,7 @@ class RasterRequirement(SpecModel):
                     np.dtype(dtype)
                 except TypeError as error:
                     raise ValueError(f"Unknown raster dtype {dtype!r}") from error
-        unknown = self.attrs.data_vars.keys() - set(self.variables) - {"*"}
+        unknown = self.attrs.data_vars.keys() - set(self.variables or ()) - {"*"}
         if unknown:
             raise ValueError(f"Metadata names unselected variables: {sorted(unknown)}")
         return self
@@ -216,11 +221,74 @@ class RasterRequirement(SpecModel):
             TypeError: The supplied value is not a Dataset.
             ValueError: Required variables, structure, or metadata are absent.
         """
+        self.select_raster(raster)
+
+    def select_raster(self, raster: xr.Dataset) -> xr.Dataset:
+        """Return a selected lazy view after checking structure and metadata.
+
+        Args:
+            raster: Native xarray Dataset, possibly backed by Dask.
+
+        Returns:
+            Dataset with the declared variables or first N channels.
+
+        Raises:
+            TypeError: The supplied value is not a Dataset.
+            ValueError: Selection is ambiguous or a requirement is unsatisfied.
+        """
         if not isinstance(raster, xr.Dataset):
             raise TypeError("Raster requirements expect an xarray.Dataset")
+        selected = (
+            self._select_variables(raster)
+            if self.variables is not None
+            else self._select_channels(raster)
+        )
+        self._validate_grid(selected)
+        self._validate_variables(selected)
+        self._validate_attrs(selected)
+        return selected
+
+    def _select_variables(self, raster: xr.Dataset) -> xr.Dataset:
+        """Select named data variables in their declared order."""
         if missing := set(self.variables) - raster.data_vars.keys():
             raise ValueError(f"Missing raster variables: {sorted(missing)}")
-        raster = raster[list(self.variables)]
+        return raster[list(self.variables)]
+
+    def _select_channels(self, raster: xr.Dataset) -> xr.Dataset:
+        """Select channels from ordinary variables or a single band variable."""
+        names = list(raster.data_vars)
+        if any("band" in variable.dims for variable in raster.data_vars.values()):
+            if len(names) != 1:
+                raise ValueError(
+                    "Positional channels are ambiguous with multiple band variables"
+                )
+            count = raster.sizes["band"]
+            if count < self.channels:
+                raise ValueError(
+                    f"Raster requires {self.channels} channels, got {count}"
+                )
+            return raster.isel(band=slice(self.channels))
+        if len(names) < self.channels:
+            raise ValueError(
+                f"Raster requires {self.channels} channels, got {len(names)}"
+            )
+        return raster[names[: self.channels]]
+
+    def _validate_variables(self, raster: xr.Dataset) -> None:
+        """Check dimensions and stored dtypes of the selected variables."""
+        dtypes = None if self.dtypes is None else tuple(map(np.dtype, self.dtypes))
+        for name, variable in raster.data_vars.items():
+            if self.dims is not None and variable.dims != self.dims:
+                raise ValueError(
+                    f"{name} requires dimensions {self.dims}, got {variable.dims}"
+                )
+            if dtypes is not None and variable.dtype not in dtypes:
+                raise ValueError(
+                    f"{name} requires dtype in {self.dtypes}, got {variable.dtype}"
+                )
+
+    def _validate_grid(self, raster: xr.Dataset) -> None:
+        """Check that the raster has the required CRS and pixel size."""
         if self.require_crs and raster.odc.geobox is None:
             raise ValueError("Raster requires a locatable CRS and grid")
         if self.resolution is not None:
@@ -235,18 +303,9 @@ class RasterRequirement(SpecModel):
             actual = (abs(box.resolution.x), abs(box.resolution.y))
             if not np.allclose(actual, expected, rtol=1e-6, atol=0):
                 raise ValueError(f"Raster requires resolution {expected}, got {actual}")
-        for name in self.variables:
-            variable = raster[name]
-            if self.dims is not None and variable.dims != self.dims:
-                raise ValueError(
-                    f"{name} requires dimensions {self.dims}, got {variable.dims}"
-                )
-            if self.dtypes is not None and variable.dtype not in tuple(
-                map(np.dtype, self.dtypes)
-            ):
-                raise ValueError(
-                    f"{name} requires dtype in {self.dtypes}, got {variable.dtype}"
-                )
+
+    def _validate_attrs(self, raster: xr.Dataset) -> None:
+        """Check metadata on the raster, its bands and its coordinates."""
         header = attrs.create_header(raster)
         self.attrs.root.validate_namespace(header.root, where="root")
         for declarations, namespaces, scope in (

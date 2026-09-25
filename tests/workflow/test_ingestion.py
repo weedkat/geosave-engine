@@ -40,6 +40,47 @@ def test_stac_projection_preserves_runtime_settings(spec):
     assert stac_config(spec.sources["optical"]).dtype is None
 
 
+@pytest.mark.parametrize("bands", [None, ("red", "nir", "unused")])
+def test_positional_stac_config_preserves_runtime_bands(bands):
+    defaults = StacSourceConfig(bands=bands, chunks={"x": 2})
+    selected = stac_config(RasterRequirement(channels=2), defaults=defaults)
+    assert selected.model_dump() == defaults.model_dump()
+    selected.chunks["x"] = 9
+    assert defaults.chunks["x"] == 2
+
+
+@pytest.mark.parametrize(
+    "selector,names",
+    [
+        ({"variables": ["nir", "red"]}, ["nir", "red"]),
+        ({"channels": 2}, ["red", "nir"]),
+    ],
+)
+def test_acquire_selects_and_validates_real_stac_assets(local_stac, selector, names):
+    sources, anchor = local_stac
+    source = sources["optical"].set_config(bands=("red", "nir", "unused"))
+    requirement = RasterRequirement(
+        **selector,
+        dims=("time", "y", "x"),
+        dtypes=("uint16",),
+        attrs={
+            "data_vars": {"*": {"models": {"packing": {"required": ["scale_factor"]}}}}
+        },
+    )
+    tasks = []
+    with Callback(pretask=lambda *args: tasks.append(args)):
+        result = acquire(sources, anchor, requirements={"optical": requirement})
+    selected = result.gs.rasters["optical"]
+    assert tasks == []
+    assert list(selected.data_vars) == names
+    assert isinstance(selected.red.data, da.Array)
+    assert selected.red.dtype == np.dtype("uint16")
+    assert source.config.bands == ("red", "nir", "unused")
+    del source.client.items[0].assets["nir"].extra_fields["raster:bands"][0]["scale"]
+    with pytest.raises(ValueError, match="optical.*nir.*scale_factor"):
+        acquire(sources, anchor, requirements={"optical": requirement})
+
+
 def test_acquire_selects_required_sources_and_bands_without_computing(
     monkeypatch, spec, raw, source, anchor
 ):

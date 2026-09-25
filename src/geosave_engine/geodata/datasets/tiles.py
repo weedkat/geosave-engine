@@ -94,9 +94,9 @@ class TileDataset(Dataset[tuple[dict[str, Any], int]]):
             torch.Size([2, 256, 256])
         """
         tile = self.tiles[index]
+        context = {} if self.model_context is None else self.model_context(tile)
         model_inputs: dict[str, Any] = {
             "image": tile.gs.to_tensor(dtype=self.dtype),
         }
-        if self.model_context is not None:
-            model_inputs.update(self.model_context(tile))
+        model_inputs.update(context)
         return model_inputs, index

@@ -2,20 +2,21 @@ from pathlib import Path
 
 import dask.array as da
 from dask import delayed
+from dask.callbacks import Callback
 import numpy as np
 from odc.geo.geobox import GeoBox
 import pytest
 from rioxarray._io import RasterioArrayWrapper
-from torch import nn
 import xarray as xr
 
 from geosave_engine.geodata.core.raster import raster
 from geosave_engine.geodata.core.stack import stack
 from geosave_engine.geodata.utils import io
-from geosave_engine.workflow.inference import infer
+from geosave_engine.geodata.datasets import TileDataset
+from geosave_engine.geodata.transform.tiling import Tiles
 from geosave_engine.workflow.io import open_rasters, write_stack
-from geosave_engine.workflow.preprocessing import preprocess
-from geosave_engine.workflow.spec import ModelSpec
+from geosave_engine.workflow.processing import Processor
+from geosave_engine.workflow.spec import ModelSpec, Ref
 
 
 @pytest.fixture
@@ -28,6 +29,55 @@ def scene() -> xr.Dataset:
         },
         box,
     )
+
+
+@pytest.mark.parametrize("storage", ["xarray", "geotiff", "zarr"])
+@pytest.mark.parametrize(
+    "selector,names",
+    [({"variables": ["nir", "red"]}, ["nir", "red"]), ({"channels": 1}, ["red"])],
+)
+def test_open_rasters_and_processor_select_lazy_sources(
+    scene, tmp_path, storage, selector, names
+):
+    scene = scene.assign(unused=scene.red.copy()).chunk({"x": 1, "y": 1})
+    if storage == "xarray":
+        source = scene
+    elif storage == "geotiff":
+        source = tmp_path / "optical.tif"
+        io.geotiff.write_gtiff(scene, source)
+    else:
+        source = tmp_path / "optical.zarr"
+        io.zarr.write(scene, source)
+    processor = Processor(
+        ModelSpec(
+            schema_version=2,
+            sources={
+                "optical": {
+                    **selector,
+                    "dims": ["y", "x"],
+                    "dtypes": ["uint16"],
+                    "require_crs": True,
+                    "resolution": 10,
+                }
+            },
+            preprocessing={
+                "result": {"call": "builtins.dict", "kwargs": {"image": Ref("optical")}}
+            },
+        ),
+        stage="preprocessing",
+    )
+    tasks = []
+    with Callback(pretask=lambda *args: tasks.append(args)):
+        with open_rasters({"optical": source}) as opened:
+            original = opened.gs.rasters["optical"]
+            selected = processor({"optical": original})["result"]["image"]
+            assert list(selected.data_vars) == names
+            for name in names:
+                assert isinstance(selected[name].data, da.Array)
+                assert selected[name].data is original[name].data
+            assert selected.gs.geobox == scene.gs.geobox
+    assert tasks == []
+    assert list(scene.data_vars) == ["red", "nir", "unused"]
 
 
 def test_open_rasters_preserves_caller_owned_native_objects(scene):
@@ -93,28 +143,12 @@ def test_open_rasters_keeps_geotiff_pixels_lazy_until_after_tile_context(
     scene = raster({"signal": np.ones((16, 16), dtype="float32")}, box)
     path = tmp_path / "image.tif"
     io.geotiff.write_gtiff(scene, path)
-    spec = ModelSpec(
-        sources={"image": {"variables": ("signal",)}},
-        inference={
-            "inputs": {"image": {"raster": "image"}},
-            "tiling": {
-                "raster": "image",
-                "tile_shape": (4, 4),
-                "overlap": 2,
-                "window": "hann",
-            },
-        },
-    )
     events = []
     original_getitem = RasterioArrayWrapper._getitem
 
     def track_read(self, key):
         events.append(("read", str(key)))
         return original_getitem(self, key)
-
-    class Identity(nn.Module):
-        def forward(self, image):
-            return image
 
     def context(tile):
         events.append(("context", str(tile.gs.geobox.shape)))
@@ -124,19 +158,14 @@ def test_open_rasters_keeps_geotiff_pixels_lazy_until_after_tile_context(
     with open_rasters({"image": path}) as opened:
         image = opened.gs.rasters["image"]
         assert isinstance(image.signal.data, da.Array)
-        prepared = preprocess(opened, spec=spec)
+        samples = TileDataset(Tiles([image], (4, 4)), model_context=context)
         assert events == []
-        outputs = infer(
-            prepared,
-            model=Identity(),
-            settings=spec.inference,
-            model_context=context,
-            batch_size=4,
-        )
+        sample, index = samples[0]
 
     assert events[0][0] == "context"
     assert any(kind == "read" for kind, _ in events)
-    np.testing.assert_allclose(outputs[0], 1)
+    assert index == 0
+    np.testing.assert_allclose(sample["image"], 1)
 
 
 def test_open_rasters_closes_owned_files_after_a_partial_open_failure(
