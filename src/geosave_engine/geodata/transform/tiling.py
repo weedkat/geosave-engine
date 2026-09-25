@@ -432,7 +432,8 @@ class TileMerger:
         A plain mask or a single stack of logits needs no `leading_dims`:
 
         >>> merger = tiles.merger()
-        >>> merger.add(dict(zip(batch["index"].tolist(), predictions)))
+        >>> model_inputs, index = batch
+        >>> merger.add(dict(zip(index.tolist(), predictions)))
         >>> merger.merge()[0].odc.geobox == scene_a.odc.geobox
         True
 
@@ -493,7 +494,8 @@ class TileMerger:
 
         Examples:
             >>> merger.add({3: prediction})
-            >>> merger.add(dict(zip(batch["index"].tolist(), predictions)))
+            >>> model_inputs, index = batch
+            >>> merger.add(dict(zip(index.tolist(), predictions)))
         """
         prepared: list[tuple[_Raster, int, tuple[int, ...], np.ndarray]] = []
         leading_shapes = dict(self._leading_shapes)

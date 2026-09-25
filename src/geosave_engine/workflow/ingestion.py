@@ -72,6 +72,7 @@ def acquire(
         >>> raw.gs.rasters["optical"]
         <xarray.Dataset> ...
     """
+    # Check that every requested source is available.
     if requirements is not None:
         if not requirements:
             raise ValueError(
@@ -83,6 +84,7 @@ def acquire(
     if not sources:
         raise ValueError("At least one source is required")
 
+    # Load each source with its required bands, preserving caller settings.
     rasters = {}
     for name in sources if requirements is None else requirements:
         source = sources[name]

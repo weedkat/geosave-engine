@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 from collections.abc import Iterator, Mapping
-from contextlib import contextmanager
+from contextlib import ExitStack, contextmanager
 from pathlib import Path
 from tempfile import TemporaryDirectory
 
@@ -17,7 +17,7 @@ from geosave_engine.geodata.utils import io
 def open_rasters(
     raw: xr.DataTree | Mapping[str, xr.Dataset | str | Path] | str | Path,
 ) -> Iterator[xr.DataTree]:
-    """Open prediction inputs as one native raster stack.
+    """Open named rasters or a saved stack as one native DataTree.
 
     Caller-owned Datasets and DataTrees remain open. Datasets and stacks opened
     from paths are closed when the context exits, including after a partial
@@ -33,8 +33,8 @@ def open_rasters(
         TypeError: An input is neither a supported native object nor a path.
         ValueError: A path suffix names no supported raster or stack format.
     """
-    owned: list[xr.Dataset | xr.DataTree] = []
-    try:
+    # Close files opened here; leave caller-owned objects open.
+    with ExitStack() as opened:
         if isinstance(raw, xr.DataTree):
             yield raw
             return
@@ -46,7 +46,7 @@ def open_rasters(
                     rasters[name] = source
                 elif isinstance(source, str | Path):
                     raster = io.read_raster(source, chunks="auto")
-                    owned.append(raster)
+                    opened.callback(raster.close)
                     rasters[name] = raster
                 else:
                     raise TypeError(
@@ -58,7 +58,7 @@ def open_rasters(
 
         if isinstance(raw, str | Path):
             tree = io.read_stack(raw, chunks="auto")
-            owned.append(tree)
+            opened.callback(tree.close)
             yield tree
             return
 
@@ -66,9 +66,6 @@ def open_rasters(
             "raw must be an xarray DataTree, a mapping of named rasters, or a "
             f"saved stack path, got {type(raw).__name__}"
         )
-    finally:
-        for opened in reversed(owned):
-            opened.close()
 
 
 def write_stack(tree: xr.DataTree, path: str | Path) -> str:
@@ -86,14 +83,9 @@ def write_stack(tree: xr.DataTree, path: str | Path) -> str:
         TypeError: `tree` is not a DataTree.
         ValueError: The destination is remote or does not end in ``.zarr``.
     """
-    if "://" in str(path):
-        raise ValueError("Raster stack output requires a local path")
-    destination = Path(path)
-    if destination.suffix != ".zarr":
-        raise ValueError("Raster stack output must end in .zarr")
-    if destination.exists():
-        raise FileExistsError(f"Output already exists: {destination}")
+    destination = _destination(path)
 
+    # Publish the destination only after every raster has been written.
     destination.parent.mkdir(parents=True, exist_ok=True)
     with TemporaryDirectory(
         prefix=f".{destination.name}-", dir=destination.parent
@@ -104,3 +96,16 @@ def write_stack(tree: xr.DataTree, path: str | Path) -> str:
             raise FileExistsError(f"Output already exists: {destination}")
         staged.rename(destination)
     return str(destination)
+
+
+def _destination(path: str | Path) -> Path:
+    """Return a new local Zarr path, rejecting remote or existing destinations."""
+    if "://" in str(path):
+        raise ValueError("Raster stack output requires a local path")
+    destination = Path(path)
+    if destination.suffix != ".zarr":
+        raise ValueError("Raster stack output must end in .zarr")
+    if destination.exists():
+        raise FileExistsError(f"Output already exists: {destination}")
+
+    return destination

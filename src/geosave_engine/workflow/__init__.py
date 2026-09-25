@@ -1,17 +1,6 @@
-"""Native model preparation and Prefect-orchestrated raster workflows."""
+"""Workflow configuration and native processing; import Prefect flows explicitly."""
 
-from .flows import ingest, predict
-from .inference import infer
 from .ingestion import acquire, stac_config
-from .postprocessing import postprocess
-from .preprocessing import preprocess
+from .processing import Processor
 
-__all__ = [
-    "acquire",
-    "infer",
-    "ingest",
-    "postprocess",
-    "predict",
-    "preprocess",
-    "stac_config",
-]
+__all__ = ["acquire", "stac_config", "Processor"]

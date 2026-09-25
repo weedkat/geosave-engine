@@ -15,12 +15,6 @@ trainer:
       init_args:
         logging_interval: epoch
     - class_path: lightning.pytorch.callbacks.RichProgressBar
-    # Optional prediction visualization:
-    # - class_path: geosave_engine.ml.callbacks.DensePredictionLogger
-    #   init_args:
-    #     color_map: {0: "#000000"}
-    #     class_map: {0: background}
-    #     log_image_every_n_epochs: 2
 
 model:
   class_path: geosave_engine.ml.tasks.SemanticSegmentationTask

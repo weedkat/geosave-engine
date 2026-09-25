@@ -10,7 +10,7 @@ from torchmetrics.functional.classification import (
     multiclass_jaccard_index,
 )
 
-from geosave_engine.ml.postprocessing.segmentation import softmax_argmax
+from geosave_engine.ml.tasks.semantic_segmentation import softmax_argmax
 
 _METRIC_FNS: dict[str, Callable[..., torch.Tensor]] = {
     "f1": multiclass_f1_score,

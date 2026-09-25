@@ -43,15 +43,16 @@ attribute; ambiguous sources and incompatible annotations raise errors.
 samples = TileDataset(tiles, model_context=model.encoder.model_context)
 loader = DataLoader(samples, batch_size=8)
 
-for batch in loader:
-    output = model(image=batch["image"], **batch["model_context"])
+for model_inputs, index in loader:
+    output = model(**model_inputs)
 ```
 
 An encoder owns the conversion from a selected xarray Dataset or DataArray
 into its model inputs. `TileDataset` calls the extractor while `.gs` metadata
 is still available, before pixel conversion. DataLoader batches the returned
-tensors. Training dataset adapters retain this mapping under
-`batch["model_context"]`; the Lightning task forwards it to the model.
+tensors as ordinary named entries alongside `image` in `model_inputs`.
+Training dataset adapters emit `(model_inputs, target)`; the Lightning task
+forwards the input mapping to the model.
 
 | Encoder | Per-sample context |
 | --- | --- |
@@ -146,8 +147,8 @@ not upload a training checkpoint directory. Checkpoint creation stays under
 Lightning's `ModelCheckpoint`; publication is an explicit operation after
 selecting a checkpoint.
 
-Task-owned thresholds, labels, and preprocessing are not included by exporting
-`task.model`. Document required bands, units, scaling, normalization, class
+Task-owned thresholds and workflow-owned labels and preprocessing are not included
+by exporting `task.model`. Document required bands, units, scaling, normalization, class
 labels, model context, and any decision thresholds in the release's model card.
 The adapter forwards model inputs unchanged and does not claim Transformers
 pipeline or Transformers Trainer support.
@@ -168,9 +169,9 @@ samples = TileDataset(tiles, model_context=task.model.encoder.model_context)
 loader = DataLoader(samples, batch_size=8)
 merger = tiles.merger(window="hann")
 
-for batch in Trainer().predict(task, dataloaders=loader):
+for logits, index in Trainer().predict(task, dataloaders=loader):
     merger.add(dict(zip(
-        batch["index"].tolist(), batch["logits"].cpu().numpy(), strict=True,
+        index.tolist(), logits.cpu().numpy(), strict=True,
     )))
 scene_logits = merger.merge()
 ```
@@ -181,9 +182,10 @@ xarray object. A stack needs a callback that selects its input group.
 `Trainer.predict` collects returned batches in memory; the direct model loop
 above can feed the merger incrementally for larger runs.
 
-Prediction batches use TileDataset's `image`, `index`, and optional
-`model_context`. Training, validation, and test batches retain the supervised
-`layers` mapping. Validation and test evaluate those prepared tiles directly;
+Prediction batches are `(model_inputs, index)`, with `image` and any context
+tensors in `model_inputs`; prediction returns `(logits, index)`. Training,
+validation, and test batches are `(model_inputs, target)`. Validation and test
+evaluate those prepared tiles directly;
 metrics count overlapping pixels more than once if the dataset repeats them.
 For full-scene metrics, stitch logits first and evaluate against scene labels.
 

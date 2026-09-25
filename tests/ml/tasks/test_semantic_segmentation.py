@@ -148,6 +148,38 @@ def test_optimizer_exact_groups_and_remaining_trainable_parameters():
     assert (remaining["lr"], remaining["weight_decay"]) == (1e-3, 1e-2)
 
 
+def test_optimizer_keeps_direct_chain_parameters_in_default_group(stages):
+    task = SemanticSegmentationTask(
+        in_channels=2,
+        num_classes=2,
+        model_chain=stages,
+        optimizer={
+            "class_path": "torch.optim.SGD",
+            "init_args": {"lr": 0.1},
+            "groups": {"model": {"lr": 0.01}},
+        },
+    )
+    task.configure_model()
+    bias = nn.Parameter(torch.tensor(1.0))
+    task.model.register_parameter("bias", bias)
+    task.model.register_parameter(
+        "frozen", nn.Parameter(torch.tensor(1.0), requires_grad=False)
+    )
+
+    optimizer = task.configure_optimizers()
+
+    assert len(optimizer.param_groups) == 2
+    stage, remaining = optimizer.param_groups
+    assert stage["params"] == [task.model.get_submodule("model").factor]
+    assert len(remaining["params"]) == 1
+    assert remaining["params"][0] is bias
+    assert stage["lr"] == 0.01
+    assert remaining["lr"] == 0.1
+    bias.grad = torch.tensor(2.0)
+    optimizer.step()
+    torch.testing.assert_close(bias, torch.tensor(0.8))
+
+
 @pytest.mark.parametrize("group", ["mod", "MODEL", "model.factor"])
 def test_unknown_optimizer_groups_fail_before_optimizer_construction(stages, group):
     task = SemanticSegmentationTask(
