@@ -223,11 +223,13 @@ model_inputs, target = batch
 logits = self(**model_inputs)
 ```
 
-`model_inputs` is always a `dict[str, Tensor]` whose keys are external
-`ModelChain.forward` input names. A conventional image batch is
-`({"image": image}, target)`. Models needing context receive it as ordinary named
-inputs, for example `({"image": image, "temporal_coords": temporal_coords}, target)`.
-The task does not accept a bare tensor alternative and contains no type branch for
+`model_inputs` is always a mapping whose keys are external `ModelChain.forward`
+input names. Its values are model-ready tensors for ordinary raster inputs, so a
+conventional image batch is `({"image": image}, target)`. A tiled `DataTree` keeps
+its group structure as a nested mapping under `image`; the batch contract does not
+flatten those groups. Models needing context receive it as ordinary named inputs,
+for example `({"image": image, "temporal_coords": temporal_coords}, target)`. The
+task does not accept a bare tensor alternative and contains no type branch for
 multiple batch shapes.
 
 Prediction uses the same two-element structure:

@@ -266,3 +266,16 @@ def test_a_window_needs_tiles_that_overlap() -> None:
 
     with pytest.raises(ValueError, match="needs tiles cut with an overlap"):
         tiles.merger(window="hann")
+
+
+def test_yaml_tile_shape_sequence_round_trips_through_merger() -> None:
+    """A YAML sequence must not fail tuple comparisons when results arrive."""
+    source = _raster(6, 8, seed=9)
+    shape = [4, 4]
+    tiles = Tiles([source], shape, overlap=2)
+    merger = tiles.merger()
+    _feed(tiles, merger)
+    rebuilt = merger.merge()[0]
+    np.testing.assert_array_equal(rebuilt.values, source.B.values)
+    assert rebuilt.gs.geobox == source.gs.geobox
+    assert shape == [4, 4]

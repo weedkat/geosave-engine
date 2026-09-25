@@ -31,6 +31,7 @@ Input: an `optical` Dataset. Output: `selected`, containing its red and nir band
 | `sources` | Required raster requirements; use `{}` when none are needed |
 | `preprocessing` | Ordered preparation steps; defaults to `{}` |
 | `postprocessing` | Ordered interpretation steps; defaults to `{}` |
+| `outputs` | Named postprocessing results with optional typed legends; defaults to `{}` |
 | `inference` | Saved declarations only; execution and model loading are deferred |
 
 Each step names its complete return value. `call` is a module-level import path
@@ -46,6 +47,12 @@ such as band order or normalization. They are not a second set of flow parameter
 When a model requires merging, its reconstruction calls belong in its own
 `postprocessing` section. The caller supplies request-owned objects and controls
 batching and accumulator lifetime. There is no separate merging configuration file.
+
+Each `outputs` key names a value in the completed postprocessing namespace,
+including a value supplied by the caller. After postprocessing, its declared
+`legend` is attached to the named xarray `DataArray` or the sole variable of a
+one-variable `Dataset`. Missing names and values that cannot identify one output
+variable fail directly. Preprocessing never applies output declarations.
 
 ## References and results
 

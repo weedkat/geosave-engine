@@ -197,7 +197,7 @@ class Tiles:
     def __init__(
         self,
         rasters: Sequence[Raster],
-        tile_shape: tuple[int, int],
+        tile_shape: Sequence[int],
         *,
         overlap: int = 0,
         mode: TilingMode = "reflect",
@@ -212,6 +212,9 @@ class Tiles:
                 f"{mode!r} is not a padding kind; extend a raster with one of "
                 f"{_PADDING_KINDS}"
             )
+
+        height, width = tile_shape
+        tile_shape = (height, width)
 
         # Declared, because inference widens a Literal on assignment to an attribute.
         self.tile_shape: tuple[int, int] = tile_shape
