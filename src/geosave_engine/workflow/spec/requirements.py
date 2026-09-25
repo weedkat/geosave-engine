@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 from collections.abc import Mapping
-from typing import Annotated, Self
+from typing import Annotated, Literal, Self
 
 import numpy as np
 from pydantic import Field, HttpUrl, JsonValue, field_serializer, model_validator
@@ -67,8 +67,7 @@ class FieldRequirement(SpecModel):
         }
         for field in equals.keys() & one_of.keys():
             if not any(
-                attrs.attrs_equal(equals[field], value)
-                for value in one_of[field]
+                attrs.attrs_equal(equals[field], value) for value in one_of[field]
             ):
                 raise ValueError(f"Conflicting equals and one_of for {field!r}")
         return equals, one_of
@@ -171,6 +170,7 @@ class RasterRequirement(SpecModel):
     """Select and validate a raster using native variables or positional channels.
 
     Args:
+        type: Source kind, always raster.
         variables: Required data variables in their selected order.
         channels: First N channels; mutually exclusive with variables.
         collection: STAC collection ID, paired with endpoints for acquisition.
@@ -182,6 +182,7 @@ class RasterRequirement(SpecModel):
         attrs: Metadata requirements in the existing attrs vocabulary.
     """
 
+    type: Literal["raster"] = "raster"
     variables: Annotated[tuple[Text, ...], Field(min_length=1)] | None = None
     channels: Annotated[int, Field(gt=0)] | None = None
     collection: Text | None = None

@@ -8,6 +8,10 @@ from inspect import signature
 from pathlib import Path
 from typing import Any, Literal, Self
 
+import xarray as xr
+
+from geosave_engine.geodata import attrs
+
 from .spec import ModelSpec, Ref
 from .spec.references import references, resolve
 
@@ -47,6 +51,7 @@ class Processor:
         # Keep this processor independent of later edits to the spec.
         configuration = spec.validated_copy()
         self._stage = stage
+        self._outputs = configuration.outputs if stage == "postprocessing" else {}
         self._operations: list[
             tuple[str, Callable[..., Any] | Ref, dict[str, Any]]
         ] = []
@@ -100,8 +105,8 @@ class Processor:
             Fresh dictionary of supplied values plus this stage's named results.
 
         Raises:
-            ValueError: A required name or source contract is unsatisfied.
-            TypeError: A target is not callable or its arguments are invalid.
+            ValueError: A required name, output, or source contract is unsatisfied.
+            TypeError: A call is invalid or an output cannot carry its legend.
             AttributeError: A referenced attribute is absent.
         """
         # Check all required inputs before running any operation.
@@ -123,4 +128,20 @@ class Processor:
             except Exception as error:
                 error.add_note(f"While executing {self._stage}.{name}")
                 raise
+        for name, output in self._outputs.items():
+            if name not in values:
+                raise ValueError(f"Missing postprocessing output {name!r}")
+            if output.legend is None:
+                continue
+            value = values[name]
+            if isinstance(value, xr.DataArray):
+                values[name] = attrs.rebase(value, output.legend)
+            elif isinstance(value, xr.Dataset) and len(value.data_vars) == 1:
+                variable = next(iter(value.data_vars))
+                values[name] = attrs.rebase(value, output.legend, target=variable)
+            else:
+                raise TypeError(
+                    f"Output {name!r} needs a DataArray or one-variable Dataset "
+                    "to attach its legend"
+                )
         return values

@@ -13,25 +13,16 @@ from geosave_engine.geodata.core.anchor import GeoAnchor
 from geosave_engine.geodata.core.raster import raster
 from geosave_engine.geodata.stac.query import StacQuery
 from geosave_engine.geodata.stac.source import StacSource
-from geosave_engine.workflow.spec import (
-    ModelSpec,
-    InferenceSpec,
-    RasterRequirement,
-    TensorInputSpec,
-    TilingSpec,
-)
+from geosave_engine.workflow.spec import ModelSpec, RasterRequirement
 
 
 @pytest.fixture
 def spec():
     return ModelSpec(
+        schema_version=2,
         sources={
             "optical": RasterRequirement(variables=("nir", "red"), require_crs=True)
         },
-        inference=InferenceSpec(
-            inputs={"image": TensorInputSpec(raster="optical")},
-            tiling=TilingSpec(raster="optical", tile_shape=(4, 4)),
-        ),
     )
 
 

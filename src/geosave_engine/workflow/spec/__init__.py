@@ -1,15 +1,7 @@
-"""Model-owned requirements and YAML processing specifications."""
+"""Portable model requirements and Python/YAML call declarations."""
 
-from .inference import (
-    InferenceSpec,
-    NormalizationSpec,
-    SegmentationSpec,
-    TensorInputSpec,
-    TilingSpec,
-    TimeWindowSpec,
-)
-from .model import ModelSpec
-from .preprocessing import OperationSpec, PreprocessingSpec
+from .model import ModelSpec, OperationSpec, OutputSpec
+from .references import Ref
 from .requirements import (
     AttrsRequirement,
     FieldRequirement,
@@ -20,15 +12,10 @@ from .requirements import (
 __all__ = [
     "AttrsRequirement",
     "FieldRequirement",
-    "InferenceSpec",
     "ModelSpec",
     "NamespaceRequirement",
-    "NormalizationSpec",
     "OperationSpec",
-    "PreprocessingSpec",
+    "OutputSpec",
     "RasterRequirement",
-    "SegmentationSpec",
-    "TensorInputSpec",
-    "TilingSpec",
-    "TimeWindowSpec",
+    "Ref",
 ]

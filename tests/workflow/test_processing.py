@@ -10,6 +10,7 @@ from dask.callbacks import Callback
 import pytest
 import xarray as xr
 
+from geosave_engine.geodata import attrs
 from geosave_engine.geodata.transform.tiling import Tiles
 from geosave_engine.workflow.processing import Processor
 from geosave_engine.workflow.spec import ModelSpec, Ref
@@ -17,6 +18,76 @@ from geosave_engine.workflow.spec import ModelSpec, Ref
 
 def spec(**stages):
     return ModelSpec(schema_version=2, sources={}, **stages)
+
+
+@pytest.mark.parametrize("dataset", [False, True])
+def test_postprocessing_attaches_legend_after_operations(dataset):
+    legend = attrs.Legend(class_map={0: "background"}, color_map={0: "#000000"})
+    labels = xr.DataArray(da.zeros((2, 2), chunks=1), dims=("y", "x"), name="class")
+    source = labels.to_dataset() if dataset else labels
+    finish = Processor(
+        spec(
+            postprocessing={"prediction": {"call": Ref("source.copy")}},
+            outputs={"prediction": {"legend": legend}},
+        ),
+        stage="postprocessing",
+    )
+    computed = []
+    with Callback(posttask=lambda *args: computed.append(True)):
+        result = finish({"source": source})["prediction"]
+    header = attrs.create_header(result)
+    namespace = header.data_vars["class"] if dataset else header.root
+    assert namespace.get(attrs.Legend) == legend
+    assert computed == []
+    assert isinstance(result["class"].data if dataset else result.data, da.Array)
+    original = attrs.create_header(source)
+    assert (original.data_vars["class"] if dataset else original.root).get(
+        attrs.Legend
+    ) is None
+
+
+@pytest.mark.parametrize("dataset", [False, True])
+def test_postprocessing_attaches_legend_to_already_supplied_output(dataset):
+    legend = attrs.Legend(class_map={0: "background"})
+    labels = xr.DataArray([0], dims="x", name="class")
+    value = labels.to_dataset() if dataset else labels
+    finish = Processor(
+        spec(outputs={"prediction": {"legend": legend}}), stage="postprocessing"
+    )
+    result = finish({"prediction": value})["prediction"]
+    header = attrs.create_header(result)
+    assert (header.data_vars["class"] if dataset else header.root).get(
+        attrs.Legend
+    ) == legend
+
+
+def test_postprocessing_rejects_missing_declared_output():
+    finish = Processor(spec(outputs={"prediction": {}}), stage="postprocessing")
+    with pytest.raises(ValueError, match="prediction"):
+        finish({})
+
+
+@pytest.mark.parametrize(
+    "value", [xr.Dataset({"a": ("x", [0]), "b": ("x", [1])}), xr.Dataset(), [0]]
+)
+def test_postprocessing_rejects_values_that_cannot_carry_a_variable_legend(value):
+    legend = attrs.Legend(class_map={0: "background"})
+    finish = Processor(
+        spec(outputs={"prediction": {"legend": legend}}), stage="postprocessing"
+    )
+    with pytest.raises(TypeError, match="prediction"):
+        finish({"prediction": value})
+
+
+def test_preprocessing_never_applies_or_requires_outputs():
+    legend = attrs.Legend(class_map={0: "background"})
+    prepare = Processor(
+        spec(outputs={"prediction": {"legend": legend}}), stage="preprocessing"
+    )
+    assert prepare({}) == {}
+    labels = xr.DataArray([0], dims="x")
+    assert prepare({"prediction": labels})["prediction"] is labels
+    assert attrs.create_header(labels).root.get(attrs.Legend) is None
 
 
 def test_preprocessing_loads_alone_and_preserves_native_lazy_values(tmp_path):

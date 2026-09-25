@@ -5,7 +5,6 @@ from typing import Annotated
 from pydantic import BaseModel, ConfigDict, StringConstraints
 
 Name = Annotated[str, StringConstraints(pattern=r"^[A-Za-z_][A-Za-z0-9_]*$")]
-RasterName = Annotated[str, StringConstraints(min_length=1, pattern=r"^[^/\\]+$")]
 Text = Annotated[str, StringConstraints(min_length=1)]
 
 

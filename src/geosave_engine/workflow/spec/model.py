@@ -1,147 +1,140 @@
-"""Portable YAML model usage settings saved beside architecture and weights."""
+"""Portable call declarations and safe YAML round trips."""
 
 from __future__ import annotations
 
-from graphlib import CycleError, TopologicalSorter
 from pathlib import Path
-from typing import Annotated, ClassVar, Literal, Self
+from typing import Any, ClassVar, Literal, Self
 
-from pydantic import Field, model_validator
+from pydantic import ConfigDict, Field, field_validator
 import yaml
 
-from .base import RasterName, SpecModel
-from .inference import InferenceSpec, SegmentationSpec
-from .preprocessing import OperationSpec, PreprocessingSpec
+from geosave_engine.geodata import attrs
+
+from .base import Name, SpecModel
+from .references import Ref, validate_value
 from .requirements import RasterRequirement
 
 
-class _UniqueSafeLoader(yaml.SafeLoader):
-    """Reject duplicate mapping keys rather than silently replacing settings."""
+class OperationSpec(SpecModel):
+    """Declare a callable and its actual keyword arguments without executing it.
+
+    Args:
+        call: Import path or reference to a supplied callable/bound method.
+        kwargs: YAML literals and references, resolved when the stage runs.
+    """
+
+    model_config = ConfigDict(arbitrary_types_allowed=True)
+
+    call: str | Ref
+    kwargs: dict[str, Any] = Field(default_factory=dict)
+
+    @field_validator("call")
+    @classmethod
+    def _call_path(cls, value: str | Ref) -> str | Ref:
+        path = value.path if isinstance(value, Ref) else value
+        Ref(path)
+        if isinstance(value, str) and "." not in value:
+            raise ValueError("An imported call needs a module and callable name")
+        return value
+
+    @field_validator("kwargs", mode="before")
+    @classmethod
+    def _arguments(cls, value: Any) -> Any:
+        return validate_value(value)
 
 
-def _unique_mapping(loader, node, deep=False):
-    loader.flatten_mapping(node)
-    mapping = {}
-    for key_node, value_node in node.value:
-        key = loader.construct_object(key_node, deep=deep)
-        try:
-            duplicate = key in mapping
-        except TypeError as error:
-            raise ValueError("YAML mapping keys must be scalar values") from error
-        if duplicate:
-            raise ValueError(f"Duplicate YAML key {key!r}")
-        mapping[key] = loader.construct_object(value_node, deep=deep)
-    return mapping
+class OutputSpec(SpecModel):
+    """Declare the semantic legend attached to a named postprocessing output."""
+
+    legend: attrs.Legend | None = None
 
 
-_UniqueSafeLoader.add_constructor(
-    yaml.resolver.BaseResolver.DEFAULT_MAPPING_TAG, _unique_mapping
-)
+class _Loader(yaml.SafeLoader):
+    """Read ordinary mappings strictly and retain inert `!ref` values."""
+
+    def construct_mapping(self, node, deep=False):
+        self.flatten_mapping(node)
+        result = {}
+        for key, value in self.construct_pairs(node, deep=deep):
+            # Legend class/color maps use integer pixel codes; typed fields
+            # and operation argument validation constrain all other mappings.
+            if type(key) not in (str, int):
+                raise ValueError("YAML mapping keys must be strings or integers")
+            if key in result:
+                raise ValueError(f"Duplicate YAML key {key!r}")
+            result[key] = value
+        return result
+
+
+class _Dumper(yaml.SafeDumper):
+    """Write references as tags and all other values as ordinary safe YAML."""
+
+    def represent_data(self, data):
+        if isinstance(data, Ref):
+            return self.represent_scalar("!ref", data.path)
+        return super().represent_data(data)
+
+
+_Loader.add_constructor("!ref", lambda loader, node: Ref(loader.construct_scalar(node)))
 
 
 class ModelSpec(SpecModel):
-    """Declare sources, named preprocessing recipes, and model execution settings."""
+    """Describe source requirements and independent named processing stages.
+
+    Args:
+        schema_version: Explicitly 2; older workflow specifications are rejected.
+        sources: Requirements for externally supplied native rasters.
+        preprocessing: Ordered calls preparing native values.
+        inference: Ordered call declarations; no inference mechanism is implied.
+        postprocessing: Ordered calls interpreting supplied predictions.
+        outputs: Named results with optional legends attached after postprocessing.
+    """
 
     filename: ClassVar[str] = "model_spec.yaml"
 
-    schema_version: Literal[1] = 1
-    sources: Annotated[dict[RasterName, RasterRequirement], Field(min_length=1)]
-    preprocessing: dict[RasterName, PreprocessingSpec] = Field(default_factory=dict)
-    inference: InferenceSpec
-    postprocessing: SegmentationSpec | OperationSpec | None = None
-
-    @model_validator(mode="after")
-    def _validate_bindings(self) -> Self:
-        available = self.sources.keys() | self.preprocessing.keys()
-        if any(name in (".", "..") for name in available):
-            raise ValueError("Raster names must be flat group names")
-        self.preparation_order()
-        if self.inference.tiling.raster not in available:
-            raise ValueError(
-                f"Tiling references unknown raster {self.inference.tiling.raster!r}"
-            )
-        for name, binding in self.inference.inputs.items():
-            if binding.raster not in available:
-                raise ValueError(
-                    f"Input {name!r} references unknown raster {binding.raster!r}"
-                )
-            known = self.sources.get(binding.raster)
-            selected = binding.variables
-            if known is not None:
-                selected = selected if selected is not None else known.variables
-                if missing := set(selected) - set(known.variables):
-                    raise ValueError(
-                        f"Input {name!r} selects unavailable variables {sorted(missing)}"
-                    )
-            if (
-                selected is not None
-                and binding.normalize is not None
-                and len(binding.normalize.mean) != len(selected)
-            ):
-                raise ValueError(
-                    f"Input {name!r} normalization must match its {len(selected)} channels"
-                )
-        if (
-            isinstance(self.postprocessing, OperationSpec)
-            and self.postprocessing.inputs
-        ):
-            raise ValueError("Postprocessing operations cannot reference raster inputs")
-        return self
-
-    def preparation_order(self) -> tuple[str, ...]:
-        """Validate recipe references and return their dependency order."""
-        if collision := self.sources.keys() & self.preprocessing.keys():
-            raise ValueError(
-                f"Preprocessing names collide with sources: {sorted(collision)}"
-            )
-        available = self.sources.keys() | self.preprocessing.keys()
-        graph = {}
-        for name, recipe in self.preprocessing.items():
-            references = {recipe.raster} | {
-                raster
-                for operation in recipe.operations
-                for raster in operation.inputs.values()
-            }
-            if unknown := references - available:
-                raise ValueError(
-                    f"Recipe {name!r} references unknown rasters: {sorted(unknown)}"
-                )
-            graph[name] = references & self.preprocessing.keys()
-        try:
-            return tuple(TopologicalSorter(graph).static_order())
-        except CycleError as error:
-            raise ValueError(
-                f"Preprocessing dependency cycle: {error.args[1]}"
-            ) from error
+    schema_version: Literal[2]
+    sources: dict[Name, RasterRequirement]
+    preprocessing: dict[Name, OperationSpec] = Field(default_factory=dict)
+    inference: dict[Name, OperationSpec] = Field(default_factory=dict)
+    postprocessing: dict[Name, OperationSpec] = Field(default_factory=dict)
+    outputs: dict[Name, OutputSpec] = Field(default_factory=dict)
 
     def validated_copy(self) -> Self:
-        """Revalidate nested mutable settings before saving or execution."""
+        """Copy and revalidate mutable nested declarations without loading code."""
         return type(self).model_validate(self.model_dump())
 
     def save(self, path: str | Path) -> Path:
-        """Write YAML to a local file or artifact directory, preserving weights."""
-        target = _spec_path(path, self.filename)
-        validated = self.validated_copy()
-        payload = yaml.safe_dump(validated.model_dump(), sort_keys=False)
+        """Save YAML to a local file or artifact directory, preserving other files.
+
+        Args:
+            path: YAML filename or directory receiving `model_spec.yaml`.
+
+        Returns:
+            Path to the saved YAML document.
+        """
+        target = _spec_path(path)
+        payload = yaml.dump(
+            self.validated_copy().model_dump(), Dumper=_Dumper, sort_keys=False
+        )
         target.parent.mkdir(parents=True, exist_ok=True)
         target.write_text(payload, encoding="utf-8")
         return target
 
     @classmethod
     def load(cls, path: str | Path) -> Self:
-        """Load safe YAML from a local file or artifact directory."""
-        payload = _spec_path(path, cls.filename).read_text(encoding="utf-8")
-        return cls.model_validate(yaml.load(payload, Loader=_UniqueSafeLoader))
+        """Read a local YAML file or artifact directory without importing callables."""
+        payload = _spec_path(path).read_text(encoding="utf-8")
+        return cls.model_validate(yaml.load(payload, Loader=_Loader))
 
 
-def _spec_path(path: str | Path, filename: str) -> Path:
+def _spec_path(path: str | Path) -> Path:
     if "://" in str(path):
         raise ValueError("ModelSpec save/load requires a local path")
     target = Path(path)
     if target.is_dir():
-        return target / filename
+        return target / ModelSpec.filename
     if target.suffix.lower() in (".yaml", ".yml"):
         return target
     if target.suffix or target.is_file():
         raise ValueError("ModelSpec files must use a .yaml or .yml YAML suffix")
-    return target / filename
+    return target / ModelSpec.filename
