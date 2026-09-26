@@ -35,27 +35,40 @@ invalid for local save/load.
 
 ## One call grammar
 
-Every `CallSpec` names an importable library function and supplies all of its
-arguments through `kwargs`:
+Every `CallSpec` names either an importable library function or a referenced
+bound method and supplies all remaining arguments through `kwargs`:
 
 ```python
 class CallSpec(SpecModel):
-    call: str
+    call: str | Ref
     kwargs: dict[str, CallValue] = Field(default_factory=dict)
 ```
 
-`call` must contain a valid dotted Python path. It is inert while the YAML is
-loaded and is imported only when its stage executes. Callable references such as
-`call: !ref raster.gs.unpack` are rejected.
+An imported `call` must contain a valid dotted Python path. It is inert while the
+YAML is loaded and is imported only when its stage executes. A referenced call
+resolves a supplied value and follows ordinary Python attributes to a callable.
+Python binds `self` when that target is a method, so invocation still passes only
+the declared kwargs:
 
-`Ref` is exclusively a value reference inside `kwargs`. A reference may select a
-supplied root or follow ordinary Python attributes from it. Literal strings stay
-literal. Lists and string-keyed mappings may contain references recursively.
+```yaml
+preprocessing:
+  selected:
+    call: !ref optical.__getitem__
+    kwargs:
+      key: [red, nir]
+  unpacked:
+    call: !ref selected.gs.unpack
+```
+
+`Ref` may provide the call target or a value inside `kwargs`. A reference may
+select a supplied root or follow ordinary Python attributes from it. Literal
+strings stay literal. Lists and string-keyed mappings may contain references
+recursively.
 
 Each stage child binds the call's complete return value to its YAML key. A later
-call refers to that result explicitly through its kwargs. There is no implicit
-receiver, previous-result injection, expression language, positional argument
-grammar, or result unpacking.
+call refers to that result explicitly as its bound receiver or through its kwargs.
+There is no separately configured receiver, previous-result injection, expression
+language, positional argument grammar, or result unpacking.
 
 ```yaml
 preprocessing:
@@ -77,8 +90,8 @@ workflow stage that happens to invoke them:
 - `geodata.transform` owns native raster transformations such as nodata
   conversion, unpacking, reprojection, tiling, and reconstruction.
 - `geodata.features` owns derived raster features.
-- `ml.transforms` owns conversion into model tensors and transformations of
-  model tensors or outputs.
+- `ml.transforms` owns reusable transformations of model tensors or outputs that
+  are not already native object capabilities.
 - Lightning tasks own training and prediction lifecycle plus learned or
   calibrated state. They may call the same transforms, but are not the only
   public route to them.
@@ -87,6 +100,11 @@ There is no Python package of generic preprocessors or postprocessors.
 `workflow` resolves declarations and orchestrates calls; it does not duplicate
 the operations.
 
+YAML prefers an importable domain function when the library exposes one. It uses
+a referenced bound method when the operation is natively method-shaped, such as
+xarray variable selection or `.gs.to_tensor()`. GeoSave does not add a thin
+wrapper merely to turn such a method into an imported function.
+
 Segmentation tensor interpretation moves from the Lightning task module to
 `ml.transforms.semantic_segmentation`. `softmax_argmax` and
 `apply_thresholds` remain ordinary importable functions. The transform owns the
@@ -94,13 +112,6 @@ final label and probability dtype behavior: labels are `torch.uint8` and
 probabilities are `torch.float32`. `SemanticSegmentationTask.postprocess` is
 removed because it would only wrap that transform; the task's
 `class_thresholds` and `ignore_index` remain the authoritative runtime values.
-
-Tensor conversion gains
-`ml.transforms.tensor.to_tensor(raster, *, dtype=None) -> torch.Tensor` for an
-xarray `DataArray` or `Dataset`. It uses the existing native `.gs.to_tensor`
-capability rather than reimplementing stacking or dtype conversion. This small
-function exists as the declarative call boundary, replacing a referenced bound
-accessor method.
 
 ## Stage execution
 
@@ -147,15 +158,17 @@ task state passed as explicit references. The YAML remains the source of operati
 order and literal parameters; Python functions do not hide a model-specific
 recipe.
 
-The example's inference conversion points at the new importable tensor transform
-instead of a `.gs.to_tensor` bound-method reference. Postprocessing points at the
-segmentation transform and does not require a separate postprocessing schema.
+The example's inference conversion keeps the native `.gs.to_tensor` bound-method
+reference. Postprocessing points at the importable segmentation transform and
+does not require a separate postprocessing schema.
 
 ## Validation and failures
 
 - Loading and saving a model spec never imports declared functions.
-- A call path without a module component is rejected during model validation.
-- A `Ref` used as `call` is rejected during model validation.
+- An imported call path without a module component is rejected during model
+  validation.
+- A referenced call target must use a valid reference path and resolve to a
+  callable when its stage executes.
 - Duplicate YAML keys, malformed references, unsupported literal values, and
   cyclic configuration containers remain invalid.
 - Missing external roots and forward stage references fail before any task is
@@ -172,7 +185,7 @@ Tests mirror source ownership and cover:
   directory, YAML filename, invalid suffix, and remote-path behavior.
 - All three model processing fields materializing as `StageSpec` and round-tripping
   through YAML.
-- Import-path-only `CallSpec` validation and inert loading.
+- Imported and referenced `CallSpec` targets, method binding, and inert loading.
 - Literal and nested `Ref` kwargs, imported invocation, argument binding, fresh
   containers, `None` results, and contextual errors.
 - Ordered predecessor references, rebinding, missing inputs, and forward
@@ -188,10 +201,6 @@ Tests mirror source ownership and cover:
 ## Breaking changes
 
 - `PostprocessingSpec` and its export are removed.
-- `CallSpec.call` no longer accepts `Ref`; bound methods must have an importable
-  domain function whose receiver or state is passed explicitly in `kwargs`.
-- YAML using `call: !ref ...` must migrate to an import path plus referenced
-  kwargs.
 - Segmentation processing helper imports move from the Lightning task module to
   `ml.transforms.semantic_segmentation`.
 - `SemanticSegmentationTask.postprocess` is removed; callers use the same
