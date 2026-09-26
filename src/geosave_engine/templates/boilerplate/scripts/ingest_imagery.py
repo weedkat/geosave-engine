@@ -6,7 +6,7 @@ import typer
 from dotenv import load_dotenv
 
 import geosave_engine as gs
-from geosave_engine.workflow.flows import ingest
+from geosave_engine.workflow.flows import prepare_training
 
 SOURCES = {"sentinel_2_l2a": {"query": {}, "load": {}}}
 
@@ -27,7 +27,7 @@ def main(
     """
     load_dotenv()
     gs.configure_gdal(gdal_disable_readdir_on_open=True, gdal_http_max_retry=3)
-    manifest = ingest(
+    manifest = prepare_training(
         labels=str(labels),
         sources=SOURCES,
         output=str(output),
