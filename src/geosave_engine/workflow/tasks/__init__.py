@@ -1,11 +1,11 @@
-"""Short Prefect tasks used by deployable workflow flows."""
+"""Raster workflow operations and Prefect tasks."""
 
 from .call import invoke_call
-from .catalog import save_catalog
-from .prepare import prepare_sample
+from .catalog import write_manifest
+from .load import load_raster
 
 __all__ = [
     "invoke_call",
-    "prepare_sample",
-    "save_catalog",
+    "load_raster",
+    "write_manifest",
 ]

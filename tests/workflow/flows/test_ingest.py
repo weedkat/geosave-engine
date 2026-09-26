@@ -1,5 +1,8 @@
+from uuid import uuid4
+
 import numpy as np
 from prefect import Flow
+from prefect.concurrency.asyncio import ConcurrencySlotAcquisitionError
 import pytest
 
 from geosave_engine.geodata.core.raster import raster
@@ -45,6 +48,35 @@ def test_ingest_writes_one_source_stack_from_a_raster_anchor(
     with io.read_stack(output, chunks="auto") as stack:
         assert stack.gs.groups == ("optical",)
         assert stack.gs.geobox == anchor.geobox
+
+
+@pytest.mark.slow
+def test_ingest_requires_configured_source_limit(
+    tmp_path, stac_server, prefect_server
+):
+    url, requests, anchor = stac_server
+    label = raster(
+        {"class": np.ones((4, 4), dtype="uint8")}, anchor.geobox
+    ).assign_coords(time=np.datetime64("2025-01-15"))
+    label_path = io.geotiff.write_cog(label, tmp_path / "label.tif")
+    output = tmp_path / "raw.zarr"
+
+    with pytest.raises(ConcurrencySlotAcquisitionError):
+        ingest.fn(
+            sources={
+                "optical": {
+                    "concurrency": f"missing-{uuid4()}",
+                    "query": {},
+                    "load": {},
+                }
+            },
+            anchor={"kind": "raster", "path": str(label_path)},
+            output=str(output),
+            spec=str(model_spec(tmp_path, url)),
+        )
+
+    assert requests == []
+    assert not output.exists()
 
 
 @pytest.mark.parametrize("sources", [{}, {"optical": {}, "extra": {}}])

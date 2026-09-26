@@ -54,6 +54,7 @@ class QueryConfig(ConfigModel):
 class SourceConfig(ConfigModel):
     """Query and pixel-loading parameters for one named model source."""
 
+    concurrency: str | None = None
     query: QueryConfig = Field(default_factory=QueryConfig)
     load: StacSourceConfig = Field(default_factory=StacSourceConfig)
 

@@ -10,7 +10,7 @@ from geosave_engine.geodata.utils import io
 
 
 @task(cache_policy=NO_CACHE, persist_result=False)
-def save_catalog(
+def write_manifest(
     samples: dict[str, str], destination: str | Path
 ) -> str:
     """Register completed sample stores and atomically publish GeoParquet."""

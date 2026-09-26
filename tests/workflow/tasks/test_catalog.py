@@ -8,11 +8,11 @@ from prefect.cache_policies import NO_CACHE
 
 from geosave_engine.geodata.core.raster import raster
 from geosave_engine.geodata.utils import io
-from geosave_engine.workflow.tasks.catalog import save_catalog
+from geosave_engine.workflow.tasks.catalog import write_manifest
 from geosave_engine.workflow.tasks.save import write_stack
 
 
-def write_sample(path, raw, *, day):
+def write_dense_stack(path, raw, *, day):
     optical = raw["optical"][["red"]]
     label = raster(
         {"class": np.full((4, 4), day, dtype="uint8")}, optical.gs.geobox
@@ -21,15 +21,15 @@ def write_sample(path, raw, *, day):
     return str(path)
 
 
-def test_save_catalog_registers_completed_samples(tmp_path, raw):
+def test_write_manifest_registers_completed_samples(tmp_path, raw):
     samples = tmp_path / "prepared" / "samples"
     paths = {
-        "north/a": write_sample(samples / "north" / "a.zarr", raw, day=1),
-        "south/b": write_sample(samples / "south" / "b.zarr", raw, day=2),
+        "north/a": write_dense_stack(samples / "north" / "a.zarr", raw, day=1),
+        "south/b": write_dense_stack(samples / "south" / "b.zarr", raw, day=2),
     }
     destination = tmp_path / "prepared" / "manifest.parquet"
 
-    result = save_catalog.fn(paths, destination)
+    result = write_manifest.fn(paths, destination)
 
     assert result == str(destination)
     catalog = io.read_vector(destination)
@@ -49,47 +49,47 @@ def test_save_catalog_registers_completed_samples(tmp_path, raw):
     }
 
 
-def test_save_catalog_does_not_compute_sample_pixels(tmp_path, raw):
-    sample = write_sample(tmp_path / "samples" / "a.zarr", raw, day=1)
+def test_write_manifest_does_not_compute_sample_pixels(tmp_path, raw):
+    sample = write_dense_stack(tmp_path / "samples" / "a.zarr", raw, day=1)
     started = []
 
     with Callback(pretask=lambda key, *_: started.append(key)):
-        save_catalog.fn({"a": sample}, tmp_path / "manifest.parquet")
+        write_manifest.fn({"a": sample}, tmp_path / "manifest.parquet")
 
     assert started == []
 
 
-def test_save_catalog_replaces_rows_atomically(tmp_path, raw):
+def test_write_manifest_replaces_rows_atomically(tmp_path, raw):
     samples = tmp_path / "samples"
-    first = write_sample(samples / "a.zarr", raw, day=1)
-    second = write_sample(samples / "b.zarr", raw, day=2)
+    first = write_dense_stack(samples / "a.zarr", raw, day=1)
+    second = write_dense_stack(samples / "b.zarr", raw, day=2)
     destination = tmp_path / "manifest.parquet"
-    save_catalog.fn({"a": first, "b": second}, destination)
+    write_manifest.fn({"a": first, "b": second}, destination)
 
-    save_catalog.fn({"b": second}, destination)
+    write_manifest.fn({"b": second}, destination)
 
     assert io.read_vector(destination).gdf.sample_id.tolist() == ["b"]
     assert not (tmp_path / ".manifest.staging.parquet").exists()
 
 
-def test_save_catalog_is_not_cached_or_persisted():
-    assert save_catalog.cache_policy is NO_CACHE
-    assert save_catalog.persist_result is False
+def test_write_manifest_is_not_cached_or_persisted():
+    assert write_manifest.cache_policy is NO_CACHE
+    assert write_manifest.persist_result is False
 
 
-def test_save_catalog_resolves_relative_sample_paths(tmp_path, raw, monkeypatch):
+def test_write_manifest_resolves_relative_sample_paths(tmp_path, raw, monkeypatch):
     monkeypatch.chdir(tmp_path)
-    sample = write_sample(Path("prepared/samples/a.zarr"), raw, day=1)
+    sample = write_dense_stack(Path("prepared/samples/a.zarr"), raw, day=1)
     destination = Path("prepared/manifest.parquet")
 
-    save_catalog.fn({"a": sample}, destination)
+    write_manifest.fn({"a": sample}, destination)
 
     assert io.read_vector(destination).gdf.iloc[0].path == (
         tmp_path / "prepared/samples/a.zarr"
     )
 
 
-def test_save_catalog_combines_samples_from_different_native_crss(tmp_path):
+def test_write_manifest_combines_samples_from_different_native_crss(tmp_path):
     paths = {}
     grid_crss = []
     for sample_id, crs in (("utm", "EPSG:32633"), ("global", "EPSG:4326")):
@@ -103,7 +103,7 @@ def test_save_catalog_combines_samples_from_different_native_crss(tmp_path):
             {"label": label, "optical": label.rename({"class": "red"})}, path
         )
 
-    save_catalog.fn(paths, tmp_path / "manifest.parquet")
+    write_manifest.fn(paths, tmp_path / "manifest.parquet")
 
     catalog = io.read_vector(tmp_path / "manifest.parquet")
     assert catalog.crs.to_epsg() == 4326

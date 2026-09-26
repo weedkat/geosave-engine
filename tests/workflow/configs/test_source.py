@@ -28,6 +28,12 @@ def test_source_config_builds_native_query_and_load_settings():
     assert config.load.chunks == {"x": 32, "y": 16}
 
 
+def test_source_config_names_a_prefect_concurrency_limit():
+    config = SourceConfig.model_validate({"concurrency": "cdse"})
+
+    assert config.concurrency == "cdse"
+
+
 @pytest.mark.parametrize(
     "payload",
     [
