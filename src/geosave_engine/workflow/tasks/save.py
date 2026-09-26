@@ -3,8 +3,6 @@
 from pathlib import Path
 from tempfile import TemporaryDirectory
 
-from prefect import task
-from prefect.cache_policies import NO_CACHE
 import xarray as xr
 
 from geosave_engine.geodata.core.stack import stack
@@ -29,9 +27,3 @@ def write_stack(rasters: dict[str, xr.Dataset], output: str | Path) -> str:
             raise FileExistsError(f"Output already exists: {destination}")
         staged.rename(destination)
     return str(destination)
-
-
-@task(cache_policy=NO_CACHE, persist_result=False)
-def save_stack(rasters: dict[str, xr.Dataset], output: str | Path) -> str:
-    """Write a raster stack through the transitional Prefect task."""
-    return write_stack(rasters, output)

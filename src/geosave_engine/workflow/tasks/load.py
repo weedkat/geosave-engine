@@ -3,8 +3,6 @@
 from __future__ import annotations
 
 import xarray as xr
-from prefect import task
-from prefect.cache_policies import NO_CACHE
 from pystac_client import Client
 from pystac_client.exceptions import APIError
 from requests.exceptions import RequestException
@@ -12,7 +10,7 @@ from requests.exceptions import RequestException
 from geosave_engine.geodata.core import GeoAnchor
 from geosave_engine.geodata.stac.client import StacClient
 from geosave_engine.geodata.stac.source import StacSource, StacSourceConfig
-from geosave_engine.workflow.configs import AnchorConfig, SourceConfig
+from geosave_engine.workflow.configs import SourceConfig
 from geosave_engine.workflow.specs import RasterRequirement
 
 
@@ -99,18 +97,3 @@ class RasterLoader:
         source.config = StacSourceConfig.model_validate(settings)
         raster = source.load(anchor)
         return self.requirement.select_raster(raster)
-
-
-@task(cache_policy=NO_CACHE, persist_result=False)
-def load_raster(
-    name: str,
-    source: SourceConfig,
-    anchor: AnchorConfig,
-    requirement: RasterRequirement,
-) -> xr.Dataset:
-    """Load one named model source as a validated lazy raster."""
-    try:
-        return RasterLoader(requirement).load(source, anchor.open())
-    except Exception as error:
-        error.add_note(f"While loading source {name!r}")
-        raise

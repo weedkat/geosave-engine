@@ -3,19 +3,19 @@ from pystac_client.exceptions import APIError
 import requests
 from rasterio.errors import RasterioIOError
 
+from geosave_engine.geodata.core import GeoAnchor
 from geosave_engine.geodata.errors import AnchorFetchError
-from geosave_engine.workflow.configs import CoordinateAnchorConfig, SourceConfig
+from geosave_engine.workflow.configs import SourceConfig
 from geosave_engine.workflow.specs import RasterRequirement
 from geosave_engine.workflow.tasks.load import RasterLoader
 
 
 def coordinate_anchor():
-    return CoordinateAnchorConfig(
-        kind="coordinates",
-        latitude=45,
-        longitude=12,
-        shape=4,
-        resolution=10,
+    return GeoAnchor.from_coordinates(
+        45,
+        12,
+        4,
+        10,
         crs="EPSG:32633",
         timespan="2025-01",
     )
@@ -34,7 +34,7 @@ def requirement(collection="sentinel-2-l2a"):
     )
 
 
-def test_load_raster_reads_and_validates_one_local_source(stac_server):
+def test_raster_loader_reads_and_validates_one_local_source(stac_server):
     url, requests, expected_anchor = stac_server
 
     result = RasterLoader(
@@ -154,7 +154,7 @@ def test_empty_search_does_not_try_another_endpoint(catalog_http):
 
     with pytest.raises(AnchorFetchError):
         RasterLoader(requirement("optical")).load(
-            SourceConfig(), coordinate_anchor().open()
+            SourceConfig(), coordinate_anchor()
         )
 
     assert visited[-1] == "https://primary.test/stac/search"
@@ -186,7 +186,7 @@ def test_lazy_asset_failure_does_not_try_another_endpoint(catalog_http, local_st
 
     raster = loader.load(
         SourceConfig.model_validate({"load": {"groupby": "time"}}),
-        coordinate_anchor().open(),
+        coordinate_anchor(),
     )
 
     with pytest.raises(RasterioIOError):

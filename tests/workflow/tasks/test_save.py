@@ -1,19 +1,10 @@
 import dask.array as da
 from dask.delayed import delayed
 import numpy as np
-from prefect.cache_policies import NO_CACHE
 import pytest
 
 from geosave_engine.geodata.utils import io
-from geosave_engine.workflow.tasks.load import load_raster
-from geosave_engine.workflow.tasks.save import save_stack, write_stack
-
-
-def test_native_results_are_not_cached_or_persisted():
-    assert load_raster.cache_policy is NO_CACHE
-    assert load_raster.persist_result is False
-    assert save_stack.cache_policy is NO_CACHE
-    assert save_stack.persist_result is False
+from geosave_engine.workflow.tasks.save import write_stack
 
 
 def test_write_stack_completes_before_return_and_reopens(raw, tmp_path):
