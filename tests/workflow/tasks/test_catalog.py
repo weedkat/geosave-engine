@@ -2,6 +2,8 @@ from pathlib import Path
 
 from dask.callbacks import Callback
 import numpy as np
+from odc.geo import CRS
+from odc.geo.geobox import GeoBox
 from prefect.cache_policies import NO_CACHE
 
 from geosave_engine.geodata.core.raster import raster
@@ -73,3 +75,36 @@ def test_save_catalog_replaces_rows_atomically(tmp_path, raw):
 def test_save_catalog_is_not_cached_or_persisted():
     assert save_catalog.cache_policy is NO_CACHE
     assert save_catalog.persist_result is False
+
+
+def test_save_catalog_resolves_relative_sample_paths(tmp_path, raw, monkeypatch):
+    monkeypatch.chdir(tmp_path)
+    sample = write_sample(Path("prepared/samples/a.zarr"), raw, day=1)
+    destination = Path("prepared/manifest.parquet")
+
+    save_catalog.fn({"a": sample}, destination)
+
+    assert io.read_vector(destination).gdf.iloc[0].path == (
+        tmp_path / "prepared/samples/a.zarr"
+    )
+
+
+def test_save_catalog_combines_samples_from_different_native_crss(tmp_path):
+    paths = {}
+    grid_crss = []
+    for sample_id, crs in (("utm", "EPSG:32633"), ("global", "EPSG:4326")):
+        geobox = GeoBox.from_bbox((0, 0, 4, 4), crs=crs, shape=(4, 4))
+        grid_crss.append(geobox.crs)
+        label = raster(
+            {"class": np.ones((4, 4), dtype="uint8")}, geobox
+        ).assign_coords(time=np.datetime64("2025-01-01"))
+        path = tmp_path / "samples" / f"{sample_id}.zarr"
+        paths[sample_id] = write_stack(
+            {"label": label, "optical": label.rename({"class": "red"})}, path
+        )
+
+    save_catalog.fn(paths, tmp_path / "manifest.parquet")
+
+    catalog = io.read_vector(tmp_path / "manifest.parquet")
+    assert catalog.crs.to_epsg() == 4326
+    assert [CRS(value) for value in catalog.gdf.grid_crs] == grid_crss

@@ -16,36 +16,26 @@ from .save import write_stack
 def _validate_sample(
     path: Path, requirements: dict[str, RasterRequirement]
 ) -> None:
-    """Validate a completed sample without loading its pixel values."""
     with io.read_stack(path, chunks="auto") as sample:
-        expected = {"label", *requirements}
-        actual = set(sample.gs.groups)
-        if actual != expected:
-            raise ValueError(
-                f"Existing sample groups {sorted(actual)} do not match "
-                f"{sorted(expected)}"
-            )
+        if set(sample.gs.groups) != {"label", *requirements}:
+            raise ValueError("Existing sample does not match model sources")
 
         rasters = sample.gs.rasters
         if rasters["label"].gs.timespan is None:
             raise ValueError(f"Existing sample label has no time: {path}")
-        sample.gs.anchor
+        _ = sample.gs.anchor
         for name, requirement in requirements.items():
-            try:
-                requirement.select_raster(rasters[name])
-            except Exception as error:
-                error.add_note(f"While validating source {name!r} in {path}")
-                raise
+            requirement.validate_raster(rasters[name])
 
 
 @task(cache_policy=NO_CACHE, persist_result=False)
-def ingest_sample(
+def prepare_sample(
     label: str | Path,
     sources: dict[str, SourceConfig],
     requirements: dict[str, RasterRequirement],
     output: str | Path,
 ) -> str:
-    """Write one label raster and its matching imagery as a completed stack."""
+    """Write one label raster and matching imagery as a training sample."""
     destination = Path(output)
     if destination.exists():
         _validate_sample(destination, requirements)
@@ -56,11 +46,8 @@ def ingest_sample(
         if anchor.timespan is None:
             raise ValueError(f"Label raster has no time: {label}")
 
-        rasters = {}
-        for name, requirement in requirements.items():
-            try:
-                rasters[name] = RasterLoader(requirement).load(sources[name], anchor)
-            except Exception as error:
-                error.add_note(f"While loading source {name!r}")
-                raise
+        rasters = {
+            name: RasterLoader(requirement).load(sources[name], anchor)
+            for name, requirement in requirements.items()
+        }
         return write_stack({"label": label_raster, **rasters}, destination)

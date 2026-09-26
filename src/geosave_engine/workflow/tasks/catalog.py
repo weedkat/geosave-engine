@@ -16,12 +16,14 @@ def save_catalog(
     """Register completed sample stores and atomically publish GeoParquet."""
     records = []
     for sample_id, path in samples.items():
-        with io.read_stack(path, chunks="auto") as sample:
+        sample_path = Path(path).resolve()
+        with io.read_stack(sample_path, chunks="auto") as sample:
             records.append(
                 GeoVector.from_xarray(
                     sample,
+                    crs="EPSG:4326",
                     fields=("time", "grid", "variables"),
-                    path=path,
+                    path=sample_path,
                     sample_id=sample_id,
                 )
             )
