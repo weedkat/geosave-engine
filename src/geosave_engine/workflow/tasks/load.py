@@ -9,6 +9,7 @@ from pystac_client import Client
 from pystac_client.exceptions import APIError
 from requests.exceptions import RequestException
 
+from geosave_engine.geodata.core import GeoAnchor
 from geosave_engine.geodata.stac.client import StacClient
 from geosave_engine.geodata.stac.source import StacSource, StacSourceConfig
 from geosave_engine.workflow.configs import AnchorConfig, SourceConfig
@@ -87,7 +88,7 @@ class RasterLoader:
             "STAC endpoints unavailable: " + "; ".join(failures)
         ) from last_error
 
-    def load(self, config: SourceConfig, anchor: AnchorConfig) -> xr.Dataset:
+    def load(self, config: SourceConfig, anchor: GeoAnchor) -> xr.Dataset:
         """Load, select, and validate the required raster lazily."""
         client = self.open_client()
         source = StacSource(client, collection=self.collection)
@@ -96,7 +97,7 @@ class RasterLoader:
         if self.requirement.variables is not None:
             settings["bands"] = self.requirement.variables
         source.config = StacSourceConfig.model_validate(settings)
-        raster = source.load(anchor.open())
+        raster = source.load(anchor)
         return self.requirement.select_raster(raster)
 
 
@@ -109,7 +110,7 @@ def load_raster(
 ) -> xr.Dataset:
     """Load one named model source as a validated lazy raster."""
     try:
-        return RasterLoader(requirement).load(source, anchor)
+        return RasterLoader(requirement).load(source, anchor.open())
     except Exception as error:
         error.add_note(f"While loading source {name!r}")
         raise
