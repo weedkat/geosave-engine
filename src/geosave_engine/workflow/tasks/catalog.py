@@ -13,7 +13,15 @@ from geosave_engine.geodata.utils import io
 def write_manifest(
     samples: dict[str, str], destination: str | Path
 ) -> str:
-    """Register completed sample stores and atomically publish GeoParquet."""
+    """Register completed sample stores and publish their manifest.
+
+    Args:
+        samples: Completed sample paths keyed by stable sample ID.
+        destination: GeoParquet manifest path.
+
+    Returns:
+        Path to the completed manifest.
+    """
     records = []
     for sample_id, path in samples.items():
         sample_path = Path(path).resolve()

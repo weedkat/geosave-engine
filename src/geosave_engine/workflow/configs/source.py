@@ -52,7 +52,14 @@ class QueryConfig(ConfigModel):
 
 
 class SourceConfig(ConfigModel):
-    """Query and pixel-loading parameters for one named model source."""
+    """Configure one model source for a workflow run.
+
+    Args:
+        concurrency: Prefect global concurrency limit name. None loads without
+            acquiring a global slot.
+        query: STAC item search settings.
+        load: Raster pixel loading settings.
+    """
 
     concurrency: str | None = None
     query: QueryConfig = Field(default_factory=QueryConfig)

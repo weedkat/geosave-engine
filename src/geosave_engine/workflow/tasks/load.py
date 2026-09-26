@@ -36,7 +36,20 @@ def load_raster(
     source: SourceConfig,
     requirement: RasterRequirement,
 ) -> xr.Dataset:
-    """Load one model source on an anchor as a lazy raster."""
+    """Load one model source on an anchor as a lazy raster.
+
+    Args:
+        anchor: Exact output grid and time window.
+        source: Runtime STAC query and pixel-loading settings.
+        requirement: Model-owned raster source requirement.
+
+    Returns:
+        Lazy raster selected and validated against the requirement.
+
+    Raises:
+        ValueError: If the requirement has no STAC collection or endpoints.
+        ConnectionError: If no configured endpoint publishes the collection.
+    """
     requirement = RasterRequirement.model_validate(requirement)
     collection = requirement.collection
     endpoints = requirement.endpoints
@@ -54,6 +67,7 @@ def load_raster(
 
 
 def _endpoint_unavailable(error: Exception) -> bool:
+    """Return whether an endpoint failure is safe to retry elsewhere."""
     if isinstance(error, APIError):
         status = getattr(error, "status_code", None)
         if status is not None:
@@ -73,6 +87,7 @@ def _endpoint_unavailable(error: Exception) -> bool:
 
 @cache
 def _open_client(collection: str, endpoint_urls: tuple[str, ...]) -> StacClient:
+    """Open and cache the first catalog publishing a collection."""
     failures = []
     last_error: Exception | None = None
     for url in endpoint_urls:
