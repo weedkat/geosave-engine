@@ -14,7 +14,6 @@ from requests.exceptions import RequestException
 
 from geosave_engine.geodata.core import GeoAnchor
 from geosave_engine.geodata.stac.client import StacClient
-from geosave_engine.geodata.stac.source import StacSource, StacSourceConfig
 from geosave_engine.workflow.configs import SourceConfig
 from geosave_engine.workflow.specs import RasterRequirement
 
@@ -46,12 +45,11 @@ def load_raster(
 
     endpoint_urls = tuple(str(endpoint) for endpoint in endpoints)
     client = _open_client(collection, endpoint_urls)
-    stac = StacSource(client, collection=collection)
+    stac = client.source(collection)
     stac.query = source.query.to_query(collection)
-    settings = source.load.model_dump()
+    stac.config = source.load
     if requirement.variables is not None:
-        settings["bands"] = requirement.variables
-    stac.config = StacSourceConfig.model_validate(settings)
+        stac.set_config(bands=requirement.variables)
     return requirement.select_raster(stac.load(anchor))
 
 

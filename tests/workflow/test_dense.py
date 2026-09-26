@@ -75,6 +75,7 @@ def test_prepare_writes_many_samples_and_resumes(
 
     result = workflow.dense.prepare(**arguments)
 
+    assert isinstance(result, str)
     assert result == str(output / "manifest.parquet")
     for sample in ("a", "b"):
         with io.read_stack(output / "samples/train" / f"{sample}.zarr") as stack:

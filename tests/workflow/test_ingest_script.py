@@ -3,14 +3,14 @@ from pathlib import Path
 from geosave_engine.templates.boilerplate.scripts import ingest_imagery
 
 
-def test_ingest_script_passes_training_job_inputs(monkeypatch, capsys):
+def test_ingest_script_calls_dense_prepare(monkeypatch, capsys):
     captured = {}
 
     def run_flow(**arguments):
         captured.update(arguments)
         return "prepared/manifest.parquet"
 
-    monkeypatch.setattr(ingest_imagery, "prepare_training", run_flow)
+    monkeypatch.setattr(ingest_imagery.dense, "prepare", run_flow)
 
     ingest_imagery.main(
         labels=Path("labels"),
