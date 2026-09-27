@@ -8,7 +8,7 @@ site_url = "https://weedkat.github.io/geosave-engine"
 
 copyright = "Copyright © 2026 GeoMoka contributors"
 
-nav = []
+nav = [{ "Workflow guide" = "guides/workflows.md" }]
 
 [project.theme]
 language = "en"
