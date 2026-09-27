@@ -2,11 +2,8 @@
 
 from __future__ import annotations
 
-from collections.abc import Iterable, Iterator
-from contextlib import contextmanager
 from functools import cache
 
-from prefect.concurrency.sync import concurrency
 import xarray as xr
 from pystac_client import Client
 from pystac_client.exceptions import APIError
@@ -16,20 +13,6 @@ from geosave_engine.geodata.core import GeoAnchor
 from geosave_engine.geodata.stac.client import StacClient
 from geosave_engine.workflow.configs import SourceConfig
 from geosave_engine.workflow.specs import RasterRequirement
-
-
-@contextmanager
-def source_concurrency(sources: Iterable[SourceConfig]) -> Iterator[None]:
-    """Occupy configured Prefect limits while loading lazy sources."""
-    names = sorted(
-        {source.concurrency for source in sources if source.concurrency is not None}
-    )
-    if not names:
-        yield
-        return
-    with concurrency(names, strict=True):
-        yield
-
 
 def load_raster(
     anchor: GeoAnchor,

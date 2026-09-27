@@ -6,7 +6,6 @@ from pydantic import JsonValue, TypeAdapter
 from geosave_engine.workflow.configs import AnchorConfig, SourceConfig
 from geosave_engine.workflow.specs import ModelSpec
 from geosave_engine.workflow.tasks import load_raster
-from geosave_engine.workflow.tasks.load import source_concurrency
 from geosave_engine.workflow.tasks.save import write_stack
 
 
@@ -40,9 +39,8 @@ def ingest(
     if configs.keys() != requirements.keys():
         raise ValueError("Source bindings must match model sources")
 
-    with source_concurrency(configs.values()):
-        rasters = {
-            name: load_raster(native_anchor, configs[name], requirement)
-            for name, requirement in requirements.items()
-        }
-        return write_stack(rasters, output)
+    rasters = {
+        name: load_raster(native_anchor, configs[name], requirement)
+        for name, requirement in requirements.items()
+    }
+    return write_stack(rasters, output)

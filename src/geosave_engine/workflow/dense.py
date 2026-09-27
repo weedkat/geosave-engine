@@ -2,43 +2,15 @@
 
 from pathlib import Path
 
-from prefect import flow, task
-from prefect.cache_policies import NO_CACHE
+from prefect import flow
 from pydantic import JsonValue
 
-from geosave_engine.geodata.utils import io
 from geosave_engine.workflow.configs import SourceConfig
-from geosave_engine.workflow.specs import ModelSpec, RasterRequirement
+from geosave_engine.workflow.specs import ModelSpec
 from geosave_engine.workflow.tasks.catalog import write_manifest
-from geosave_engine.workflow.tasks.load import load_raster, source_concurrency
-from geosave_engine.workflow.tasks.save import write_stack
+from geosave_engine.workflow.tasks.dense import _prepare_dense_sample
 
-__all__ = ["prepare", "validate_sample"]
-
-
-def validate_sample(
-    path: str | Path, requirements: dict[str, RasterRequirement]
-) -> None:
-    """Validate a dense sample against its model source requirements.
-
-    Args:
-        path: Completed sample Zarr path.
-        requirements: Model source requirements keyed by sample group.
-
-    Raises:
-        ValueError: If groups, label time, grid metadata, or source rasters are
-            invalid.
-    """
-    with io.read_stack(path, chunks="auto") as sample:
-        if set(sample.gs.groups) != {"label", *requirements}:
-            raise ValueError("Existing sample does not match model sources")
-
-        rasters = sample.gs.rasters
-        if rasters["label"].gs.timespan is None:
-            raise ValueError(f"Existing sample label has no time: {path}")
-        _ = sample.gs.anchor
-        for name, requirement in requirements.items():
-            requirement.validate_raster(rasters[name])
+__all__ = ["prepare"]
 
 
 def _discover_labels(root: Path, pattern: str) -> dict[str, Path]:
@@ -52,32 +24,6 @@ def _discover_labels(root: Path, pattern: str) -> dict[str, Path]:
     if len(outputs) != len(set(outputs)):
         raise ValueError("Labels must map to unique sample paths")
     return labels
-
-
-@task(cache_policy=NO_CACHE, persist_result=False)
-def _prepare_sample(
-    label: str | Path,
-    sources: dict[str, SourceConfig],
-    requirements: dict[str, RasterRequirement],
-    output: str | Path,
-) -> str:
-    """Prepare one label-aligned dense sample."""
-    destination = Path(output)
-    if destination.exists():
-        validate_sample(destination, requirements)
-        return str(destination)
-
-    with io.read_raster(label) as label_raster:
-        anchor = label_raster.gs.anchor
-        if anchor.timespan is None:
-            raise ValueError(f"Label raster has no time: {label}")
-
-        with source_concurrency(sources.values()):
-            rasters = {
-                name: load_raster(anchor, sources[name], requirement)
-                for name, requirement in requirements.items()
-            }
-            return write_stack({"label": label_raster, **rasters}, destination)
 
 
 @flow(name="dense-prepare", persist_result=False)
@@ -117,7 +63,7 @@ def prepare(
     destination = Path(output)
     discovered = _discover_labels(Path(labels), pattern)
     pending = {
-        sample_id: _prepare_sample.submit(
+        sample_id: _prepare_dense_sample.submit(
             label,
             configs,
             requirements,

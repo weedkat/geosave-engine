@@ -1,11 +1,4 @@
-from concurrent.futures import ThreadPoolExecutor
-from threading import Barrier, Lock
-from time import sleep
-from uuid import uuid4
-
 import pytest
-from prefect.client.orchestration import get_client
-from prefect.concurrency.asyncio import ConcurrencySlotAcquisitionError
 from pystac_client.exceptions import APIError
 import requests
 from rasterio.errors import RasterioIOError
@@ -87,47 +80,8 @@ def test_load_raster_reuses_open_client(catalog_http):
     ]
 
 
-@pytest.mark.slow
-def test_source_concurrency_requires_a_configured_prefect_limit(prefect_server):
-    source = SourceConfig(concurrency=f"missing-{uuid4()}")
-
-    with pytest.raises(ConcurrencySlotAcquisitionError):
-        with load_module.source_concurrency([source]):
-            pass
-
-
-@pytest.mark.slow
-def test_source_concurrency_serializes_parallel_loads(prefect_server):
-    name = f"serial-{uuid4()}"
-    with get_client(sync_client=True) as client:
-        client.upsert_global_concurrency_limit_by_name(name, 1)
-    source = SourceConfig(concurrency=name)
-    barrier = Barrier(2)
-    lock = Lock()
-    active = 0
-    peak = 0
-
-    def load():
-        nonlocal active, peak
-        barrier.wait()
-        with load_module.source_concurrency([source]):
-            with lock:
-                active += 1
-                peak = max(peak, active)
-            sleep(0.1)
-            with lock:
-                active -= 1
-
-    try:
-        with ThreadPoolExecutor(max_workers=2) as pool:
-            futures = [pool.submit(load) for _ in range(2)]
-            for future in futures:
-                future.result()
-    finally:
-        with get_client(sync_client=True) as client:
-            client.delete_global_concurrency_limit_by_name(name)
-
-    assert peak == 1
+def test_load_module_has_no_concurrency_configuration() -> None:
+    assert not hasattr(load_module, "source_concurrency")
 
 
 @pytest.mark.parametrize("failure", [requests.ConnectionError("offline"), 404, 503])

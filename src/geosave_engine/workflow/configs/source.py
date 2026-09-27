@@ -55,13 +55,10 @@ class SourceConfig(ConfigModel):
     """Configure one model source for a workflow run.
 
     Args:
-        concurrency: Prefect global concurrency limit name. None loads without
-            acquiring a global slot.
         query: STAC item search settings.
         load: Raster pixel loading settings.
     """
 
-    concurrency: str | None = None
     query: QueryConfig = Field(default_factory=QueryConfig)
     load: StacSourceConfig = Field(default_factory=StacSourceConfig)
 
