@@ -1,15 +1,27 @@
 """Persist a completed native raster stack."""
 
+from collections.abc import Mapping
 from pathlib import Path
 from tempfile import TemporaryDirectory
+from typing import Literal
 
+from pydantic import JsonValue
 import xarray as xr
 
 from geosave_engine.geodata.core.stack import stack
 from geosave_engine.geodata.utils import io
 
+type SampleFormat = Literal["geotiff", "zarr"]
 
-def write_stack(rasters: dict[str, xr.Dataset], output: str | Path) -> str:
+_PUBLICATION_OPTIONS = {"compute", "layout", "overwrite", "split_bands"}
+
+
+def write_stack(
+    rasters: dict[str, xr.Dataset],
+    output: str | Path,
+    *,
+    write_options: Mapping[str, JsonValue] | None = None,
+) -> str:
     """Write named rasters fully before publishing a new local Zarr store."""
     destination = Path(output)
     if "://" in str(output) or destination.suffix != ".zarr":
@@ -22,8 +34,110 @@ def write_stack(rasters: dict[str, xr.Dataset], output: str | Path) -> str:
         prefix=f".{destination.name}-", dir=destination.parent
     ) as temporary:
         staged = Path(temporary) / destination.name
-        io.zarr.write(tree, staged, compute=True, overwrite=False)
+        io.zarr.write(
+            tree,
+            staged,
+            compute=True,
+            overwrite=False,
+            **dict(write_options or {}),
+        )
         if destination.exists():
             raise FileExistsError(f"Output already exists: {destination}")
         staged.rename(destination)
     return str(destination)
+
+
+def open_sample(source: str | Path, *, format: SampleFormat) -> xr.DataTree:
+    """Open one persisted sample as a native raster stack.
+
+    Args:
+        source: GeoTIFF sample directory or Zarr store.
+        format: Persisted representation.
+
+    Returns:
+        DataTree holding the sample's named rasters.
+
+    Raises:
+        ValueError: If the format is unknown or a GeoTIFF sample has no assets.
+    """
+    if format == "zarr":
+        return io.read_stack(source, chunks="auto")
+    if format != "geotiff":
+        raise ValueError(f"Unknown sample format: {format!r}")
+
+    root = Path(source)
+    assets = sorted(
+        root.glob("*.tif"), key=lambda path: (path.stem != "label", path.name)
+    )
+    if not assets:
+        raise ValueError(f"GeoTIFF sample has no .tif assets: {root}")
+    return stack(
+        {asset.stem: io.read_raster(asset, chunks="auto") for asset in assets}
+    )
+
+
+def write_sample(
+    rasters: dict[str, xr.Dataset],
+    output: str | Path,
+    *,
+    format: SampleFormat = "geotiff",
+    write_options: Mapping[str, JsonValue] | None = None,
+) -> str:
+    """Atomically publish one named dense-training sample.
+
+    Args:
+        rasters: Named, co-registered sample rasters.
+        output: GeoTIFF sample directory or Zarr store.
+        format: Persisted representation.
+        write_options: Serializable encoding options for the native writer.
+
+    Returns:
+        Completed sample path.
+
+    Raises:
+        FileExistsError: If the destination already exists.
+        ValueError: If the format, options, or GeoTIFF time axis is invalid.
+    """
+    options = dict(write_options or {})
+    if reserved := sorted(options.keys() & _PUBLICATION_OPTIONS):
+        raise ValueError(f"GeoSave owns sample publication options: {reserved}")
+    if format == "zarr":
+        return write_stack(rasters, output, write_options=options)
+    if format != "geotiff":
+        raise ValueError(f"Unknown sample format: {format!r}")
+
+    destination = Path(output)
+    if "://" in str(output):
+        raise ValueError("Output must be a local sample directory")
+    if destination.exists():
+        raise FileExistsError(f"Output already exists: {destination}")
+
+    scenes = {name: _geotiff_scene(raster, name) for name, raster in rasters.items()}
+    destination.parent.mkdir(parents=True, exist_ok=True)
+    with TemporaryDirectory(
+        prefix=f".{destination.name}-", dir=destination.parent
+    ) as temporary:
+        staged = Path(temporary) / destination.name
+        staged.mkdir()
+        for name, scene in scenes.items():
+            io.geotiff.write_cog(scene, staged / f"{name}.tif", **options)
+        with open_sample(staged, format="geotiff") as restored:
+            if set(restored.gs.groups) != set(scenes):
+                raise ValueError("Completed GeoTIFF assets do not match sample rasters")
+            _ = restored.gs.anchor
+        if destination.exists():
+            raise FileExistsError(f"Output already exists: {destination}")
+        staged.rename(destination)
+    return str(destination)
+
+
+def _geotiff_scene(raster: xr.Dataset, name: str) -> xr.Dataset:
+    """Reduce one singleton time axis for flat GeoTIFF persistence."""
+    if "time" not in raster.dims:
+        return raster
+    if raster.sizes["time"] != 1:
+        raise ValueError(
+            f"GeoTIFF raster {name!r} has {raster.sizes['time']} time steps; "
+            "use format='zarr'"
+        )
+    return raster.squeeze("time", drop=False)
