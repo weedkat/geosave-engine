@@ -7,15 +7,17 @@ A Lightning checkpoint remains a training artifact. A model release contains the
 selected native `ModelChain`, its generated construction configuration, its
 safetensors state, and `model_spec.yaml`.
 
+`ModelChain` is an ordinary `torch.nn.Module`. It is the initial publication unit
+because, unlike an isolated child module, it retains the resolved construction
+recipe needed to rebuild itself in another process.
+
 Users publish and load native models through GeoSave functions. The
 Transformers-specific `GeoSaveModel` wrapper remains an installed internal
 persistence adapter and does not appear in the normal training or deployment
 workflow. Releases do not contain executable Python source.
 
 ```python
-from huggingface_hub import hf_hub_download
-
-from geosave_engine.workflow.specs import ModelSpec
+from geosave_engine.release import load_model, load_spec, publish_model
 
 
 # Training
@@ -30,13 +32,8 @@ publish_model(
     repo_id="geosave/my-model",
 )
 
-# Raster discovery, validation, and preparation can load only the spec.
-spec_path = hf_hub_download(
-    "geosave/my-model",
-    ModelSpec.filename,
-    revision=commit,
-)
-spec = ModelSpec.load(spec_path)
+# Raster discovery, validation, and preparation load only the spec.
+spec = load_spec("geosave/my-model", revision=commit)
 
 # Tensor deployment loads only the native model.
 model = load_model("geosave/my-model", revision=commit)
@@ -129,7 +126,7 @@ test steps select the tensor outputs required by their losses and metrics.
 
 The task may retain training-only models under other attributes. Publication
 never inspects a LightningModule and guesses which child to deploy. A custom
-task explicitly passes its chosen native model to `publish_model()`.
+task explicitly passes its chosen configured `ModelChain` to `publish_model()`.
 
 ```python
 # The task chooses a configured ModelChain; the publisher does not inspect it.
@@ -171,6 +168,38 @@ Models with independent release lifecycles use separate artifacts and are
 composed by a workflow. A model that consumes stitched, georeferenced scene
 output is a later workflow inference step, not a per-tile ModelChain stage.
 
+### Backbone-only releases
+
+Pretraining may need more modules than downstream inference. For example, an MAE
+task keeps the deployable GFM backbone in `task.model` and its reconstruction
+decoder as a separate training-only child:
+
+```python
+class MAETask(LightningModule):
+    def __init__(self, ...):
+        super().__init__()
+        self.model = build_model(
+            {"encoder": {"name": "gfm", "init_args": {...}}}
+        )
+        self.decoder = MAEDecoder(...)
+
+    def training_step(self, batch, batch_idx):
+        features = self.model(image=batch["image"])["features"]
+        reconstruction = self.decoder(features)
+        return reconstruction_loss(reconstruction, batch)
+```
+
+Publishing `task.model` writes only the encoder parameters. After loading,
+`model.encoder` is the native GFM module. Publishing `task.model.encoder`
+directly is not supported initially because that child does not independently
+own the resolved constructor recipe held by its parent chain.
+
+A chain with no terminal head returns only the named values produced by its
+selected `chain_step` methods. It does not return external inputs or other
+internal context. Therefore a backbone-only chain can return
+`{"features": features}`. One terminal head still returns a tensor, and multiple
+terminal heads still return a mapping keyed by stage name.
+
 ## Construction Contract
 
 Only a `ModelChain` built through `build_model()` is publishable initially. Its
@@ -190,11 +219,11 @@ model = build_model(
 An arbitrary native `nn.Module` remains usable as a registered ModelChain stage.
 GeoSave does not add a second construction interface for arbitrary modules.
 
-Published stage recipes must be JSON-serializable and resolvable in a fresh
-process. Built-in and promoted implementations should use registered names.
-Importable `class_path` selectors remain supported when their package is an
-explicit deployment dependency. Publication does not copy arbitrary selected
-stage source code.
+Published stage recipes must be JSON-serializable, use registered `name`
+selectors, and resolve from the installed GeoSave library in a fresh process.
+`class_path` remains available for workspace training but is rejected by
+publication. This keeps executable implementation code in the versioned library
+rather than copying workspace or third-party source into a model repository.
 
 Promotion from a workspace path to a library name is explicit:
 
@@ -211,12 +240,11 @@ class paths.
 
 ## Publication Interface
 
-`geosave_engine.ml.release` owns the public functional interface. Keeping these
-imports in the optional Hub module means importing `geosave_engine.ml` does not
-require Transformers:
+`geosave_engine.release` owns transport for the two independently loadable parts
+of a release:
 
 ```python
-from geosave_engine.ml.release import load_model, publish_model, save_model
+from geosave_engine.release import load_model, load_spec, publish_model, save_model
 
 
 def save_model(
@@ -247,6 +275,16 @@ def load_model(
     local_files_only: bool = False,
 ) -> ModelChain:
     """Load one native inference graph."""
+
+
+def load_spec(
+    path_or_repo_id: str | Path,
+    *,
+    revision: str | None = None,
+    token: str | bool | None = None,
+    local_files_only: bool = False,
+) -> ModelSpec:
+    """Load one model-owned geospatial processing contract."""
 ```
 
 `save_model()` is the primitive. The destination must not exist. It stages the
@@ -262,14 +300,19 @@ the installed `GeoSaveModel.from_pretrained()` implementation, honoring
 configuration and weights it needs. The function does not execute remote code
 and returns only the adapter's native chain.
 
-`ModelSpec` remains an independent workflow contract. Ingest and raster
-validation can download only `model_spec.yaml` with `hf_hub_download()` and pass
-that local file to `ModelSpec.load()`. A process that needs both halves may
-download one pinned snapshot and load them independently:
+`load_spec()` passes local files and directories to `ModelSpec.load()`. For a Hub
+repository it downloads only `model_spec.yaml` with `hf_hub_download()` and then
+loads that local file. It does not import Transformers or download weights.
+`ModelSpec` therefore remains an independent workflow contract for raster
+acquisition, validation, and processing.
+
+The top-level module uses function-local imports for the optional Transformers
+adapter, so spec-only consumers do not require the Hub extra. A process that
+needs both halves may download one pinned snapshot and load them independently:
 
 ```python
 snapshot = snapshot_download(repo_id, revision=commit)
-spec = ModelSpec.load(snapshot)
+spec = load_spec(snapshot)
 model = load_model(snapshot)
 ```
 
@@ -292,11 +335,33 @@ release/
 └── README.md
 ```
 
-`config.json` is generated by Transformers from `GeoSaveConfig`; users do not
-edit it. `GeoSaveModel.from_chain()` translates `ModelChain.stage_specs` into
-`GeoSaveConfig.stages`, and inherited `save_pretrained()` writes the JSON and
-safetensors files. `save_model()` also copies `model_spec.yaml` and generates the
-minimal model card. The public functions hide the adapter call.
+`config.json` is generated; users do not edit it. `save_model()` translates
+`ModelChain.stage_specs` into `GeoSaveConfig`, and inherited `save_pretrained()`
+writes the JSON and safetensors files. `save_model()` also copies
+`model_spec.yaml` and generates the minimal model card. A simplified generated
+configuration is:
+
+```json
+{
+  "model_type": "geosave_chain",
+  "format_version": 1,
+  "geosave_version": "0.2.0",
+  "architectures": ["GeoSaveModel"],
+  "stages": [
+    {
+      "stage": "encoder",
+      "spec": {
+        "name": "gfm",
+        "init_args": {"embed_dim": 768, "patch_size": 16, "pretrained": false}
+      }
+    }
+  ]
+}
+```
+
+The public functions hide the adapter call. On load, the generated stage recipe
+constructs installed library modules and safetensors supplies their trained
+parameters.
 
 The existing `huggingface.py` export is a copy of the Transformers adapter source
 created by `register_for_auto_class()`. It exists only so generic
@@ -308,11 +373,12 @@ interprets `config.json`. The exporter therefore does not call
 `register_for_auto_class()` and does not write `huggingface.py` or `auto_map`.
 
 The configuration records `format_version: 1` for the GeoSave construction
-contract and the installed GeoSave package version for diagnostics. Loading
-rejects an unsupported format version, not an artifact merely produced by a
-different package patch or minor version. Hub deployments pin the immutable
-commit hash returned by `publish_model()`; a branch name is acceptable for
-interactive loading but is not a reproducible deployment.
+contract and the exact installed GeoSave package version. Because implementation
+code remains in the installed Alpha library, `load_model()` rejects a different
+GeoSave version instead of silently executing changed code. This strict check can
+be relaxed after the model construction API has a compatibility policy. Hub
+deployments pin the immutable commit hash returned by `publish_model()`; a branch
+name is acceptable for interactive loading but is not reproducible deployment.
 
 The release does not contain `train.yaml`, the Lightning checkpoint, optimizer
 state, scheduler state, callbacks, metrics, or the DataModule.
@@ -378,6 +444,7 @@ concurrent remote runner exist; nested batch dimensions are not introduced.
 Publication fails before upload when:
 
 - the chain was not built from stage specifications;
+- a stage uses `class_path` instead of a registered `name`;
 - the construction recipe is not JSON-serializable;
 - `model_spec.yaml` is absent or structurally incompatible;
 - the target local release directory already exists.
@@ -387,15 +454,16 @@ Loading fails when:
 - the artifact revision is missing required files;
 - a stage selector cannot be resolved or model construction fails;
 - safetensors contain missing, unexpected, or mismatched state;
-- the GeoSave artifact format version is unsupported.
+- the GeoSave artifact format version is unsupported;
+- the installed GeoSave version differs from the generated version.
 
 Loading `ModelSpec` fails independently when `model_spec.yaml` is absent or
 invalid. This does not prevent tensor-only serving from loading the model.
 
 No compatibility alias preserves the direct `GeoSaveModel.from_chain()` user
 workflow in documentation. The adapter remains available for Transformers, but
-the supported GeoSave workflow uses `save_model()`, `publish_model()`, and
-`load_model()`.
+the supported GeoSave workflow uses `save_model()`, `publish_model()`,
+`load_model()`, and `load_spec()`.
 
 ## Testing
 
@@ -403,18 +471,23 @@ Focused tests cover:
 
 - a local release containing all required files;
 - generated `config.json` preserving ordered resolved stage recipes;
+- generated `config.json` recording artifact and exact GeoSave versions;
 - `load_model()` returning only a native `ModelChain`;
-- `ModelSpec.load()` independently reading the bundled processing contract;
+- `load_spec()` independently reading a local or Hub processing contract without
+  importing Transformers or downloading weights;
 - exact weights and outputs after an installed-adapter fresh-process round trip;
 - no `huggingface.py`, `auto_map`, or remote-code execution path;
 - a multi-stage segmenter/refiner graph in one safetensors artifact;
 - strict failure for missing, unexpected, and mismatched weights;
 - rejection of non-serializable constructor arguments;
+- rejection of `class_path` stage selectors during publication;
 - rejection of a directly composed chain without construction specs;
 - promotion by strict state transfer from a workspace-built chain to a
   library-built chain;
 - built-in task `forward()` matching `task.model()`;
-- custom Lightning tasks explicitly publishing a selected child model;
+- a backbone-only MAE task publishing `task.model` without its training decoder;
+- a headless chain returning only named stage outputs, not its external inputs;
+- custom Lightning tasks explicitly publishing a selected configured chain;
 - the renamed `configs/train.yaml` working through LightningCLI;
 - no Lightning checkpoint, optimizer, scheduler, criterion, metric, or
   DataModule state in the release;
@@ -433,6 +506,12 @@ prediction tests, followed by scoped Ruff, BasedPyright, and `git diff --check`.
   selecting `result["logits"]`.
 - Publishing supports configured `ModelChain` instances only in the initial
   version.
+- Publication requires registered `name` selectors; workspace `class_path`
+  implementations must be promoted into the library first.
+- Headless `ModelChain` results no longer include external inputs in their output
+  mapping.
+- Loading requires the exact GeoSave version recorded by the release during
+  Alpha development.
 - Generic loading through uninstalled Hub remote code is no longer supported;
   deployments install `geosave-engine[hub]` and use `load_model()`.
 - Deployments install the GeoSave Hub extra and load the immutable Hub commit
