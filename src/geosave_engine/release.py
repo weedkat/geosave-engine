@@ -5,17 +5,12 @@ from __future__ import annotations
 import json
 from pathlib import Path
 from tempfile import mkdtemp, TemporaryDirectory
-from typing import TYPE_CHECKING
 
 from huggingface_hub import HfApi, hf_hub_download
 
 from geosave_engine.__about__ import __version__
 from geosave_engine.ml.model_chain import ModelChain
 from geosave_engine.workflow.specs import ModelSpec
-
-if TYPE_CHECKING:
-    from os import PathLike
-
 
 _RELEASE_FILES = {
     "README.md",
@@ -153,7 +148,7 @@ def publish_model(
     return commit.oid
 
 
-def _local_source(path_or_repo_id: str | PathLike[str]) -> Path | None:
+def _local_source(path_or_repo_id: str | Path) -> Path | None:
     """Resolve explicit Paths and existing strings as local sources."""
     if isinstance(path_or_repo_id, Path):
         if not path_or_repo_id.exists():
@@ -184,12 +179,20 @@ def load_model(
     from geosave_engine.ml.huggingface import GeoSaveModel
 
     source = _local_source(path_or_repo_id)
-    model = GeoSaveModel.from_pretrained(
-        source if source is not None else path_or_repo_id,
-        revision=revision,
-        token=token,
-        local_files_only=local_files_only,
-    )
+    location = source if source is not None else path_or_repo_id
+    if revision is None:
+        model = GeoSaveModel.from_pretrained(
+            location,
+            token=token,
+            local_files_only=local_files_only,
+        )
+    else:
+        model = GeoSaveModel.from_pretrained(
+            location,
+            revision=revision,
+            token=token,
+            local_files_only=local_files_only,
+        )
     return model.chain
 
 
@@ -213,6 +216,7 @@ def load_spec(
     """
     source = _local_source(path_or_repo_id)
     if source is None:
+        assert isinstance(path_or_repo_id, str)
         source = Path(
             hf_hub_download(
                 repo_id=path_or_repo_id,
