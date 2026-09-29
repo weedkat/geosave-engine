@@ -1,4 +1,4 @@
-"""Optional Transformers AutoModel integration for publishable model chains."""
+"""Installed Transformers persistence adapter for native model releases."""
 
 from __future__ import annotations
 
@@ -8,8 +8,11 @@ import torch
 from transformers import AutoConfig, AutoModel, PretrainedConfig, PreTrainedModel
 from transformers.initialization import no_init_weights
 
+from geosave_engine.__about__ import __version__
 from geosave_engine.ml.model_chain import ModelChain
 from geosave_engine.ml.registry import build_model
+
+ARTIFACT_FORMAT_VERSION = 1
 
 
 class StageConfig(TypedDict):
@@ -20,28 +23,49 @@ class StageConfig(TypedDict):
 
 
 class GeoSaveConfig(PretrainedConfig):
-    """Describe a chain in a Transformers model artifact.
+    """Describe a native chain in a generated model artifact.
 
     Args:
         stages: Ordered stage names and construction specifications.
+        format_version: GeoSave release format version.
+        geosave_version: Exact GeoSave version required to load the artifact.
         **kwargs: Standard Transformers configuration fields.
 
     Raises:
-        ValueError: Stage names are repeated.
+        ValueError: The format version is unsupported or stage names repeat.
+        RuntimeError: The artifact requires a different GeoSave version.
     """
 
     model_type = "geosave_chain"
 
-    def __init__(self, stages: list[StageConfig] | None = None, **kwargs: Any) -> None:
+    def __init__(
+        self,
+        stages: list[StageConfig] | None = None,
+        format_version: int = ARTIFACT_FORMAT_VERSION,
+        geosave_version: str = __version__,
+        **kwargs: Any,
+    ) -> None:
+        if format_version != ARTIFACT_FORMAT_VERSION:
+            raise ValueError(
+                f"Unsupported GeoSave artifact format version {format_version}; "
+                f"expected {ARTIFACT_FORMAT_VERSION}"
+            )
+        if geosave_version != __version__:
+            raise RuntimeError(
+                f"Artifact requires GeoSave version {geosave_version}; "
+                f"installed version is {__version__}"
+            )
         super().__init__(**kwargs)
         self.stages = stages if stages is not None else []
+        self.format_version = format_version
+        self.geosave_version = geosave_version
         names = [entry["stage"] for entry in self.stages]
         if len(names) != len(set(names)):
             raise ValueError("Each stage must have a unique name")
 
 
 class GeoSaveModel(PreTrainedModel):
-    """Publish a model chain through the Transformers model contract.
+    """Persist a native model chain through the Transformers file contract.
 
     Args:
         config: Ordered construction specifications.
@@ -51,9 +75,6 @@ class GeoSaveModel(PreTrainedModel):
     Raises:
         ValueError: The supplied chain does not match the configuration.
 
-    Examples:
-        >>> published = GeoSaveModel.from_chain(task.model)
-        >>> published.push_to_hub("your-account/your-model")
     """
 
     config_class = GeoSaveConfig
@@ -84,10 +105,16 @@ class GeoSaveModel(PreTrainedModel):
         Raises:
             ValueError: The chain has no construction specifications.
         """
+        specs = chain.stage_specs
+        for stage, spec in specs.items():
+            if not spec.get("name") or "class_path" in spec:
+                raise ValueError(
+                    f"Stage {stage!r} must use a registered name for publication"
+                )
         config = GeoSaveConfig(
             stages=[
                 StageConfig(stage=name, spec=spec)
-                for name, spec in chain.stage_specs.items()
+                for name, spec in specs.items()
             ]
         )
         model = cls(config, chain=chain)
@@ -101,9 +128,6 @@ class GeoSaveModel(PreTrainedModel):
         loading_info: Any,
     ) -> Any:
         """Reject artifacts that do not exactly match their configured chain."""
-        loading_info = PreTrainedModel._finalize_model_loading(
-            model, load_config, loading_info
-        )
         problems = []
         if loading_info.missing_keys:
             problems.append(f"Missing keys: {sorted(loading_info.missing_keys)}")
@@ -115,6 +139,15 @@ class GeoSaveModel(PreTrainedModel):
             problems.append(
                 f"Mismatched keys: {sorted(loading_info.mismatched_keys)}"
             )
+        if problems:
+            raise RuntimeError(
+                "GeoSaveModel requires an exact checkpoint match. "
+                + "; ".join(problems)
+            )
+        loading_info = PreTrainedModel._finalize_model_loading(
+            model, load_config, loading_info
+        )
+        problems = []
         if loading_info.error_msgs:
             problems.append(f"Loading errors: {loading_info.error_msgs}")
         if loading_info.conversion_errors:
@@ -140,5 +173,3 @@ class GeoSaveModel(PreTrainedModel):
 
 AutoConfig.register(GeoSaveConfig.model_type, GeoSaveConfig)
 AutoModel.register(GeoSaveConfig, GeoSaveModel)
-GeoSaveConfig.register_for_auto_class()
-GeoSaveModel.register_for_auto_class("AutoModel")
