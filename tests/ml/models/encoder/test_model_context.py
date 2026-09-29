@@ -14,7 +14,7 @@ from geosave_engine.geodata import DataTree, Dataset, raster, stack
 from geosave_engine.geodata.attrs import TimeSpec
 from geosave_engine.geodata.datasets import TileDataset
 from geosave_engine.geodata.transform.tiling import Tiles
-from geosave_engine.ml.huggingface import GeoSaveModel
+from geosave_engine.release.huggingface import GeoSaveModel
 from geosave_engine.ml.registry import build_model
 from geosave_engine.ml.models.encoder.clay import Clay
 from geosave_engine.ml.models.encoder.prithvi import (

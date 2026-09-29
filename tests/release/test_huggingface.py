@@ -14,10 +14,10 @@ import torch
 from transformers import AutoModel
 
 from geosave_engine.__about__ import __version__
-from geosave_engine.ml.huggingface import GeoSaveConfig, GeoSaveModel
 from geosave_engine.ml.model_chain import ModelChain
 from geosave_engine.ml.models.head.dense import DenseHead
 from geosave_engine.ml.registry import build_model
+from geosave_engine.release.huggingface import GeoSaveConfig, GeoSaveModel
 
 
 @pytest.fixture
@@ -125,7 +125,7 @@ def test_installed_adapter_loads_in_fresh_process(
             """
 import sys
 import torch
-from geosave_engine.ml.huggingface import GeoSaveModel
+from geosave_engine.release.huggingface import GeoSaveModel
 model = GeoSaveModel.from_pretrained(sys.argv[1], local_files_only=True)
 actual = model(feature_map=torch.ones(1, 2, 4, 4))
 expected = torch.load(sys.argv[2], weights_only=True)

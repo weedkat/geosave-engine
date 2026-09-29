@@ -86,7 +86,7 @@ def save_model(
     target.parent.mkdir(parents=True, exist_ok=True)
     staging = Path(mkdtemp(prefix=f".{target.name}-", dir=target.parent))
     try:
-        from geosave_engine.ml.huggingface import GeoSaveModel
+        from .huggingface import GeoSaveModel
 
         GeoSaveModel.from_chain(model).save_pretrained(staging)
         validated_spec.save(staging)
@@ -174,7 +174,7 @@ def load_model(
     Returns:
         Native configured model chain.
     """
-    from geosave_engine.ml.huggingface import GeoSaveModel
+    from .huggingface import GeoSaveModel
 
     source = _local_source(path_or_repo_id)
     location = source if source is not None else path_or_repo_id

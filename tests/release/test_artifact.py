@@ -113,7 +113,7 @@ def test_missing_local_path_is_not_treated_as_a_hub_repository(
 ) -> None:
     missing = tmp_path / "missing"
 
-    with patch("geosave_engine.release.hf_hub_download") as download:
+    with patch("geosave_engine.release.artifact.hf_hub_download") as download:
         with pytest.raises(FileNotFoundError):
             load_spec(missing)
         with pytest.raises(FileNotFoundError):
@@ -143,7 +143,7 @@ def test_failed_save_leaves_no_release_or_staging_directory(
 
     with (
         patch(
-            "geosave_engine.ml.huggingface.GeoSaveModel.save_pretrained",
+            "geosave_engine.release.huggingface.GeoSaveModel.save_pretrained",
             side_effect=RuntimeError("injected failure"),
         ),
         pytest.raises(RuntimeError, match="injected failure"),
@@ -159,7 +159,7 @@ def test_remote_spec_load_downloads_only_the_spec(tmp_path: Path) -> None:
     path = remote_spec.save(tmp_path / "download")
 
     with patch(
-        "geosave_engine.release.hf_hub_download", return_value=str(path)
+        "geosave_engine.release.artifact.hf_hub_download", return_value=str(path)
     ) as download:
         actual = load_spec(
             "org/model",
@@ -197,7 +197,7 @@ def test_publish_uploads_one_complete_release_and_returns_commit_oid(
         return SimpleNamespace(oid="immutable-commit-oid")
 
     api.upload_folder.side_effect = upload_folder
-    with patch("geosave_engine.release.HfApi", return_value=api):
+    with patch("geosave_engine.release.artifact.HfApi", return_value=api):
         result = publish_model(
             model,
             "test-org/geosave-probe",
@@ -236,6 +236,15 @@ def test_local_spec_load_does_not_import_transformers(tmp_path: Path) -> None:
             "-c",
             """
 import sys
+from importlib.abc import MetaPathFinder
+
+class BlockTransformers(MetaPathFinder):
+    def find_spec(self, fullname, path, target=None):
+        if fullname == "transformers" or fullname.startswith("transformers."):
+            raise RuntimeError("transformers import blocked")
+        return None
+
+sys.meta_path.insert(0, BlockTransformers())
 from geosave_engine.release import load_spec
 load_spec(sys.argv[1])
 assert "transformers" not in sys.modules
