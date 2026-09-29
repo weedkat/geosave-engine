@@ -10,9 +10,9 @@ from torch import nn
 from torch.utils.data import DataLoader, Dataset
 import yaml
 
-from geosave_engine.ml.cli import GeosaveCLI
+from geosave_engine.ml.lightning.cli import GeosaveCLI
+from geosave_engine.ml.lightning.tasks import SemanticSegmentationTask
 from geosave_engine.ml.model_chain import chain_step
-from geosave_engine.ml.tasks import SemanticSegmentationTask
 
 
 class SegmentationModel(nn.Module):
@@ -33,6 +33,22 @@ class SegmentationModel(nn.Module):
     ) -> torch.Tensor:
         logits = image * self.factor
         return logits if offset is None else logits + offset
+
+
+class MappedSegmentationModel(nn.Module):
+    def __init__(
+        self,
+        in_channels: int,
+        input_size: int | tuple[int, int],
+        num_classes: int,
+    ) -> None:
+        super().__init__()
+        assert in_channels == num_classes
+        self.factor = nn.Parameter(torch.tensor(1.0))
+
+    @chain_step(outputs=("logits",))
+    def logits(self, image: torch.Tensor) -> torch.Tensor:
+        return image * self.factor
 
 
 class Samples(Dataset):
@@ -293,9 +309,10 @@ def test_training_constructor_errors_remain_native(stages, field, path):
 def test_template_preserves_task_optimizer_configuration(monkeypatch):
     calls = []
     monkeypatch.setattr(
-        "geosave_engine.ml.cli.GeosaveCLI", lambda **kwargs: calls.append(kwargs)
+        "geosave_engine.ml.lightning.cli.GeosaveCLI",
+        lambda **kwargs: calls.append(kwargs),
     )
-    template = Path(__file__).parents[3] / "src/geosave_engine/templates/common/main.py"
+    template = Path(__file__).parents[4] / "src/geosave_engine/templates/common/main.py"
     runpy.run_path(str(template), run_name="__main__")
     assert calls[0]["auto_configure_optimizers"] is False
 
@@ -321,6 +338,26 @@ def test_forward_preserves_prepared_inputs_and_routes_context(
     assert actual.dtype == torch.float64
     assert not hasattr(task, "preprocessor")
     assert not hasattr(task, "preprocess")
+
+
+def test_forward_rejects_mapped_model_results() -> None:
+    task = SemanticSegmentationTask(
+        model_chain={
+            "model": {"class_path": f"{__name__}.MappedSegmentationModel"}
+        },
+        in_channels=2,
+        num_classes=2,
+        input_size=2,
+    )
+    task.configure_model()
+    image = torch.tensor(
+        [[[[3.0, 0.0], [0.0, 3.0]], [[0.0, 3.0], [3.0, 0.0]]]]
+    )
+
+    native = task.model(image=image)
+    assert isinstance(native, dict)
+    with pytest.raises(TypeError, match="must return logits as a tensor"):
+        task(image=image)
 
 
 def test_steps_accept_model_inputs_and_target_tuples(

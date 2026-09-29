@@ -7,7 +7,7 @@ import pytest
 import torch
 from torch.utils.data import DataLoader, Dataset
 
-from geosave_engine.ml.data import SemanticSegmentationDataModule
+from geosave_engine.ml.lightning.data import SemanticSegmentationDataModule
 
 
 class Samples(Dataset):

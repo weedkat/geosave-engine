@@ -1,5 +1,5 @@
 from copy import deepcopy
-from typing import Any
+from typing import Any, cast
 
 import torch
 from lightning import LightningModule
@@ -13,52 +13,6 @@ from geosave_engine.ml.registry import (
     build_optimizer,
     build_scheduler,
 )
-
-
-def softmax_argmax(logits: torch.Tensor) -> tuple[torch.Tensor, torch.Tensor]:
-    """Softmax over the class dim, then argmax + top-class confidence.
-
-    Args:
-        logits: `[B, num_classes, H, W]` raw model output.
-
-    Returns:
-        `(preds [B, H, W] argmax class, max_probs [B, H, W] top-class confidence)`.
-    """
-    probs = logits.softmax(dim=1)
-    max_probs, preds = probs.max(dim=1)
-    return preds, max_probs
-
-
-def apply_thresholds(
-    logits: torch.Tensor,
-    thresholds: torch.Tensor,
-    ignore_index: int,
-    mask: torch.Tensor | None = None,
-) -> tuple[torch.Tensor, torch.Tensor]:
-    """Argmax + per-class confidence threshold + optional nodata mask.
-
-    Args:
-        logits: `[B, num_classes, H, W]` raw model output.
-        thresholds: `[num_classes]` per-class confidence threshold.
-        ignore_index: Class index assigned to low-confidence/masked pixels.
-        mask: Optional boolean `[B, H, W]` nodata mask. Masked pixels -> ignore_index.
-
-    Returns:
-        `(preds [B, H, W], max_probs [B, H, W] float32)`.
-    """
-    preds, max_probs = softmax_argmax(logits)
-
-    pixel_thresholds = torch.index_select(thresholds, 0, preds.reshape(-1)).view_as(
-        preds
-    )
-    preds = torch.where(
-        max_probs >= pixel_thresholds, preds, preds.new_full((), ignore_index)
-    )
-
-    if mask is not None:
-        preds = torch.where(mask.bool(), preds.new_full((), ignore_index), preds)
-
-    return preds, max_probs
 
 
 class SemanticSegmentationTask(LightningModule):
@@ -92,7 +46,7 @@ class SemanticSegmentationTask(LightningModule):
     Examples:
         # LightningCLI YAML:
         model:
-          class_path: geosave_engine.ml.tasks.SemanticSegmentationTask
+          class_path: geosave_engine.ml.lightning.tasks.SemanticSegmentationTask
           init_args:
             in_channels: 2
             num_classes: 2
@@ -160,7 +114,7 @@ class SemanticSegmentationTask(LightningModule):
         }
         self.criterion = build_criterion(criterion_spec)
 
-    def configure_model(self) -> None:
+    def configure_model(self):
         """Construct the model and prediction thresholds."""
         if hasattr(self, "model"):
             return
@@ -192,10 +146,13 @@ class SemanticSegmentationTask(LightningModule):
         if self.scheduler_spec is None:
             return optimizer
 
-        return {
-            "optimizer": optimizer,
-            "lr_scheduler": build_scheduler(self.scheduler_spec, optimizer),
-        }
+        return cast(
+            OptimizerLRScheduler,
+            {
+                "optimizer": optimizer,
+                "lr_scheduler": build_scheduler(self.scheduler_spec, optimizer),
+            },
+        )
 
     def setup(self, stage: str | None = None) -> None:
         metrics = SemanticSegmentationMetrics(
@@ -208,7 +165,7 @@ class SemanticSegmentationTask(LightningModule):
         self.test_metrics = metrics.clone(prefix="test_")
 
     def forward(self, **model_inputs: Any) -> torch.Tensor:
-        """Run a prepared tile batch through the model chain.
+        """Return raw per-pixel logits for prepared model inputs.
 
         Args:
             **model_inputs: Prepared named model tensors. ``image`` holds the
@@ -216,33 +173,17 @@ class SemanticSegmentationTask(LightningModule):
                 required; contextual tensors are ordinary keys.
 
         Returns:
-            ``[B, num_classes, H, W]`` logits.
+            Raw per-pixel logits.
+
+        Raises:
+            TypeError: If the configured model does not return one tensor.
         """
-        result = self.model(**model_inputs)
-        return result if isinstance(result, torch.Tensor) else result["logits"]
-
-    def postprocess(
-        self,
-        logits: torch.Tensor,
-        mask: torch.Tensor | None = None,
-    ) -> tuple[torch.Tensor, torch.Tensor]:
-        """Assign classes after tile logits have been stitched into scenes.
-
-        Args:
-            logits: ``[B, num_classes, H, W]`` raw model output.
-            mask: Optional boolean ``[B, H, W]`` nodata mask. Masked pixels → ignore_index.
-
-        Returns:
-            ``(pred_label [B, H, W] uint8, pred_proba [B, H, W] float32)``.
-        """
-        preds, max_probs = apply_thresholds(
-            logits, self.class_thresholds, self.ignore_index, mask
-        )
-
-        preds = preds.to(torch.uint8)
-        max_probs = max_probs.to(torch.float32)
-
-        return preds, max_probs
+        logits = self.model(**model_inputs)
+        if not isinstance(logits, torch.Tensor):
+            raise TypeError(
+                "Semantic segmentation models must return logits as a tensor"
+            )
+        return logits
 
     def training_step(
         self, batch: tuple[dict[str, Any], torch.Tensor], batch_idx: int
@@ -346,7 +287,7 @@ class SemanticSegmentationTask(LightningModule):
         batch_idx: int,
         dataloader_idx: int = 0,
     ) -> tuple[torch.Tensor, Any]:
-        """Predict tile logits for geodata stitching without class assignment.
+        """Return raw tile logits and their sample indices.
 
         Args:
             batch: ``(model_inputs, index)`` from TileDataset.
@@ -354,8 +295,8 @@ class SemanticSegmentationTask(LightningModule):
             dataloader_idx: Lightning prediction loader number.
 
         Returns:
-            ``(logits, index)``. Merge logits before applying
-            postprocess; indices are local to each loader's Tiles collection.
+            ``(logits, index)``. Indices are local to each loader's Tiles
+            collection.
         """
         model_inputs, index = batch
         return self(**model_inputs), index

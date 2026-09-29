@@ -9,9 +9,9 @@ import torch
 import yaml
 
 from geosave_engine.cli.core.workspace import create_workspace
-from geosave_engine.ml.cli import GeosaveCLI
-from geosave_engine.ml.data import SemanticSegmentationDataModule
-from geosave_engine.ml.tasks import SemanticSegmentationTask
+from geosave_engine.ml.lightning.data import SemanticSegmentationDataModule
+from geosave_engine.ml.lightning.tasks import SemanticSegmentationTask
+from geosave_engine.ml.lightning.cli import GeosaveCLI
 from geosave_engine.workflow.specs import ModelSpec, Ref
 from geosave_engine.cli.core.templates import get_tasks
 
@@ -19,28 +19,32 @@ from geosave_engine.cli.core.templates import get_tasks
 @pytest.fixture
 def workspace(tmp_path, monkeypatch):
     create_workspace(tmp_path, "semantic_segmentation", "supervised")
+    assert (tmp_path / "configs/train.yaml").is_file()
+    assert not (tmp_path / "configs/model.yaml").exists()
     monkeypatch.syspath_prepend(str(tmp_path))
     return tmp_path
 
 
 def test_segmentation_configs_agree_on_model_inputs(workspace):
     spec = ModelSpec.load(workspace / "configs/model_spec.yaml")
-    config = yaml.safe_load((workspace / "configs/model.yaml").read_text())
-    source = spec.sources["sentinel_2_l2a"]
-    assert source.collection == "sentinel-2-l2a"
-    assert source.variables == ("B02", "B03", "B04", "B08")
-    assert tuple(map(str, source.endpoints)) == (
-        "https://planetarycomputer.microsoft.com/api/stac/v1/",
-        "https://stac.dataspace.copernicus.eu/v1/",
+    config = yaml.safe_load((workspace / "configs/train.yaml").read_text())
+    requirement = spec.rasters["sentinel_2_l2a"]
+    assert requirement.stac is not None
+    assert requirement.stac.collection == "sentinel-2-l2a"
+    assert requirement.variables == ("B02", "B03", "B04", "B08")
+    assert tuple(map(str, requirement.stac.endpoints)) == (
+        "planetary_computer",
+        "cdse",
     )
-    assert source.require_crs
+    assert requirement.require_crs
     model = SemanticSegmentationTask(**config["model"]["init_args"])
-    assert model.in_channels == len(source.variables) == 4
-    assert spec.inference["image"].call == Ref("image.gs.to_tensor")
-    assert spec.inference["image"].kwargs == {"dtype": "float32"}
+    assert model.in_channels == len(requirement.variables) == 4
+    assert spec.tiling["image"].shape == model.input_size
+    assert spec.model_inputs["image"].call == Ref("image.gs.to_tensor")
+    assert spec.model_inputs["image"].kwargs == {"dtype": "float32"}
     assert model.num_classes == 2
     assert config["data"]["class_path"] == (
-        "geosave_engine.ml.data.SemanticSegmentationDataModule"
+        "geosave_engine.ml.lightning.data.SemanticSegmentationDataModule"
     )
     data = SemanticSegmentationDataModule(**config["data"]["init_args"])
     assert data.input_size == model.input_size
@@ -49,7 +53,7 @@ def test_segmentation_configs_agree_on_model_inputs(workspace):
 
 
 def test_model_config_uses_current_task_constructor(workspace):
-    config = yaml.safe_load((workspace / "configs/model.yaml").read_text())
+    config = yaml.safe_load((workspace / "configs/train.yaml").read_text())
     model = SemanticSegmentationTask(**config["model"]["init_args"])
     assert isinstance(model.criterion, torch.nn.CrossEntropyLoss)
     assert model.optimizer_spec["name"] == "adamw"
@@ -80,7 +84,7 @@ def test_generated_entrypoint_parses_library_lightning_pair(
             "main.py",
             "fit",
             "--config",
-            str(workspace / "configs/model.yaml"),
+            str(workspace / "configs/train.yaml"),
             "--print_config",
         ],
     )
@@ -90,7 +94,7 @@ def test_generated_entrypoint_parses_library_lightning_pair(
     config = yaml.safe_load(capsys.readouterr().out)
     assert config["model"]["init_args"]["in_channels"] == 4
     assert config["data"]["class_path"] == (
-        "geosave_engine.ml.data.SemanticSegmentationDataModule"
+        "geosave_engine.ml.lightning.data.SemanticSegmentationDataModule"
     )
 
 
@@ -98,14 +102,16 @@ def test_generated_entrypoint_parses_library_lightning_pair(
 def test_custom_lightning_workspace_runs_one_train_and_validation_batch(tmp_path):
     assert "lightning" in get_tasks()["custom"]
     create_workspace(tmp_path, "custom", "lightning")
+    assert (tmp_path / "configs/train.yaml").is_file()
+    assert not (tmp_path / "configs/model.yaml").exists()
     script = """
 from modules.data import CustomDataModule
 from modules.task import CustomTask
-from geosave_engine.ml.cli import GeosaveCLI
+from geosave_engine.ml.lightning.cli import GeosaveCLI
 
 cli = GeosaveCLI(
     run=False,
-    args=["--config", "configs/model.yaml"],
+    args=["--config", "configs/train.yaml"],
     save_config_callback=None,
     auto_configure_optimizers=False,
     subclass_mode_model=True,
