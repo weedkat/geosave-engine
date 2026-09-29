@@ -98,10 +98,11 @@ def test_a_step_merging_two_upstream_keys_runs_once(x):
     assert calls == ["merge"]
 
 
-def test_no_head_returns_the_merged_context(x):
+def test_no_head_returns_only_named_stage_outputs(x):
     ctx = ModelChain(Split(), Merge())(x)
 
-    assert set(ctx) == {"image", "low", "high", "merged"}
+    assert set(ctx) == {"low", "high", "merged"}
+    assert "image" not in ctx
 
 
 def test_one_head_returns_its_bare_tensor(x):

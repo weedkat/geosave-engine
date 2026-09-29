@@ -69,6 +69,7 @@ class ModelChain(nn.Module):
                 f"Values supplied both a positional and keyword way: {sorted(repeated)}"
             )
         context = positional | kwargs
+        produced: dict[str, object] = {}
         heads: dict[str, object] = {}
         for step in self._steps:
             result = step.method.invoke(step.module, context)
@@ -76,11 +77,12 @@ class ModelChain(nn.Module):
                 heads[step.stage] = result
             else:
                 context.update(result)
+                produced.update(result)
         if len(heads) == 1:
             result = next(iter(heads.values()))
             assert isinstance(result, torch.Tensor)
             return result
-        return heads if heads else context
+        return heads if heads else produced
 
     def __repr__(self) -> str:
         """Return external inputs, execution order, and registered modules."""
