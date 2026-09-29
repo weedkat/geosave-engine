@@ -21,13 +21,16 @@ This change will:
   `_logits` normalization helper while retaining `predict_step`;
 - remove the unfinished dense-prediction workflow, tasks, declarations, tests,
   exports, and documentation;
+- make `geosave_engine.model_spec` a first-class package shared by workflows,
+  releases, and generated training code;
 - reduce `ModelSpec` to raster requirements and preprocessing declarations;
 - expose raster loading and preprocessing as behavior on `ModelSpec` rather
   than external functions that unpack it;
 - reserve Prefect flows for independently runnable jobs and Prefect tasks for
   work submitted concurrently;
 - finish the caller-metadata path for dense sample preparation;
-- move generic table reading into public utilities;
+- organize workflows by the ingestion and training-data domains rather than
+  technical `flows`, `tasks`, and `configs` buckets;
 - convert the release module into a package and colocate its Hugging Face
   persistence adapter there.
 
@@ -141,8 +144,11 @@ an inference interface is designed from a real consumer.
 
 ## Behavior-rich model specification
 
+`geosave_engine.model_spec` is a top-level package because `model_spec.yaml` is
+shared by workflow execution, generated training code, and releases. It must
+not make release code depend on the Prefect-oriented `workflow` namespace.
 `ModelSpec` is the primary public module for behavior completely described by
-`model_spec.yaml`. Callers should not extract its declarations and pass them to
+that file. Callers should not extract its declarations and pass them to
 unrelated public functions.
 
 ```python
@@ -180,17 +186,19 @@ an explicit `chunks: null` or a user-declared eager operation may still
 materialize pixels. The contract therefore promises that GeoSave adds no
 implicit eager pixel computation, not that arbitrary recipes are always lazy.
 
-Cached clients, endpoint retry classification, and fresh mutable sources stay
-inside a private acquisition implementation. There is one concrete STAC
-adapter, so no loader protocol, registry, or injected callable is introduced.
-Individual raster acquisition is not a public interface in this change; it
-would bypass the model-level all-recipes-present preflight without a current
-caller that needs that behavior.
+`StacRecipe.load_raster(anchor)` owns catalog selection, query binding, and
+creation of a fresh mutable source. Cached clients and endpoint retry classification are
+localized private functions in `model_spec/stac.py`, beside the public recipe
+that uses them; there is no private acquisition module. There is one concrete
+STAC adapter, so no loader protocol, registry, or injected callable is
+introduced. `ModelSpec.load_rasters()` remains the normal interface because it
+adds the all-recipes-present preflight, raster selection, and named error
+context across the complete model input bundle.
 
-`geosave_engine.workflow.flows.ingest` remains the independently runnable job.
-It accepts deployment-safe values, loads the model specification, performs the
-missing-recipe preflight, opens the anchor, calls `model.load_rasters()`, and
-atomically writes the raster stack. Dense sample preparation receives the
+`geosave_engine.workflow.ingestion.ingest` remains the independently runnable
+job. It accepts deployment-safe values, loads the model specification, performs
+the missing-recipe preflight, opens the anchor, calls `model.load_rasters()`,
+and atomically writes the raster stack. Dense sample preparation receives the
 complete `ModelSpec` and calls the same method directly; it does not receive an
 extracted requirements mapping or invoke the ingest flow as a subflow.
 
@@ -277,8 +285,6 @@ def _validated(self) -> Self:
     return type(self).model_validate(self.model_dump())
 
 def load_rasters(self, anchor: GeoAnchor, /) -> dict[str, xr.Dataset]:
-    from geosave_engine.workflow import _acquisition
-
     model = self._validated()
     missing = [
         name for name, requirement in model.rasters.items()
@@ -290,7 +296,10 @@ def load_rasters(self, anchor: GeoAnchor, /) -> dict[str, xr.Dataset]:
     rasters = {}
     for name, requirement in model.rasters.items():
         try:
-            rasters[name] = _acquisition.load_raster(anchor, requirement)
+            assert requirement.stac is not None
+            rasters[name] = requirement.select_raster(
+                requirement.stac.load_raster(anchor)
+            )
         except Exception as error:
             error.add_note(f"While loading raster {name!r}")
             raise
@@ -314,28 +323,23 @@ def preprocess(
     return model.preprocessing.run(state)
 ```
 
-The private acquisition implementation contains the existing STAC mechanics:
+`StacRecipe` contains the existing STAC mechanics:
 
 ```python
-def load_raster(
-    anchor: GeoAnchor,
-    requirement: RasterRequirement,
-) -> xr.Dataset:
-    recipe = requirement.stac
-    if recipe is None:
-        raise ValueError("Raster requirement needs a STAC recipe")
+def load_raster(self, anchor: GeoAnchor, /) -> xr.Dataset:
+    """Load this recipe on an exact output grid and fallback search anchor."""
     client = _open_client(
-        recipe.collection,
-        tuple(str(endpoint) for endpoint in recipe.endpoints),
+        self.collection,
+        tuple(str(endpoint) for endpoint in self.endpoints),
     )
-    source = client.source(recipe.collection)
-    source.query = recipe.query.to_query(recipe.collection)
-    source.config = recipe.load
-    return requirement.select_raster(source.load(anchor))
+    source = client.source(self.collection)
+    source.query = self.query.to_query(self.collection)
+    source.config = self.load
+    return source.load(anchor)
 ```
 
 `_open_client()` retains cached `StacClient` instances and constructs a fresh
-mutable source in `load_raster()`. A `ValueError` raised specifically by
+mutable source in `StacRecipe.load_raster()`. A `ValueError` raised specifically by
 `StacClient.collection()` means that endpoint lacks the collection and permits
 fallback. Errors from opening the endpoint, parsing malformed collection
 documents, authentication, and invalid queries continue to propagate.
@@ -358,9 +362,9 @@ except ValueError as error:
 ```
 
 This is a local correction to the adapter's existing fallback policy, not a
-change to the frozen geodata STAC API. The local import in `load_rasters()`
-also avoids making the private acquisition module part of spec import-time
-validation.
+change to the frozen geodata STAC API. Loading `geosave_engine.model_spec`
+remains inert because client creation occurs only when
+`StacRecipe.load_raster()` is called.
 
 The runnable ingest flow becomes a small deployment adapter:
 
@@ -383,78 +387,104 @@ must fail before opening a potentially remote anchor, while
 `ModelSpec.load_rasters()` must enforce its own interface for direct callers.
 It is not extracted into another public validation method.
 
-### Tables and sample identity
+### Manifest locality
 
-`geosave_engine.utils.read_table(path)` reads CSV, TSV, Parquet, or the first
-XLSX worksheet. This is a generic public utility and has source-mirrored tests
-under `tests/utils/`.
+CSV, TSV, Parquet, and first-worksheet XLSX reading stays inside
+`workflow/training_data/manifest.py`. It currently has one consumer, so a
+top-level `utils.read_table()` would be a shallow module rather than a shared
+utility.
 
-`geosave_engine.workflow.metadata.read_sample_metadata()` retains the
-workflow-specific `label_path` join, exact label-set validation, and
-manifest-owned-column checks.
+The same manifest module owns label discovery, stable sample IDs, metadata
+joining, the ordered manifest schema, and synchronous GeoParquet publication.
+These operations share the invariant that every discovered label corresponds
+to exactly one manifest row. Keeping them together prevents reserved columns,
+path resolution, and ordering rules from being duplicated across a flow and
+several root helpers.
 
-`geosave_engine.workflow.catalog` owns the manifest schema and exposes its
-ordered owned-column names once. Metadata validation and manifest publication
-both use that definition rather than maintaining duplicate reserved-name sets.
-`write_manifest()` is an ordinary synchronous function in that module.
-
-Stable label discovery and output naming move to
-`geosave_engine.workflow.samples` as public functions:
-
-```python
-def discover_labels(root: Path, pattern: str) -> dict[str, Path]: ...
-
-def dense_sample_path(
-    root: Path,
-    sample_id: str,
-    format: SampleFormat,
-) -> Path: ...
-```
+`workflow/training_data/sample.py` owns the persisted dense-sample contract:
+format selection, atomic writes, reopening, and completed-sample validation.
+`open_sample()` is exported because the generated training Dataset will consume
+the same artifact. Publication helpers remain package implementation until a
+second caller needs them.
 
 Endpoint retry classification, cached STAC clients, YAML loaders, GeoTIFF scene
-normalization, and completed-sample validation remain private implementation.
-They do not gain leverage from a public interface.
+normalization, and bounded-submission bookkeeping remain private functions
+inside the public domain module that uses them. They do not justify standalone
+private modules.
 
-### Physical locality
+### Package structure and dependency direction
 
-The source layout reflects runtime responsibility rather than placing every
-workflow helper under `tasks`:
+The package layout follows stable lifecycle responsibilities:
 
 ```text
-workflow/
-├── _acquisition.py       # private STAC endpoint and source implementation
-├── catalog.py            # manifest schema and synchronous publication
-├── metadata.py           # caller metadata join and validation
-├── samples.py            # label discovery and output identity
-├── storage.py            # atomic stack/sample open and write functions
-├── flows/                # independently runnable jobs
-├── specs/                # behavior-rich declarative model modules
-└── tasks/                # only concurrently submitted work
+geosave_engine/
+├── model_spec/
+│   ├── __init__.py       # explicit model-spec public interface
+│   ├── base.py           # strict shared declaration model
+│   ├── model.py          # ModelSpec loading, saving, acquisition composition
+│   ├── call.py           # inert references and call declarations
+│   ├── stage.py          # ordered processing execution
+│   ├── rasters.py        # raster requirements and selection
+│   └── stac.py           # STAC recipe and acquisition implementation
+├── workflow/
+│   ├── ingestion/
+│   │   ├── __init__.py   # ingest public interface
+│   │   ├── anchor.py     # serializable anchor inputs
+│   │   └── flow.py       # Prefect flow and atomic stack publication
+│   └── training_data/
+│       ├── __init__.py   # preparation public interface
+│       ├── dense.py      # preparation flow and submitted sample task
+│       ├── sample.py     # dense sample artifact contract
+│       └── manifest.py   # discovery, metadata, schema, publication
+└── release/
+    ├── __init__.py       # explicit release public interface
+    ├── artifact.py       # versioned release bundle operations
+    └── huggingface.py    # Transformers persistence adapter
 ```
 
-The normal public seam stays on `ModelSpec`; the private acquisition module
-keeps network mechanics out of `specs/model.py` without creating another public
-loader. `StageSpec.run()` lives with `StageSpec`. Source-mirrored tests move with
-these modules instead of preserving their old `tasks` locations.
+`model_spec` earns a top-level package because both workflow and release depend
+on it. `workflow.ingestion` owns the durable raster-stack job.
+`workflow.training_data` owns label-aligned training samples and their
+manifest. `release` owns the separately versioned model-artifact lifecycle.
+There are no general root `catalog`, `metadata`, `samples`, or `storage`
+modules.
+
+Imports point inward without cycles:
+
+```text
+CLI and templates
+    -> workflow.ingestion / workflow.training_data
+        -> model_spec
+            -> geodata
+
+release -> model_spec + ml
+```
+
+The technical `workflow.flows`, `workflow.tasks`, and `workflow.configs`
+packages are deleted. Prefect decorators do not determine ownership: the one
+submitted operation lives beside the dense preparation flow that submits it.
+Package `__init__.py` files expose supported interfaces while implementation
+imports use their owning modules directly.
 
 The physical moves are explicit:
 
 | Current code | Target owner |
 | --- | --- |
-| `workflow/tasks/load.py` | `workflow/_acquisition.py` |
-| `workflow/tasks/process.py::run_stage` | `workflow/specs/stage.py::StageSpec.run` |
-| `workflow/tasks/process.py::preprocess` | `workflow/specs/model.py::ModelSpec.preprocess` |
+| `workflow/specs/*` | `model_spec/*` |
+| `workflow/tasks/load.py` | `model_spec/stac.py::StacRecipe.load_raster` |
+| `workflow/tasks/process.py::run_stage` | `model_spec/stage.py::StageSpec.run` |
+| `workflow/tasks/process.py::preprocess` | `model_spec/model.py::ModelSpec.preprocess` |
 | `workflow/tasks/process.py::postprocess` | deleted |
-| `workflow/tasks/save.py` | `workflow/storage.py` |
-| `workflow/tasks/catalog.py` | `workflow/catalog.py` |
-| private label/path helpers in `flows/prepare_dense_data.py` | `workflow/samples.py` |
+| `workflow/configs/anchor.py` | `workflow/ingestion/anchor.py` |
+| `workflow/flows/ingest.py` and `write_stack` | `workflow/ingestion/flow.py` |
+| dense flow and submitted task | `workflow/training_data/dense.py` |
+| dense sample open/write/validation | `workflow/training_data/sample.py` |
+| catalog, metadata, label discovery, sample paths | `workflow/training_data/manifest.py` |
+| `release.py` | `release/artifact.py` |
 | `ml/huggingface.py` | `release/huggingface.py` |
-| top-level `release.py` | `release/__init__.py` |
 
-After the move, `geosave_engine.workflow.tasks` exports only
-`prepare_dense_sample`. Existing tests move to the source-mirrored target
-locations; no forwarding modules or import aliases remain for these Alpha
-interfaces.
+Existing tests move to source-mirrored target packages. No forwarding modules
+or import aliases preserve the removed Alpha paths.
 
 ## Prefect ownership
 
@@ -570,6 +600,7 @@ The release implementation becomes:
 ```text
 geosave_engine/release/
 ├── __init__.py
+├── artifact.py
 └── huggingface.py
 ```
 
@@ -579,23 +610,24 @@ The existing public imports remain:
 from geosave_engine.release import load_model, load_spec, publish_model, save_model
 ```
 
+`release.artifact` owns the versioned release directory, required files, model
+card, atomic local saving, Hub publication, and loading operations.
 `release.huggingface` owns `GeoSaveConfig`, `GeoSaveModel`, and Transformers
 registration. Tests move from the ML test tree to the source-mirrored release
-test tree. Imports of the optional Transformers adapter remain lazy so
-`load_spec()` does not import Transformers.
+test tree.
 
-`release.__init__` keeps the existing save/load/publish functions and changes
-only their local lazy imports:
+`release.__init__` defines the package interface by re-exporting the existing
+functions from `artifact`:
 
 ```python
-def save_model(...):
-    from .huggingface import GeoSaveModel
-    ...
+from .artifact import load_model, load_spec, publish_model, save_model
 
-def load_model(...):
-    from .huggingface import GeoSaveModel
-    ...
+__all__ = ["load_model", "load_spec", "publish_model", "save_model"]
 ```
+
+`artifact.py` imports `GeoSaveModel` locally inside model save/load operations,
+so importing `geosave_engine.release` or calling `load_spec()` does not import
+the optional Transformers dependency.
 
 Release validation retains `json.dumps(model.stage_specs)` and complete-file
 checks, but removes the comparison against `spec.model_inputs` because that
@@ -614,6 +646,8 @@ The cleanup removes:
 - `workflow/flows/predict.py`;
 - `workflow/tasks/predict.py`;
 - `workflow/specs/prediction.py`;
+- the remaining `workflow/flows`, `workflow/tasks`, `workflow/configs`, and
+  `workflow/specs` package paths after their owners move;
 - their source-mirrored tests;
 - prediction-only model-spec and template declarations;
 - postprocessing execution and tests;
@@ -666,12 +700,14 @@ Implementation follows focused test-first slices:
 4. `StageSpec.run()` and `ModelSpec.preprocess()` tests for inert loading,
    ordered execution, rebinding, forward references, runtime-root rejection,
    raster selection, no caller-mapping mutation, and laziness.
-5. Public table and sample-identity utility tests.
+5. Training-manifest discovery, metadata, schema, and publication tests through
+   `workflow.training_data.manifest`.
 6. Dense metadata CLI-to-manifest tests, including failure before submission.
 7. Release package round trips and a fresh-process adapter load.
 
-The final verification runs focused workflow/template/ML/release tests, the
-complete test suite, scoped Ruff, BasedPyright, and `git diff --check`.
+The final verification runs focused model-spec/workflow/template/ML/release
+tests, the complete test suite, scoped Ruff, BasedPyright, and
+`git diff --check`.
 
 The next milestone uses the cleaned interfaces to build a template-owned
 manifest Dataset/DataModule and proves one real preparation-to-training run.
