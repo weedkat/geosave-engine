@@ -60,6 +60,30 @@ for the task to normalize. Training, validation, test, and prediction steps all
 call `self(**model_inputs)` directly. `predict_step` remains part of model
 development and returns raw tile logits with their sample indices.
 
+The task implementation is intentionally direct:
+
+```python
+def forward(self, **model_inputs: Any) -> torch.Tensor:
+    """Return raw per-pixel logits for prepared model inputs."""
+    logits = self.model(**model_inputs)
+    if not isinstance(logits, torch.Tensor):
+        raise TypeError("Semantic segmentation models must return logits as a tensor")
+    return logits
+
+def predict_step(
+    self,
+    batch: tuple[dict[str, Any], Any],
+    batch_idx: int,
+    dataloader_idx: int = 0,
+) -> tuple[torch.Tensor, Any]:
+    model_inputs, index = batch
+    return self(**model_inputs), index
+```
+
+The same direct call replaces `_logits(self(...))` in the train, validation,
+and test steps. The current mapped-result fixture becomes a rejection test;
+the existing Lightning tile prediction and explicit `predict_step` tests stay.
+
 Other tasks may define different pure-tensor contracts when they exist. A
 few-shot model may accept support tensors, support labels, and query tensors in
 one call. An autoregressive model may return next-step logits plus tensor cache
@@ -220,6 +244,145 @@ Deterministic model-required preparation belongs in `ModelSpec.preprocessing`.
 Random augmentation, cropping, episode construction, label conversion, and
 selection of model keyword arguments remain Dataset/DataModule policy.
 
+### Concrete implementation
+
+`StageSpec.run()` absorbs the current external `run_stage()` implementation:
+
+```python
+def run(self, inputs: Mapping[str, Any], /) -> dict[str, Any]:
+    """Execute declarations in order after validating their references."""
+    self.validate_inputs(inputs.keys())
+    state = dict(inputs)
+    results = {}
+    for output, declaration in self.items():
+        result = declaration.invoke(declaration.select_inputs(state))
+        state[output] = result
+        results[output] = result
+    return results
+```
+
+`ModelSpec` owns structural validation and the two normal runtime operations:
+
+```python
+@model_validator(mode="after")
+def _validate_preprocessing_roots(self) -> Self:
+    unknown = set(self.preprocessing.external_inputs) - self.rasters.keys()
+    if unknown:
+        raise ValueError(
+            f"Preprocessing inputs must be declared rasters: {sorted(unknown)}"
+        )
+    return self
+
+def _validated(self) -> Self:
+    return type(self).model_validate(self.model_dump())
+
+def load_rasters(self, anchor: GeoAnchor, /) -> dict[str, xr.Dataset]:
+    from geosave_engine.workflow import _acquisition
+
+    model = self._validated()
+    missing = [
+        name for name, requirement in model.rasters.items()
+        if requirement.stac is None
+    ]
+    if missing:
+        raise ValueError(f"STAC recipes required for rasters: {missing}")
+
+    rasters = {}
+    for name, requirement in model.rasters.items():
+        try:
+            rasters[name] = _acquisition.load_raster(anchor, requirement)
+        except Exception as error:
+            error.add_note(f"While loading raster {name!r}")
+            raise
+    return rasters
+
+def preprocess(
+    self,
+    inputs: Mapping[str, xr.Dataset],
+    /,
+) -> dict[str, Any]:
+    model = self._validated()
+    state = dict(inputs)
+    for name in model.preprocessing.external_inputs:
+        if name not in state:
+            continue  # StageSpec.run() reports missing references.
+        try:
+            state[name] = model.rasters[name].select_raster(state[name])
+        except (TypeError, ValueError) as error:
+            error.add_note(f"While preprocessing raster {name!r}")
+            raise
+    return model.preprocessing.run(state)
+```
+
+The private acquisition implementation contains the existing STAC mechanics:
+
+```python
+def load_raster(
+    anchor: GeoAnchor,
+    requirement: RasterRequirement,
+) -> xr.Dataset:
+    recipe = requirement.stac
+    if recipe is None:
+        raise ValueError("Raster requirement needs a STAC recipe")
+    client = _open_client(
+        recipe.collection,
+        tuple(str(endpoint) for endpoint in recipe.endpoints),
+    )
+    source = client.source(recipe.collection)
+    source.query = recipe.query.to_query(recipe.collection)
+    source.config = recipe.load
+    return requirement.select_raster(source.load(anchor))
+```
+
+`_open_client()` retains cached `StacClient` instances and constructs a fresh
+mutable source in `load_raster()`. A `ValueError` raised specifically by
+`StacClient.collection()` means that endpoint lacks the collection and permits
+fallback. Errors from opening the endpoint, parsing malformed collection
+documents, authentication, and invalid queries continue to propagate.
+
+Because `StacClient.collection()` currently uses `ValueError` for both its
+documented missing-collection result and errors raised while parsing a returned
+document, `_open_client()` matches only the former's exact message:
+
+```python
+try:
+    metadata = client.collection(collection)
+except ValueError as error:
+    expected = (
+        f"collection {collection!r} not found on this STAC endpoint; "
+        "call collections() to see what is available"
+    )
+    if str(error) != expected:
+        raise
+    metadata = None
+```
+
+This is a local correction to the adapter's existing fallback policy, not a
+change to the frozen geodata STAC API. The local import in `load_rasters()`
+also avoids making the private acquisition module part of spec import-time
+validation.
+
+The runnable ingest flow becomes a small deployment adapter:
+
+```python
+@flow(name="ingest", persist_result=False)
+def ingest(anchor: dict[str, JsonValue], *, output: str, spec: str) -> str:
+    model = ModelSpec.load(spec)
+    missing = [
+        name for name, requirement in model.rasters.items()
+        if requirement.stac is None
+    ]
+    if missing:
+        raise ValueError(f"STAC recipes required for rasters: {missing}")
+    target = TypeAdapter(AnchorConfig).validate_python(anchor).open()
+    return write_stack(model.load_rasters(target), output)
+```
+
+The repeated missing-recipe comprehension is intentional and tested: the flow
+must fail before opening a potentially remote anchor, while
+`ModelSpec.load_rasters()` must enforce its own interface for direct callers.
+It is not extracted into another public validation method.
+
 ### Tables and sample identity
 
 `geosave_engine.utils.read_table(path)` reads CSV, TSV, Parquet, or the first
@@ -274,6 +437,25 @@ keeps network mechanics out of `specs/model.py` without creating another public
 loader. `StageSpec.run()` lives with `StageSpec`. Source-mirrored tests move with
 these modules instead of preserving their old `tasks` locations.
 
+The physical moves are explicit:
+
+| Current code | Target owner |
+| --- | --- |
+| `workflow/tasks/load.py` | `workflow/_acquisition.py` |
+| `workflow/tasks/process.py::run_stage` | `workflow/specs/stage.py::StageSpec.run` |
+| `workflow/tasks/process.py::preprocess` | `workflow/specs/model.py::ModelSpec.preprocess` |
+| `workflow/tasks/process.py::postprocess` | deleted |
+| `workflow/tasks/save.py` | `workflow/storage.py` |
+| `workflow/tasks/catalog.py` | `workflow/catalog.py` |
+| private label/path helpers in `flows/prepare_dense_data.py` | `workflow/samples.py` |
+| `ml/huggingface.py` | `release/huggingface.py` |
+| top-level `release.py` | `release/__init__.py` |
+
+After the move, `geosave_engine.workflow.tasks` exports only
+`prepare_dense_sample`. Existing tests move to the source-mirrored target
+locations; no forwarding modules or import aliases remain for these Alpha
+interfaces.
+
 ## Prefect ownership
 
 Only independently runnable jobs are flows:
@@ -299,6 +481,36 @@ conversion read it, and applies `model.preprocess()` to cropped sample values.
 Expensive deterministic preprocessing may be cached later only after the first
 training run provides evidence that this is useful.
 
+The submitted task receives the whole model specification, which makes the
+public behavior the only acquisition path:
+
+```python
+@task(cache_policy=NO_CACHE, persist_result=False)
+def prepare_dense_sample(
+    label: str | Path,
+    model: ModelSpec,
+    output: str | Path,
+    *,
+    format: SampleFormat = "geotiff",
+    write_options: Mapping[str, JsonValue] | None = None,
+) -> str:
+    destination = Path(output)
+    if destination.exists():
+        _validate_dense_sample(destination, model.rasters, format=format)
+        return str(destination)
+
+    with io.read_raster(label) as label_raster:
+        anchor = label_raster.gs.anchor
+        if anchor.timespan is None:
+            raise ValueError(f"Label raster has no time: {label}")
+        return write_sample(
+            {"label": label_raster, **model.load_rasters(anchor)},
+            destination,
+            format=format,
+            write_options=write_options,
+        )
+```
+
 ## Dense metadata completion
 
 The existing metadata reader is wired into the runnable preparation path:
@@ -312,6 +524,44 @@ The existing metadata reader is wired into the runnable preparation path:
 The CLI and generated ingestion script accept the optional metadata table.
 Invalid metadata therefore fails before STAC access and cannot leave a partially
 updated manifest.
+
+The flow's setup and finalization become:
+
+```python
+model = ModelSpec.load(spec)
+if "label" in model.rasters:
+    raise ValueError("Model raster name 'label' is reserved")
+
+discovered = discover_labels(Path(labels), pattern)
+properties = read_sample_metadata(metadata, discovered)
+
+# The existing bounded loop submits:
+prepare_dense_sample.submit(
+    label,
+    model,
+    dense_sample_path(destination, sample_id, format),
+    format=format,
+    write_options=write_options,
+)
+
+# Once every future is resolved, finalize synchronously:
+return write_manifest(
+    ordered,
+    destination / "manifest.parquet",
+    format=format,
+    metadata=properties,
+)
+```
+
+`metadata` is added to both the flow and CLI command as
+`str | None = None`. Recipe validation happens through the `ModelSpec` passed
+to each submitted sample. Metadata and label validation happen before any
+submission. A separate flow-level missing-recipe check remains useful here too:
+it guarantees every recipe error is reported before a worker starts STAC I/O.
+
+The CLI forwards `metadata=str(metadata) if metadata is not None else None`;
+the generated preparation script exposes the same optional argument. Neither
+layer reads the table itself.
 
 ## Release package
 
@@ -334,6 +584,24 @@ registration. Tests move from the ML test tree to the source-mirrored release
 test tree. Imports of the optional Transformers adapter remain lazy so
 `load_spec()` does not import Transformers.
 
+`release.__init__` keeps the existing save/load/publish functions and changes
+only their local lazy imports:
+
+```python
+def save_model(...):
+    from .huggingface import GeoSaveModel
+    ...
+
+def load_model(...):
+    from .huggingface import GeoSaveModel
+    ...
+```
+
+Release validation retains `json.dumps(model.stage_specs)` and complete-file
+checks, but removes the comparison against `spec.model_inputs` because that
+prediction-only declaration is removed. `_validate_release` consequently takes
+only `model`; `save_model` still validates and bundles the supplied `ModelSpec`.
+
 No publisher protocol or registry is added. Hugging Face is the only current
 adapter; a future `release.mlflow` module should be designed from actual MLflow
 artifact behavior.
@@ -352,6 +620,15 @@ The cleanup removes:
 - stale prediction design and implementation-plan documents;
 - all imports of the deleted `geosave_engine.ml.cli` path;
 - any compatibility aliases for removed Alpha interfaces.
+
+Every remaining `GeosaveCLI` import changes directly to
+`geosave_engine.ml.lightning.cli`. The new package path is the only path; the
+deleted `geosave_engine.ml.cli` module is not restored as a forwarding alias.
+
+The existing `values.yaml` test fixture mixes generic stage execution with a
+model recipe by supplying scalar runtime roots such as `scale`, `value`, and
+`audit`. Those cases move to direct `StageSpec` tests. Model-spec fixtures use
+only declared raster roots, proving that model preprocessing is self-contained.
 
 Current geodata implementations and behavior remain unchanged.
 
@@ -387,7 +664,8 @@ Implementation follows focused test-first slices:
 3. `ModelSpec.load_rasters()` tests using native anchors and specifications,
    including all-recipes preflight, endpoint fallback, and error context.
 4. `StageSpec.run()` and `ModelSpec.preprocess()` tests for inert loading,
-   ordered execution, runtime-root rejection, raster selection, and laziness.
+   ordered execution, rebinding, forward references, runtime-root rejection,
+   raster selection, no caller-mapping mutation, and laziness.
 5. Public table and sample-identity utility tests.
 6. Dense metadata CLI-to-manifest tests, including failure before submission.
 7. Release package round trips and a fresh-process adapter load.
