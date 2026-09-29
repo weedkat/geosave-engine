@@ -5,13 +5,9 @@ from __future__ import annotations
 import json
 import os
 from pathlib import Path
-from shutil import copy2
-from types import SimpleNamespace
 import subprocess
 import sys
-from unittest.mock import MagicMock, patch
 
-from huggingface_hub import ModelCard
 import pytest
 from safetensors.torch import load_file, save_file
 import torch
@@ -22,7 +18,6 @@ from geosave_engine.ml.huggingface import GeoSaveConfig, GeoSaveModel
 from geosave_engine.ml.model_chain import ModelChain
 from geosave_engine.ml.models.head.dense import DenseHead
 from geosave_engine.ml.registry import build_model
-from tests.ml.model_chain.conftest import Head
 
 
 @pytest.fixture
@@ -197,48 +192,3 @@ def test_config_rejects_duplicate_stage_names() -> None:
                 {"stage": "encoder", "spec": {"name": "dense"}},
             ]
         )
-
-
-def test_adapter_push_uploads_a_reloadable_transformers_artifact(
-    tmp_path: Path,
-    stages: dict[str, dict[str, object]],
-) -> None:
-    destination = tmp_path / "uploaded"
-    destination.mkdir()
-    adapter = GeoSaveModel.from_chain(build_model(stages))
-    api = MagicMock()
-    api.create_repo.return_value = SimpleNamespace(repo_id="test-org/geosave-probe")
-
-    def create_commit(*, operations: list[object], **kwargs: object) -> str:
-        assert kwargs["repo_id"] == "test-org/geosave-probe"
-        for operation in operations:
-            copy2(operation.path_or_fileobj, destination / operation.path_in_repo)
-        return "https://huggingface.co/test-org/geosave-probe/commit/test"
-
-    api.create_commit.side_effect = create_commit
-    with (
-        patch("transformers.utils.hub.hf_api", return_value=api),
-        patch(
-            "transformers.utils.hub.create_and_tag_model_card",
-            return_value=ModelCard(""),
-        ),
-    ):
-        result = adapter.push_to_hub(
-            "test-org/geosave-probe",
-            token="test-token",
-            revision="test-branch",
-            create_pr=True,
-            commit_message="Test model publication",
-        )
-
-    assert result.endswith("/commit/test")
-    assert {path.name for path in destination.iterdir()} >= {
-        "README.md",
-        "config.json",
-        "model.safetensors",
-    }
-    restored = AutoModel.from_pretrained(destination, local_files_only=True)
-    inputs = torch.ones(1, 2, 3, 3)
-    torch.testing.assert_close(
-        restored(feature_map=inputs), adapter(feature_map=inputs)
-    )

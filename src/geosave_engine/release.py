@@ -4,10 +4,10 @@ from __future__ import annotations
 
 import json
 from pathlib import Path
-from tempfile import mkdtemp
+from tempfile import mkdtemp, TemporaryDirectory
 from typing import TYPE_CHECKING
 
-from huggingface_hub import hf_hub_download
+from huggingface_hub import HfApi, hf_hub_download
 
 from geosave_engine.__about__ import __version__
 from geosave_engine.ml.model_chain import ModelChain
@@ -112,6 +112,45 @@ def save_model(
             staging.rmdir()
         raise
     return target
+
+
+def publish_model(
+    model: ModelChain,
+    repo_id: str,
+    *,
+    spec: ModelSpec | str | Path,
+    revision: str | None = None,
+    token: str | bool | None = None,
+) -> str:
+    """Upload one complete release and return its immutable commit hash.
+
+    Args:
+        model: Configured native inference graph to publish.
+        repo_id: Hugging Face model repository ID.
+        spec: Model-owned processing contract or its local path.
+        revision: Target Hub branch or tag.
+        token: Hugging Face authentication token or token-selection flag.
+
+    Returns:
+        Immutable commit OID created by the upload.
+    """
+    with TemporaryDirectory() as temporary:
+        release = save_model(model, Path(temporary) / "release", spec=spec)
+        api = HfApi()
+        api.create_repo(
+            repo_id=repo_id,
+            repo_type="model",
+            exist_ok=True,
+            token=token,
+        )
+        commit = api.upload_folder(
+            folder_path=release,
+            repo_id=repo_id,
+            repo_type="model",
+            revision=revision,
+            token=token,
+        )
+    return commit.oid
 
 
 def _local_source(path_or_repo_id: str | PathLike[str]) -> Path | None:

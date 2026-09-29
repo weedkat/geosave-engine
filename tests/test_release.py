@@ -5,9 +5,11 @@ from __future__ import annotations
 import json
 import os
 from pathlib import Path
+from shutil import copytree
 import subprocess
 import sys
-from unittest.mock import patch
+from types import SimpleNamespace
+from unittest.mock import MagicMock, patch
 
 import pytest
 import torch
@@ -15,7 +17,7 @@ import torch
 from geosave_engine.__about__ import __version__
 from geosave_engine.ml.model_chain import ModelChain
 from geosave_engine.ml.registry import build_model
-from geosave_engine.release import load_model, load_spec, save_model
+from geosave_engine.release import load_model, load_spec, publish_model, save_model
 from geosave_engine.workflow.specs import ModelSpec, Ref
 
 
@@ -183,6 +185,54 @@ def test_remote_spec_load_downloads_only_the_spec(tmp_path: Path) -> None:
         token="token",
         local_files_only=True,
     )
+
+
+def test_publish_uploads_one_complete_release_and_returns_commit_oid(
+    tmp_path: Path,
+    model: ModelChain,
+    spec: ModelSpec,
+) -> None:
+    uploaded = tmp_path / "uploaded"
+    api = MagicMock()
+
+    def upload_folder(*, folder_path: str | Path, **kwargs: object) -> object:
+        assert kwargs == {
+            "repo_id": "test-org/geosave-probe",
+            "repo_type": "model",
+            "revision": "release-branch",
+            "token": "test-token",
+        }
+        copytree(folder_path, uploaded)
+        return SimpleNamespace(oid="immutable-commit-oid")
+
+    api.upload_folder.side_effect = upload_folder
+    with patch("geosave_engine.release.HfApi", return_value=api):
+        result = publish_model(
+            model,
+            "test-org/geosave-probe",
+            spec=spec,
+            revision="release-branch",
+            token="test-token",
+        )
+
+    assert result == "immutable-commit-oid"
+    assert {path.name for path in uploaded.iterdir()} == {
+        "README.md",
+        "config.json",
+        "model.safetensors",
+        "model_spec.yaml",
+    }
+    api.create_repo.assert_called_once_with(
+        repo_id="test-org/geosave-probe",
+        repo_type="model",
+        exist_ok=True,
+        token="test-token",
+    )
+    inputs = torch.ones(1, 2, 3, 3)
+    torch.testing.assert_close(
+        load_model(uploaded)(feature_map=inputs), model(feature_map=inputs)
+    )
+    assert load_spec(uploaded) == spec
 
 
 @pytest.mark.slow
