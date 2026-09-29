@@ -1,0 +1,397 @@
+# Native Model Release Design
+
+## Summary
+
+GeoSave trains through Lightning and deploys native PyTorch inference graphs.
+A Lightning checkpoint remains a training artifact. A model release contains the
+selected native `ModelChain`, its generated construction configuration, its
+safetensors state, and `model_spec.yaml`.
+
+Users publish and load native models through GeoSave functions. The
+Transformers-specific `GeoSaveModel` wrapper remains an internal persistence
+adapter and does not appear in the normal training or deployment workflow.
+
+```python
+# Training
+task = SemanticSegmentationTask(...)
+trainer.fit(task)
+
+# Select the checkpoint and publish its native inference graph.
+task = SemanticSegmentationTask.load_from_checkpoint("best.ckpt")
+publish_model(
+    task.model,
+    spec="configs/model_spec.yaml",
+    repo_id="geosave/my-model",
+)
+
+# Deployment
+model, spec = load_model("geosave/my-model", revision=commit)
+model = model.to(device).eval()
+with torch.inference_mode():
+    output = model(**model_inputs)
+```
+
+## Goals
+
+- Keep Lightning responsible for training, validation, optimization, callbacks,
+  and checkpoint recovery.
+- Make the native PyTorch inference graph the unit that is versioned and served.
+- Support one inference graph containing one or many cooperating PyTorch models.
+- Hide the Transformers adapter behind concise GeoSave publication and loading
+  functions.
+- Publish one immutable artifact containing weights, construction, and the
+  geospatial processing contract.
+- Preserve `ModelChain` and `chain_step` as the structured model-development
+  interface.
+- Load the released model without constructing a Lightning task or Trainer.
+
+## Non-goals
+
+- Publishing an arbitrary workspace source tree as executable Hub code.
+- Inferring which child of an arbitrary custom LightningModule should be
+  deployed.
+- Turning `model_spec.yaml` into LightningCLI configuration.
+- Putting STAC acquisition, scene tiling, spatial aggregation, or georeferenced
+  persistence inside the native model.
+- Adding ONNX, TorchScript, TensorRT, or a generic serving protocol in this
+  change.
+- Making a Lightning checkpoint the production inference artifact.
+
+## Ownership
+
+```text
+configs/train.yaml
+    Human-authored LightningCLI configuration.
+    Owns Trainer, LightningModule, DataModule, loss, optimizer, and scheduler.
+
+LightningModule
+    One training system.
+    May contain several native models used for training.
+
+task.model
+    Complete deployable inference graph for built-in GeoSave tasks.
+    Contains every learned module and buffer needed during tensor inference.
+
+ModelChain
+    Reproducibly constructed native PyTorch inference graph.
+    May contain one model, a sequential cascade, branches, or multiple heads.
+
+model_spec.yaml
+    Required raster inputs, preprocessing, tiling, tensor conversion,
+    aggregation, postprocessing, and exported geospatial values.
+
+Hugging Face release
+    Generated model construction, safetensors state, model_spec.yaml, adapter
+    source, and model card.
+
+LitServe
+    Runtime transport, device placement, request batching, and invocation of the
+    loaded native model.
+```
+
+`configs/model.yaml` is renamed to `configs/train.yaml` because the document
+configures the complete Lightning training run rather than only the native
+model. Alpha status permits the direct rename without an alias.
+
+## Lightning Contract
+
+A LightningModule is a training system, not the publication unit. It may own
+multiple PyTorch models, for example a student and teacher or a generator and
+discriminator. Custom LightningModules retain ordinary Lightning freedom.
+
+Built-in GeoSave tasks follow one additional convention:
+
+```python
+class SemanticSegmentationTask(LightningModule):
+    model: ModelChain
+
+    def forward(self, **model_inputs: object) -> object:
+        return self.model(**model_inputs)
+```
+
+`task.model` is the complete deployable tensor-inference graph. `forward()`
+delegates without applying task-only interpretation. Training, validation, and
+test steps select the tensor outputs required by their losses and metrics.
+
+The task may retain training-only models under other attributes. Publication
+never inspects a LightningModule and guesses which child to deploy. A custom
+task explicitly passes its chosen native model to `publish_model()`.
+
+```python
+# The task chooses a configured ModelChain; the publisher does not inspect it.
+publish_model(task.inference_model, spec=spec, repo_id=repo_id)
+```
+
+For built-in semantic segmentation, the native graph returns raw tile logits.
+Losses, metrics, and validation callbacks consume those logits. Spatial
+aggregation happens before nonlinear scene interpretation.
+
+## Multiple-model Inference Graphs
+
+Models that always execute, version, and deploy together form one native
+inference graph:
+
+```python
+class Segmenter(nn.Module):
+    @chain_step(outputs=("logits",))
+    def forward(self, image: torch.Tensor) -> torch.Tensor:
+        return self.network(image)
+
+
+class Refiner(nn.Module):
+    @chain_step(head=True)
+    def forward(self, logits: torch.Tensor) -> torch.Tensor:
+        return self.network(logits)
+
+
+model = ModelChain(
+    segmenter=Segmenter(),
+    refiner=Refiner(),
+)
+```
+
+Both modules appear in one `state_dict()` and one safetensors artifact. A
+complex composite `nn.Module` may instead be registered as one ModelChain stage.
+
+Models with independent release lifecycles use separate artifacts and are
+composed by a workflow. A model that consumes stitched, georeferenced scene
+output is a later workflow inference step, not a per-tile ModelChain stage.
+
+## Construction Contract
+
+Only a `ModelChain` built through `build_model()` is publishable initially. Its
+`stage_specs` property is the construction recipe and contains the ordered stage
+selectors plus resolved constructor arguments.
+
+```python
+model = build_model(
+    {
+        "encoder": {"name": "dinov3"},
+        "decoder": {"name": "dpt"},
+        "head": {"name": "dense"},
+    }
+)
+```
+
+An arbitrary native `nn.Module` remains usable as a registered ModelChain stage.
+GeoSave does not add a second construction interface for arbitrary modules.
+
+Published stage recipes must be JSON-serializable and resolvable in a fresh
+process. Built-in and promoted implementations should use registered names.
+Importable `class_path` selectors remain supported when their package is an
+explicit deployment dependency. Publication does not copy arbitrary selected
+stage source code.
+
+Promotion from a workspace path to a library name is explicit:
+
+```python
+trained = task.model
+released = build_model(stable_stage_specs)
+released.load_state_dict(trained.state_dict(), strict=True)
+publish_model(released, spec=spec, repo_id=repo_id)
+```
+
+Strict state transfer proves that the promoted implementation has the same
+parameter and buffer structure. Publication does not silently rewrite workspace
+class paths.
+
+## Publication Interface
+
+`geosave_engine.ml.release` owns the public functional interface. Keeping these
+imports in the optional Hub module means importing `geosave_engine.ml` does not
+require Transformers:
+
+```python
+from geosave_engine.ml.release import load_model, publish_model, save_model
+
+
+def save_model(
+    model: ModelChain,
+    path: str | Path,
+    *,
+    spec: ModelSpec | str | Path,
+) -> Path:
+    """Write one complete local inference release."""
+
+
+def publish_model(
+    model: ModelChain,
+    repo_id: str,
+    *,
+    spec: ModelSpec | str | Path,
+    revision: str | None = None,
+    token: str | bool | None = None,
+) -> str:
+    """Upload one complete release and return its immutable commit hash."""
+
+
+def load_model(
+    path_or_repo_id: str | Path,
+    *,
+    revision: str | None = None,
+    token: str | bool | None = None,
+    local_files_only: bool = False,
+) -> tuple[ModelChain, ModelSpec]:
+    """Load a native inference graph and its processing contract."""
+```
+
+`save_model()` is the primitive. The destination must not exist. It stages the
+complete release in a sibling temporary directory and renames that directory to
+the destination only after every file is valid. `publish_model()` builds the same
+local release in a temporary directory, uploads that directory, and returns the
+Hub commit hash. Its `revision` argument selects the target Hub branch or tag;
+deployment uses the returned commit hash.
+
+`load_model()` treats an existing local path as a release directory. Otherwise it
+downloads one Hub snapshot with `huggingface_hub.snapshot_download()`, honoring
+`revision`, `token`, and `local_files_only`. It uses the installed
+`GeoSaveModel.from_pretrained()` implementation rather than executing remote code,
+loads `model_spec.yaml` from the same snapshot, and returns the adapter's native
+chain and the parsed spec.
+
+`GeoSaveConfig` and `GeoSaveModel` remain importable because Transformers remote
+code and AutoClass registration require concrete classes. They are adapter
+implementation, not the documented user workflow. `ModelChain` remains free of
+`save_pretrained()`, `push_to_hub()`, and Transformers inheritance.
+
+## Release Layout
+
+```text
+release/
+├── config.json
+├── model.safetensors
+├── model_spec.yaml
+├── huggingface.py
+└── README.md
+```
+
+`config.json` is generated by Transformers from `GeoSaveConfig`; users do not
+edit it. `GeoSaveModel.from_chain()` translates `ModelChain.stage_specs` into
+`GeoSaveConfig.stages`, and inherited `save_pretrained()` writes the JSON and
+safetensors files. `save_model()` also copies `model_spec.yaml` and generates the
+minimal model card. The public functions hide the adapter call.
+
+The configuration records `format_version: 1` for the GeoSave construction
+contract and the installed GeoSave package version for diagnostics. Loading
+rejects an unsupported format version, not an artifact merely produced by a
+different package patch or minor version. Hub deployments pin the immutable
+commit hash returned by `publish_model()`; a branch name is acceptable for
+interactive loading but is not a reproducible deployment.
+
+The release does not contain `train.yaml`, the Lightning checkpoint, optimizer
+state, scheduler state, callbacks, metrics, or the DataModule.
+
+## Inference State
+
+Every value required by native tensor inference lives in the published
+ModelChain as a parameter, persistent buffer, or JSON-serializable constructor
+argument.
+
+Values applied after spatial aggregation live explicitly in `model_spec.yaml`.
+Learned class thresholds cannot remain only on the Lightning task. Threshold
+calibration must produce explicit release input for postprocessing before a
+thresholded release can be published. The existing argmax template does not
+require calibrated thresholds.
+
+The release path does not attempt to serialize task attributes implicitly.
+
+## Model Spec Validation
+
+Publication loads and revalidates `model_spec.yaml` before writing any artifact.
+It also requires:
+
+- every required external `ModelChain.inputs` name to be a named output of the
+  model-input stage;
+- JSON-serializable construction specifications.
+
+The publisher does not guess whether a runtime model result will be a tensor or a
+mapping, so result-to-aggregation validation remains in `predict_dense()`, where
+the actual result exists. Publication validation is structural and does not
+execute STAC acquisition or compute a raster. Tests exercise a bounded synthetic
+sample through preprocessing, model-input conversion, native inference,
+aggregation, and postprocessing.
+
+## LitServe
+
+LitServe loads the release once during setup:
+
+```python
+class GeoSaveAPI(ls.LitAPI):
+    def setup(self, device):
+        self.model, self.spec = load_model(
+            self.model_id,
+            revision=self.revision,
+        )
+        self.model.to(device).eval()
+
+    def predict(self, model_inputs):
+        with torch.inference_mode():
+            return self.model(**model_inputs)
+```
+
+The initial server adapter accepts prepared named tensor inputs and returns raw
+tensor or named-tensor outputs. Prefect workflows retain raster acquisition,
+preprocessing, tiling, spatial aggregation, postprocessing, and persistence.
+
+Offline dense prediction keeps DataLoader batching as the single batch owner.
+LitServe dynamic batching is deferred until a per-sample request interface and
+concurrent remote runner exist; nested batch dimensions are not introduced.
+
+## Errors
+
+Publication fails before upload when:
+
+- the chain was not built from stage specifications;
+- the construction recipe is not JSON-serializable;
+- `model_spec.yaml` is absent or structurally incompatible;
+- the target local release directory already exists.
+
+Loading fails when:
+
+- the artifact revision is missing required files;
+- a stage selector cannot be resolved or model construction fails;
+- safetensors contain missing, unexpected, or mismatched state;
+- the GeoSave artifact format version is unsupported;
+- `model_spec.yaml` is invalid.
+
+No compatibility alias preserves the direct `GeoSaveModel.from_chain()` user
+workflow in documentation. The adapter remains available for Transformers, but
+the supported GeoSave workflow uses `save_model()`, `publish_model()`, and
+`load_model()`.
+
+## Testing
+
+Focused tests cover:
+
+- a local release containing all required files;
+- generated `config.json` preserving ordered resolved stage recipes;
+- `load_model()` returning a native `ModelChain` and matching `ModelSpec`;
+- exact weights and outputs after a fresh-process round trip;
+- a multi-stage segmenter/refiner graph in one safetensors artifact;
+- strict failure for missing, unexpected, and mismatched weights;
+- rejection of non-serializable constructor arguments;
+- rejection of a directly composed chain without construction specs;
+- promotion by strict state transfer from a workspace-built chain to a
+  library-built chain;
+- built-in task `forward()` matching `task.model()`;
+- custom Lightning tasks explicitly publishing a selected child model;
+- the renamed `configs/train.yaml` working through LightningCLI;
+- no Lightning checkpoint, optimizer, scheduler, criterion, metric, or
+  DataModule state in the release;
+- a mocked Hub upload containing the complete release;
+- bounded synthetic raster execution through `model_spec.yaml`.
+
+Run focused publication, model-chain, Lightning-task, template, and workflow
+prediction tests, followed by scoped Ruff, BasedPyright, and `git diff --check`.
+
+## Breaking Changes
+
+- `configs/model.yaml` becomes `configs/train.yaml` in generated workspaces.
+- Documentation stops presenting `GeoSaveModel.from_chain()` as the publication
+  workflow.
+- Built-in task `forward()` returns the native model output without silently
+  selecting `result["logits"]`.
+- Publishing supports configured `ModelChain` instances only in the initial
+  version.
+- Deployments install the GeoSave Hub extra and load the immutable Hub commit
+  returned by publication.
