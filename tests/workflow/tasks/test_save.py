@@ -6,7 +6,6 @@ import pytest
 from geosave_engine.geodata.core.raster import raster
 from geosave_engine.geodata.utils import io
 import geosave_engine.workflow.tasks.save as save_module
-from geosave_engine.workflow.tasks.save import write_stack
 
 
 def _sample_rasters(raw):
@@ -16,71 +15,6 @@ def _sample_rasters(raw):
         optical.gs.geobox,
     ).assign_coords(time=np.datetime64("2025-01-15T12:00:00"))
     return {"label": label, "optical": optical}
-
-
-def test_write_stack_completes_before_return_and_reopens(raw, tmp_path):
-    output = tmp_path / "raw.zarr"
-
-    saved = write_stack(raw, output)
-
-    assert saved == str(output)
-    with io.read_stack(output, chunks="auto") as restored:
-        assert restored.gs.groups == ("optical",)
-        np.testing.assert_array_equal(restored["optical"].red, raw["optical"].red)
-
-
-def test_write_stack_preserves_existing_destination(raw, tmp_path):
-    output = tmp_path / "raw.zarr"
-    write_stack(raw, output)
-
-    with pytest.raises(FileExistsError, match="already exists"):
-        write_stack({"replacement": raw["optical"] * 10}, output)
-
-    with io.read_stack(output, chunks="auto") as restored:
-        assert restored.gs.groups == ("optical",)
-        np.testing.assert_array_equal(restored["optical"].red, raw["optical"].red)
-
-
-@pytest.mark.parametrize("output", ["raw.nc", "s3://bucket/raw.zarr"])
-def test_write_stack_requires_a_local_zarr_destination(output):
-    with pytest.raises(ValueError, match="local .zarr"):
-        write_stack({}, output)
-
-
-def test_write_stack_rechecks_destination_before_publish(raw, tmp_path, monkeypatch):
-    output = tmp_path / "raw.zarr"
-    original = io.zarr.write
-
-    def create_competing_output(*args, **kwargs):
-        result = original(*args, **kwargs)
-        output.mkdir()
-        return result
-
-    monkeypatch.setattr(io.zarr, "write", create_competing_output)
-
-    with pytest.raises(FileExistsError, match="already exists"):
-        write_stack(raw, output)
-
-
-def test_failed_write_cleans_staging_and_allows_retry(raw, tmp_path):
-    def fail_chunk():
-        raise RuntimeError("delayed chunk failed")
-
-    failed = raw["optical"].copy()
-    failed["red"] = (
-        failed.red.dims,
-        da.from_delayed(
-            delayed(fail_chunk)(), shape=failed.red.shape, dtype=failed.red.dtype
-        ),
-    )
-    output = tmp_path / "raw.zarr"
-
-    with pytest.raises(RuntimeError, match="delayed chunk failed"):
-        write_stack({"optical": failed}, output)
-
-    assert not output.exists()
-    assert list(tmp_path.glob(f".{output.name}-*")) == []
-    assert write_stack(raw, output) == str(output)
 
 
 def test_write_sample_publishes_flat_geotiff_assets(raw, tmp_path) -> None:

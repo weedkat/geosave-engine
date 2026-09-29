@@ -65,9 +65,8 @@ def _touch_labels(root: Path, count: int) -> None:
 
 def test_workflow_exports_only_runnable_flows() -> None:
     assert _flow_imported
-    assert isinstance(flows.ingest, Flow)
     assert isinstance(flows.prepare_dense_data, Flow)
-    assert set(flows.__all__) == {"ingest", "prepare_dense_data"}
+    assert set(flows.__all__) == {"prepare_dense_data"}
     assert not hasattr(flows, "preprocess")
     assert not hasattr(flows, "postprocess")
     assert not hasattr(flows, "run_stage")

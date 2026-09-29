@@ -3,7 +3,7 @@ from dotenv import load_dotenv
 
 from .commands.create import create
 from .commands.make import make
-from .commands.workflow import workflow_app
+from .commands.workflow import workflow
 
 app = typer.Typer(
     help="GeoSave Engine CLI",
@@ -12,7 +12,7 @@ app = typer.Typer(
 )
 app.command()(create)
 app.command()(make)
-app.add_typer(workflow_app, name="workflow")
+app.add_typer(workflow, name="workflow")
 
 
 @app.callback()

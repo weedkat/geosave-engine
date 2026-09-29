@@ -3,11 +3,12 @@
 from collections.abc import Mapping
 from pathlib import Path
 from tempfile import TemporaryDirectory
-from typing import Literal
+from typing import Any, Literal, cast
 
 from pydantic import JsonValue
 import xarray as xr
 
+from geosave_engine.geodata import Dataset
 from geosave_engine.geodata.core.stack import stack
 from geosave_engine.geodata.utils import io
 
@@ -16,13 +17,13 @@ type SampleFormat = Literal["geotiff", "zarr"]
 _PUBLICATION_OPTIONS = {"compute", "layout", "overwrite", "split_bands"}
 
 
-def write_stack(
-    rasters: dict[str, xr.Dataset],
+def _write_zarr_sample(
+    rasters: Mapping[str, xr.Dataset],
     output: str | Path,
     *,
     write_options: Mapping[str, JsonValue] | None = None,
 ) -> str:
-    """Write named rasters fully before publishing a new local Zarr store."""
+    """Write a dense sample fully before publishing its local Zarr store."""
     destination = Path(output)
     if "://" in str(output) or destination.suffix != ".zarr":
         raise ValueError("Output must be a local .zarr path")
@@ -30,6 +31,7 @@ def write_stack(
         raise FileExistsError(f"Output already exists: {destination}")
     destination.parent.mkdir(parents=True, exist_ok=True)
     tree = stack(rasters)
+    native_options = cast("dict[str, Any]", dict(write_options or {}))
     with TemporaryDirectory(
         prefix=f".{destination.name}-", dir=destination.parent
     ) as temporary:
@@ -39,7 +41,7 @@ def write_stack(
             staged,
             compute=True,
             overwrite=False,
-            **dict(write_options or {}),
+            **native_options,
         )
         if destination.exists():
             raise FileExistsError(f"Output already exists: {destination}")
@@ -77,7 +79,7 @@ def open_sample(source: str | Path, *, format: SampleFormat) -> xr.DataTree:
 
 
 def write_sample(
-    rasters: dict[str, xr.Dataset],
+    rasters: Mapping[str, xr.Dataset],
     output: str | Path,
     *,
     format: SampleFormat = "geotiff",
@@ -102,7 +104,7 @@ def write_sample(
     if reserved := sorted(options.keys() & _PUBLICATION_OPTIONS):
         raise ValueError(f"GeoSave owns sample publication options: {reserved}")
     if format == "zarr":
-        return write_stack(rasters, output, write_options=options)
+        return _write_zarr_sample(rasters, output, write_options=options)
     if format != "geotiff":
         raise ValueError(f"Unknown sample format: {format!r}")
 
@@ -113,6 +115,7 @@ def write_sample(
         raise FileExistsError(f"Output already exists: {destination}")
 
     scenes = {name: _geotiff_scene(raster, name) for name, raster in rasters.items()}
+    native_options = cast("dict[str, Any]", options)
     destination.parent.mkdir(parents=True, exist_ok=True)
     with TemporaryDirectory(
         prefix=f".{destination.name}-", dir=destination.parent
@@ -120,7 +123,11 @@ def write_sample(
         staged = Path(temporary) / destination.name
         staged.mkdir()
         for name, scene in scenes.items():
-            io.geotiff.write_cog(scene, staged / f"{name}.tif", **options)
+            io.geotiff.write_cog(
+                cast("Dataset", scene),
+                staged / f"{name}.tif",
+                **native_options,
+            )
         with open_sample(staged, format="geotiff") as restored:
             if set(restored.gs.groups) != set(scenes):
                 raise ValueError("Completed GeoTIFF assets do not match sample rasters")

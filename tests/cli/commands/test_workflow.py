@@ -1,8 +1,8 @@
 import pytest
 from typer.testing import CliRunner
 
-from geosave_engine.cli.commands import workflow
 from geosave_engine.cli.main import app
+from geosave_engine.workflow import flows, ingestion
 
 runner = CliRunner()
 
@@ -22,8 +22,9 @@ def test_ingest_help_lists_its_flow_options() -> None:
     result = runner.invoke(app, ["workflow", "ingest", "--help"])
 
     assert result.exit_code == 0
-    for option in ("--anchor", "--output", "--spec", "--sources"):
+    for option in ("--anchor", "--output", "--spec"):
         assert option in result.stdout
+    assert "--sources" not in result.stdout
 
 
 def test_prepare_dense_data_help_lists_safe_concurrency_default() -> None:
@@ -35,14 +36,17 @@ def test_prepare_dense_data_help_lists_safe_concurrency_default() -> None:
         "--output",
         "--spec",
         "--pattern",
-        "--sources",
         "--max-concurrency",
+        "--format",
+        "--write-options",
     ):
         assert option in result.stdout
+    assert "--sources" not in result.stdout
     assert "1" in result.stdout
+    assert "geotiff" in result.stdout
 
 
-def test_ingest_parses_structured_options_and_prints_result(
+def test_ingest_parses_anchor_and_prints_result(
     monkeypatch,
 ) -> None:
     captured = {}
@@ -51,7 +55,7 @@ def test_ingest_parses_structured_options_and_prints_result(
         captured.update(arguments)
         return "data/raw.zarr"
 
-    monkeypatch.setattr(workflow, "ingest", run_flow)
+    monkeypatch.setattr(ingestion, "ingest", run_flow)
     result = runner.invoke(
         app,
         [
@@ -63,8 +67,6 @@ def test_ingest_parses_structured_options_and_prints_result(
             "data/raw.zarr",
             "--spec",
             "model_spec.yaml",
-            "--sources",
-            '{"optical":{"query":{"max_items":8}}}',
         ],
     )
 
@@ -73,7 +75,6 @@ def test_ingest_parses_structured_options_and_prints_result(
         "anchor": {"kind": "raster", "path": "data/reference.tif"},
         "output": "data/raw.zarr",
         "spec": "model_spec.yaml",
-        "sources": {"optical": {"query": {"max_items": 8}}},
     }
     assert result.stdout == "data/raw.zarr\n"
 
@@ -85,7 +86,7 @@ def test_prepare_dense_data_forwards_typed_options(monkeypatch) -> None:
         captured.update(arguments)
         return "data/prepared/manifest.parquet"
 
-    monkeypatch.setattr(workflow, "prepare_dense_data", run_flow)
+    monkeypatch.setattr(flows, "prepare_dense_data", run_flow)
     result = runner.invoke(
         app,
         [
@@ -101,6 +102,10 @@ def test_prepare_dense_data_forwards_typed_options(monkeypatch) -> None:
             "train/*.tif",
             "--max-concurrency",
             "2",
+            "--format",
+            "zarr",
+            "--write-options",
+            '{"compress":"ZSTD","blocksize":256}',
         ],
     )
 
@@ -110,8 +115,9 @@ def test_prepare_dense_data_forwards_typed_options(monkeypatch) -> None:
         "output": "data/prepared",
         "spec": "model_spec.yaml",
         "pattern": "train/*.tif",
-        "sources": None,
         "max_concurrency": 2,
+        "format": "zarr",
+        "write_options": {"compress": "ZSTD", "blocksize": 256},
     }
     assert result.stdout == "data/prepared/manifest.parquet\n"
 
@@ -121,8 +127,6 @@ def test_prepare_dense_data_forwards_typed_options(monkeypatch) -> None:
     [
         ("--anchor", "{"),
         ("--anchor", '{"kind":"unknown"}'),
-        ("--sources", "[]"),
-        ("--sources", '{"optical":{"unexpected":true}}'),
     ],
 )
 def test_ingest_rejects_invalid_json_before_invoking_flow(
@@ -131,7 +135,7 @@ def test_ingest_rejects_invalid_json_before_invoking_flow(
     def unexpected_flow(**arguments):
         pytest.fail(f"flow invoked with invalid input: {arguments}")
 
-    monkeypatch.setattr(workflow, "ingest", unexpected_flow)
+    monkeypatch.setattr(ingestion, "ingest", unexpected_flow)
     arguments = [
         "workflow",
         "ingest",
@@ -155,7 +159,7 @@ def test_prepare_dense_data_rejects_zero_concurrency_before_flow(
     def unexpected_flow(**arguments):
         pytest.fail(f"flow invoked with invalid input: {arguments}")
 
-    monkeypatch.setattr(workflow, "prepare_dense_data", unexpected_flow)
+    monkeypatch.setattr(flows, "prepare_dense_data", unexpected_flow)
     result = runner.invoke(
         app,
         [
@@ -175,11 +179,45 @@ def test_prepare_dense_data_rejects_zero_concurrency_before_flow(
     assert result.exit_code == 2
 
 
+@pytest.mark.parametrize(
+    ("option", "value"),
+    [
+        ("--format", "netcdf"),
+        ("--write-options", "[]"),
+        ("--write-options", "{"),
+    ],
+)
+def test_prepare_dense_data_rejects_invalid_output_options_before_flow(
+    monkeypatch, option, value
+) -> None:
+    def unexpected_flow(**arguments):
+        pytest.fail(f"flow invoked with invalid input: {arguments}")
+
+    monkeypatch.setattr(flows, "prepare_dense_data", unexpected_flow)
+    result = runner.invoke(
+        app,
+        [
+            "workflow",
+            "prepare-dense-data",
+            "--labels",
+            "labels",
+            "--output",
+            "prepared",
+            "--spec",
+            "model_spec.yaml",
+            option,
+            value,
+        ],
+    )
+
+    assert result.exit_code == 2
+
+
 def test_flow_failure_exits_without_printing_success_path(monkeypatch) -> None:
     def fail(**arguments):
         raise RuntimeError("ingestion failed")
 
-    monkeypatch.setattr(workflow, "ingest", fail)
+    monkeypatch.setattr(ingestion, "ingest", fail)
     result = runner.invoke(
         app,
         [

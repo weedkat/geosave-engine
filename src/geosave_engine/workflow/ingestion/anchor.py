@@ -3,12 +3,22 @@
 from pathlib import Path
 from typing import Annotated, Literal, Self
 
-from pydantic import Field, PositiveInt, model_validator
+from pydantic import BaseModel, ConfigDict, Field, PositiveInt, model_validator
 
 from geosave_engine.geodata.core import GeoAnchor
 from geosave_engine.geodata.utils import io
 
-from .base import ConfigModel
+
+class ConfigModel(BaseModel):
+    """Reject unknown fields and non-finite deployment parameters."""
+
+    model_config = ConfigDict(
+        extra="forbid",
+        allow_inf_nan=False,
+        frozen=True,
+        validate_default=True,
+        revalidate_instances="always",
+    )
 
 
 class CoordinateAnchorConfig(ConfigModel):
