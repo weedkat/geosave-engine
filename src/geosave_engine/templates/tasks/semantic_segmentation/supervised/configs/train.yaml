@@ -17,7 +17,7 @@ trainer:
     - class_path: lightning.pytorch.callbacks.RichProgressBar
 
 model:
-  class_path: geosave_engine.ml.tasks.SemanticSegmentationTask
+  class_path: geosave_engine.ml.lightning.tasks.SemanticSegmentationTask
   init_args:
     in_channels: 4
     num_classes: 2
@@ -42,7 +42,7 @@ model:
     metrics: [iou.macro, f1.macro]
 
 data:
-  class_path: geosave_engine.ml.data.SemanticSegmentationDataModule
+  class_path: geosave_engine.ml.lightning.data.SemanticSegmentationDataModule
   init_args:
     train_path: data/train
     val_path: data/val

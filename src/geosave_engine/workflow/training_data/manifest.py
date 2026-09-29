@@ -2,8 +2,9 @@
 
 from collections.abc import Mapping
 from pathlib import Path
-from typing import Literal
+from typing import Any, Literal, cast
 
+import geopandas as gpd
 import pandas as pd
 
 from geosave_engine.geodata import GeoVector
@@ -108,7 +109,10 @@ def read_sample_metadata(
         raise ValueError(f"Metadata contains extra label paths: {extra}")
 
     caller_columns = [column for column in table.columns if column != "label_path"]
-    rows = table[caller_columns].to_dict(orient="records")
+    rows = [
+        dict(zip(caller_columns, values, strict=True))
+        for values in table[caller_columns].itertuples(index=False, name=None)
+    ]
     by_path = dict(zip(resolved_paths, rows, strict=True))
     return {key: by_path[path.resolve()] for key, path in labels.items()}
 
@@ -137,6 +141,7 @@ def write_manifest(
         sample_path = Path(path).resolve()
         with open_sample(sample_path, format=format) as sample:
             anchor = sample.gs.anchor
+            caller_fields = cast("dict[str, Any]", dict(properties.get(sample_key, {})))
             records.append(
                 GeoVector.from_xarray(
                     sample,
@@ -147,7 +152,7 @@ def write_manifest(
                     grid_crs=str(anchor.crs),
                     grid_height=anchor.geobox.height,
                     grid_width=anchor.geobox.width,
-                    **properties.get(sample_key, {}),
+                    **caller_fields,
                 )
             )
 
@@ -162,5 +167,6 @@ def write_manifest(
     )
     columns = [*_OWNED_COLUMNS[:-1], *custom_columns, _OWNED_COLUMNS[-1]]
     catalog = GeoVector.concat(records)
-    GeoVector(catalog.gdf[columns]).to_geoparquet(output, overwrite=True)
+    selected = cast("gpd.GeoDataFrame", catalog.gdf.loc[:, columns])
+    GeoVector(selected).to_geoparquet(output, overwrite=True)
     return str(output)

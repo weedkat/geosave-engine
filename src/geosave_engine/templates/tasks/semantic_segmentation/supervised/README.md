@@ -1,8 +1,8 @@
 # Semantic segmentation
 
-`configs/model.yaml` configures the Lightning model and data objects.
+`configs/train.yaml` configures the Lightning Trainer, model, and data objects.
 `configs/model_spec.yaml` accompanies the model and declares its required source
-bands, lazy preprocessing, and future per-sample inference input.
+bands, STAC acquisition recipe, and lazy preprocessing.
 
 ## Prepare a raster
 
@@ -17,11 +17,10 @@ sample-ready lazy Dataset with nodata masked and reflectance unpacked. The
 example computes only the small result it prints.
 
 ```python
-from geosave_engine.workflow.flows import preprocess
-from geosave_engine.workflow.specs import ModelSpec
+from geosave_engine.model_spec import ModelSpec
 
 spec = ModelSpec.load("configs/model_spec.yaml")
-image = preprocess({"sentinel_2_l2a": optical}, spec)["image"]
+image = spec.preprocess({"sentinel_2_l2a": optical})["image"]
 ```
 
 Job areas, dates, query/load options, destinations, and Prefect settings are
@@ -44,15 +43,36 @@ the model chain. For this example, `image` is a floating-point tensor with shape
 Train after selecting the data-module subclass:
 
 ```bash
-uv run python main.py fit --config configs/model.yaml
+uv run python main.py fit --config configs/train.yaml
 ```
 
-## Inference and postprocessing status
+## Release and inference
 
-The model spec declares `image.gs.to_tensor(dtype="float32")` as the future
-inference-input conversion. The current workflow validates and round-trips that
-call but does not execute inference: bounded sampling, batching, model loading,
-device policy, and prediction deployment still need their own design.
+Restore the selected checkpoint, then publish its native inference graph with
+the model-owned processing contract:
 
-`postprocessing` is intentionally empty. Prediction interpretation, tiling, and
-merging are not implemented by this workflow revision.
+```python
+from geosave_engine.ml.lightning.tasks import SemanticSegmentationTask
+from geosave_engine.release import publish_model
+
+task = SemanticSegmentationTask.load_from_checkpoint("checkpoints/best.ckpt")
+commit = publish_model(
+    task.model,
+    "your-account/your-model",
+    spec="configs/model_spec.yaml",
+)
+```
+
+Deployment loads the two release parts independently at the returned commit:
+
+```python
+from geosave_engine.release import load_model, load_spec
+
+spec = load_spec("your-account/your-model", revision=commit)
+model = load_model("your-account/your-model", revision=commit).eval()
+```
+
+The spec owns raster requirements, acquisition, and preprocessing. The native
+model accepts named tensor inputs and returns raw logits. Task-specific
+inference code owns tiling, iterative execution, aggregation, and output
+interpretation when those behaviors are needed.
