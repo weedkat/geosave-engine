@@ -6,13 +6,14 @@ from collections.abc import Mapping
 from typing import Annotated, Literal, Self
 
 import numpy as np
-from pydantic import Field, HttpUrl, JsonValue, field_serializer, model_validator
+from pydantic import Field, JsonValue, model_validator
 import xarray as xr
 
 from geosave_engine.geodata import attrs
 from geosave_engine.geodata.attrs.model import REGISTERED_ATTR_KEYS
 
 from .base import SpecModel, Text
+from .stac import StacRecipe
 
 
 class FieldRequirement(SpecModel):
@@ -171,11 +172,11 @@ class RasterRequirement(SpecModel):
     """Select and validate a raster using native variables or positional channels.
 
     Args:
-        type: Source kind, always raster.
+        type: Requirement kind, always raster.
         variables: Required data variables in their selected order.
         channels: First N channels; mutually exclusive with variables.
-        collection: STAC collection ID, paired with endpoints for acquisition.
-        endpoints: HTTP(S) STAC endpoints in fallback order; omitted for files.
+        coordinates: Coordinate arrays that must be present.
+        stac: Optional recipe for acquiring the raster from STAC.
         dims: Exact dimension order required for each selected variable, if set.
         dtypes: Accepted stored dtypes, if constrained.
         require_crs: Require a locatable geospatial grid.
@@ -186,8 +187,8 @@ class RasterRequirement(SpecModel):
     type: Literal["raster"] = "raster"
     variables: Annotated[tuple[Text, ...], Field(min_length=1)] | None = None
     channels: Annotated[int, Field(gt=0)] | None = None
-    collection: Text | None = None
-    endpoints: Annotated[tuple[HttpUrl, ...], Field(min_length=1)] | None = None
+    coordinates: tuple[Text, ...] = ()
+    stac: StacRecipe | None = None
     dims: Annotated[tuple[Text, ...], Field(min_length=1)] | None = None
     dtypes: Annotated[tuple[Text, ...], Field(min_length=1)] | None = None
     require_crs: bool = False
@@ -198,19 +199,8 @@ class RasterRequirement(SpecModel):
     ) = None
     attrs: AttrsRequirement = Field(default_factory=AttrsRequirement)
 
-    @field_serializer("endpoints")
-    def _serialize_endpoints(
-        self, endpoints: tuple[HttpUrl, ...] | None
-    ) -> tuple[str, ...] | None:
-        return None if endpoints is None else tuple(str(url) for url in endpoints)
-
     @model_validator(mode="after")
     def _validate_structure(self) -> Self:
-        if (self.collection is None) != (self.endpoints is None):
-            raise ValueError("collection and endpoints must be supplied together")
-        endpoints = tuple(str(endpoint) for endpoint in self.endpoints or ())
-        if len(endpoints) != len(set(endpoints)):
-            raise ValueError("endpoints must not contain duplicate names")
         if (self.variables is None) == (self.channels is None):
             raise ValueError("Exactly one of variables or channels is required")
         if self.variables is not None and len(self.variables) != len(
@@ -219,6 +209,8 @@ class RasterRequirement(SpecModel):
             raise ValueError("variables must not contain duplicate names")
         if self.dims is not None and len(self.dims) != len(set(self.dims)):
             raise ValueError("dims must not contain duplicate names")
+        if len(self.coordinates) != len(set(self.coordinates)):
+            raise ValueError("coordinates must not contain duplicate names")
         if self.dtypes is not None:
             for dtype in self.dtypes:
                 try:
@@ -228,6 +220,13 @@ class RasterRequirement(SpecModel):
         unknown = self.attrs.data_vars.keys() - set(self.variables or ()) - {"*"}
         if unknown:
             raise ValueError(f"Metadata names unselected variables: {sorted(unknown)}")
+        if (
+            self.variables is not None
+            and self.stac is not None
+            and self.stac.load.bands is not None
+            and tuple(self.stac.load.bands) != self.variables
+        ):
+            raise ValueError("STAC load bands must match raster variables in order")
         return self
 
     def validate_raster(self, raster: xr.Dataset) -> None:
@@ -262,10 +261,16 @@ class RasterRequirement(SpecModel):
             if self.variables is not None
             else self._select_channels(raster)
         )
+        self._validate_coordinates(selected)
         self._validate_grid(selected)
         self._validate_variables(selected)
         self._validate_attrs(selected)
         return selected
+
+    def _validate_coordinates(self, raster: xr.Dataset) -> None:
+        """Check that required coordinate arrays are present."""
+        if missing := set(self.coordinates) - raster.coords.keys():
+            raise ValueError(f"Missing raster coordinates: {sorted(missing)}")
 
     def _select_variables(self, raster: xr.Dataset) -> xr.Dataset:
         """Select named data variables in their declared order."""

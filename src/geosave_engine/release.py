@@ -9,8 +9,8 @@ from tempfile import mkdtemp, TemporaryDirectory
 from huggingface_hub import HfApi, hf_hub_download
 
 from geosave_engine.__about__ import __version__
+from geosave_engine.model_spec import ModelSpec
 from geosave_engine.ml.model_chain import ModelChain
-from geosave_engine.workflow.specs import ModelSpec
 
 _RELEASE_FILES = {
     "README.md",
@@ -23,8 +23,9 @@ _RELEASE_FILES = {
 def _validated_spec(spec: ModelSpec | str | Path) -> ModelSpec:
     """Load and revalidate one model-owned processing contract."""
     if isinstance(spec, ModelSpec):
-        return spec.validated_copy()
-    return ModelSpec.load(spec).validated_copy()
+        return ModelSpec.model_validate(spec.model_dump())
+    loaded = ModelSpec.load(spec)
+    return ModelSpec.model_validate(loaded.model_dump())
 
 
 def _validate_release(model: ModelChain) -> None:

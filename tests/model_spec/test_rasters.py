@@ -10,52 +10,12 @@ import xarray as xr
 from pydantic import ValidationError
 
 from geosave_engine.geodata.core.raster import raster
-from geosave_engine.workflow.specs import RasterRequirement
-
-
-@pytest.mark.parametrize(
-    "settings",
-    [
-        {"collection": "sentinel-2-l2a"},
-        {"endpoints": ["https://primary.test/stac"]},
-        {"collection": "", "endpoints": ["https://primary.test/stac"]},
-        {"collection": "sentinel-2-l2a", "endpoints": []},
-        {"collection": "sentinel-2-l2a", "endpoints": ["file:///tmp/catalog"]},
-        {"collection": "sentinel-2-l2a", "endpoints": ["not a URL"]},
-        {
-            "collection": "sentinel-2-l2a",
-            "endpoints": ["https://primary.test/stac", "https://primary.test/stac"],
-        },
-    ],
-)
-def test_source_identity_requires_collection_and_unique_http_endpoints(settings):
-    with pytest.raises(ValidationError):
-        RasterRequirement(channels=3, **settings)
-
-
-def test_endpoints_preserve_priority_and_serialize_as_strings():
-    requirement = RasterRequirement.model_validate(
-        {
-            "channels": 3,
-            "collection": "sentinel-2-l2a",
-            "endpoints": ["https://primary.test/stac", "http://backup.test/stac"],
-        }
-    )
-    assert requirement.model_dump()["endpoints"] == (
-        "https://primary.test/stac",
-        "http://backup.test/stac",
-    )
-    assert requirement.model_dump(mode="json")["endpoints"] == [
-        "https://primary.test/stac",
-        "http://backup.test/stac",
-    ]
-    assert RasterRequirement.model_validate(requirement.model_dump()) == requirement
+from geosave_engine.model_spec import RasterRequirement
 
 
 def test_persisted_raster_requirements_need_no_acquisition_identity():
     requirement = RasterRequirement(variables=("nir", "red"))
-    assert requirement.collection is None
-    assert requirement.endpoints is None
+    assert requirement.stac is None
     assert list(requirement.select_raster(packed())) == ["nir", "red"]
 
 
@@ -83,7 +43,7 @@ def packed() -> xr.Dataset:
     "selector",
     [{}, {"variables": ["red"], "channels": 1}, {"channels": 0}, {"channels": -1}],
 )
-def test_exactly_one_nonempty_source_selector_is_required(selector):
+def test_exactly_one_nonempty_raster_selector_is_required(selector):
     with pytest.raises(ValidationError):
         RasterRequirement.model_validate(selector)
 
@@ -277,7 +237,29 @@ def test_foreign_requirements_cannot_bypass_registered_models():
         )
 
 
-def test_coordinate_scope_and_allowed_values_are_checked():
+def test_required_coordinates_are_present_without_computing():
+    data = packed().drop_indexes("x").drop_vars("x")
+    requirement = RasterRequirement(variables=("red",), coordinates=("x",))
+    tasks = []
+
+    with Callback(pretask=lambda *args: tasks.append(args)):
+        with pytest.raises(ValueError, match="coordinates.*x"):
+            requirement.validate_raster(data)
+
+    assert tasks == []
+
+
+def test_extra_coordinates_are_allowed_and_retained():
+    requirement = RasterRequirement(
+        variables=("red",), coordinates=("x",), dims=("y", "x")
+    )
+
+    selected = requirement.select_raster(packed())
+
+    assert tuple(selected.coords) == ("y", "x")
+
+
+def test_coordinate_attrs_still_apply():
     requirement = RasterRequirement.model_validate(
         {
             "variables": ["red"],

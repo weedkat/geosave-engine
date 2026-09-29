@@ -5,7 +5,7 @@ import math
 from pydantic import ValidationError
 import pytest
 
-from geosave_engine.workflow.specs import CallSpec, Ref
+from geosave_engine.model_spec import CallSpec, Ref
 
 
 def mutate(*, items: list[int]) -> list[int]:

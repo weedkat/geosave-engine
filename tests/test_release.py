@@ -15,10 +15,10 @@ import pytest
 import torch
 
 from geosave_engine.__about__ import __version__
+from geosave_engine.model_spec import ModelSpec
 from geosave_engine.ml.model_chain import ModelChain
 from geosave_engine.ml.registry import build_model
 from geosave_engine.release import load_model, load_spec, publish_model, save_model
-from geosave_engine.workflow.specs import ModelSpec
 
 
 @pytest.fixture

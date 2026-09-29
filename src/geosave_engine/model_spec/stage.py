@@ -55,3 +55,16 @@ class StageSpec(RootModel[dict[Name, CallSpec]], Mapping[str, CallSpec]):
         if missing := required - supplied:
             raise ValueError(f"Missing stage inputs: {sorted(missing)}")
         return frozenset(required)
+
+    def run(self, inputs: Mapping[str, Any], /) -> dict[str, Any]:
+        """Execute declarations in order without mutating supplied inputs."""
+        self.validate_inputs(inputs.keys())
+        state = dict(inputs)
+        results = {}
+
+        for output, declaration in self.items():
+            result = declaration.invoke(declaration.select_inputs(state))
+            state[output] = result
+            results[output] = result
+
+        return results

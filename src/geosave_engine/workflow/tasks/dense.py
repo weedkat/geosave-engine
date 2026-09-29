@@ -1,46 +1,72 @@
 """Prepare one label-aligned dense raster sample."""
 
+from collections.abc import Mapping
 from pathlib import Path
 
+from pydantic import JsonValue
 from prefect import task
 from prefect.cache_policies import NO_CACHE
 
 from geosave_engine.geodata.utils import io
-from geosave_engine.workflow.configs import SourceConfig
-from geosave_engine.workflow.specs import RasterRequirement
+from geosave_engine.model_spec import ModelSpec, RasterRequirement
 
-from .load import load_raster
-from .save import write_stack
+from .save import SampleFormat, open_sample, write_sample
 
 
 def _validate_dense_sample(
     path: str | Path,
     requirements: dict[str, RasterRequirement],
+    *,
+    format: SampleFormat = "geotiff",
 ) -> None:
     """Validate one completed dense sample."""
-    with io.read_stack(path, chunks="auto") as sample:
+    with open_sample(path, format=format) as sample:
         if set(sample.gs.groups) != {"label", *requirements}:
-            raise ValueError("Existing sample does not match model sources")
+            raise ValueError("Existing sample does not match model rasters")
 
         rasters = sample.gs.rasters
         if rasters["label"].gs.timespan is None:
             raise ValueError(f"Existing sample label has no time: {path}")
         _ = sample.gs.anchor
         for name, requirement in requirements.items():
-            requirement.validate_raster(rasters[name])
+            raster = rasters[name]
+            if (
+                format == "geotiff"
+                and requirement.dims is not None
+                and "time" in requirement.dims
+                and "time" in raster.coords
+                and "time" not in raster.dims
+            ):
+                raster = raster.expand_dims("time").transpose(*requirement.dims)
+            requirement.validate_raster(raster)
 
 
 @task(cache_policy=NO_CACHE, persist_result=False)
-def _prepare_dense_sample(
+def prepare_dense_sample(
     label: str | Path,
-    sources: dict[str, SourceConfig],
-    requirements: dict[str, RasterRequirement],
+    model: ModelSpec,
     output: str | Path,
+    *,
+    format: SampleFormat = "geotiff",
+    write_options: Mapping[str, JsonValue] | None = None,
 ) -> str:
-    """Prepare one label-aligned dense sample."""
+    """Prepare one label-aligned dense sample.
+
+    Args:
+        label: Source label raster.
+        model: Model-owned raster and preprocessing contract.
+        output: GeoTIFF sample directory or Zarr store.
+        format: Persisted sample representation.
+        write_options: Serializable options for the native raster writer.
+
+    Returns:
+        Path to the completed sample.
+    """
+    model = ModelSpec.model_validate(model.model_dump())
+    requirements = model.rasters
     destination = Path(output)
     if destination.exists():
-        _validate_dense_sample(destination, requirements)
+        _validate_dense_sample(destination, requirements, format=format)
         return str(destination)
 
     with io.read_raster(label) as label_raster:
@@ -48,8 +74,10 @@ def _prepare_dense_sample(
         if anchor.timespan is None:
             raise ValueError(f"Label raster has no time: {label}")
 
-        rasters = {
-            name: load_raster(anchor, sources[name], requirement)
-            for name, requirement in requirements.items()
-        }
-        return write_stack({"label": label_raster, **rasters}, destination)
+        rasters = model.load_rasters(anchor)
+        return write_sample(
+            {"label": label_raster, **rasters},
+            destination,
+            format=format,
+            write_options=write_options,
+        )

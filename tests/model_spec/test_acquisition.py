@@ -2,18 +2,17 @@ import pytest
 from pystac_client.exceptions import APIError
 import requests
 from rasterio.errors import RasterioIOError
+from types import SimpleNamespace
 
-import geosave_engine.workflow.tasks.load as load_module
+import geosave_engine.model_spec.stac as stac_module
 from geosave_engine.geodata.core import GeoAnchor
 from geosave_engine.geodata.errors import AnchorFetchError
-from geosave_engine.workflow.configs import SourceConfig
-from geosave_engine.workflow.specs import RasterRequirement
-from geosave_engine.workflow.tasks import load_raster
+from geosave_engine.model_spec import ModelSpec, RasterRequirement, StacRecipe
 
 
 @pytest.fixture(autouse=True)
 def clear_client_cache():
-    load_module._open_client.cache_clear()
+    stac_module._open_client.cache_clear()
 
 
 def coordinate_anchor():
@@ -31,28 +30,37 @@ def requirement(collection="sentinel-2-l2a"):
     return RasterRequirement.model_validate(
         {
             "channels": 3,
-            "collection": collection,
-            "endpoints": [
-                "https://primary.test/stac",
-                "https://backup.test/stac",
-            ],
+            "stac": {
+                "collection": collection,
+                "endpoints": [
+                    "https://primary.test/stac",
+                    "https://backup.test/stac",
+                ],
+            },
         }
     )
 
 
-def test_load_raster_reads_and_validates_one_local_source(stac_server):
+def test_load_rasters_reads_and_validates_one_local_source(stac_server):
     url, requests, expected_anchor = stac_server
 
-    result = load_raster(
-        expected_anchor,
-        SourceConfig(),
-        RasterRequirement(
-            variables=("red", "nir"),
-            collection="optical",
-            endpoints=(url,),
-            require_crs=True,
-        ),
+    model = ModelSpec(
+        schema_version=2,
+        rasters={
+            "image": RasterRequirement(
+                variables=("red", "nir"),
+                stac=StacRecipe.model_validate(
+                    {
+                        "collection": "optical",
+                        "endpoints": (url,),
+                        "load": {"bands": ["red", "nir"]},
+                    }
+                ),
+                require_crs=True,
+            )
+        },
     )
+    result = model.load_rasters(expected_anchor)["image"]
 
     assert list(result.data_vars) == ["red", "nir"]
     assert result.odc.geobox == expected_anchor.geobox
@@ -60,7 +68,7 @@ def test_load_raster_reads_and_validates_one_local_source(stac_server):
     assert requests == [["optical"]]
 
 
-def test_load_raster_reuses_open_client(catalog_http):
+def test_load_stac_raster_reuses_open_client(catalog_http):
     visited, responses = catalog_http
     responses["https://primary.test/stac/search"] = {
         "type": "FeatureCollection",
@@ -70,7 +78,7 @@ def test_load_raster_reuses_open_client(catalog_http):
 
     for _ in range(2):
         with pytest.raises(AnchorFetchError):
-            load_raster(coordinate_anchor(), SourceConfig(), requirement())
+            requirement().stac.load_raster(coordinate_anchor())
 
     assert visited == [
         "https://primary.test/stac",
@@ -80,8 +88,24 @@ def test_load_raster_reuses_open_client(catalog_http):
     ]
 
 
-def test_load_module_has_no_concurrency_configuration() -> None:
-    assert not hasattr(load_module, "source_concurrency")
+def test_open_client_dispatches_a_named_provider(monkeypatch):
+    expected = SimpleNamespace(
+        collection=lambda collection: SimpleNamespace(id=collection)
+    )
+    opened = []
+
+    def open_endpoint(endpoint):
+        opened.append(endpoint)
+        return expected
+
+    monkeypatch.setattr(stac_module.StacClient, "open", open_endpoint, raising=False)
+
+    assert stac_module._open_client("sentinel-2-l2a", ("planetary_computer",)) is expected
+    assert opened == ["planetary_computer"]
+
+
+def test_stac_module_has_no_concurrency_configuration() -> None:
+    assert not hasattr(stac_module, "source_concurrency")
 
 
 @pytest.mark.parametrize("failure", [requests.ConnectionError("offline"), 404, 503])
@@ -98,7 +122,7 @@ def test_unavailable_endpoint_falls_back_in_declared_order(
     }
 
     with pytest.raises(AnchorFetchError):
-        load_raster(coordinate_anchor(), SourceConfig(), requirement())
+        requirement().stac.load_raster(coordinate_anchor())
 
     expected = ["https://primary.test/stac"]
     if stage:
@@ -127,7 +151,7 @@ def test_credentials_and_malformed_documents_do_not_fall_back(catalog_http, fail
     responses["https://primary.test/stac"] = failure
 
     with pytest.raises(Exception) as caught:
-        load_raster(coordinate_anchor(), SourceConfig(), requirement())
+        requirement().stac.load_raster(coordinate_anchor())
 
     assert not isinstance(caught.value, ConnectionError)
     assert visited == ["https://primary.test/stac"]
@@ -148,7 +172,7 @@ def test_malformed_collection_does_not_fall_back(catalog_http):
     }
 
     with pytest.raises(KeyError, match="license"):
-        load_raster(coordinate_anchor(), SourceConfig(), requirement())
+        requirement().stac.load_raster(coordinate_anchor())
 
     assert visited == [
         "https://primary.test/stac",
@@ -162,7 +186,7 @@ def test_endpoint_exhaustion_reports_each_cause(catalog_http):
     responses["https://backup.test/stac/collections/sentinel-2-l2a"] = 404
 
     with pytest.raises(ConnectionError) as caught:
-        load_raster(coordinate_anchor(), SourceConfig(), requirement())
+        requirement().stac.load_raster(coordinate_anchor())
 
     assert "https://primary.test/stac" in str(caught.value)
     assert "offline" in str(caught.value)
@@ -171,13 +195,18 @@ def test_endpoint_exhaustion_reports_each_cause(catalog_http):
     assert isinstance(caught.value.__cause__, APIError)
 
 
-def test_model_source_without_catalog_identity_fails_before_http(catalog_http):
+def test_load_rasters_reports_all_missing_recipes_before_http(catalog_http):
     visited, _ = catalog_http
+    model = ModelSpec(
+        schema_version=2,
+        rasters={
+            "optical": RasterRequirement(channels=3),
+            "elevation": RasterRequirement(channels=1),
+        },
+    )
 
-    with pytest.raises(ValueError, match="collection and endpoints"):
-        load_raster(
-            coordinate_anchor(), SourceConfig(), RasterRequirement(channels=3)
-        )
+    with pytest.raises(ValueError, match="optical.*elevation"):
+        model.load_rasters(coordinate_anchor())
 
     assert visited == []
 
@@ -191,9 +220,7 @@ def test_empty_search_does_not_try_another_endpoint(catalog_http):
     }
 
     with pytest.raises(AnchorFetchError):
-        load_raster(
-            coordinate_anchor(), SourceConfig(), requirement("optical")
-        )
+        requirement("optical").stac.load_raster(coordinate_anchor())
 
     assert visited[-1] == "https://primary.test/stac/search"
     assert all("backup" not in url for url in visited)
@@ -212,19 +239,19 @@ def test_lazy_asset_failure_does_not_try_another_endpoint(catalog_http, local_st
     requirement = RasterRequirement.model_validate(
         {
             "variables": ["red"],
-            "collection": "optical",
-            "endpoints": [
-                "https://primary.test/stac",
-                "https://backup.test/stac",
-            ],
+            "stac": {
+                "collection": "optical",
+                "endpoints": [
+                    "https://primary.test/stac",
+                    "https://backup.test/stac",
+                ],
+                "load": {"bands": ["red"], "groupby": "time"},
+            },
         }
     )
 
-    raster = load_raster(
-        coordinate_anchor(),
-        SourceConfig.model_validate({"load": {"groupby": "time"}}),
-        requirement,
-    )
+    assert requirement.stac is not None
+    raster = requirement.stac.load_raster(coordinate_anchor())
 
     with pytest.raises(RasterioIOError):
         raster.red.compute()

@@ -5,7 +5,7 @@ import inspect
 import pytest
 import yaml
 
-from geosave_engine.workflow.specs import CallSpec, ModelSpec, Ref
+from geosave_engine.model_spec import CallSpec, ModelSpec, Ref
 
 
 @pytest.mark.parametrize(
@@ -31,7 +31,7 @@ def test_python_and_yaml_round_trip_preserves_references_and_literals(tmp_path):
     spec = ModelSpec.model_validate(
         {
             "schema_version": 2,
-            "rasters": {},
+            "rasters": {"optical": {"channels": 1}},
             "preprocessing": {
                 "selected": CallSpec(
                     call=Ref("optical.__getitem__"),
@@ -62,7 +62,7 @@ def test_parsing_never_imports_or_executes_calls(tmp_path):
     path = tmp_path / "model.yaml"
     path.write_text(
         """schema_version: 2
-rasters: {}
+rasters: {source: {channels: 1}}
 preprocessing:
   result:
     call: deliberately_uninstalled.module.function

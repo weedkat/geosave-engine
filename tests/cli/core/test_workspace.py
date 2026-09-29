@@ -9,10 +9,10 @@ import torch
 import yaml
 
 from geosave_engine.cli.core.workspace import create_workspace
+from geosave_engine.model_spec import ModelSpec
 from geosave_engine.ml.lightning.data import SemanticSegmentationDataModule
 from geosave_engine.ml.lightning.tasks import SemanticSegmentationTask
 from geosave_engine.ml.lightning.cli import GeosaveCLI
-from geosave_engine.workflow.specs import ModelSpec, Ref
 from geosave_engine.cli.core.templates import get_tasks
 
 
@@ -39,9 +39,6 @@ def test_segmentation_configs_agree_on_model_inputs(workspace):
     assert requirement.require_crs
     model = SemanticSegmentationTask(**config["model"]["init_args"])
     assert model.in_channels == len(requirement.variables) == 4
-    assert spec.tiling["image"].shape == model.input_size
-    assert spec.model_inputs["image"].call == Ref("image.gs.to_tensor")
-    assert spec.model_inputs["image"].kwargs == {"dtype": "float32"}
     assert model.num_classes == 2
     assert config["data"]["class_path"] == (
         "geosave_engine.ml.lightning.data.SemanticSegmentationDataModule"

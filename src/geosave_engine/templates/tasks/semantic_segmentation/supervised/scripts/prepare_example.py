@@ -7,8 +7,7 @@ from odc.geo.geobox import GeoBox
 import xarray as xr
 
 from geosave_engine.geodata.core.raster import raster
-from geosave_engine.workflow.flows import preprocess
-from geosave_engine.workflow.specs import ModelSpec
+from geosave_engine.model_spec import ModelSpec
 
 
 def sample_raster() -> xr.Dataset:
@@ -34,8 +33,8 @@ def sample_raster() -> xr.Dataset:
 def main() -> None:
     """Prepare lazy reflectance and compute only to display the sample pixels."""
     path = Path(__file__).resolve().parents[1] / "configs/model_spec.yaml"
-    prepared = preprocess(
-        {"sentinel_2_l2a": sample_raster()}, ModelSpec.load(path)
+    prepared = ModelSpec.load(path).preprocess(
+        {"sentinel_2_l2a": sample_raster()}
     )
     print(prepared["image"].compute())
 

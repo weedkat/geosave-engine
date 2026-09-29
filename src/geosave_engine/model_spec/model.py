@@ -3,9 +3,12 @@
 from __future__ import annotations
 
 from pathlib import Path
+from collections.abc import Mapping
+from typing import Any
 from typing import ClassVar, Literal, Self
 
-from pydantic import Field
+from pydantic import Field, model_validator
+import xarray as xr
 import yaml
 from yaml.nodes import ScalarNode
 
@@ -13,6 +16,7 @@ from .base import Name, SpecModel
 from .call import Ref
 from .rasters import RasterRequirement
 from .stage import StageSpec
+from geosave_engine.geodata.core import GeoAnchor
 
 
 class _Loader(yaml.SafeLoader):
@@ -56,9 +60,54 @@ class ModelSpec(SpecModel):
     rasters: dict[Name, RasterRequirement]
     preprocessing: StageSpec = Field(default_factory=StageSpec)
 
-    def validated_copy(self) -> Self:
-        """Copy and revalidate mutable nested declarations without loading code."""
+    @model_validator(mode="after")
+    def _validate_preprocessing_inputs(self) -> Self:
+        unknown = set(self.preprocessing.external_inputs) - self.rasters.keys()
+        if unknown:
+            raise ValueError(
+                "Preprocessing inputs must be declared rasters: "
+                f"{sorted(unknown)}"
+            )
+        return self
+
+    def _validated(self) -> Self:
+        """Copy and revalidate mutable nested declarations."""
         return type(self).model_validate(self.model_dump())
+
+    def load_rasters(self, anchor: GeoAnchor, /) -> dict[str, xr.Dataset]:
+        """Load and validate every declared raster on an anchor."""
+        model = self._validated()
+        missing = [name for name, requirement in model.rasters.items() if requirement.stac is None]
+        if missing:
+            raise ValueError(f"Rasters need STAC recipes: {missing}")
+
+        rasters = {}
+        for name, requirement in model.rasters.items():
+            try:
+                recipe = requirement.stac
+                assert recipe is not None
+                rasters[name] = requirement.select_raster(recipe.load_raster(anchor))
+            except Exception as error:
+                error.add_note(f"While loading raster {name!r}")
+                raise
+        return rasters
+
+    def preprocess(self, inputs: Mapping[str, Any], /) -> dict[str, Any]:
+        """Validate consumed rasters and run preprocessing declarations."""
+        model = self._validated()
+        state = dict(inputs)
+        for name in model.preprocessing.external_inputs:
+            if name not in state:
+                continue
+            try:
+                raster = state[name]
+                if not isinstance(raster, xr.Dataset):
+                    raise TypeError("Raster requirements expect an xarray.Dataset")
+                state[name] = model.rasters[name].select_raster(raster)
+            except (TypeError, ValueError) as error:
+                error.add_note(f"While validating raster {name!r}")
+                raise
+        return model.preprocessing.run(state)
 
     @staticmethod
     def resolve_path(path: str | Path) -> Path:
@@ -78,7 +127,7 @@ class ModelSpec(SpecModel):
         """Save this document to a local YAML file or artifact directory."""
         target = self.resolve_path(path)
         payload = yaml.dump(
-            self.validated_copy().model_dump(), Dumper=_Dumper, sort_keys=False
+            self._validated().model_dump(), Dumper=_Dumper, sort_keys=False
         )
         target.parent.mkdir(parents=True, exist_ok=True)
         target.write_text(payload, encoding="utf-8")

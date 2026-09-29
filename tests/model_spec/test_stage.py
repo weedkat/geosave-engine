@@ -4,7 +4,7 @@ from collections.abc import Mapping
 
 import pytest
 
-from geosave_engine.workflow.specs import Ref, StageSpec
+from geosave_engine.model_spec import Ref, StageSpec
 
 
 def stage(**calls: object) -> StageSpec:
