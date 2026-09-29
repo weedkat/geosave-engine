@@ -7,8 +7,8 @@ import numpy as np
 from dask.callbacks import Callback
 
 from geosave_engine.cli.core.workspace import create_workspace
-from geosave_engine.workflow.flows import preprocess
 from geosave_engine.workflow.specs import ModelSpec, Ref
+from geosave_engine.workflow.tasks import preprocess
 
 
 def test_shipped_model_spec_round_trips_as_inert_declarations(tmp_path):
@@ -21,15 +21,20 @@ def test_shipped_model_spec_round_trips_as_inert_declarations(tmp_path):
     restored = ModelSpec.load(spec.save(tmp_path))
 
     assert restored == spec
-    assert spec.sources["sentinel_2_l2a"].variables == (
+    assert spec.rasters["sentinel_2_l2a"].variables == (
         "B02",
         "B03",
         "B04",
         "B08",
     )
-    assert spec.inference["image"].call == Ref("image.gs.to_tensor")
-    assert spec.inference["image"].kwargs == {"dtype": "float32"}
-    assert spec.postprocessing.model_dump() == {}
+    assert spec.preprocessing["valid_pixels"].call == (
+        "geosave_engine.geodata.transform.nodata.to_nan"
+    )
+    assert spec.preprocessing["valid_pixels"].kwargs == {"data": Ref("sentinel_2_l2a")}
+    assert spec.preprocessing["image"].call == (
+        "geosave_engine.geodata.transform.packing.unpack"
+    )
+    assert spec.preprocessing["image"].kwargs == {"data": Ref("valid_pixels")}
 
 
 def test_value_declarations_round_trip_without_loading_calls(tmp_path):

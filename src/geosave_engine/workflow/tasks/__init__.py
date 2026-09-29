@@ -1,11 +1,13 @@
 """Raster workflow operations and Prefect tasks."""
 
-from .call import invoke_call
 from .catalog import write_manifest
-from .load import load_raster
+from .dense import prepare_dense_sample
+from .load import load_stac_raster
+from .process import preprocess
 
 __all__ = [
-    "invoke_call",
-    "load_raster",
+    "load_stac_raster",
+    "prepare_dense_sample",
+    "preprocess",
     "write_manifest",
 ]

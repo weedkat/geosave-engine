@@ -11,8 +11,7 @@ from yaml.nodes import ScalarNode
 
 from .base import Name, SpecModel
 from .call import Ref
-from .postprocessing import PostprocessingSpec
-from .sources import RasterRequirement
+from .rasters import RasterRequirement
 from .stage import StageSpec
 
 
@@ -49,33 +48,31 @@ _Loader.add_constructor("!ref", _construct_ref)
 
 
 class ModelSpec(SpecModel):
-    """Describe model source requirements and inert processing declarations."""
+    """Describe model raster requirements and inert processing declarations."""
 
     filename: ClassVar[str] = "model_spec.yaml"
 
     schema_version: Literal[2]
-    sources: dict[Name, RasterRequirement]
+    rasters: dict[Name, RasterRequirement]
     preprocessing: StageSpec = Field(default_factory=StageSpec)
-    inference: StageSpec = Field(default_factory=StageSpec)
-    postprocessing: PostprocessingSpec = Field(default_factory=PostprocessingSpec)
 
     def validated_copy(self) -> Self:
         """Copy and revalidate mutable nested declarations without loading code."""
         return type(self).model_validate(self.model_dump())
 
-    @classmethod
-    def resolve_path(cls, path: str | Path) -> Path:
+    @staticmethod
+    def resolve_path(path: str | Path) -> Path:
         """Resolve a local YAML filename or model artifact directory."""
         if "://" in str(path):
             raise ValueError("ModelSpec save/load requires a local path")
         target = Path(path)
         if target.is_dir():
-            return target / cls.filename
+            return target / ModelSpec.filename
         if target.suffix.lower() in (".yaml", ".yml"):
             return target
         if target.suffix or target.is_file():
             raise ValueError("ModelSpec files must use a .yaml or .yml YAML suffix")
-        return target / cls.filename
+        return target / ModelSpec.filename
 
     def save(self, path: str | Path) -> Path:
         """Save this document to a local YAML file or artifact directory."""

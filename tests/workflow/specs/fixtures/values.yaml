@@ -1,6 +1,6 @@
 # Same grammar with non-raster data. Runtime bindings need no fake raster source.
 schema_version: 2
-sources: {}
+rasters: {}
 preprocessing:
   # Resolve the old value (2.0), then replace its binding with the return (6.0).
   value:
@@ -37,4 +37,3 @@ preprocessing:
         squared: [!ref squared]
   array:
     call: !ref table.to_numpy
-postprocessing: {}

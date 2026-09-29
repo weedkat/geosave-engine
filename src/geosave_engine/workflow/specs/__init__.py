@@ -3,14 +3,14 @@
 from .base import Name, SpecModel, Text
 from .call import CallSpec, CallValue, Ref
 from .model import ModelSpec
-from .postprocessing import PostprocessingSpec
 from .stage import StageSpec
-from .sources import (
+from .rasters import (
     AttrsRequirement,
     FieldRequirement,
     NamespaceRequirement,
     RasterRequirement,
 )
+from .stac import QueryConfig, SortConfig, StacRecipe
 
 __all__ = [
     "AttrsRequirement",
@@ -20,10 +20,12 @@ __all__ = [
     "ModelSpec",
     "Name",
     "NamespaceRequirement",
-    "PostprocessingSpec",
+    "QueryConfig",
     "RasterRequirement",
     "Ref",
     "SpecModel",
     "StageSpec",
+    "StacRecipe",
+    "SortConfig",
     "Text",
 ]

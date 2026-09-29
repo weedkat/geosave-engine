@@ -18,7 +18,7 @@ from geosave_engine.__about__ import __version__
 from geosave_engine.ml.model_chain import ModelChain
 from geosave_engine.ml.registry import build_model
 from geosave_engine.release import load_model, load_spec, publish_model, save_model
-from geosave_engine.workflow.specs import ModelSpec, Ref
+from geosave_engine.workflow.specs import ModelSpec
 
 
 @pytest.fixture
@@ -35,15 +35,7 @@ def model() -> ModelChain:
 
 @pytest.fixture
 def spec() -> ModelSpec:
-    return ModelSpec.model_validate(
-        {
-            "schema_version": 2,
-            "rasters": {},
-            "model_inputs": {
-                "feature_map": {"call": Ref("prepared_feature_map")}
-            },
-        }
-    )
+    return ModelSpec(schema_version=2, rasters={})
 
 
 def test_local_release_contains_only_complete_inference_artifact(
@@ -130,17 +122,16 @@ def test_missing_local_path_is_not_treated_as_a_hub_repository(
     download.assert_not_called()
 
 
-def test_missing_model_input_aborts_before_creating_destination(
+def test_release_does_not_require_a_prediction_input_contract(
     tmp_path: Path,
     model: ModelChain,
 ) -> None:
     target = tmp_path / "release"
-    incompatible = ModelSpec(schema_version=2, rasters={})
+    spec = ModelSpec(schema_version=2, rasters={})
 
-    with pytest.raises(ValueError, match="model inputs"):
-        save_model(model, target, spec=incompatible)
+    save_model(model, target, spec=spec)
 
-    assert not target.exists()
+    assert (target / ModelSpec.filename).is_file()
 
 
 def test_failed_save_leaves_no_release_or_staging_directory(

@@ -1,6 +1,6 @@
 """Deployable Prefect workflow entry points."""
 
 from .ingest import ingest
-from .preprocess import preprocess
+from .prepare_dense_data import prepare_dense_data
 
-__all__ = ["ingest", "preprocess"]
+__all__ = ["ingest", "prepare_dense_data"]

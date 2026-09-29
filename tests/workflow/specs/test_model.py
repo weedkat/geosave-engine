@@ -1,62 +1,37 @@
 from __future__ import annotations
 
+import inspect
+
 import pytest
-from pydantic import ValidationError
 import yaml
 
-from geosave_engine.workflow.specs import CallSpec, ModelSpec, Ref, StageSpec
+from geosave_engine.workflow.specs import CallSpec, ModelSpec, Ref
 
 
-def test_inference_reuses_explicit_call_declarations(tmp_path):
-    spec = ModelSpec.model_validate(
-        {
-            "schema_version": 2,
-            "sources": {},
-            "preprocessing": {},
-            "inference": {
-                "image": {
-                    "call": Ref("normalized.gs.to_tensor"),
-                    "kwargs": {"dtype": "float32"},
-                }
-            },
-            "postprocessing": {},
-        }
-    )
-
-    path = spec.save(tmp_path)
-
-    assert isinstance(spec.preprocessing, StageSpec)
-    assert isinstance(spec.inference, StageSpec)
-    assert ModelSpec.load(path) == spec
-
-
-def test_postprocessing_rejects_undeclared_semantics():
-    with pytest.raises(ValidationError, match="method"):
+@pytest.mark.parametrize(
+    "field",
+    ["tiling", "model_inputs", "aggregation", "postprocessing", "exports"],
+)
+def test_prediction_fields_are_rejected(field):
+    with pytest.raises(ValueError, match="Extra inputs are not permitted"):
         ModelSpec.model_validate(
-            {
-                "schema_version": 2,
-                "sources": {},
-                "postprocessing": {"method": "segmentation"},
-            }
+            {"schema_version": 2, "rasters": {}, field: {}}
         )
 
 
-def test_loading_never_imports_inference_calls(tmp_path):
-    path = tmp_path / "model_spec.yaml"
-    path.write_text(
-        "schema_version: 2\nsources: {}\ninference:\n"
-        "  image:\n    call: missing_package.to_tensor\n"
-        "postprocessing: {}\n"
-    )
+def test_resolve_path_is_static_and_uses_model_filename(tmp_path):
+    descriptor = inspect.getattr_static(ModelSpec, "resolve_path")
 
-    assert ModelSpec.load(path).inference["image"].call == ("missing_package.to_tensor")
+    assert isinstance(descriptor, staticmethod)
+    assert ModelSpec.filename == "model_spec.yaml"
+    assert ModelSpec.resolve_path(tmp_path) == tmp_path / ModelSpec.filename
 
 
 def test_python_and_yaml_round_trip_preserves_references_and_literals(tmp_path):
     spec = ModelSpec.model_validate(
         {
             "schema_version": 2,
-            "sources": {},
+            "rasters": {},
             "preprocessing": {
                 "selected": CallSpec(
                     call=Ref("optical.__getitem__"),
@@ -70,12 +45,6 @@ def test_python_and_yaml_round_trip_preserves_references_and_literals(tmp_path):
                     },
                 ),
             },
-            "inference": {
-                "logits": {
-                    "call": Ref("model"),
-                    "kwargs": {"image": Ref("image")},
-                },
-            },
         }
     )
     assert ModelSpec.model_validate(spec.model_dump()) == spec
@@ -87,14 +56,13 @@ def test_python_and_yaml_round_trip_preserves_references_and_literals(tmp_path):
     assert ModelSpec.load(path) == spec
     assert ModelSpec.load(tmp_path) == spec
     assert (tmp_path / "weights.bin").read_bytes() == b"weights"
-    assert isinstance(ModelSpec.load(path).inference["logits"].call, Ref)
 
 
 def test_parsing_never_imports_or_executes_calls(tmp_path):
     path = tmp_path / "model.yaml"
     path.write_text(
         """schema_version: 2
-sources: {}
+rasters: {}
 preprocessing:
   result:
     call: deliberately_uninstalled.module.function
@@ -118,15 +86,15 @@ def test_invalid_reference_paths_fail(path):
 @pytest.mark.parametrize(
     "body",
     [
-        "schema_version: 2\nsources: {}\nsources: {}",
-        "schema_version: 2\nsources: {}\npreprocessing:\n  x: {call: builtins.dict, call: builtins.list}",
-        "schema_version: 2\nsources: {}\npreprocessing:\n  x: {call: !ref [model]}",
-        "schema_version: 2\nsources: {}\npreprocessing:\n  x: {call: !unknown model}",
-        "schema_version: 2\nsources: {}\npreprocessing:\n  x: {call: builtins.dict, kwargs: {!ref key: 1}}",
-        "schema_version: 2\nsources: {}\npreprocessing:\n  x: {call: builtins.dict, kwargs: {1: value}}",
-        "schema_version: 2\nsources: {1: {}}",
-        "schema_version: 2\nsources: {}\npreprocessing: {1: {call: builtins.dict}}",
-        "schema_version: 2\nsources: {}\npreprocessing:\n  x: {call: builtins.dict, kwargs: &cycle {self: *cycle}}",
+        "schema_version: 2\nrasters: {}\nrasters: {}",
+        "schema_version: 2\nrasters: {}\npreprocessing:\n  x: {call: builtins.dict, call: builtins.list}",
+        "schema_version: 2\nrasters: {}\npreprocessing:\n  x: {call: !ref [model]}",
+        "schema_version: 2\nrasters: {}\npreprocessing:\n  x: {call: !unknown model}",
+        "schema_version: 2\nrasters: {}\npreprocessing:\n  x: {call: builtins.dict, kwargs: {!ref key: 1}}",
+        "schema_version: 2\nrasters: {}\npreprocessing:\n  x: {call: builtins.dict, kwargs: {1: value}}",
+        "schema_version: 2\nrasters: {1: {}}",
+        "schema_version: 2\nrasters: {}\npreprocessing: {1: {call: builtins.dict}}",
+        "schema_version: 2\nrasters: {}\npreprocessing:\n  x: {call: builtins.dict, kwargs: &cycle {self: *cycle}}",
     ],
 )
 def test_invalid_yaml_is_rejected(tmp_path, body):
@@ -159,12 +127,17 @@ def test_invalid_yaml_is_rejected(tmp_path, body):
 )
 def test_invalid_python_declarations_fail(change):
     with pytest.raises(ValueError):
-        ModelSpec.model_validate({"schema_version": 2, "sources": {}, **change})
+        ModelSpec.model_validate({"schema_version": 2, "rasters": {}, **change})
 
 
 def test_schema_version_is_explicit():
     with pytest.raises(ValueError):
-        ModelSpec.model_validate({"sources": {}})
+        ModelSpec.model_validate({"rasters": {}})
+
+
+def test_old_sources_field_is_rejected():
+    with pytest.raises(ValueError):
+        ModelSpec.model_validate({"schema_version": 2, "sources": {}})
 
 
 def test_yaml_reference_support_does_not_modify_safe_loader():
@@ -173,7 +146,7 @@ def test_yaml_reference_support_does_not_modify_safe_loader():
 
 
 def test_save_revalidates_mutated_declarations(tmp_path):
-    spec = ModelSpec(schema_version=2, sources={})
+    spec = ModelSpec(schema_version=2, rasters={})
     spec.preprocessing.root["bad.name"] = CallSpec(call="builtins.dict")
 
     with pytest.raises(ValueError):

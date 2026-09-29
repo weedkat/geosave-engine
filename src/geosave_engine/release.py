@@ -27,12 +27,9 @@ def _validated_spec(spec: ModelSpec | str | Path) -> ModelSpec:
     return ModelSpec.load(spec).validated_copy()
 
 
-def _validate_release(model: ModelChain, spec: ModelSpec) -> None:
-    """Validate construction and model-input compatibility before writing."""
+def _validate_release(model: ModelChain) -> None:
+    """Validate that model construction is serializable before writing."""
     json.dumps(model.stage_specs)
-    missing = set(model.inputs) - set(spec.model_inputs)
-    if missing:
-        raise ValueError(f"Model spec is missing model inputs: {sorted(missing)}")
 
 
 def _model_card() -> str:
@@ -83,7 +80,7 @@ def save_model(
         raise FileExistsError(target)
 
     validated_spec = _validated_spec(spec)
-    _validate_release(model, validated_spec)
+    _validate_release(model)
 
     target.parent.mkdir(parents=True, exist_ok=True)
     staging = Path(mkdtemp(prefix=f".{target.name}-", dir=target.parent))
