@@ -8,10 +8,16 @@ selected native `ModelChain`, its generated construction configuration, its
 safetensors state, and `model_spec.yaml`.
 
 Users publish and load native models through GeoSave functions. The
-Transformers-specific `GeoSaveModel` wrapper remains an internal persistence
-adapter and does not appear in the normal training or deployment workflow.
+Transformers-specific `GeoSaveModel` wrapper remains an installed internal
+persistence adapter and does not appear in the normal training or deployment
+workflow. Releases do not contain executable Python source.
 
 ```python
+from huggingface_hub import hf_hub_download
+
+from geosave_engine.workflow.specs import ModelSpec
+
+
 # Training
 task = SemanticSegmentationTask(...)
 trainer.fit(task)
@@ -24,8 +30,16 @@ publish_model(
     repo_id="geosave/my-model",
 )
 
-# Deployment
-model, spec = load_model("geosave/my-model", revision=commit)
+# Raster discovery, validation, and preparation can load only the spec.
+spec_path = hf_hub_download(
+    "geosave/my-model",
+    ModelSpec.filename,
+    revision=commit,
+)
+spec = ModelSpec.load(spec_path)
+
+# Tensor deployment loads only the native model.
+model = load_model("geosave/my-model", revision=commit)
 model = model.to(device).eval()
 with torch.inference_mode():
     output = model(**model_inputs)
@@ -81,8 +95,8 @@ model_spec.yaml
     aggregation, postprocessing, and exported geospatial values.
 
 Hugging Face release
-    Generated model construction, safetensors state, model_spec.yaml, adapter
-    source, and model card.
+    Generated model construction, safetensors state, model_spec.yaml, and model
+    card. It contains no executable Python source.
 
 LitServe
     Runtime transport, device placement, request batching, and invocation of the
@@ -231,8 +245,8 @@ def load_model(
     revision: str | None = None,
     token: str | bool | None = None,
     local_files_only: bool = False,
-) -> tuple[ModelChain, ModelSpec]:
-    """Load a native inference graph and its processing contract."""
+) -> ModelChain:
+    """Load one native inference graph."""
 ```
 
 `save_model()` is the primitive. The destination must not exist. It stages the
@@ -242,15 +256,29 @@ local release in a temporary directory, uploads that directory, and returns the
 Hub commit hash. Its `revision` argument selects the target Hub branch or tag;
 deployment uses the returned commit hash.
 
-`load_model()` treats an existing local path as a release directory. Otherwise it
-downloads one Hub snapshot with `huggingface_hub.snapshot_download()`, honoring
-`revision`, `token`, and `local_files_only`. It uses the installed
-`GeoSaveModel.from_pretrained()` implementation rather than executing remote code,
-loads `model_spec.yaml` from the same snapshot, and returns the adapter's native
-chain and the parsed spec.
+`load_model()` passes the local release directory or Hub repository directly to
+the installed `GeoSaveModel.from_pretrained()` implementation, honoring
+`revision`, `token`, and `local_files_only`. Transformers downloads only the
+configuration and weights it needs. The function does not execute remote code
+and returns only the adapter's native chain.
 
-`GeoSaveConfig` and `GeoSaveModel` remain importable because Transformers remote
-code and AutoClass registration require concrete classes. They are adapter
+`ModelSpec` remains an independent workflow contract. Ingest and raster
+validation can download only `model_spec.yaml` with `hf_hub_download()` and pass
+that local file to `ModelSpec.load()`. A process that needs both halves may
+download one pinned snapshot and load them independently:
+
+```python
+snapshot = snapshot_download(repo_id, revision=commit)
+spec = ModelSpec.load(snapshot)
+model = load_model(snapshot)
+```
+
+This keeps the two consumers separate while proving both files came from the
+same immutable release. `load_model()` never performs raster acquisition or
+returns workflow configuration as a tuple.
+
+`GeoSaveConfig` and `GeoSaveModel` remain importable installed classes because
+Transformers persistence requires concrete classes. They are adapter
 implementation, not the documented user workflow. `ModelChain` remains free of
 `save_pretrained()`, `push_to_hub()`, and Transformers inheritance.
 
@@ -261,7 +289,6 @@ release/
 ├── config.json
 ├── model.safetensors
 ├── model_spec.yaml
-├── huggingface.py
 └── README.md
 ```
 
@@ -270,6 +297,15 @@ edit it. `GeoSaveModel.from_chain()` translates `ModelChain.stage_specs` into
 `GeoSaveConfig.stages`, and inherited `save_pretrained()` writes the JSON and
 safetensors files. `save_model()` also copies `model_spec.yaml` and generates the
 minimal model card. The public functions hide the adapter call.
+
+The existing `huggingface.py` export is a copy of the Transformers adapter source
+created by `register_for_auto_class()`. It exists only so generic
+`AutoModel.from_pretrained(..., trust_remote_code=True)` can execute repository
+code without first importing GeoSave. It is not the native model architecture or
+the user's model implementation. The release API removes this remote-code mode:
+deployment installs `geosave-engine[hub]`, and the installed `GeoSaveModel`
+interprets `config.json`. The exporter therefore does not call
+`register_for_auto_class()` and does not write `huggingface.py` or `auto_map`.
 
 The configuration records `format_version: 1` for the GeoSave construction
 contract and the installed GeoSave package version for diagnostics. Loading
@@ -318,7 +354,7 @@ LitServe loads the release once during setup:
 ```python
 class GeoSaveAPI(ls.LitAPI):
     def setup(self, device):
-        self.model, self.spec = load_model(
+        self.model = load_model(
             self.model_id,
             revision=self.revision,
         )
@@ -351,8 +387,10 @@ Loading fails when:
 - the artifact revision is missing required files;
 - a stage selector cannot be resolved or model construction fails;
 - safetensors contain missing, unexpected, or mismatched state;
-- the GeoSave artifact format version is unsupported;
-- `model_spec.yaml` is invalid.
+- the GeoSave artifact format version is unsupported.
+
+Loading `ModelSpec` fails independently when `model_spec.yaml` is absent or
+invalid. This does not prevent tensor-only serving from loading the model.
 
 No compatibility alias preserves the direct `GeoSaveModel.from_chain()` user
 workflow in documentation. The adapter remains available for Transformers, but
@@ -365,8 +403,10 @@ Focused tests cover:
 
 - a local release containing all required files;
 - generated `config.json` preserving ordered resolved stage recipes;
-- `load_model()` returning a native `ModelChain` and matching `ModelSpec`;
-- exact weights and outputs after a fresh-process round trip;
+- `load_model()` returning only a native `ModelChain`;
+- `ModelSpec.load()` independently reading the bundled processing contract;
+- exact weights and outputs after an installed-adapter fresh-process round trip;
+- no `huggingface.py`, `auto_map`, or remote-code execution path;
 - a multi-stage segmenter/refiner graph in one safetensors artifact;
 - strict failure for missing, unexpected, and mismatched weights;
 - rejection of non-serializable constructor arguments;
@@ -393,5 +433,7 @@ prediction tests, followed by scoped Ruff, BasedPyright, and `git diff --check`.
   selecting `result["logits"]`.
 - Publishing supports configured `ModelChain` instances only in the initial
   version.
+- Generic loading through uninstalled Hub remote code is no longer supported;
+  deployments install `geosave-engine[hub]` and use `load_model()`.
 - Deployments install the GeoSave Hub extra and load the immutable Hub commit
   returned by publication.
