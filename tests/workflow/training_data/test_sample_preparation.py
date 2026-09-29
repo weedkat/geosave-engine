@@ -8,11 +8,11 @@ import pytest
 from geosave_engine.geodata.core.raster import raster
 from geosave_engine.geodata.utils import io
 from geosave_engine.model_spec import ModelSpec, RasterRequirement, StacRecipe
-from geosave_engine.workflow import tasks as workflow_tasks
-from geosave_engine.workflow.tasks.save import open_sample, write_sample
+from geosave_engine.workflow.training_data import open_sample
+from geosave_engine.workflow.training_data.sample import write_sample
 
 try:
-    dense_module = import_module("geosave_engine.workflow.tasks.dense")
+    dense_module = import_module("geosave_engine.workflow.training_data.dense")
 except ModuleNotFoundError:
     dense_module = SimpleNamespace()
     _dense_imported = False
@@ -54,7 +54,6 @@ def _model(requirements):
 
 
 def test_prepare_dense_sample_is_not_cached_or_persisted() -> None:
-    assert dense_module.prepare_dense_sample is workflow_tasks.prepare_dense_sample
     assert dense_module.prepare_dense_sample.cache_policy is NO_CACHE
     assert dense_module.prepare_dense_sample.persist_result is False
 

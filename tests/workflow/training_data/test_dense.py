@@ -5,19 +5,20 @@ from time import sleep
 from types import SimpleNamespace
 
 import numpy as np
+import pandas as pd
+import geopandas as gpd
 from prefect import Flow
 from pydantic import ValidationError
 import pytest
 
-import geosave_engine.workflow as workflow
 from geosave_engine.geodata import GeoVector
 from geosave_engine.geodata.core.raster import raster
 from geosave_engine.geodata.utils import io
-from geosave_engine.workflow import flows
 from geosave_engine.model_spec import ModelSpec, RasterRequirement, StacRecipe
+from geosave_engine.workflow import training_data
 
 try:
-    flow_module = import_module("geosave_engine.workflow.flows.prepare_dense_data")
+    flow_module = import_module("geosave_engine.workflow.training_data.dense")
 except ModuleNotFoundError:
     flow_module = SimpleNamespace()
     _flow_imported = False
@@ -63,14 +64,15 @@ def _touch_labels(root: Path, count: int) -> None:
         (root / f"{index}.tif").touch()
 
 
-def test_workflow_exports_only_runnable_flows() -> None:
+def test_training_data_exports_only_public_operations() -> None:
     assert _flow_imported
-    assert isinstance(flows.prepare_dense_data, Flow)
-    assert set(flows.__all__) == {"prepare_dense_data"}
-    assert not hasattr(flows, "preprocess")
-    assert not hasattr(flows, "postprocess")
-    assert not hasattr(flows, "run_stage")
-    assert not hasattr(workflow, "dense")
+    assert isinstance(training_data.prepare_dense_data, Flow)
+    assert set(training_data.__all__) == {
+        "SampleFormat",
+        "open_sample",
+        "prepare_dense_data",
+    }
+    assert not hasattr(training_data, "prepare_dense_sample")
 
 
 def test_prepare_dense_data_requires_labels(tmp_path) -> None:
@@ -191,6 +193,39 @@ def test_prepare_dense_data_rejects_zero_concurrency_before_submission(
         )
 
 
+def test_invalid_metadata_prevents_submission_and_preserves_manifest(
+    tmp_path, monkeypatch
+) -> None:
+    labels = tmp_path / "labels"
+    _touch_labels(labels, 1)
+    metadata = tmp_path / "samples.csv"
+    pd.DataFrame({"label_path": ["labels/missing.tif"]}).to_csv(
+        metadata, index=False
+    )
+    output = tmp_path / "prepared"
+    output.mkdir()
+    manifest = output / "manifest.parquet"
+    manifest.write_bytes(b"existing manifest")
+    spec = _save_spec(tmp_path, {"optical": _requirement("https://stac.test")})
+
+    def unexpected_submission(*args, **kwargs):
+        pytest.fail(f"task submitted before metadata validation: {args}, {kwargs}")
+
+    monkeypatch.setattr(
+        flow_module.prepare_dense_sample, "submit", unexpected_submission
+    )
+
+    with pytest.raises(ValueError, match="missing.*0.tif"):
+        flow_module.prepare_dense_data.fn(
+            labels=str(labels),
+            output=str(output),
+            spec=str(spec),
+            metadata=str(metadata),
+        )
+
+    assert manifest.read_bytes() == b"existing manifest"
+
+
 @pytest.mark.slow
 @pytest.mark.parametrize(("limit", "expected_peak"), [(1, 1), (2, 2)])
 def test_prepare_dense_data_bounds_active_samples(
@@ -215,9 +250,9 @@ def test_prepare_dense_data_bounds_active_samples(
     active = 0
     peak = 0
 
-    def prepare(label, requirements, output, *, format, write_options):
+    def prepare(label, model, output, *, format, write_options):
         nonlocal active, peak
-        assert set(requirements) == {"optical", "elevation"}
+        assert set(model.rasters) == {"optical", "elevation"}
         assert format == "geotiff"
         assert write_options is None
         with lock:
@@ -231,12 +266,13 @@ def test_prepare_dense_data_bounds_active_samples(
             active -= 1
         return str(output)
 
-    def manifest(samples, destination, *, format):
+    def manifest(samples, destination, *, format, metadata):
         assert format == "geotiff"
+        assert metadata == {key: {} for key in samples}
         return str(destination)
 
     monkeypatch.setattr(flow_module.prepare_dense_sample, "fn", prepare)
-    monkeypatch.setattr(flow_module.write_manifest, "fn", manifest)
+    monkeypatch.setattr(flow_module, "write_manifest", manifest)
 
     result = flow_module.prepare_dense_data(
         labels=str(labels),
@@ -264,7 +300,7 @@ def test_prepare_dense_data_stops_submitting_after_failure(
     second_started = Event()
     started: list[str] = []
 
-    def prepare(label, requirements, destination, *, format, write_options):
+    def prepare(label, model, destination, *, format, write_options):
         assert format == "geotiff"
         assert write_options is None
         name = Path(label).name
@@ -313,11 +349,19 @@ def test_prepare_dense_data_uses_model_recipes_and_resumes(
     labels = tmp_path / "labels"
     _write_label(labels / "train/b.tif", anchor, day=2)
     _write_label(labels / "train/a.tif", anchor, day=1)
+    metadata = tmp_path / "samples.csv"
+    pd.DataFrame(
+        {
+            "label_path": ["labels/train/a.tif", "labels/train/b.tif"],
+            "split": ["train", "validation"],
+        }
+    ).to_csv(metadata, index=False)
     output = tmp_path / "prepared"
     arguments = {
         "labels": str(labels),
         "output": str(output),
         "spec": str(_save_spec(tmp_path, {"optical": _requirement(url)})),
+        "metadata": str(metadata),
     }
 
     result = flow_module.prepare_dense_data(**arguments)
@@ -326,9 +370,10 @@ def test_prepare_dense_data_uses_model_recipes_and_resumes(
     assert requests == [["optical"], ["optical"]]
     assert flow_module.prepare_dense_data(**arguments) == result
     assert requests == [["optical"], ["optical"]]
-    manifest = io.read_vector(result)
-    assert manifest.gdf.sample_id.tolist() == ["train/a", "train/b"]
-    assert manifest.gdf["format"].tolist() == ["geotiff", "geotiff"]
+    manifest = gpd.read_parquet(result)
+    assert manifest.path.tolist() == ["train/a", "train/b"]
+    assert manifest["format"].tolist() == ["geotiff", "geotiff"]
+    assert manifest.split.tolist() == ["train", "validation"]
     for sample in (output / "train/a", output / "train/b"):
         assert sorted(path.name for path in sample.iterdir()) == [
             "label.tif",
@@ -355,9 +400,9 @@ def test_prepare_dense_data_supports_explicit_zarr(
     assert result == str(output / "manifest.parquet")
     assert requests == [["optical"]]
     assert (output / "val/region/tile.v1.zarr").is_dir()
-    manifest = io.read_vector(result)
-    assert manifest.gdf.sample_id.tolist() == ["val/region/tile.v1"]
-    assert manifest.gdf["format"].tolist() == ["zarr"]
+    manifest = gpd.read_parquet(result)
+    assert manifest.path.tolist() == ["val/region/tile.v1.zarr"]
+    assert manifest["format"].tolist() == ["zarr"]
 
 
 @pytest.mark.slow

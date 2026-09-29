@@ -6,7 +6,7 @@ from typing import Annotated, Literal
 from pydantic import JsonValue, TypeAdapter, ValidationError
 import typer
 
-from geosave_engine.workflow import flows
+from geosave_engine.workflow import training_data
 
 _write_options_adapter = TypeAdapter(dict[str, JsonValue])
 
@@ -31,6 +31,10 @@ def prepare_dense_data(
         str,
         typer.Option(help="Native writer options as JSON.", metavar="JSON"),
     ] = "{}",
+    metadata: Annotated[
+        Path | None,
+        typer.Option(help="CSV, TSV, Parquet, or XLSX sample metadata."),
+    ] = None,
 ) -> None:
     """Prepare label-aligned samples and publish their manifest."""
     try:
@@ -38,7 +42,7 @@ def prepare_dense_data(
     except ValidationError as error:
         raise typer.BadParameter(str(error), param_hint="--write-options") from error
 
-    result = flows.prepare_dense_data(
+    result = training_data.prepare_dense_data(
         labels=str(labels),
         output=str(output),
         spec=str(spec),
@@ -46,5 +50,6 @@ def prepare_dense_data(
         max_concurrency=max_concurrency,
         format=format,
         write_options=native_write_options,
+        metadata=None if metadata is None else str(metadata),
     )
     typer.echo(result)

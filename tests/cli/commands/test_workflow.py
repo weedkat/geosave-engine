@@ -2,7 +2,7 @@ import pytest
 from typer.testing import CliRunner
 
 from geosave_engine.cli.main import app
-from geosave_engine.workflow import flows, ingestion
+from geosave_engine.workflow import ingestion, training_data
 
 runner = CliRunner()
 
@@ -39,6 +39,7 @@ def test_prepare_dense_data_help_lists_safe_concurrency_default() -> None:
         "--max-concurrency",
         "--format",
         "--write-options",
+        "--metadata",
     ):
         assert option in result.stdout
     assert "--sources" not in result.stdout
@@ -86,7 +87,7 @@ def test_prepare_dense_data_forwards_typed_options(monkeypatch) -> None:
         captured.update(arguments)
         return "data/prepared/manifest.parquet"
 
-    monkeypatch.setattr(flows, "prepare_dense_data", run_flow)
+    monkeypatch.setattr(training_data, "prepare_dense_data", run_flow)
     result = runner.invoke(
         app,
         [
@@ -106,6 +107,8 @@ def test_prepare_dense_data_forwards_typed_options(monkeypatch) -> None:
             "zarr",
             "--write-options",
             '{"compress":"ZSTD","blocksize":256}',
+            "--metadata",
+            "data/samples.csv",
         ],
     )
 
@@ -118,6 +121,7 @@ def test_prepare_dense_data_forwards_typed_options(monkeypatch) -> None:
         "max_concurrency": 2,
         "format": "zarr",
         "write_options": {"compress": "ZSTD", "blocksize": 256},
+        "metadata": "data/samples.csv",
     }
     assert result.stdout == "data/prepared/manifest.parquet\n"
 
@@ -159,7 +163,7 @@ def test_prepare_dense_data_rejects_zero_concurrency_before_flow(
     def unexpected_flow(**arguments):
         pytest.fail(f"flow invoked with invalid input: {arguments}")
 
-    monkeypatch.setattr(flows, "prepare_dense_data", unexpected_flow)
+    monkeypatch.setattr(training_data, "prepare_dense_data", unexpected_flow)
     result = runner.invoke(
         app,
         [
@@ -193,7 +197,7 @@ def test_prepare_dense_data_rejects_invalid_output_options_before_flow(
     def unexpected_flow(**arguments):
         pytest.fail(f"flow invoked with invalid input: {arguments}")
 
-    monkeypatch.setattr(flows, "prepare_dense_data", unexpected_flow)
+    monkeypatch.setattr(training_data, "prepare_dense_data", unexpected_flow)
     result = runner.invoke(
         app,
         [

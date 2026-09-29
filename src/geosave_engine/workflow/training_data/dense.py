@@ -1,38 +1,82 @@
 """Prepare bounded, label-aligned dense training samples."""
 
+from collections.abc import Mapping
 from pathlib import Path
 from typing import Literal
 
-from prefect import flow
+from prefect import flow, task
+from prefect.cache_policies import NO_CACHE
 from prefect.futures import as_completed
 from pydantic import JsonValue, PositiveInt, TypeAdapter
 
-from geosave_engine.model_spec import ModelSpec
-from geosave_engine.workflow.tasks import prepare_dense_sample, write_manifest
+from geosave_engine.geodata.utils import io
+from geosave_engine.model_spec import ModelSpec, RasterRequirement
+
+from .manifest import (
+    find_labels as _find_labels,
+    read_sample_metadata,
+    sample_path as _sample_path,
+    write_manifest,
+)
+from .sample import SampleFormat, open_sample, write_sample
 
 
-def _find_labels(root: Path, pattern: str) -> dict[str, Path]:
-    """Return sorted label paths keyed by their relative sample IDs."""
-    paths = sorted(path for path in root.glob(pattern) if path.is_file())
-    if not paths:
-        raise ValueError(f"No labels found for {pattern!r} under {root}")
+def _validate_dense_sample(
+    path: str | Path,
+    requirements: dict[str, RasterRequirement],
+    *,
+    format: SampleFormat = "geotiff",
+) -> None:
+    """Validate one completed dense sample."""
+    with open_sample(path, format=format) as sample:
+        if set(sample.gs.groups) != {"label", *requirements}:
+            raise ValueError("Existing sample does not match model rasters")
 
-    labels = {
-        path.relative_to(root).with_suffix("").as_posix(): path for path in paths
-    }
-    if len(labels) != len(paths):
-        raise ValueError("Labels must map to unique sample paths")
-    return labels
+        rasters = sample.gs.rasters
+        if rasters["label"].gs.timespan is None:
+            raise ValueError(f"Existing sample label has no time: {path}")
+        _ = sample.gs.anchor
+        for name, requirement in requirements.items():
+            raster = rasters[name]
+            if (
+                format == "geotiff"
+                and requirement.dims is not None
+                and "time" in requirement.dims
+                and "time" in raster.coords
+                and "time" not in raster.dims
+            ):
+                raster = raster.expand_dims("time").transpose(*requirement.dims)
+            requirement.validate_raster(raster)
 
 
-def _sample_path(
-    root: Path, sample_id: str, format: Literal["geotiff", "zarr"]
-) -> Path:
-    """Return the format-specific path for one suffix-free sample ID."""
-    path = root / sample_id
-    if format == "zarr":
-        return path.parent / f"{path.name}.zarr"
-    return path
+@task(cache_policy=NO_CACHE, persist_result=False)
+def prepare_dense_sample(
+    label: str | Path,
+    model: ModelSpec,
+    output: str | Path,
+    *,
+    format: SampleFormat = "geotiff",
+    write_options: Mapping[str, JsonValue] | None = None,
+) -> str:
+    """Prepare one label-aligned dense sample."""
+    model = ModelSpec.model_validate(model.model_dump())
+    destination = Path(output)
+    if destination.exists():
+        _validate_dense_sample(destination, model.rasters, format=format)
+        return str(destination)
+
+    with io.read_raster(label) as label_raster:
+        anchor = label_raster.gs.anchor
+        if anchor.timespan is None:
+            raise ValueError(f"Label raster has no time: {label}")
+
+        rasters = model.load_rasters(anchor)
+        return write_sample(
+            {"label": label_raster, **rasters},
+            destination,
+            format=format,
+            write_options=write_options,
+        )
 
 
 @flow(name="prepare-dense-data", persist_result=False)
@@ -45,6 +89,7 @@ def prepare_dense_data(
     max_concurrency: PositiveInt = 1,
     format: Literal["geotiff", "zarr"] = "geotiff",
     write_options: dict[str, JsonValue] | None = None,
+    metadata: str | None = None,
 ) -> str:
     """Prepare dense training samples and publish their spatial manifest.
 
@@ -57,6 +102,7 @@ def prepare_dense_data(
             to one to protect raster reads and writes.
         format: Persisted sample representation.
         write_options: Serializable options for the native raster writer.
+        metadata: Optional CSV, TSV, Parquet, or XLSX sample metadata table.
 
     Returns:
         Path to the completed GeoParquet manifest.
@@ -79,6 +125,7 @@ def prepare_dense_data(
 
     destination = Path(output)
     discovered = _find_labels(Path(labels), pattern)
+    properties = read_sample_metadata(metadata, discovered)
     remaining = iter(discovered.items())
     pending = {}
     completed = {}
@@ -115,5 +162,8 @@ def prepare_dense_data(
 
     ordered = {sample_id: completed[sample_id] for sample_id in discovered}
     return write_manifest(
-        ordered, destination / "manifest.parquet", format=format
+        ordered,
+        destination / "manifest.parquet",
+        format=format,
+        metadata=properties,
     )
