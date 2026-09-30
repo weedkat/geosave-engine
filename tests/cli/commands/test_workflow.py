@@ -2,7 +2,7 @@ import pytest
 from typer.testing import CliRunner
 
 from geosave_engine.cli.main import app
-from geosave_engine.workflow import ingestion, training_data
+from geosave_engine.workflow import flows, training_data
 
 runner = CliRunner()
 
@@ -56,7 +56,7 @@ def test_ingest_parses_anchor_and_prints_result(
         captured.update(arguments)
         return "data/raw.zarr"
 
-    monkeypatch.setattr(ingestion, "ingest", run_flow)
+    monkeypatch.setattr(flows, "ingest", run_flow)
     result = runner.invoke(
         app,
         [
@@ -139,7 +139,7 @@ def test_ingest_rejects_invalid_json_before_invoking_flow(
     def unexpected_flow(**arguments):
         pytest.fail(f"flow invoked with invalid input: {arguments}")
 
-    monkeypatch.setattr(ingestion, "ingest", unexpected_flow)
+    monkeypatch.setattr(flows, "ingest", unexpected_flow)
     arguments = [
         "workflow",
         "ingest",
@@ -221,7 +221,7 @@ def test_flow_failure_exits_without_printing_success_path(monkeypatch) -> None:
     def fail(**arguments):
         raise RuntimeError("ingestion failed")
 
-    monkeypatch.setattr(ingestion, "ingest", fail)
+    monkeypatch.setattr(flows, "ingest", fail)
     result = runner.invoke(
         app,
         [

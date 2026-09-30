@@ -1,4 +1,4 @@
-"""Raster ingestion on explicit native anchors."""
+"""Serializable inputs for deployable workflows."""
 
 from .anchor import (
     AnchorConfig,
@@ -6,12 +6,12 @@ from .anchor import (
     GeoJSONAnchorConfig,
     RasterAnchorConfig,
 )
-from .flow import ingest
+from .base import ConfigModel
 
 __all__ = [
     "AnchorConfig",
+    "ConfigModel",
     "CoordinateAnchorConfig",
     "GeoJSONAnchorConfig",
     "RasterAnchorConfig",
-    "ingest",
 ]

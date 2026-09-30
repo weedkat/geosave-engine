@@ -7,9 +7,9 @@ import pytest
 from geosave_engine.geodata.core.raster import raster
 from geosave_engine.geodata.utils import io
 from geosave_engine.model_spec import ModelSpec, RasterRequirement, StacRecipe
-from geosave_engine.workflow.ingestion import ingest
+from geosave_engine.workflow.flows import ingest
 
-ingest_module = import_module("geosave_engine.workflow.ingestion.flow")
+ingest_module = import_module("geosave_engine.workflow.flows.ingest")
 
 
 def model_spec(tmp_path, url):
@@ -83,7 +83,7 @@ def test_ingest_loads_every_model_raster_recipe(tmp_path, monkeypatch) -> None:
         return str(output)
 
     monkeypatch.setattr(ModelSpec, "load_rasters", load)
-    monkeypatch.setattr(ingest_module, "_write_stack", write)
+    monkeypatch.setattr(ingest_module, "write_stack", write)
 
     result = ingest.fn(
         anchor={

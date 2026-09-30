@@ -6,8 +6,8 @@ from typing import Annotated
 from pydantic import TypeAdapter, ValidationError
 import typer
 
-from geosave_engine.workflow import ingestion
-from geosave_engine.workflow.ingestion import AnchorConfig
+from geosave_engine.workflow import flows
+from geosave_engine.workflow.configs import AnchorConfig
 
 _anchor_adapter = TypeAdapter(AnchorConfig)
 
@@ -26,7 +26,7 @@ def ingest(
     except ValidationError as error:
         raise typer.BadParameter(str(error), param_hint="--anchor") from error
 
-    result = ingestion.ingest(
+    result = flows.ingest(
         anchor=native_anchor.model_dump(
             mode="json",
             exclude_defaults=True,

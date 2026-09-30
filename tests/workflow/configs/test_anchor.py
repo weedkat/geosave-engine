@@ -5,7 +5,7 @@ from pydantic import TypeAdapter
 
 from geosave_engine.geodata.core.raster import raster
 from geosave_engine.geodata.utils import io
-from geosave_engine.workflow.ingestion import AnchorConfig
+from geosave_engine.workflow.configs import AnchorConfig
 
 
 def test_coordinate_anchor_opens_a_native_grid():
