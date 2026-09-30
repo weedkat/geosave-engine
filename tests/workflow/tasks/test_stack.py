@@ -51,6 +51,21 @@ def test_write_stack_rechecks_destination_before_publish(raw, tmp_path, monkeypa
         write_stack(raw, output)
 
 
+def test_write_stack_forwards_native_writer_options(raw, tmp_path, monkeypatch):
+    captured = {}
+    original = io.zarr.write
+
+    def write(tree, path, **options):
+        captured.update(options)
+        return original(tree, path, **options)
+
+    monkeypatch.setattr(io.zarr, "write", write)
+
+    write_stack(raw, tmp_path / "raw.zarr", consolidated=True)
+
+    assert captured == {"compute": True, "overwrite": False, "consolidated": True}
+
+
 def test_failed_write_cleans_staging_and_allows_retry(raw, tmp_path):
     def fail_chunk():
         raise RuntimeError("delayed chunk failed")
