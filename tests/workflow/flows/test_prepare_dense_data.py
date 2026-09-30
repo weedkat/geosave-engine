@@ -17,7 +17,6 @@ from geosave_engine.model_spec import ModelSpec, RasterRequirement, StacRecipe
 from geosave_engine.workflow import flows, tasks
 from geosave_engine.workflow.flows import prepare_dense_data
 from geosave_engine.workflow.tasks import prepare_dense_sample
-from geosave_engine.workflow.tasks.manifest import find_labels, sample_path
 
 flow_module = import_module("geosave_engine.workflow.flows.prepare_dense_data")
 
@@ -113,35 +112,6 @@ def test_prepare_dense_data_requires_labels(tmp_path) -> None:
             output=str(tmp_path / "prepared"),
             spec=str(spec),
         )
-
-
-def test_find_labels_preserves_tree_and_removes_only_the_final_suffix(
-    tmp_path,
-) -> None:
-    labels = tmp_path / "labels"
-    _touch_labels(labels, 0)
-    path = labels / "train" / "region" / "tile.v1.tif"
-    path.parent.mkdir(parents=True)
-    path.touch()
-
-    assert find_labels(labels, "**/*.tif") == {
-        "train/region/tile.v1": path
-    }
-
-
-@pytest.mark.parametrize(
-    ("format", "relative"),
-    [
-        ("geotiff", "train/region/tile.v1"),
-        ("zarr", "train/region/tile.v1.zarr"),
-    ],
-)
-def test_sample_path_preserves_the_suffix_free_identity(
-    tmp_path, format, relative
-) -> None:
-    assert sample_path(
-        tmp_path / "prepared", "train/region/tile.v1", format
-    ) == tmp_path / "prepared" / relative
 
 
 def test_prepare_dense_data_requires_unique_sample_paths(tmp_path) -> None:

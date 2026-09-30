@@ -12,41 +12,11 @@ from geosave_engine.geodata import Dataset
 from geosave_engine.geodata.core.stack import stack
 from geosave_engine.geodata.utils import io
 
+from .stack import write_stack
+
 type SampleFormat = Literal["geotiff", "zarr"]
 
 _PUBLICATION_OPTIONS = {"compute", "layout", "overwrite", "split_bands"}
-
-
-def _write_zarr_sample(
-    rasters: Mapping[str, xr.Dataset],
-    output: str | Path,
-    *,
-    write_options: Mapping[str, JsonValue] | None = None,
-) -> str:
-    """Write a dense sample fully before publishing its local Zarr store."""
-    destination = Path(output)
-    if "://" in str(output) or destination.suffix != ".zarr":
-        raise ValueError("Output must be a local .zarr path")
-    if destination.exists():
-        raise FileExistsError(f"Output already exists: {destination}")
-    destination.parent.mkdir(parents=True, exist_ok=True)
-    tree = stack(rasters)
-    native_options = cast("dict[str, Any]", dict(write_options or {}))
-    with TemporaryDirectory(
-        prefix=f".{destination.name}-", dir=destination.parent
-    ) as temporary:
-        staged = Path(temporary) / destination.name
-        io.zarr.write(
-            tree,
-            staged,
-            compute=True,
-            overwrite=False,
-            **native_options,
-        )
-        if destination.exists():
-            raise FileExistsError(f"Output already exists: {destination}")
-        staged.rename(destination)
-    return str(destination)
 
 
 def open_sample(source: str | Path, *, format: SampleFormat) -> xr.DataTree:
@@ -104,7 +74,7 @@ def write_sample(
     if reserved := sorted(options.keys() & _PUBLICATION_OPTIONS):
         raise ValueError(f"GeoSave owns sample publication options: {reserved}")
     if format == "zarr":
-        return _write_zarr_sample(rasters, output, write_options=options)
+        return write_stack(rasters, output, **options)
     if format != "geotiff":
         raise ValueError(f"Unknown sample format: {format!r}")
 

@@ -51,7 +51,6 @@ def prepare_dense_sample(
     write_options: Mapping[str, JsonValue] | None = None,
 ) -> str:
     """Prepare one label-aligned dense sample."""
-    model = ModelSpec.model_validate(model.model_dump())
     destination = Path(output)
     if destination.exists():
         _validate_dense_sample(destination, model.rasters, format=format)

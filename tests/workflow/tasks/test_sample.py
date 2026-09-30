@@ -168,3 +168,21 @@ def test_write_sample_forwards_geotiff_encoding_options(
         ("label.tif", {"compress": "ZSTD", "blocksize": 256}),
         ("optical.tif", {"compress": "ZSTD", "blocksize": 256}),
     ]
+
+
+def test_write_sample_forwards_zarr_options_to_the_stack_writer(
+    raw, tmp_path, monkeypatch
+) -> None:
+    captured = {}
+
+    def write(rasters, output, **options):
+        captured.update(options)
+        return str(output)
+
+    monkeypatch.setattr(save_module, "write_stack", write)
+
+    save_module.write_sample(
+        raw, tmp_path / "a.zarr", format="zarr", write_options={"consolidated": True}
+    )
+
+    assert captured == {"consolidated": True}

@@ -58,11 +58,13 @@ def prepare_dense_data(
     destination = Path(output)
     discovered = find_labels(Path(labels), pattern)
     properties = read_sample_metadata(metadata, discovered)
-    remaining = iter(discovered.items())
     pending = {}
     completed = {}
-
-    for sample_id, label in remaining:
+    for sample_id, label in discovered.items():
+        if len(pending) == limit:
+            # A failed result raises here, so no further samples are submitted.
+            future = next(as_completed(list(pending)))
+            completed[pending.pop(future)] = future.result()
         future = prepare_dense_sample.submit(
             label,
             model,
@@ -71,26 +73,8 @@ def prepare_dense_data(
             write_options=write_options,
         )
         pending[future] = sample_id
-        if len(pending) == limit:
-            break
-
-    while pending:
-        future = next(as_completed(list(pending)))
-        sample_id = pending.pop(future)
-        completed[sample_id] = future.result()
-
-        try:
-            next_sample_id, label = next(remaining)
-        except StopIteration:
-            continue
-        next_future = prepare_dense_sample.submit(
-            label,
-            model,
-            sample_path(destination, next_sample_id, format),
-            format=format,
-            write_options=write_options,
-        )
-        pending[next_future] = next_sample_id
+    for future in as_completed(list(pending)):
+        completed[pending[future]] = future.result()
 
     ordered = {sample_id: completed[sample_id] for sample_id in discovered}
     return write_manifest(

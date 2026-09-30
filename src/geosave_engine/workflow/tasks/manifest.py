@@ -2,7 +2,7 @@
 
 from collections.abc import Mapping
 from pathlib import Path
-from typing import Literal, cast
+from typing import cast
 
 import geopandas as gpd
 import pandas as pd
@@ -39,7 +39,7 @@ def find_labels(root: Path, pattern: str) -> dict[str, Path]:
 
 
 def sample_path(
-    root: Path, sample_id: str, format: Literal["geotiff", "zarr"]
+    root: Path, sample_id: str, format: SampleFormat
 ) -> Path:
     """Return the format-specific path for one suffix-free sample ID."""
     path = root / sample_id
