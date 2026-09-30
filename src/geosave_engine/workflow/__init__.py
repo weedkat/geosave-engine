@@ -1,1 +1,1 @@
-"""Deployable ingestion and training-data workflows."""
+"""Serializable configs, reusable tasks, and deployable Prefect flows."""

@@ -13,9 +13,10 @@ Visit official Documentation : <https://weedkat.github.io/geosave-engine/>
   adapters for Zarr, netCDF, GeoTIFF/COG, GeoJSON, GeoPackage, and GeoParquet.
   Native transforms, temporal windows, tiling, and tensor conversion support
   lazy raster processing.
-- **Model workflows** — [YAML model specifications](src/geosave_engine/workflow/README.md)
-  connect reusable preparation to Prefect ingestion and prediction, with named
-  raster inputs, context, temporal sampling, and completed Zarr outputs.
+- **Model workflows** — [YAML model specifications and Prefect workflows](docs/guides/workflows.md)
+  keep raster acquisition and preprocessing portable while providing
+  serializable configs, reusable tasks, and independently runnable
+  data-preparation flows.
 - **DataArray features** — spectral indices and masks consume explicitly
   ordered band DataArrays and return DataArrays.
 - **Training task** — `SemanticSegmentationTask` provides model construction,

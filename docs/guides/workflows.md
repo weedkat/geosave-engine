@@ -4,6 +4,19 @@ GeoSave exposes complete, durable jobs under `geosave workflow`. Commands run
 locally, wait for Prefect to finish, and print the output path only after a
 successful run.
 
+The Python package follows the same separation of concerns:
+
+- `geosave_engine.workflow.configs` defines serializable runtime inputs such
+  as anchor payloads.
+- `geosave_engine.workflow.flows` exposes independently runnable Prefect
+  workflows.
+- `geosave_engine.workflow.tasks` exposes reusable Prefect work units for
+  composing new flows. Persistence and manifest helpers remain in their
+  focused task modules.
+
+Raster requirements, acquisition recipes, and preprocessing stay on
+`ModelSpec`, which is shared by workflows, training, release, and serving.
+
 | Command | Purpose | Input | Output |
 | --- | --- | --- | --- |
 | `ingest` | Load every model raster on one explicit spatial and temporal target. | Anchor JSON and model spec. | One Zarr raster stack. |
@@ -233,8 +246,7 @@ Rerunning the same command validates and reuses compatible completed samples.
 The commands are thin wrappers around the two public flows:
 
 ```python
-from geosave_engine.workflow.ingestion import ingest
-from geosave_engine.workflow.training_data import prepare_dense_data
+from geosave_engine.workflow.flows import ingest, prepare_dense_data
 
 stack = ingest(
     anchor={"kind": "raster", "path": "data/reference.tif"},
@@ -254,3 +266,10 @@ manifest = prepare_dense_data(
 
 Both calls are synchronous and return the completed output path. Raster
 requirements and STAC acquisition settings come from `model_spec.yaml`.
+
+When validating an anchor payload outside the built-in flow, import
+`AnchorConfig` from `geosave_engine.workflow.configs`. When composing a custom
+Prefect flow that prepares individual samples, import `prepare_dense_sample`
+from `geosave_engine.workflow.tasks`. These lower-level interfaces support
+composition; application entry points should generally call the complete
+flows above.
