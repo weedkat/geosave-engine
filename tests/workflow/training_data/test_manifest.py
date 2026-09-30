@@ -115,6 +115,31 @@ def test_write_manifest_preserves_ordered_custom_columns_and_nulls(tmp_path, raw
     assert stored.note.isna().tolist() == [True, False]
 
 
+def test_write_manifest_accepts_metadata_named_like_factory_parameters(tmp_path, raw):
+    sample = write_dense_sample(tmp_path / "samples/a.zarr", raw, day=1)
+    destination = tmp_path / "manifest.parquet"
+
+    write_manifest(
+        {"a": sample},
+        destination,
+        format="zarr",
+        metadata={
+            "a": {
+                "crs": "source-crs",
+                "fields": "survey-fields",
+                "data": "source-data",
+            }
+        },
+    )
+
+    stored = gpd.read_parquet(destination)
+    assert stored.loc[0, ["crs", "fields", "data"]].to_dict() == {
+        "crs": "source-crs",
+        "fields": "survey-fields",
+        "data": "source-data",
+    }
+
+
 def test_write_manifest_does_not_compute_sample_pixels(tmp_path, raw):
     sample = write_dense_sample(tmp_path / "samples" / "a.zarr", raw, day=1)
     started = []

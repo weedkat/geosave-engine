@@ -404,8 +404,8 @@ class StacSource:
     def _search_query(self, anchor: GeoAnchor) -> StacQuery:
         """Narrow this source's search to one anchor.
 
-        The anchor's footprint and window are used unless `query` already
-        pinned a datetime, which a fixed-vintage collection needs.
+        Explicit item IDs bypass target search selectors. Otherwise the target
+        supplies only an omitted spatial selector and datetime window.
 
         Args:
             anchor: Grid and datetime window to load.
@@ -413,9 +413,13 @@ class StacSource:
         Returns:
             Query narrowed to the anchor.
         """
-        left, bottom, right, top = anchor.geobox.geographic_extent.boundingbox
-        bbox = (left, bottom, right, top)
-        window = (
-            self.query.datetime if self.query.datetime is not None else anchor.timespan
-        )
-        return replace(self.query, bbox=bbox, datetime=window)
+        if self.query.ids is not None:
+            return self.query
+
+        query = self.query
+        if query.bbox is None and query.intersects is None:
+            bounds = anchor.geobox.geographic_extent.boundingbox
+            query = replace(query, bbox=tuple(bounds))
+        if query.datetime is None:
+            query = replace(query, datetime=anchor.timespan)
+        return query

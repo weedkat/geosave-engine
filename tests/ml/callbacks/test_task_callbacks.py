@@ -8,8 +8,8 @@ from torch import nn
 from torch.utils.data import DataLoader, Dataset
 
 from geosave_engine.ml.callbacks import DensePredictionLogger, ThresholdCalibrator
+from geosave_engine.ml.lightning.tasks import SemanticSegmentationTask
 from geosave_engine.ml.model_chain import chain_step
-from geosave_engine.ml.tasks import SemanticSegmentationTask
 
 
 class SegmentationModel(nn.Module):

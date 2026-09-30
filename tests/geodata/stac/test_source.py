@@ -13,7 +13,7 @@ from odc.geo.geobox import GeoBox
 
 import geosave_engine.geodata.stac.source as source_module
 from geosave_engine.geodata import GeoAnchor, raster
-from geosave_engine.geodata.stac import StacSource, StacSourceConfig
+from geosave_engine.geodata.stac import StacQuery, StacSource, StacSourceConfig
 
 
 class FakeClient:
@@ -22,6 +22,64 @@ class FakeClient:
 
     def collection(self, collection: str) -> object:
         return object()
+
+
+def _target() -> GeoAnchor:
+    return GeoAnchor.from_coordinates(
+        -6.5914,
+        107.8416,
+        shape=2,
+        resolution=10,
+        timespan="2025-06",
+    )
+
+
+def test_search_query_preserves_explicit_recipe_selectors() -> None:
+    source = StacSource(FakeClient(), collection="example")  # type: ignore[arg-type]
+    query = StacQuery(
+        collections=["example"],
+        intersects={"type": "Point", "coordinates": [107.8, -6.5]},
+        datetime="2024-01",
+    )
+    source.query = query
+
+    assert source._search_query(_target()) == query
+
+
+def test_search_query_preserves_explicit_bbox() -> None:
+    source = StacSource(FakeClient(), collection="example")  # type: ignore[arg-type]
+    source.query = StacQuery(collections=["example"], bbox=(1, 2, 3, 4))
+
+    query = source._search_query(_target())
+
+    assert query.bbox == (1, 2, 3, 4)
+    assert query.datetime == _target().timespan
+
+
+def test_search_query_fills_omitted_target_selectors() -> None:
+    source = StacSource(FakeClient(), collection="example")  # type: ignore[arg-type]
+
+    query = source._search_query(_target())
+
+    assert query.bbox is not None
+    assert query.datetime == _target().timespan
+
+
+def test_item_ids_do_not_gain_target_selectors() -> None:
+    source = StacSource(FakeClient(), collection="example")  # type: ignore[arg-type]
+    query = StacQuery(collections=["example"], ids=["scene-1"])
+    source.query = query
+
+    assert source._search_query(_target()) == query
+
+
+def test_query_rejects_bbox_and_intersects_together() -> None:
+    with pytest.raises(ValueError, match="bbox.*intersects"):
+        StacQuery(
+            collections=["example"],
+            bbox=(0, 0, 1, 1),
+            intersects={"type": "Point", "coordinates": [0, 0]},
+        )
 
 
 def test_source_config_defaults_to_spatial_dask_chunks() -> None:

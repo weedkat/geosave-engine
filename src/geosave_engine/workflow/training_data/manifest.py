@@ -2,7 +2,7 @@
 
 from collections.abc import Mapping
 from pathlib import Path
-from typing import Any, Literal, cast
+from typing import Literal, cast
 
 import geopandas as gpd
 import pandas as pd
@@ -137,11 +137,10 @@ def write_manifest(
     """
     properties = metadata or {}
     records = []
-    for sample_key, path in samples.items():
+    for path in samples.values():
         sample_path = Path(path).resolve()
         with open_sample(sample_path, format=format) as sample:
             anchor = sample.gs.anchor
-            caller_fields = cast("dict[str, Any]", dict(properties.get(sample_key, {})))
             records.append(
                 GeoVector.from_xarray(
                     sample,
@@ -152,7 +151,6 @@ def write_manifest(
                     grid_crs=str(anchor.crs),
                     grid_height=anchor.geobox.height,
                     grid_width=anchor.geobox.width,
-                    **caller_fields,
                 )
             )
 
@@ -167,6 +165,11 @@ def write_manifest(
     )
     columns = [*_OWNED_COLUMNS[:-1], *custom_columns, _OWNED_COLUMNS[-1]]
     catalog = GeoVector.concat(records)
-    selected = cast("gpd.GeoDataFrame", catalog.gdf.loc[:, columns])
+    frame = catalog.gdf.copy()
+    for column in custom_columns:
+        frame[column] = [
+            properties.get(sample_key, {}).get(column) for sample_key in samples
+        ]
+    selected = cast("gpd.GeoDataFrame", frame.loc[:, columns])
     GeoVector(selected).to_geoparquet(output, overwrite=True)
     return str(output)

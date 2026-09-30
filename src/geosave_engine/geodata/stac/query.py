@@ -32,7 +32,7 @@ class StacQuery:
 
     Raises:
         ValueError: `collections` is empty, `ids` is given but empty, `bbox`
-            is not a valid WGS84 box, or `max_items` or `limit` is below one.
+            is invalid or combined with `intersects`, or a limit is below one.
     """
 
     collections: list[str]
@@ -52,6 +52,8 @@ class StacQuery:
             ValueError: A field is empty, malformed, or below one.
         """
         validate_wgs84_bbox(self.bbox)
+        if self.bbox is not None and self.intersects is not None:
+            raise ValueError("bbox and intersects are mutually exclusive")
         if not self.collections:
             raise ValueError("StacQuery needs at least one collection")
         if self.ids is not None and not self.ids:

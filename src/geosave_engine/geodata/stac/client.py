@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from typing import Any
+from typing import Any, Literal
 
 import planetary_computer
 import pystac
@@ -16,6 +16,8 @@ from .source import StacSource
 CDSE_URL = "https://stac.dataspace.copernicus.eu/v1/"
 PLANETARY_COMPUTER_URL = "https://planetarycomputer.microsoft.com/api/stac/v1/"
 ELEMENT84_URL = "https://earth-search.aws.element84.com/v1/"
+
+type StacProvider = Literal["planetary_computer", "cdse", "element84"]
 
 
 class StacClient:
@@ -37,6 +39,24 @@ class StacClient:
         """
         self._client = client
         self._collections: dict[str, pystac.Collection] = {}
+
+    @classmethod
+    def open(cls, endpoint: StacProvider | str) -> StacClient:
+        """Open a built-in provider or an arbitrary STAC API URL.
+
+        Args:
+            endpoint: Built-in provider name or STAC API URL.
+
+        Returns:
+            Configured client for the endpoint.
+        """
+        if endpoint == "planetary_computer":
+            return cls.planetary_computer()
+        if endpoint == "cdse":
+            return cls.cdse()
+        if endpoint == "element84":
+            return cls.element84()
+        return cls(Client.open(endpoint, stac_io=_default_io()))
 
     @classmethod
     def cdse(cls) -> StacClient:

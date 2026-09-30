@@ -104,6 +104,34 @@ def test_open_client_dispatches_a_named_provider(monkeypatch):
     assert opened == ["planetary_computer"]
 
 
+def test_open_client_falls_back_when_native_client_reports_missing_collection(
+    monkeypatch,
+):
+    collection = "sentinel-2-l2a"
+
+    def missing(_collection):
+        raise ValueError(
+            f"collection {collection!r} not found on this STAC endpoint; "
+            "call collections() to see what is available"
+        )
+
+    primary = SimpleNamespace(collection=missing)
+    backup = SimpleNamespace(
+        collection=lambda name: SimpleNamespace(id=name)
+    )
+    clients = iter((primary, backup))
+    monkeypatch.setattr(
+        stac_module.StacClient,
+        "open",
+        lambda _endpoint: next(clients),
+    )
+
+    assert stac_module._open_client(
+        collection,
+        ("https://primary.test/stac", "https://backup.test/stac"),
+    ) is backup
+
+
 def test_stac_module_has_no_concurrency_configuration() -> None:
     assert not hasattr(stac_module, "source_concurrency")
 
