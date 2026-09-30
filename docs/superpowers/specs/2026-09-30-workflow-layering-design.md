@@ -262,6 +262,39 @@ particular:
 - active sample preparation never exceeds `max_concurrency`;
 - raster pixels remain lazy until persistence requires computation.
 
+## Consolidation during the move
+
+A gap review of the current modules found duplicated behavior that the move
+removes instead of relocating:
+
+- **One atomic Zarr publication.** `ingestion.flow._write_stack` and
+  `training_data.sample._write_zarr_sample` are the same staged-rename write;
+  only the latter forwards writer options. `tasks.stack.write_stack` accepts
+  native writer options and `tasks.sample.write_sample(format="zarr")` calls
+  it.
+- **One recipe check.** `ModelSpec.load_rasters`, `ingest`, and
+  `prepare_dense_data` each compute missing STAC recipes with different
+  messages. `ModelSpec.require_recipes()` owns the check; `load_rasters` and
+  both flows call it, so flows still fail before anchor or STAC I/O.
+- **One bounded-submission loop.** The dense flow's prime-then-refill loop
+  repeats the submit call. A single loop waits for one completion when the
+  bound is reached, then submits; a failed `result()` still stops further
+  submission.
+- **No redundant spec copy.** Prefect passes the submitted `ModelSpec` object
+  unchanged (smoke-tested: `model is spec`), and `load_rasters` already
+  revalidates a copy, so `prepare_dense_sample` drops its own
+  `model_validate(model_dump())`.
+- **Consistent format type.** `tasks.manifest.sample_path` takes
+  `SampleFormat` rather than a repeated `Literal`. The flow parameter keeps the
+  literal because Prefect derives its parameter schema from it.
+- **Mirrored tests.** Metadata-table tests exercise `tasks.manifest` and move
+  into `tests/workflow/tasks/test_manifest.py`.
+
+Left for a separate design: GeoTIFF samples squeeze a singleton time axis on
+write, and dense validation re-expands it using model `dims`. The inverse
+lives in `tasks.dense` rather than `tasks.sample`; moving it changes what
+`open_sample` returns and belongs with the training sample contract.
+
 ## Testing
 
 Tests move to `tests/workflow/configs`, `tests/workflow/flows`, and
