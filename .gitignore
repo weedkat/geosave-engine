@@ -2,6 +2,7 @@
 .claude/
 .codex/
 .agents/
+.worktrees/
 
 # Byte-compiled / optimized / DLL files
 __pycache__/
