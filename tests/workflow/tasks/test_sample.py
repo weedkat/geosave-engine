@@ -5,7 +5,7 @@ import pytest
 
 from geosave_engine.geodata.core.raster import raster
 from geosave_engine.geodata.utils import io
-import geosave_engine.workflow.training_data.sample as save_module
+import geosave_engine.workflow.tasks.sample as save_module
 
 
 def _sample_rasters(raw):

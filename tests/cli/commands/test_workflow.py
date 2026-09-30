@@ -2,7 +2,7 @@ import pytest
 from typer.testing import CliRunner
 
 from geosave_engine.cli.main import app
-from geosave_engine.workflow import flows, training_data
+from geosave_engine.workflow import flows
 
 runner = CliRunner()
 
@@ -87,7 +87,7 @@ def test_prepare_dense_data_forwards_typed_options(monkeypatch) -> None:
         captured.update(arguments)
         return "data/prepared/manifest.parquet"
 
-    monkeypatch.setattr(training_data, "prepare_dense_data", run_flow)
+    monkeypatch.setattr(flows, "prepare_dense_data", run_flow)
     result = runner.invoke(
         app,
         [
@@ -163,7 +163,7 @@ def test_prepare_dense_data_rejects_zero_concurrency_before_flow(
     def unexpected_flow(**arguments):
         pytest.fail(f"flow invoked with invalid input: {arguments}")
 
-    monkeypatch.setattr(training_data, "prepare_dense_data", unexpected_flow)
+    monkeypatch.setattr(flows, "prepare_dense_data", unexpected_flow)
     result = runner.invoke(
         app,
         [
@@ -197,7 +197,7 @@ def test_prepare_dense_data_rejects_invalid_output_options_before_flow(
     def unexpected_flow(**arguments):
         pytest.fail(f"flow invoked with invalid input: {arguments}")
 
-    monkeypatch.setattr(training_data, "prepare_dense_data", unexpected_flow)
+    monkeypatch.setattr(flows, "prepare_dense_data", unexpected_flow)
     result = runner.invoke(
         app,
         [

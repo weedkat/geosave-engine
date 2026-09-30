@@ -6,7 +6,7 @@ from typing import Annotated, Literal
 from pydantic import JsonValue, TypeAdapter, ValidationError
 import typer
 
-from geosave_engine.workflow import training_data
+from geosave_engine.workflow import flows
 
 _write_options_adapter = TypeAdapter(dict[str, JsonValue])
 
@@ -42,7 +42,7 @@ def prepare_dense_data(
     except ValidationError as error:
         raise typer.BadParameter(str(error), param_hint="--write-options") from error
 
-    result = training_data.prepare_dense_data(
+    result = flows.prepare_dense_data(
         labels=str(labels),
         output=str(output),
         spec=str(spec),

@@ -10,9 +10,8 @@ import pytest
 
 from geosave_engine.geodata.core.raster import raster
 from geosave_engine.geodata.utils import io
-from geosave_engine.workflow.training_data import SampleFormat
-from geosave_engine.workflow.training_data.manifest import write_manifest
-from geosave_engine.workflow.training_data.sample import write_sample
+from geosave_engine.workflow.tasks.manifest import write_manifest
+from geosave_engine.workflow.tasks.sample import SampleFormat, write_sample
 
 
 def write_dense_sample(

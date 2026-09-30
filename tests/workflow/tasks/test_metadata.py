@@ -3,7 +3,7 @@ from pathlib import Path
 import pandas as pd
 import pytest
 
-from geosave_engine.workflow.training_data.manifest import read_sample_metadata
+from geosave_engine.workflow.tasks.manifest import read_sample_metadata
 
 
 def _labels(root: Path) -> dict[str, Path]:

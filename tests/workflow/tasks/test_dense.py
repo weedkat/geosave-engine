@@ -1,5 +1,4 @@
 from importlib import import_module
-from types import SimpleNamespace
 import numpy as np
 from odc.geo.geobox import GeoBox
 from prefect.cache_policies import NO_CACHE
@@ -8,20 +7,9 @@ import pytest
 from geosave_engine.geodata.core.raster import raster
 from geosave_engine.geodata.utils import io
 from geosave_engine.model_spec import ModelSpec, RasterRequirement, StacRecipe
-from geosave_engine.workflow.training_data import open_sample
-from geosave_engine.workflow.training_data.sample import write_sample
+from geosave_engine.workflow.tasks.sample import open_sample, write_sample
 
-try:
-    dense_module = import_module("geosave_engine.workflow.training_data.dense")
-except ModuleNotFoundError:
-    dense_module = SimpleNamespace()
-    _dense_imported = False
-else:
-    _dense_imported = True
-
-
-def test_dense_task_module_exists() -> None:
-    assert _dense_imported
+dense_module = import_module("geosave_engine.workflow.tasks.dense")
 
 
 def _write_label(path, anchor, *, dated=True):

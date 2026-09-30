@@ -1,3 +1,5 @@
 """Reusable workflow work units."""
 
-__all__: list[str] = []
+from .dense import prepare_dense_sample
+
+__all__ = ["prepare_dense_sample"]

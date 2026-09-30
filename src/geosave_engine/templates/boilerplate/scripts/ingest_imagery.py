@@ -8,7 +8,7 @@ import typer
 from dotenv import load_dotenv
 
 import geosave_engine as gs
-from geosave_engine.workflow.training_data import prepare_dense_data
+from geosave_engine.workflow.flows import prepare_dense_data
 
 _write_options_adapter = TypeAdapter(dict[str, JsonValue])
 
