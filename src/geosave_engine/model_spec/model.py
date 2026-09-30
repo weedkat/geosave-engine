@@ -74,12 +74,20 @@ class ModelSpec(SpecModel):
         """Copy and revalidate mutable nested declarations."""
         return type(self).model_validate(self.model_dump())
 
+    def require_recipes(self) -> None:
+        """Require a STAC recipe for every declared raster.
+
+        Raises:
+            ValueError: If any raster has no STAC recipe.
+        """
+        missing = [name for name, requirement in self.rasters.items() if requirement.stac is None]
+        if missing:
+            raise ValueError(f"Rasters need STAC recipes: {missing}")
+
     def load_rasters(self, anchor: GeoAnchor, /) -> dict[str, xr.Dataset]:
         """Load and validate every declared raster on an anchor."""
         model = self._validated()
-        missing = [name for name, requirement in model.rasters.items() if requirement.stac is None]
-        if missing:
-            raise ValueError(f"Rasters need STAC recipes: {missing}")
+        model.require_recipes()
 
         rasters = {}
         for name, requirement in model.rasters.items():

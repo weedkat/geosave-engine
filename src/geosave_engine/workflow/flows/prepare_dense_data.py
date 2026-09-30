@@ -53,13 +53,7 @@ def prepare_dense_data(
     model = ModelSpec.load(spec)
     if "label" in model.rasters:
         raise ValueError("Model raster name 'label' is reserved")
-    missing = [
-        name
-        for name, requirement in model.rasters.items()
-        if requirement.stac is None
-    ]
-    if missing:
-        raise ValueError(f"STAC recipes required for rasters: {missing}")
+    model.require_recipes()
 
     destination = Path(output)
     discovered = find_labels(Path(labels), pattern)

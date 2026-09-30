@@ -239,6 +239,19 @@ def test_load_rasters_reports_all_missing_recipes_before_http(catalog_http):
     assert visited == []
 
 
+def test_require_recipes_lists_every_raster_without_a_recipe():
+    model = ModelSpec(
+        schema_version=2,
+        rasters={
+            "optical": RasterRequirement(channels=3),
+            "elevation": RasterRequirement(channels=1),
+        },
+    )
+
+    with pytest.raises(ValueError, match=r"\['optical', 'elevation'\]"):
+        model.require_recipes()
+
+
 def test_empty_search_does_not_try_another_endpoint(catalog_http):
     visited, responses = catalog_http
     responses["https://primary.test/stac/search"] = {

@@ -30,11 +30,7 @@ def ingest(
         ValueError: If a raster has no STAC recipe or fails validation.
     """
     model = ModelSpec.load(spec)
-    missing = [
-        name for name, requirement in model.rasters.items() if requirement.stac is None
-    ]
-    if missing:
-        raise ValueError(f"STAC recipes required for rasters: {missing}")
+    model.require_recipes()
     anchor_config = TypeAdapter(AnchorConfig).validate_python(anchor)
     native_anchor = anchor_config.open()
 
