@@ -6,7 +6,7 @@ from typing import Annotated, Literal, Self
 from pydantic import Field, PositiveInt, model_validator
 
 from geosave_engine.geodata.core import GeoAnchor
-from geosave_engine.geodata.utils import io
+from geosave_engine.geodata import io
 
 from .base import ConfigModel
 
@@ -50,7 +50,7 @@ class GeoJSONAnchorConfig(ConfigModel):
     def open(self) -> GeoAnchor:
         """Read the geometry and build its native anchor."""
         return GeoAnchor.from_geometry(
-            io.read_vector(self.path).footprint,
+            io.read_vector(self.path).gs.footprint,
             **self.model_dump(exclude={"kind", "path"}, exclude_none=True),
         )
 

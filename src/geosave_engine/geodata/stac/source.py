@@ -12,12 +12,9 @@ from odc.stac.model import PropertyLoadRequest
 from pydantic import BaseModel, ConfigDict, Field
 
 from geosave_engine.geodata.attrs import rebase
-from geosave_engine.geodata.attrs.headers.stac import (
-    StacGroupby,
-    create_header,
-    read_asset_fields,
-)
+from geosave_engine.geodata.attrs.headers.stac import create_header, read_asset_fields
 from geosave_engine.geodata.errors import AnchorFetchError
+from geosave_engine.geodata.transform.warp import Resampling
 
 from .query import StacQuery
 
@@ -28,7 +25,7 @@ if TYPE_CHECKING:
     from geosave_engine.geodata import Dataset
 
 Bands = list[str] | tuple[str, ...]
-Resampling = str | dict[str, str]
+StacGroupby = Literal["solar_day", "id", "time"]
 ChunkSize = int | Literal["auto"]
 
 

@@ -6,6 +6,7 @@ from typing import Any
 import dask.array as da
 import numpy as np
 import pytest
+from pydantic import ValidationError
 
 from geosave_engine.geodata.attrs import AttrsHeader
 import xarray as xr
@@ -94,6 +95,22 @@ def test_source_config_accepts_mixed_chunk_sizes() -> None:
     configured = StacSourceConfig(chunks={"x": 1024, "y": "auto"})
 
     assert configured.chunks == {"x": 1024, "y": "auto"}
+
+
+def test_source_config_keeps_one_kernel_per_band() -> None:
+    configured = StacSourceConfig(resampling={"B04": "bilinear", "SCL": "nearest"})
+
+    assert configured.resampling == {"B04": "bilinear", "SCL": "nearest"}
+
+
+def test_source_config_refuses_a_kernel_nested_under_a_band() -> None:
+    with pytest.raises(ValidationError, match="resampling"):
+        StacSourceConfig(resampling={"B04": {"x": "nearest"}})
+
+
+def test_source_config_refuses_an_unknown_kernel() -> None:
+    with pytest.raises(ValidationError, match="resampling"):
+        StacSourceConfig(resampling="not-a-kernel")
 
 
 def test_load_returns_dask_backed_arrays_by_default(

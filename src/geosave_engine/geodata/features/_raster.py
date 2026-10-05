@@ -14,9 +14,8 @@ def prepared_reflectance(
     """Select reflectance variables after requiring explicit preparation."""
     bands = tuple(raster[variable] for variable in variables)
     for band in bands:
-        metadata = attrs.AttrsNamespace.from_attrs(band.attrs)
-        packing = metadata.get(attrs.Packing)
-        nodata = metadata.get(attrs.Nodata)
+        packing = attrs.Packing.from_attrs(band.attrs)
+        nodata = attrs.Nodata.from_attrs(band.attrs)
         packed = packing is not None and (
             packing.scale_factor is not None or packing.add_offset is not None
         )

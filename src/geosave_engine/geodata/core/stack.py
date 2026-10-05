@@ -30,12 +30,15 @@ import odc.geo.xr  # noqa: F401  — registers the .odc accessor
 import xarray as xr
 from odc.geo.geobox import GeoBox
 
+import geosave_engine.geodata.attrs as attrs
 from geosave_engine.geodata.transform import warp
 
-from .base import GeoAccessor
+from .base import GeoRasterAccessor
 from .profile import CRS_COORDINATE
 
 if TYPE_CHECKING:
+    from collections.abc import Callable
+
     from dask.delayed import Delayed
     from os import PathLike
     import holoviews as hv
@@ -43,7 +46,7 @@ if TYPE_CHECKING:
     import torch
     from numpy.typing import DTypeLike
 
-    from geosave_engine.geodata.utils.io.netcdf import (
+    from geosave_engine.geodata.io.netcdf import (
         NetCDFEngine,
         NetCDFWriteOptions,
     )
@@ -51,9 +54,9 @@ if TYPE_CHECKING:
     from geosave_engine.geodata.utils.datetime import DateRange
     from odc.geo import SomeResolution
     from geosave_engine.geodata import DataTree, Dataset
-    from geosave_engine.geodata.utils.io.geotiff import COGWriteOptions
-    from geosave_engine.geodata.utils.io.layout import LeafPath
-    from geosave_engine.geodata.utils.io.zarr import ZarrWriteOptions
+    from geosave_engine.geodata.io.geotiff import COGWriteOptions
+    from geosave_engine.geodata.io.layout import LeafPath
+    from geosave_engine.geodata.io.zarr import ZarrWriteOptions
 
     from .anchor import GeoAnchor
 
@@ -74,7 +77,8 @@ def stack(rasters: Mapping[str, xr.Dataset]) -> DataTree:
     Returns:
         Flat DataTree whose children are the given rasters, unchanged, over a
         root carrying the spatial coordinates they share, or no coordinates
-        where they share none.
+        where they share none. The caller retains ownership of opened rasters;
+        this factory does not transfer their file-close callbacks.
 
     Raises:
         ValueError: `rasters` is empty, or a name spells a path.
@@ -122,8 +126,32 @@ def stack(rasters: Mapping[str, xr.Dataset]) -> DataTree:
     )
 
 
+def map_groups(
+    tree: xr.DataTree, change: Callable[[xr.Dataset], xr.Dataset]
+) -> DataTree:
+    """Apply one change to every group, keeping the stack's own attrs.
+
+    The stack is rebuilt rather than mapped over, so a change that moves the
+    grid still leaves a root that matches its groups.
+
+    Args:
+        tree: Stack to change.
+        change: Returns the changed raster for one group.
+
+    Returns:
+        New stack of the changed groups, in the same order, carrying the
+        root attrs `tree` carried.
+
+    Examples:
+        >>> map_groups(scene, lambda raster: raster.isel(time=0)).gs.groups
+        ('sentinel-2-l2a', 'dem')
+    """
+    changed = stack({name: change(raster) for name, raster in tree.gs.rasters.items()})
+    return attrs.rebase(changed, tree.gs.attrs.root)
+
+
 @xr.register_datatree_accessor("gs")
-class GeoStack(GeoAccessor["DataTree"]):
+class GeoStack(GeoRasterAccessor["DataTree"]):
     """Read and persist one raster-stack DataTree.
 
     `attrs` reads only the root's own attrs; groups carry their own, read
@@ -262,7 +290,10 @@ class GeoStack(GeoAccessor["DataTree"]):
         """
         # .dataset would return a DatasetView whose attrs still write through here.
         return {
-            name: cast("Dataset", self._data[name].to_dataset()) for name in self.groups
+            name: cast(
+                "Dataset", self._data.children[name].to_dataset(inherit="all_coords")
+            )
+            for name in self.groups
         }
 
     @overload
@@ -402,7 +433,7 @@ class GeoStack(GeoAccessor["DataTree"]):
         # A time facet is an NdLayout; mpl won't nest it, so take its panels.
         panels: list[hv.Element] = []
         for name in self.groups:
-            raster = self._data[name].to_dataset()
+            raster = self._data.children[name].to_dataset(inherit="all_coords")
             place = raster.gs.anchor.location
             caption = name if place is None else f"{name}\n{place.to_address()}"
             drawn = raster.gs.plot(xlabel=caption)
@@ -474,8 +505,10 @@ class GeoStack(GeoAccessor["DataTree"]):
         split_bands: bool = False,
         map_scale: float | None = None,
         overwrite: bool = False,
+        catalog: str | PathLike[str] | None = None,
+        id: str | None = None,
         **options: Unpack[COGWriteOptions],
-    ) -> None:
+    ) -> Path:
         """Write every group as a tree of Cloud Optimized GeoTIFFs.
 
         Each group writes into its own directory named after the group, so the
@@ -489,8 +522,13 @@ class GeoStack(GeoAccessor["DataTree"]):
                 than keeping them as bands of one file per instant.
             map_scale: Map denominator used to write pixels per centimetre in
                 every leaf.
+            catalog: Optional GeoParquet recording the saved assets.
+            id: Record identity; None uses the saved raster's anchor.
             overwrite: Replace leaves that already exist.
             **options: COG creation options passed to every leaf.
+
+        Returns:
+            The directory written, holding one tree per group.
 
         Raises:
             FileExistsError: A leaf exists and `overwrite` is false.
@@ -500,6 +538,8 @@ class GeoStack(GeoAccessor["DataTree"]):
         Examples:
             >>> scene.gs.to_cog("scene")  # scene/sentinel-2-l2a/..., scene/dem/...
         """
+        from geosave_engine.geodata.io.assets import write_catalog
+
         root = Path(destination)
         for name, raster in self.rasters.items():
             raster.gs.to_cog(
@@ -510,42 +550,57 @@ class GeoStack(GeoAccessor["DataTree"]):
                 overwrite=overwrite,
                 **options,
             )
+        return cast(
+            "Path", write_catalog(root, catalog, id=id, stack=True, overwrite=overwrite)
+        )
 
     def to_zarr(
         self,
         destination: str | PathLike[str],
         *,
+        compute: bool = True,
         overwrite: bool = False,
+        catalog: str | PathLike[str] | None = None,
+        id: str | None = None,
         **write_options: Unpack[ZarrWriteOptions],
     ) -> Path | Delayed:
         """Write this raster stack to Zarr.
 
         Args:
             destination: Output path ending in `.zarr`.
+            compute: False defers writing pixels and publishing the catalog.
+            catalog: Optional GeoParquet recording the saved assets.
+            id: Record identity; None uses the saved raster's anchor.
             overwrite: Replace an existing destination when true.
             **write_options: Supported xarray Zarr write options.
 
         Returns:
-            Destination path, or xarray's delayed write when `compute=False`.
+            Destination path, or a delayed task returning it when `compute=False`.
 
         Raises:
             FileExistsError: The destination exists and overwrite is false.
             TypeError: An option is unsupported.
             ValueError: The destination is invalid.
         """
-        from geosave_engine.geodata.utils.io import zarr
+        from geosave_engine.geodata.io import zarr
 
-        return zarr.write(
+        from geosave_engine.geodata.io.assets import write_catalog
+
+        saved = zarr.write(
             self._data,
             destination,
+            compute=compute,
             overwrite=overwrite,
             **write_options,
         )
+
+        return write_catalog(saved, catalog, id=id, stack=True, overwrite=overwrite)
 
     def to_netcdf(
         self,
         destination: str | PathLike[str],
         *,
+        compute: bool = True,
         engine: NetCDFEngine = "netcdf4",
         overwrite: bool = False,
         **write_options: Unpack[NetCDFWriteOptions],
@@ -554,23 +609,25 @@ class GeoStack(GeoAccessor["DataTree"]):
 
         Args:
             destination: Output path ending in `.nc`, `.nc4`, or `.cdf`.
+            compute: False returns a delayed task that writes and returns its path.
             engine: Concrete xarray netCDF writing engine.
             overwrite: Replace an existing destination when true.
             **write_options: Supported xarray netCDF write options.
 
         Returns:
-            Destination path, or xarray's delayed write when `compute=False`.
+            Destination path, or a delayed task returning it when `compute=False`.
 
         Raises:
             FileExistsError: The destination exists and overwrite is false.
             TypeError: An option is unsupported.
             ValueError: The destination is invalid.
         """
-        from geosave_engine.geodata.utils.io import netcdf
+        from geosave_engine.geodata.io import netcdf
 
         return netcdf.write(
             self._data,
             destination,
+            compute=compute,
             engine=engine,
             overwrite=overwrite,
             **write_options,

@@ -1,4 +1,4 @@
-"""Spatial and attrs properties shared by every `gs` accessor."""
+"""Properties and pixel operations shared by every `gs` raster accessor."""
 
 from __future__ import annotations
 
@@ -13,65 +13,28 @@ from geosave_engine.geodata.utils.datetime import parse_daterange
 from .profile import TIME_COORDINATE
 
 if TYPE_CHECKING:
-    from collections.abc import Callable, Mapping, Sequence
+    import geopandas as gpd
+    from collections.abc import Mapping, Sequence
 
-    import torch
-    from numpy.typing import DTypeLike
     from odc.geo import CRS, BoundingBox, Resolution
     from odc.geo.gcp import GCPGeoBox
     from odc.geo.geobox import GeoBox
 
-    from geosave_engine.geodata.attrs import AttrsHeader, AttrsModel
+    from geosave_engine.geodata.attrs import AttrsHeader, AttrsModel, AttrsNamespace
+    from odc.geo import SomeResolution
+
+    from geosave_engine.geodata.transform.warp import Resampling, Target
     from geosave_engine.geodata.utils.datetime import DateRange
 
     from .anchor import GeoAnchor
 
 
-def tensor(
-    pixels: Callable[[DTypeLike | None], np.ndarray],
-    dtype: str | torch.dtype | None = None,
-) -> torch.Tensor:
-    """Build a contiguous tensor, preserving pixels unless a dtype is requested.
-
-    Args:
-        pixels: Reads the pixels in the numpy dtype it is given.
-        dtype: Torch dtype or its YAML-friendly name. None preserves the
-            pixels' dtype. A dtype numpy cannot hold, such as
-            `torch.bfloat16`, is read as float32 and narrowed on conversion.
-
-    Returns:
-        Tensor over contiguous pixels, in `dtype`.
-    """
-    import torch
-
-    if isinstance(dtype, str):
-        target = getattr(torch, dtype, None)
-        if not isinstance(target, torch.dtype):
-            raise ValueError(f"Unknown torch dtype {dtype!r}")
-    else:
-        target = dtype
-
-    if target is None:
-        values = np.ascontiguousarray(pixels(None))
-        try:
-            return torch.as_tensor(values)
-        except (TypeError, ValueError) as error:
-            raise TypeError(
-                f"Cannot convert numpy dtype {values.dtype} to a torch tensor"
-            ) from error
-
-    try:
-        reading_dtype = torch.empty(0, dtype=target).numpy().dtype
-    except TypeError:
-        reading_dtype = np.dtype("float32")
-    return torch.as_tensor(np.ascontiguousarray(pixels(reading_dtype)), dtype=target)
-
-
-class GeoAccessor[DataT: xr.Dataset | xr.DataArray | xr.DataTree]:
-    """Spatial and attrs properties every `gs` accessor reads the same way.
+class GeoRasterAccessor[DataT: xr.Dataset | xr.DataArray | xr.DataTree]:
+    """Spatial, attrs, and pixel members every `gs` raster accessor shares.
 
     Concrete accessors bind their xarray object to `_data`; this class is
-    never built directly.
+    never built directly. Each pixel operation delegates to `transform`,
+    which treats a band, a raster, and a stack alike.
     """
 
     _data: DataT
@@ -179,7 +142,7 @@ class GeoAccessor[DataT: xr.Dataset | xr.DataArray | xr.DataTree]:
     @overload
     def rebase(
         self,
-        *models: AttrsModel,
+        *models: AttrsModel | AttrsHeader | AttrsNamespace,
         target: str | Sequence[str] | None = None,
         inplace: Literal[False] = False,
         **model_kwargs: Mapping[str, Any] | None,
@@ -188,7 +151,7 @@ class GeoAccessor[DataT: xr.Dataset | xr.DataArray | xr.DataTree]:
     @overload
     def rebase(
         self,
-        *models: AttrsModel,
+        *models: AttrsModel | AttrsHeader | AttrsNamespace,
         target: str | Sequence[str] | None = None,
         inplace: Literal[True],
         **model_kwargs: Mapping[str, Any] | None,
@@ -196,18 +159,19 @@ class GeoAccessor[DataT: xr.Dataset | xr.DataArray | xr.DataTree]:
 
     def rebase(
         self,
-        *models: AttrsModel,
+        *models: AttrsModel | AttrsHeader | AttrsNamespace,
         target: str | Sequence[str] | None = None,
         inplace: bool = False,
         **model_kwargs: Mapping[str, Any] | None,
     ) -> DataT | None:
-        """Return a copy of this object carrying the supplied attrs.
+        """Return a copy of this object carrying the supplied attrs, as `attrs.rebase`.
 
         A DataTree writes only its root; groups are rebased through
         `stack["<group>"].gs.rebase`.
 
         Args:
-            *models: Model instances to apply to `target`.
+            *models: Model instances to apply to `target`, one `AttrsNamespace`
+                to patch onto it, or one `AttrsHeader` to restore.
             target: Variable or coordinate name the models describe, or
                 several of them. None writes to the object's own attrs.
             inplace: Write into this object rather than returning a new one.
@@ -219,13 +183,15 @@ class GeoAccessor[DataT: xr.Dataset | xr.DataArray | xr.DataTree]:
             when `inplace` is set.
 
         Raises:
-            KeyError: A keyword names no registered model.
-            ValueError: `target` names neither a variable nor a coordinate.
+            KeyError: A keyword names no GeoSave attrs model.
+            ValueError: `target` names neither a variable nor a coordinate, or
+                an attrs value belongs to another scope than its target.
             ValidationError: A supplied value does not satisfy its field.
 
         Examples:
             >>> ds.gs.rebase(ACDD(title="Sentinel-2 Level-2A"))
-            >>> ds.gs.rebase(cf={"units": "1"}, target="B04")
+            >>> ds.gs.rebase(cf_variable={"units": "1"}, target="B04")
+            >>> joined.gs.rebase(attrs.merge(rasters))
         """
         if inplace:
             attrs.rebase(
@@ -254,7 +220,7 @@ class GeoAccessor[DataT: xr.Dataset | xr.DataArray | xr.DataTree]:
             return None
         labels = coords[TIME_COORDINATE].values
         # A merge that dropped a disagreeing cadence leaves the model behind.
-        spec = self.attrs.coords[TIME_COORDINATE].get(attrs.TimeSpec)
+        spec = attrs.TimeSpec.from_attrs(coords[TIME_COORDINATE].attrs)
         if spec is not None and spec.time_freq is not None:
             return spec.timespan(labels)
 
@@ -287,3 +253,123 @@ class GeoAccessor[DataT: xr.Dataset | xr.DataArray | xr.DataTree]:
         if not isinstance(geobox, GeoBox):
             raise ValueError(f"{type(self._data).__name__} carries no locatable grid")
         return GeoAnchor(geobox, timespan=self.timespan)
+
+    def unpack(self) -> DataT:
+        """Read physical values out of stored digital numbers.
+
+        Returns:
+            New object of physical values, a variable unchanged where it
+            carries neither `scale_factor` nor `add_offset`.
+
+        Examples:
+            >>> ds.gs.unpack().B04.max().item()
+            0.09
+        """
+        from geosave_engine.geodata.transform import packing
+
+        return packing.unpack(self._data)
+
+    def mask(
+        self, valid: xr.DataArray | np.ndarray, *, fill: float | int | None = None
+    ) -> DataT:
+        """Make nodata every pixel `valid` does not keep.
+
+        Args:
+            valid: Boolean array, True where a pixel is real data. A DataArray
+                names its own axes and may span fewer, broadcasting over the
+                rest; a bare numpy array is read as the grid alone.
+            fill: Value the blanked pixels take, also written where a variable
+                carries no fill value yet. None reads what each one carries.
+
+        Returns:
+            New object, its unkept pixels holding their variable's fill value.
+
+        Raises:
+            ValueError: `valid` is not boolean, does not span the grid, spans an
+                axis this object does not, `fill` does not fit a dtype, or a
+                variable carries no fill value and none is given.
+
+        Examples:
+            >>> clear = ds.gs.mask(ds.scl.isin([4, 5, 6, 7]))
+        """
+        from geosave_engine.geodata.transform import nodata
+
+        return nodata.mask(self._data, valid, fill=fill)
+
+    def to_nan(self) -> DataT:
+        """Replace each variable's fill value with NaN.
+
+        Returns:
+            New object holding NaN where the pixels were nodata, a variable
+            unchanged where it carries no fill value.
+
+        Examples:
+            >>> ds.gs.to_nan().red.dtype
+            dtype('float32')
+        """
+        from geosave_engine.geodata.transform import nodata
+
+        return nodata.to_nan(self._data)
+
+    def reproject(
+        self,
+        target: Target,
+        *,
+        resampling: Resampling | Mapping[str, Resampling] = "nearest",
+        resolution: SomeResolution | None = None,
+    ) -> DataT:
+        """Warp pixels onto the grid a target names.
+
+        A target grid is adopted whole — CRS, resolution, and extent — while a
+        bare CRS only decides the projection, sizing the grid from this object.
+
+        Args:
+            target: Grid to land on, a raster already on one, or a CRS.
+            resampling: One GDAL kernel for every variable, or a mapping naming
+                each variable's own, which `"*"` answers the rest of.
+            resolution: Output pixel size, taken only for a CRS target. None
+                keeps the ground sampling as closely as the new CRS allows.
+
+        Returns:
+            New object on the target grid, carrying its own `spatial_ref` and
+            the CF semantics its axes earn.
+
+        Raises:
+            ValueError: This object or `target` sits on no locatable grid,
+                `resolution` contradicts a target grid, a variable does not
+                span the grid, or `resampling` would blend class codes.
+
+        Examples:
+            >>> ds.gs.reproject("EPSG:3857").gs.crs.epsg
+            3857
+            >>> srtm.gs.reproject(scene, resampling="bilinear")
+        """
+        from geosave_engine.geodata.transform import warp
+
+        return warp.reproject(
+            self._data, target, resampling=resampling, resolution=resolution
+        )
+
+    def crop(self, vector: gpd.GeoDataFrame, *, mask: bool = True) -> DataT:
+        """Cut this object down to a vector's extent.
+
+        Args:
+            vector: Geometries to cut against, reprojected onto this
+                object's CRS where they sit in another.
+            mask: Also make nodata the pixels outside the geometries, which
+                then take their own variable's fill value.
+
+        Returns:
+            New object covering the vector's extent, its dtype unchanged.
+
+        Raises:
+            ValueError: This object carries no CRS, `vector` is empty or does
+                not overlap it, or `mask` is set while a variable carries no
+                fill value.
+
+        Examples:
+            >>> ds.gs.crop(field_boundaries)
+        """
+        from geosave_engine.geodata.transform import vector as vectors
+
+        return vectors.crop(self._data, vector, mask=mask)

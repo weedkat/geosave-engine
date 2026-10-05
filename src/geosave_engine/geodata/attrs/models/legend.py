@@ -6,9 +6,8 @@ from typing import TYPE_CHECKING, Annotated, Any, ClassVar, NamedTuple, Self
 
 from pydantic import BeforeValidator, model_validator
 
-from geosave_engine.geodata.attrs.model import AttrsModel
-from geosave_engine.geodata.attrs.validate import parse_collection_text
-from geosave_engine.utils.colorize import Palette
+from geosave_engine.geodata.attrs.model import MUST_AGREE, AttrsModel, parse_collection_text
+from geosave_engine.geodata.attrs.palette import Palette
 
 if TYPE_CHECKING:
     from collections.abc import Mapping
@@ -43,12 +42,12 @@ class Legend(AttrsModel):
     NAME: ClassVar[str] = "legend"
 
     flag_values: Annotated[
-        list[int] | None, BeforeValidator(parse_collection_text)
+        list[int] | None, BeforeValidator(parse_collection_text), MUST_AGREE
     ] = None
     flag_masks: Annotated[
-        list[int] | None, BeforeValidator(parse_collection_text)
+        list[int] | None, BeforeValidator(parse_collection_text), MUST_AGREE
     ] = None
-    flag_meanings: str | None = None
+    flag_meanings: Annotated[str | None, MUST_AGREE] = None
     color_map: Annotated[Palette | None, BeforeValidator(parse_collection_text)] = None
 
     if TYPE_CHECKING:

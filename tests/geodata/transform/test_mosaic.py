@@ -131,7 +131,7 @@ def test_rasters_with_different_nodata_markers_are_refused() -> None:
     first = granule(nodata=0)
     second = granule(nodata=255)
 
-    with pytest.raises(ValueError, match=r"'red'.*nodata"):
+    with pytest.raises(ValueError, match=r"nodata.*\n.*'red'"):
         mosaic([first, second])
 
 
@@ -206,3 +206,21 @@ def test_rasters_carrying_no_grid_are_refused() -> None:
 def test_rasters_no_one_grid_holds_are_refused(other: GeoBox, mismatch: str) -> None:
     with quiet(), pytest.raises(ValueError, match=mismatch):
         mosaic([granule(), granule(other, fill=9)])
+
+
+def test_mosaic_lays_floats_whose_nodata_is_nan() -> None:
+    import numpy as np
+    from odc.geo.geobox import GeoBox
+
+    from geosave_engine.geodata.core.raster import raster as build
+    from geosave_engine.geodata.transform.composite import mosaic
+
+    west = GeoBox.from_bbox((0, 0, 80, 80), crs="EPSG:32633", resolution=10)
+    east = GeoBox.from_bbox((40, 0, 120, 80), crs="EPSG:32633", resolution=10)
+    left = build({"red": np.full(west.shape, 5.0, "float32")}, west, nodata=np.nan)
+    right = build({"red": np.full(east.shape, 9.0, "float32")}, east, nodata=np.nan)
+
+    laid = mosaic([left, right])
+
+    assert laid.red.shape == (8, 12)
+    assert laid.red.values[0, 0] == 5.0 and laid.red.values[0, -1] == 9.0

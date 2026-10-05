@@ -1,11 +1,12 @@
 from geosave_engine.geodata.errors.errors import (
     AnchorFetchError,
+    AssumedFillWarning,
     DroppedAttrsWarning,
     UnreadMaskWarning,
     DroppedBucketsWarning,
     DroppedInstantsWarning,
     DroppedPackingWarning,
-    DroppedWindowsWarning,
+    DroppedFramesWarning,
     GeoSaveWarning,
     MissingCRSWarning,
     TileDecodeError,
@@ -17,12 +18,13 @@ from geosave_engine.geodata.errors.errors import (
 
 __all__ = [
     "AnchorFetchError",
+    "AssumedFillWarning",
     "DroppedAttrsWarning",
     "UnreadMaskWarning",
     "DroppedBucketsWarning",
     "DroppedInstantsWarning",
     "DroppedPackingWarning",
-    "DroppedWindowsWarning",
+    "DroppedFramesWarning",
     "GeoSaveWarning",
     "MissingCRSWarning",
     "TileDecodeError",

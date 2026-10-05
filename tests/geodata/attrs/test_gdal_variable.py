@@ -6,7 +6,7 @@ import xarray as xr
 from pydantic import ValidationError
 
 import geosave_engine.geodata.core.raster  # noqa: F401  — registers the .gs accessor
-from geosave_engine.geodata.attrs import GDALVariable, rebase
+from geosave_engine.geodata.attrs import AttrsNamespace, GDALVariable, rebase
 
 
 def build_bands(*colours: str | None) -> xr.Dataset:
@@ -102,3 +102,10 @@ def test_write_rgb_refuses_a_name_the_raster_does_not_carry() -> None:
 def test_write_rgb_refuses_one_variable_on_two_channels() -> None:
     with pytest.raises(ValueError, match="cannot draw two channels"):
         build_bands(None, None).gs.write_rgb("b0", "b0", "b1")
+
+
+def test_a_description_attr_stays_foreign() -> None:
+    namespace = AttrsNamespace.from_attrs({"description": "Red band"}, "variable")
+
+    assert namespace.get(GDALVariable) is None
+    assert namespace.foreign == {"description": "Red band"}

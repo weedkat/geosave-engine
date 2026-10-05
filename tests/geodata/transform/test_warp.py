@@ -118,9 +118,13 @@ def test_a_blending_kernel_refuses_class_codes(resampling: str) -> None:
 
 @pytest.mark.parametrize("resampling", ["nearest", "mode"])
 def test_a_value_preserving_kernel_accepts_class_codes(resampling: str) -> None:
-    warped = reproject(landcover(), WGS84, resampling=resampling)
+    from geosave_engine.geodata.errors import AssumedFillWarning
 
-    assert set(np.unique(warped.landcover.values)) <= {0, 1, 2}
+    # The class map carries no fill value, so uncovered pixels take uint8's.
+    with pytest.warns(AssumedFillWarning, match="255"):
+        warped = reproject(landcover(), WGS84, resampling=resampling)
+
+    assert set(np.unique(warped.landcover.values)) <= {0, 1, 2, 255}
 
 
 def test_a_blending_kernel_names_the_group_holding_class_codes() -> None:
@@ -259,3 +263,72 @@ def test_align_refuses_rasters_sharing_no_ground_to_intersect() -> None:
 
     with pytest.raises(ValueError, match="no ground in common"):
         align([here, far], extent="intersection")
+
+
+def _small(dtype: str, nodata: float | int | None) -> xr.Dataset:
+    box = utm_box(size=8)
+    return build_raster({"red": np.full(box.shape, 5, dtype)}, box, nodata=nodata)
+
+
+def _wider() -> GeoBox:
+    """Build a grid reaching past `_small`'s, so a warp leaves uncovered pixels."""
+    return GeoBox.from_bbox((300000, 5000000, 300160, 5000080), crs=UTM, resolution=10)
+
+
+def test_reproject_keeps_a_nan_fill_value() -> None:
+    source = _small("float32", np.nan)
+
+    warped = reproject(source, _wider())
+    band = reproject(source.red, _wider())
+
+    assert np.isnan(attrs.Nodata.from_attrs(warped.red.attrs).fill_value)
+    assert np.isnan(attrs.Nodata.from_attrs(band.attrs).fill_value)
+    assert np.isnan(warped.red.values).any()
+
+
+def test_reproject_keeps_a_bands_name() -> None:
+    assert reproject(_small("uint16", 0).red, _wider()).name == "red"
+
+
+@pytest.mark.parametrize(
+    ("dtype", "fill"), [("uint16", 65535), ("uint8", 255), ("int16", -32768)]
+)
+def test_reproject_gives_an_integer_with_no_fill_value_one_and_warns(
+    dtype: str, fill: int
+) -> None:
+    from geosave_engine.geodata.errors import AssumedFillWarning
+
+    source = _small(dtype, None)
+
+    with pytest.warns(AssumedFillWarning, match=str(fill)):
+        warped = reproject(source, _wider())
+    with pytest.warns(AssumedFillWarning, match=str(fill)):
+        band = reproject(source.red, _wider())
+
+    assert attrs.Nodata.from_attrs(warped.red.attrs).fill_value == fill
+    assert sorted(np.unique(warped.red.values).tolist()) == sorted([5, fill])
+    assert sorted(np.unique(band.values).tolist()) == sorted([5, fill])
+    assert warped.red.dtype == np.dtype(dtype)
+
+
+def test_reproject_stays_quiet_for_a_variable_carrying_a_fill_value() -> None:
+    import warnings
+
+    with warnings.catch_warnings():
+        warnings.simplefilter("error")
+        warped = reproject(_small("uint16", 0), _wider())
+
+    assert sorted(np.unique(warped.red.values).tolist()) == [0, 5]
+
+
+def test_reproject_records_nan_for_a_float_with_no_fill_value_and_warns() -> None:
+    from geosave_engine.geodata.errors import AssumedFillWarning
+
+    source = _small("float32", None)
+
+    with pytest.warns(AssumedFillWarning, match="nan"):
+        warped = reproject(source, _wider())
+
+    assert np.isnan(attrs.Nodata.from_attrs(warped.red.attrs).fill_value)
+    assert np.isnan(warped.red.values).any()
+    assert warped.red.dtype == np.dtype("float32")

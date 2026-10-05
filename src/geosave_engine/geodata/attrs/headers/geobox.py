@@ -1,8 +1,10 @@
-"""Create CF coordinate attrs from an odc-geo grid."""
+"""Create the coordinate attrs header an odc-geo grid describes."""
 
 from __future__ import annotations
 
 from typing import TYPE_CHECKING
+
+from odc.geo.xr import xr_coords
 
 from ..header import AttrsHeader
 
@@ -11,20 +13,23 @@ if TYPE_CHECKING:
 
 
 def create_header(geobox: GeoBox) -> AttrsHeader:
-    """Create the coordinate header described by a grid's CRS.
+    """Describe a grid's spatial coordinates: odc's attrs plus their CF meaning.
 
     Args:
         geobox: Grid carrying a CRS.
 
     Returns:
-        Header whose coordinates use the grid's dimension names.
+        Header naming only the grid's coordinates, under the grid's dimension
+        names, each holding odc's `units`, `resolution`, and `crs` plus CF's
+        `standard_name` and `axis`.
 
     Raises:
         ValueError: The grid carries no CRS.
 
     Examples:
-        >>> create_header(utm_geobox).coords["y"].to_attrs()
-        {'standard_name': 'projection_y_coordinate', 'units': 'metre', 'axis': 'Y'}
+        >>> create_header(utm_geobox).coords["x"].to_attrs()
+        {'units': 'metre', 'resolution': 10.0, 'crs': 'EPSG:32633',
+         'standard_name': 'projection_x_coordinate', 'axis': 'X'}
     """
     crs = geobox.crs
     if crs is None:
@@ -37,11 +42,16 @@ def create_header(geobox: GeoBox) -> AttrsHeader:
         if crs.geographic
         else ("projection_y_coordinate", "projection_x_coordinate")
     )
+    coords = xr_coords(geobox)
     return AttrsHeader.from_attrs(
         coords={
-            str(dimension): {"standard_name": name, "units": unit, "axis": axis}
-            for dimension, name, unit, axis in zip(
-                geobox.dimensions, names, crs.units, ("Y", "X"), strict=True
+            str(dimension): {
+                **coords[dimension].attrs,
+                "standard_name": name,
+                "axis": axis,
+            }
+            for dimension, name, axis in zip(
+                geobox.dimensions, names, ("Y", "X"), strict=True
             )
         }
     )

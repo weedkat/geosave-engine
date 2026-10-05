@@ -2,7 +2,7 @@
 
 GeoSave Engine is a local-first product for building geospatial AI workflows end to end. It standardizes the full path from data acquisition, environment setup, model training, and prediction to serving-ready outputs, so teams do not need to reinvent a different workflow for every project.
 
-It generates a ready-to-use boilerplate and applies proven best practices out of the box, including access to state-of-the-art models and multiple training methods with minimal coding. Instead of building model pipelines from scratch, users can focus on dataset creation and preprocessing, then run the resulting pipeline on fresh satellite data directly from their own machine.
+It generates editable workspace starters that compose geospatial data APIs, model stages, and Lightning training. Users can prepare datasets and develop models through ordinary Python objects and configuration.
 
 Visit official Documentation : <https://weedkat.github.io/geosave-engine/>
 
@@ -11,7 +11,7 @@ Visit official Documentation : <https://weedkat.github.io/geosave-engine/>
 - **Geospatial core redesign** — CF-conformant `xr.Dataset` rasters and flat,
   same-grid `xr.DataTree` stacks use `.gs` accessors and typed persistence
   adapters for Zarr, netCDF, GeoTIFF/COG, GeoJSON, GeoPackage, and GeoParquet.
-  Native transforms, temporal windows, tiling, and tensor conversion support
+  Native transforms, temporal frames, tiling, and tensor conversion support
   lazy raster processing.
 - **Model workflows** — [YAML model specifications and Prefect workflows](docs/guides/workflows.md)
   keep raster acquisition and preprocessing portable while providing
@@ -19,8 +19,9 @@ Visit official Documentation : <https://weedkat.github.io/geosave-engine/>
   data-preparation flows.
 - **DataArray features** — spectral indices and masks consume explicitly
   ordered band DataArrays and return DataArrays.
-- **Training task** — `SemanticSegmentationTask` provides model construction,
-  training, evaluation, and prediction. Dataset adapter design is pending.
+- **Training module** — `ml.segmentation.supervised.Module` provides model construction,
+  training, evaluation, and prediction. `supervised.DataModule` feeds it from
+  STAC sample manifests, cut and transformed as the model spec declares.
 - **Pretrained model registry** — encoders (DINOv3, Prithvi, Prithvi-TL,
   Clay), decoders (DPT, UNet), heads, selected by registry key, chained
   together automatically, no manual import wiring or hand-glued forward pass.
@@ -65,8 +66,9 @@ cd my-project
 # fill in .env with your CDSE (or other STAC provider) credentials
 ```
 
-`geosave create` prompts for a task and method; pass `-t`/`-m` to skip the
-prompts and `-d` to set the project description. Then follow the
+`geosave create` prompts for a workspace starter; pass `-w segmentation`,
+`-w custom_lightning`, or `-w blank` to select it, and `-d` to set the description.
+See the [workspace guide](docs/guides/workspaces.md) and follow the
 [documentation](https://weedkat.github.io/geosave-engine/) for the full
 step-by-step — explore a pipeline, build a dataset, train.
 
@@ -81,9 +83,9 @@ my-project/
 ├── modules/       # editable project modules
 ├── notebooks/
 ├── predictions/
-├── scripts/       # `geosave make scripts <file>` copies boilerplate here
+├── scripts/       # `geosave make scripts <file>` copies optional scaffolds here
 ├── .env           # CDSE credentials, filled in with placeholders
-├── geosave.toml   # project name, description, task/method, engine version
+├── geosave.toml   # project information, starter template, engine version
 └── main.py        # LightningCLI entry point — do not need to touch this
 ```
 

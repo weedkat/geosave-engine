@@ -125,25 +125,16 @@ def concat_time[T: xr.DataArray | xr.Dataset | xr.DataTree](
         )
 
     header = attrs.merge(bands)
-    result: xr.DataArray | xr.Dataset
-    if isinstance(bands[0], xr.DataArray):
-        result = xr.concat(
-            cast("Sequence[xr.DataArray]", bands),
-            dim=TIME_COORDINATE,
-            join=join,
-            compat=compat,
-            data_vars=data_vars,
-            coords=coords,
-            fill_value=resolved,
-        )
-    else:
-        result = xr.concat(
-            cast("Sequence[xr.Dataset]", bands),
-            dim=TIME_COORDINATE,
-            join=join,
-            compat=compat,
-            data_vars=data_vars,
-            coords=coords,
-            fill_value=resolved,
-        )
+    # xr.concat overloads on one element type, which a union of both does not select.
+    result = xr.concat(
+        cast("Sequence[xr.Dataset]", bands),
+        dim=TIME_COORDINATE,
+        join=join,
+        compat=compat,
+        data_vars=data_vars,
+        coords=coords,
+        fill_value=resolved,
+        # The header merged above writes the attrs; xarray's copy of raster 0's would linger.
+        combine_attrs="drop",
+    )
     return cast("T", attrs.rebase(result, header))

@@ -1,6 +1,6 @@
 # Workflow CLI and Execution Boundaries
 
-Status: draft for user review.
+Status: approved.
 
 ## Goal
 

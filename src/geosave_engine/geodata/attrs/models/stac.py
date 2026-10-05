@@ -8,8 +8,7 @@ from typing import Annotated, Any, ClassVar, Self
 
 from pydantic import BaseModel, BeforeValidator, ConfigDict, Field
 
-from geosave_engine.geodata.attrs.model import AttrsModel
-from geosave_engine.geodata.attrs.validate import parse_collection_text
+from geosave_engine.geodata.attrs.model import AttrsModel, parse_collection_text
 
 
 class StacItem(BaseModel):
@@ -51,7 +50,7 @@ class StacMetadata(AttrsModel):
         ('eo:cloud_cover', 'platform')
     """
 
-    NAME: ClassVar[str] = "stac"
+    NAME: ClassVar[str] = "stac_metadata"
 
     stac_items: Annotated[
         tuple[StacItem, ...] | None, BeforeValidator(parse_collection_text)
@@ -99,4 +98,4 @@ class StacMetadata(AttrsModel):
             stac_groupby=grouped.stac_groupby,
         )
         # Items accumulate rather than drop, so differing ones are not a loss.
-        return combined, dropped - set(cls.field_keys["stac_items"])
+        return combined, dropped - set(cls.attr_keys("stac_items"))

@@ -30,7 +30,7 @@ def to_shapely(geometry: SomeGeometry) -> BaseGeometry:
         except shapely.errors.ShapelyError as error:
             raise ValueError(f"could not parse WKT: {error}") from error
     elif isinstance(geometry, Mapping):
-        normalized = shapely.geometry.shape(geometry)
+        normalized = shapely.geometry.shape(dict(geometry))
     elif isinstance(geometry, OdcGeometry):
         normalized = geometry.geom
     elif isinstance(geometry, BaseGeometry):

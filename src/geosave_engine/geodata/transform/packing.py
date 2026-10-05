@@ -6,39 +6,30 @@ this, so a stored fill value is never scaled into a bogus physical reading.
 
 from __future__ import annotations
 
-from typing import TYPE_CHECKING, cast, overload
+from typing import cast
 
+import numpy as np
 import xarray as xr
 from xarray.coding.variables import CFScaleOffsetCoder
 
 import geosave_engine.geodata.attrs as attrs
 from geosave_engine.geodata.transform import nodata
 
-if TYPE_CHECKING:
-    from geosave_engine.geodata import DataArray, Dataset
 
-
-@overload
-def unpack(data: xr.DataArray) -> DataArray: ...
-
-
-@overload
-def unpack(data: xr.Dataset) -> Dataset: ...
-
-
-def unpack(data: xr.DataArray | xr.Dataset) -> DataArray | Dataset:
+def unpack[T: xr.DataArray | xr.Dataset | xr.DataTree](data: T) -> T:
     """Read physical values out of each variable's stored digital numbers.
 
     A variable carrying neither `scale_factor` nor `add_offset` passes through
-    unchanged.
+    unchanged. A stack is unpacked group by group.
 
     Args:
-        data: DataArray or Dataset holding stored values.
+        data: DataArray, Dataset, or DataTree holding stored values.
 
     Returns:
-        New object of the same kind holding physical values, each unpacked
-        variable's packing dropped from attrs since its values are no longer
-        the stored numbers packing described.
+        New object of the same kind holding physical values, float32 where
+        the stored integers are 16 bits or fewer and float64 otherwise. Each
+        unpacked variable's packing is dropped from attrs, since its values
+        are no longer the stored numbers packing described.
 
     Raises:
         ValueError: A packed variable still marks its nodata pixels with a
@@ -48,13 +39,16 @@ def unpack(data: xr.DataArray | xr.Dataset) -> DataArray | Dataset:
         >>> unpack(scene).red.max().item()
         0.09
     """
+    if isinstance(data, xr.DataTree):
+        return cast("T", data.map_over_datasets(lambda dataset: unpack(dataset)))
+
     if isinstance(data, xr.DataArray):
-        return cast("DataArray", _unpack_array(data))
+        return cast("T", _unpack_array(data))
 
     physical = {
         variable: _unpack_array(data[variable]) for variable in data.gs.variables
     }
-    return cast("Dataset", data.assign(physical))
+    return cast("T", nodata.drop_source(data.assign(physical)))
 
 
 def _unpack_array(array: xr.DataArray) -> xr.DataArray:
@@ -71,7 +65,7 @@ def _unpack_array(array: xr.DataArray) -> xr.DataArray:
         ValueError: `array` holds class codes, or still marks its nodata pixels
             with a fill value.
     """
-    packing = array.gs.attrs.root.get(attrs.Packing)
+    packing = attrs.Packing.from_attrs(array.attrs)
     if packing is None or (packing.scale_factor is None and packing.add_offset is None):
         return array
 
@@ -92,9 +86,14 @@ def _unpack_array(array: xr.DataArray) -> xr.DataArray:
         )
 
     # xarray copies the attrs it reads today; the copy keeps that promise ours.
-    physical = CFScaleOffsetCoder().decode(
-        array.variable.copy(deep=False), name=array.name
-    )
+    stored = array.variable.copy(deep=False)
+    if array.dtype.kind in "iu" and array.dtype.itemsize <= 2:
+        # CF reads a 16-bit integer out as float32 only where its packing is
+        # float32 too, and a packing read off disk arrives as a Python float.
+        for key in ("scale_factor", "add_offset"):
+            if key in stored.attrs:
+                stored.attrs[key] = np.float32(stored.attrs[key])
+    physical = CFScaleOffsetCoder().decode(stored, name=array.name)
     return xr.DataArray(
         physical, coords=array.coords, name=array.name, attrs=physical.attrs
     )

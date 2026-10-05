@@ -1,6 +1,6 @@
 # Workflow Processing Design
 
-Status: approved design; implementation pending.
+Status: implemented.
 
 ## Goal
 
@@ -115,8 +115,10 @@ removed because it would only wrap that transform; the task's
 
 ## Stage execution
 
-Preprocessing and postprocessing use one private stage runner in
-`workflow/flows/_stage.py`. Before submitting any Prefect task, the runner
+Preprocessing and postprocessing use the public `run_stage` function in
+`workflow/flows/stage.py`. It composes model-owned calls inside an active Prefect
+flow without coupling the inert `StageSpec` model to orchestration. Before
+submitting any Prefect task, the runner
 validates every external and ordered reference.
 Each call receives only the roots it references. Independent calls remain free
 to overlap, while calls referring to preceding results receive their futures as

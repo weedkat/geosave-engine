@@ -264,7 +264,7 @@ class GeoAnchor:
         from .vector import GeoVector
 
         # Reproject before bounding, so the box fits no looser than the CRS change forces.
-        footprint = GeoVector.from_geometry(geometry).footprint
+        footprint = GeoVector.from_geometry(geometry).gs.footprint
         grid_crs = select_grid_crs(footprint, crs)
         return cls.from_bbox(
             footprint.to_crs(grid_crs).boundingbox,

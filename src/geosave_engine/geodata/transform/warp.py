@@ -18,10 +18,12 @@ Examples:
 
 from __future__ import annotations
 
+import warnings
 from collections.abc import Mapping
 from math import isclose, lcm
 from typing import TYPE_CHECKING, Literal, cast, get_args
 
+import numpy as np
 import odc.geo.xr  # noqa: F401  — registers the .odc accessor
 import xarray as xr
 from odc.geo.crs import norm_crs
@@ -32,6 +34,8 @@ from odc.geo.geobox import (
 )
 
 import geosave_engine.geodata.attrs as attrs
+from geosave_engine.geodata.errors import AssumedFillWarning
+from geosave_engine.geodata.transform import nodata
 
 if TYPE_CHECKING:
     from collections.abc import Sequence
@@ -270,6 +274,41 @@ def _target_geobox(
     return geobox
 
 
+def _warp_band(band: xr.DataArray, geobox: GeoBox, kernel: Resampling) -> xr.DataArray:
+    """Warp one band, keeping its name and the fill value its new pixels take.
+
+    Args:
+        band: Band on a locatable grid.
+        geobox: Grid to land on.
+        kernel: GDAL resampling kernel.
+
+    Returns:
+        Band on `geobox`, holding its fill value where the source does not
+        reach. A band carrying none is given one: NaN where float, and its
+        dtype's far end where integer, the maximum where unsigned and the
+        minimum where signed.
+    """
+    fill = nodata.fill_value(band)
+    if fill is None and band.dtype.kind in "iuf":
+        if band.dtype.kind == "f":
+            fill = float("nan")
+        else:
+            limits = np.iinfo(band.dtype)
+            fill = int(limits.max if band.dtype.kind == "u" else limits.min)
+        warnings.warn(
+            f"{str(band.name)!r} carries no fill value, so the pixels its warp "
+            f"does not cover take {fill}; choose one with gs.write_nodata(...) "
+            f"before warping",
+            AssumedFillWarning,
+            stacklevel=3,
+        )
+        band = band.gs.write_nodata(fill)
+
+    warped = band.odc.reproject(geobox, resampling=kernel).rename(band.name)
+    # odc drops a NaN fill value from attrs and narrows a float one to int.
+    return warped if fill is None else warped.gs.write_nodata(fill)
+
+
 def reproject[T: xr.DataArray | xr.Dataset | xr.DataTree](
     data: T,
     target: Target,
@@ -299,7 +338,14 @@ def reproject[T: xr.DataArray | xr.Dataset | xr.DataTree](
 
     Returns:
         New object of the same kind on the target grid, carrying its own
-        `spatial_ref` and the CF semantics its axes earn.
+        `spatial_ref` and the CF semantics its axes earn. Pixels the source
+        does not reach hold each variable's fill value.
+
+    Warns:
+        AssumedFillWarning: A variable carries no fill value, so its uncovered
+            pixels take NaN where it is float, and its dtype's far end where
+            it is integer: the maximum where unsigned, the minimum where
+            signed.
 
     Raises:
         CRSError: `target` names no CRS pyproj recognises.
@@ -395,7 +441,7 @@ def reproject[T: xr.DataArray | xr.Dataset | xr.DataTree](
     if isinstance(data, xr.DataArray):
         band = cast("xr.DataArray", data)
         kernel = _variable_resampling(resampling, str(band.name))
-        return cast("T", band.odc.reproject(geobox, resampling=kernel))
+        return cast("T", _warp_band(band, geobox, kernel))
 
     # odc's Dataset path keeps the old spatial_ref attrs, so it reports the source.
     raster = cast("xr.Dataset", data)
@@ -413,8 +459,8 @@ def reproject[T: xr.DataArray | xr.Dataset | xr.DataTree](
                 f"{sorted(grid_dims)}, so it names no pixels to warp; drop it "
                 f"or place it on the grid first"
             )
-        data_vars[str(variable)] = values.odc.reproject(
-            geobox, resampling=_variable_resampling(resampling, str(variable))
+        data_vars[str(variable)] = _warp_band(
+            values, geobox, _variable_resampling(resampling, str(variable))
         )
     warped = xr.Dataset(data_vars).gs.write_crs()
     return cast("T", attrs.rebase(warped, raster.gs.attrs.root))

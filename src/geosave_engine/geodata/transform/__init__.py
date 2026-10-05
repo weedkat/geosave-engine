@@ -10,10 +10,20 @@ Examples:
         filled = composite.mosaic([clear, last_week])
         monthly = composite.reduce(composite.resample(filled, "MS"), "median")
         dem = warp.reproject(srtm, monthly, resampling="bilinear")
-        samples = tiling.Tiles([monthly], (256, 256), overlap=32)
+        prepared = monthly.assign(elevation=dem.elevation)
 """
 
-from . import composite, concat, merge, nodata, packing, tiling, time, vector, warp
+from . import (
+    composite,
+    concat,
+    merge,
+    nodata,
+    packing,
+    time,
+    vector,
+    warp,
+    window,
+)
 
 __all__ = [
     "composite",
@@ -21,8 +31,8 @@ __all__ = [
     "merge",
     "nodata",
     "packing",
-    "tiling",
     "time",
     "vector",
     "warp",
+    "window",
 ]

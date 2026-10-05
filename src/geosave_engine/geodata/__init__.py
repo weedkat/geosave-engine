@@ -2,6 +2,7 @@
 
 from typing import TYPE_CHECKING
 
+import geopandas as gpd
 import xarray as xr
 
 from . import transform
@@ -11,13 +12,14 @@ from .core import (
     GeoRaster,
     GeoStack,
     GeoVector,
+    GeoRow,
     raster,
     stack,
 )
-from .utils import io
+from . import io
 from .utils.gdal_env import configure_gdal
-from .utils.io import read_raster, read_stack, read_vector
-from .utils.io.layout import LAYOUTS, write_tree
+from .io import read_raster, read_stack, read_vector
+from .io.layout import LAYOUTS, write_tree
 
 
 if TYPE_CHECKING:
@@ -49,10 +51,20 @@ if TYPE_CHECKING:
 
         gs: GeoStack
 
+    class GeoDataFrame(gpd.GeoDataFrame):
+        """GeoPandas GeoDataFrame carrying GeoSave's `gs` accessor.
+
+        The runtime value is a `geopandas.GeoDataFrame`; this declaration
+        exists only so type checkers can resolve `.gs`.
+        """
+
+        gs: GeoVector
+
 else:
     DataArray = xr.DataArray
     Dataset = xr.Dataset
     DataTree = xr.DataTree
+    GeoDataFrame = gpd.GeoDataFrame
 
 
 __all__ = [
@@ -62,9 +74,11 @@ __all__ = [
     "DataArray",
     "DataTree",
     "Dataset",
+    "GeoDataFrame",
     "GeoRaster",
     "GeoStack",
     "GeoVector",
+    "GeoRow",
     "write_tree",
     "configure_gdal",
     "io",

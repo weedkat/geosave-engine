@@ -25,7 +25,7 @@ from geosave_engine.geodata.core.anchor import GeoAnchor
 from geosave_engine.geodata.core.raster import raster
 from geosave_engine.geodata.stac.query import StacQuery
 from geosave_engine.geodata.stac.source import StacSource
-from geosave_engine.model_spec import ModelSpec, RasterRequirement
+from geosave_engine.model.spec import ModelSpec, RasterRequirement
 
 
 def pytest_configure(config):

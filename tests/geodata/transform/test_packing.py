@@ -7,6 +7,7 @@ from odc.geo.geobox import GeoBox
 
 import geosave_engine.geodata.attrs as attrs
 from geosave_engine.geodata.core.raster import raster as build_raster
+from geosave_engine.geodata.core.stack import stack as build_stack
 from geosave_engine.geodata.transform.nodata import is_fill, to_nan
 from geosave_engine.geodata.transform.packing import unpack
 
@@ -170,3 +171,58 @@ def test_unpacking_refuses_a_variable_whose_values_are_class_codes() -> None:
     # Packing decodes a measurement; a class code measures nothing.
     with pytest.raises(ValueError, match="holds class codes and declares packing"):
         unpack(labelled)
+
+
+def test_a_stack_unpacks_group_by_group_and_stays_lazy() -> None:
+    tree = build_stack(
+        {
+            "optical": stored(1000, scale=1e-4).chunk(),
+            "dem": stored(7, scale=None).chunk(),
+        }
+    ).gs.rebase(attrs.ACDD(title="scene"))
+    tree.coords["site"] = "field-1"
+
+    physical = unpack(tree)
+
+    rasters = physical.gs.rasters
+    assert physical.gs.groups == ("optical", "dem")
+    assert rasters["optical"].red.chunks is not None
+    assert rasters["optical"].red.values[0, 0] == pytest.approx(0.1)
+    assert rasters["dem"].red.dtype == np.dtype("uint16")
+    assert physical.gs.attrs.root.get(attrs.ACDD).title == "scene"
+    assert physical.coords["site"].item() == "field-1"
+
+
+def test_a_stack_blanks_nodata_group_by_group_and_stays_lazy() -> None:
+    tree = build_stack(
+        {
+            "optical": stored(0, scale=None, nodata=0).chunk(),
+            "dem": stored(7, scale=None).chunk(),
+        }
+    ).gs.rebase(attrs.ACDD(title="scene"))
+    tree.coords["site"] = "field-1"
+
+    blanked = to_nan(tree)
+
+    rasters = blanked.gs.rasters
+    assert rasters["optical"].red.chunks is not None
+    assert np.isnan(rasters["optical"].red.values).all()
+    assert rasters["dem"].red.dtype == np.dtype("uint16")
+    assert blanked.gs.attrs.root.get(attrs.ACDD).title == "scene"
+    assert blanked.coords["site"].item() == "field-1"
+
+
+@pytest.mark.parametrize(
+    ("dtype", "unpacked"),
+    [
+        ("uint8", "float32"),
+        ("uint16", "float32"),
+        ("int16", "float32"),
+        ("int32", "float64"),
+    ],
+)
+def test_unpacking_reads_small_integers_as_float32(dtype: str, unpacked: str) -> None:
+    physical = unpack(stored(100, scale=1e-4, dtype=dtype))
+
+    assert physical.red.dtype == np.dtype(unpacked)
+    assert physical.red.values[0, 0] == pytest.approx(0.01)

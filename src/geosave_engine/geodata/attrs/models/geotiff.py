@@ -1,4 +1,4 @@
-"""Baseline TIFF tags GDAL carries as dataset-level metadata."""
+"""TIFF metadata GDAL carries at dataset level."""
 
 from __future__ import annotations
 
@@ -10,6 +10,7 @@ from odc.geo.geobox import GeoBox
 from pydantic import field_serializer, field_validator
 
 from geosave_engine.geodata.attrs.model import AttrsModel
+from geosave_engine.geodata.attrs.models.acdd import ACDD
 
 if TYPE_CHECKING:
     import xarray as xr
@@ -18,11 +19,11 @@ DATETIME_FORMAT = "%Y:%m:%d %H:%M:%S"
 
 
 class GeoTIFFTags(AttrsModel):
-    """State the baseline TIFF tags a GeoTIFF carries.
+    """State the TIFF metadata a GeoTIFF carries.
 
-    Fields are named for the tags themselves, so what the model carries is what
-    GDAL writes. `TIFFTAG_MINSAMPLEVALUE` and `TIFFTAG_MAXSAMPLEVALUE` are
-    absent because GDAL reports them read-only.
+    Baseline fields use their TIFF tag names. ``GEOSAVE_DATETIME`` is precise
+    GeoSave metadata stored in GDAL's metadata tag. `TIFFTAG_MINSAMPLEVALUE`
+    and `TIFFTAG_MAXSAMPLEVALUE` are absent because GDAL reports them read-only.
 
     Args:
         TIFFTAG_DOCUMENTNAME: Name of the document the image came from.
@@ -30,6 +31,8 @@ class GeoTIFFTags(AttrsModel):
         TIFFTAG_SOFTWARE: Software that produced the file.
         TIFFTAG_DATETIME: When the image was made. Written as GDAL's
             ``YYYY:mm:dd HH:MM:SS``, which holds whole seconds only.
+        GEOSAVE_DATETIME: The same instant as ISO 8601 text at its original
+            precision. GDAL stores this non-standard metadata inside the TIFF.
         TIFFTAG_ARTIST: Person who made the image.
         TIFFTAG_HOSTCOMPUTER: Machine the file was written on.
         TIFFTAG_COPYRIGHT: Copyright notice.
@@ -39,15 +42,16 @@ class GeoTIFFTags(AttrsModel):
             none, 2 for inches, 3 for centimetres.
 
     Examples:
-        >>> ds.gs.rebase(geotiff={"TIFFTAG_ARTIST": "GeoSave"})
+        >>> ds.gs.rebase(geotiff_tags={"TIFFTAG_ARTIST": "GeoSave"})
     """
 
-    NAME: ClassVar[str] = "geotiff"
+    NAME: ClassVar[str] = "geotiff_tags"
 
     TIFFTAG_DOCUMENTNAME: str | None = None
     TIFFTAG_IMAGEDESCRIPTION: str | None = None
     TIFFTAG_SOFTWARE: str | None = None
     TIFFTAG_DATETIME: datetime | None = None
+    GEOSAVE_DATETIME: str | None = None
     TIFFTAG_ARTIST: str | None = None
     TIFFTAG_HOSTCOMPUTER: str | None = None
     TIFFTAG_COPYRIGHT: str | None = None
@@ -65,8 +69,9 @@ class GeoTIFFTags(AttrsModel):
         """Build the TIFF tags that describe one raster file.
 
         Existing TIFF tags are retained. An ACDD summary supplies the image
-        description, a scalar time coordinate supplies the TIFF datetime, and
-        ``map_scale`` converts ground resolution to pixels per centimetre.
+        description, a scalar time coordinate supplies both the standard
+        whole-second TIFF datetime and GeoSave's precise datetime metadata,
+        and ``map_scale`` converts ground resolution to pixels per centimetre.
 
         Args:
             obj: Raster represented by this file.
@@ -79,22 +84,23 @@ class GeoTIFFTags(AttrsModel):
             ValueError: The scale is invalid, or physical resolution cannot be
                 calculated from a regular grid in a projected CRS.
         """
-        # Local imports avoid making the model registry depend on itself while
-        # the attrs package is being imported.
-        from geosave_engine.geodata.attrs.models.acdd import ACDD
-        from geosave_engine.geodata.attrs.namespace import AttrsNamespace
+        values = (cls.from_attrs(obj.attrs) or cls()).to_attrs()
 
-        namespace = AttrsNamespace.from_attrs(obj.attrs)
-        carried = namespace.get(cls) or cls()
-        values = carried.to_attrs()
-
-        acdd = namespace.get(ACDD)
+        acdd = ACDD.from_attrs(obj.attrs)
         if acdd is not None and acdd.summary is not None:
             values["TIFFTAG_IMAGEDESCRIPTION"] = acdd.summary
 
         time = obj.coords.get("time")
         if time is not None and time.ndim == 0:
-            values["TIFFTAG_DATETIME"] = time.values
+            instant = time.values
+            if isinstance(instant, np.datetime64) and not np.isnat(instant):
+                values["TIFFTAG_DATETIME"] = instant.astype("datetime64[s]")
+                values["GEOSAVE_DATETIME"] = np.datetime_as_string(
+                    instant, unit="auto"
+                )
+            else:
+                values["TIFFTAG_DATETIME"] = instant
+                values["GEOSAVE_DATETIME"] = None
 
         if map_scale is not None:
             try:
@@ -173,6 +179,22 @@ class GeoTIFFTags(AttrsModel):
                 f"{value} carries sub-second precision, which the tag cannot "
                 f"hold; round it to whole seconds first"
             )
+        return value
+
+    @field_validator("GEOSAVE_DATETIME")
+    @classmethod
+    def _validate_geosave_datetime(cls, value: str | None) -> str | None:
+        """Require an ISO instant that NumPy can restore without precision loss."""
+        if value is None:
+            return None
+        try:
+            instant = np.datetime64(value)
+        except ValueError:
+            raise ValueError(
+                "GEOSAVE_DATETIME needs an ISO 8601 instant"
+            ) from None
+        if np.isnat(instant):
+            raise ValueError("GEOSAVE_DATETIME needs an ISO 8601 instant")
         return value
 
     @field_validator("TIFFTAG_RESOLUTIONUNIT", mode="before")

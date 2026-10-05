@@ -2,24 +2,24 @@
 
 from __future__ import annotations
 
-from collections.abc import KeysView, Mapping, Sequence
-from types import MappingProxyType
-from typing import Any, ClassVar, Self, get_args
+from collections.abc import Mapping, Sequence
+from functools import cache
+from typing import Any, ClassVar, Self
 
+import numpy as np
+import orjson
 from pydantic import BaseModel, ConfigDict, TypeAdapter
 from xarray.core.duck_array_ops import array_equiv
 
-_MODEL_TYPES: dict[str, type[AttrsModel]] = {}
 
-# Each xarray attr key is owned by the first model field that defines its type.
-_FIELD_BY_ATTR_KEY: dict[str, tuple[type[AttrsModel], str]] = {}
+type FlatAttrs = dict[str, Any]  # attr key to stored value, as `.attrs` holds them
 
-# Live views onto the registry, filled as models are registered.
-REGISTERED_MODELS: Mapping[str, type[AttrsModel]] = MappingProxyType(_MODEL_TYPES)
-REGISTERED_ATTR_KEYS: KeysView[str] = _FIELD_BY_ATTR_KEY.keys()
 
-# rebase takes these as keywords, so no model may answer to them.
-_RESERVED_MODEL_NAMES = frozenset({"target", "inplace"})
+class MustAgree:
+    """Mark a field that same-named variables joined side by side must agree on."""
+
+
+MUST_AGREE = MustAgree()
 
 
 class AttrsModel(BaseModel):
@@ -29,10 +29,9 @@ class AttrsModel(BaseModel):
     unless `field_keys` declares other keys.
 
     Attributes:
-        NAME: Stable name, unique in the registry, used as `rebase`'s keyword.
-        field_keys: Model field names mapped to key names in a flat xarray
-            `.attrs` dictionary. It maps names, not attr values. Each field
-            may use more than one key; for example, `Nodata.fill_value` uses
+        NAME: Stable name, unique across `MODELS`, used as `rebase`'s keyword.
+        field_keys: Field names mapped to the attr keys they write, for fields
+            spelled several ways; `Nodata.fill_value` writes
             `("_FillValue", "nodata")`.
 
     Args:
@@ -42,9 +41,6 @@ class AttrsModel(BaseModel):
         ValidationError: A value does not satisfy its field.
 
     Examples:
-        A field with several keys writes each of them; a plain field writes its
-        own name:
-
         >>> Nodata(fill_value=0).to_attrs()
         {'_FillValue': 0, 'nodata': 0}
         >>> Packing(scale_factor=1e-4).to_attrs()
@@ -59,149 +55,101 @@ class AttrsModel(BaseModel):
     )
 
     NAME: ClassVar[str]
-    field_keys: ClassVar[Mapping[str, tuple[str, ...]]]
-    _field_parsers: ClassVar[Mapping[str, TypeAdapter[Any]]]
+    field_keys: ClassVar[Mapping[str, tuple[str, ...]]] = {}
 
     @classmethod
-    def __pydantic_init_subclass__(cls, **kwargs: Any) -> None:
-        """Register a concrete model after Pydantic builds its fields.
+    def attr_keys(cls, field_name: str | None = None) -> tuple[str, ...]:
+        """Return the attr keys one field writes, or every key this model writes."""
+        if field_name is not None:
+            return cls.field_keys.get(field_name, (field_name,))
+        return tuple(key for name in cls.model_fields for key in cls.attr_keys(name))
 
-        A model needs a unique, unreserved name, at least one field,
-        and field types matching any other model that already
-        writes one of its attr keys.
+    @classmethod
+    def from_attrs(cls, attrs: Mapping[str, Any]) -> Self | None:
+        """Parse this model from a flat attrs mapping.
 
         Args:
-            **kwargs: Arguments forwarded to Pydantic's subclass hook.
+            attrs: Flat attrs mapping, possibly carrying other models' keys.
+
+        Returns:
+            The model, or None when the mapping carries none of its keys.
 
         Raises:
-            ValueError: The name is empty, reserved, or registered; the model
-                has no fields; or a shared attr key is typed differently from
-                where it was first defined.
+            ValueError: A field's spellings are set to different values.
+            ValidationError: A value does not satisfy its field.
+
+        Examples:
+            >>> Nodata.from_attrs({"nodata": 0, "units": "1"})
+            Nodata(fill_value=0)
         """
-        super().__pydantic_init_subclass__(**kwargs)
-
-        model_name = cls.__dict__.get("NAME")
-        if (
-            not isinstance(model_name, str)
-            or not model_name
-            or model_name != model_name.strip()
-        ):
-            raise ValueError(
-                f"{cls.__name__} must declare a non-empty NAME without "
-                "surrounding whitespace"
-            )
-        if model_name in _RESERVED_MODEL_NAMES:
-            raise ValueError(
-                f"{cls.__name__} may not be named {model_name!r}; rebase takes that "
-                f"as a keyword, so a model answering to it is unreachable"
-            )
-        if model_name in _MODEL_TYPES:
-            raise ValueError(
-                f"attrs model name {model_name!r} is already registered"
-            )
-        if not cls.model_fields:
-            raise ValueError(f"{cls.__name__} must carry at least one attrs field")
-
-        custom_keys = dict(getattr(cls, "field_keys", {}))
-        unknown_fields = custom_keys.keys() - cls.model_fields.keys()
-        if unknown_fields:
-            raise ValueError(
-                f"{cls.__name__}.field_keys names unknown fields "
-                f"{sorted(unknown_fields)}"
-            )
-
-        field_keys: dict[str, tuple[str, ...]] = {}
+        field_values: dict[str, Any] = {}
         for field_name in cls.model_fields:
-            attr_keys = custom_keys.get(field_name, (field_name,))
-            if (
-                not isinstance(attr_keys, tuple)
-                or not attr_keys
-                or any(not isinstance(key, str) or not key for key in attr_keys)
-            ):
-                raise ValueError(
-                    f"{cls.__name__}.field_keys[{field_name!r}] must be a "
-                    "nonempty tuple of xarray attr key names"
-                )
-            field_keys[field_name] = attr_keys
+            spellings = [key for key in cls.attr_keys(field_name) if key in attrs]
+            if not spellings:
+                continue
+            if len(spellings) > 1:
+                # One store may hold a spelling as text and another as a number.
+                typed = [parse_field_value(cls, field_name, attrs[key]) for key in spellings]
+                for spelling, other in zip(spellings[1:], typed[1:], strict=True):
+                    if not attrs_equal(other, typed[0]):
+                        raise ValueError(
+                            f"{spellings[0]!r} is {typed[0]!r} but {spelling!r} is "
+                            f"{other!r}; they spell one {cls.__name__}.{field_name}, "
+                            f"so set one of them"
+                        )
+            field_values[field_name] = attrs[spellings[0]]
+        return cls(**field_values) if field_values else None
 
-        for field_name, field in cls.model_fields.items():
-            for attr_key in field_keys[field_name]:
-                owner = _FIELD_BY_ATTR_KEY.get(attr_key)
-                if owner is None:
-                    continue
+    @classmethod
+    def missing(cls) -> Self:
+        """Return the model with every field missing, so writing it removes its keys.
 
-                # A shared key must mean one value, however it is read.
-                owner_model, owner_field_name = owner
-                owner_field = owner_model.model_fields[owner_field_name]
-                if (
-                    field.annotation != owner_field.annotation
-                    or field.metadata != owner_field.metadata
-                ):
-                    raise ValueError(
-                        f"attr {attr_key!r} is typed one way by "
-                        f"{owner_model.__name__}.{owner_field_name} and another by "
-                        f"{cls.__name__}.{field_name}"
-                    )
-                if _field_has_converter(cls, field_name) or _field_has_converter(
-                    owner_model, owner_field_name
-                ):
-                    raise ValueError(
-                        f"attr {attr_key!r} is written by "
-                        f"{owner_model.__name__}.{owner_field_name} and "
-                        f"{cls.__name__}.{field_name}, one of them through a "
-                        "model-specific field validator or serializer; put shared "
-                        "conversion in one reusable Annotated type"
-                    )
+        Examples:
+            >>> Nodata.missing().to_attrs()
+            {'_FillValue': None, 'nodata': None}
+        """
+        return cls.model_construct(**dict.fromkeys(cls.model_fields))
 
-        # Publish only a model that passed every registration constraint.
-        _MODEL_TYPES[model_name] = cls
-        cls.field_keys = MappingProxyType(field_keys)
-        cls._field_parsers = MappingProxyType(
-            {
-                field_name: TypeAdapter(field.rebuild_annotation())
-                for field_name, field in cls.model_fields.items()
-            }
-        )
-        for field_name, attr_keys in field_keys.items():
-            for attr_key in attr_keys:
-                _FIELD_BY_ATTR_KEY.setdefault(attr_key, (cls, field_name))
-
-    def to_attrs(self) -> dict[str, Any]:
+    def to_attrs(self) -> FlatAttrs:
         """Read this model back as a flat attrs mapping.
 
         Values come out JSON-native (datetimes as ISO 8601 strings,
-        timedeltas as ISO 8601 durations, dict keys as strings) so every attr
-        stays writable to zarr and netCDF.
+        timedeltas as ISO 8601 durations, dict keys as strings, NumPy values
+        as Python ones) so every attr stays writable to zarr and netCDF.
 
         Returns:
             {
                 "<attr key>": its value, None where the field marks the attr
-                    absent,
+                    missing,
             }
             Only fields that were explicitly set appear, each under every key
             it writes.
+
+        Raises:
+            TypeError: A value has no JSON representation.
 
         Examples:
             >>> CFVariable(units="1").to_attrs()
             {'units': '1'}
         """
-        dumped = self.model_dump(
-            mode="json",
-            exclude_unset=True,
-            exclude_computed_fields=True,
-        )
-        attrs: dict[str, Any] = {}
-        for field_name, value in dumped.items():
-            for attr_key in type(self).field_keys[field_name]:
-                attrs[attr_key] = value
-        return attrs
+        return {
+            key: value
+            for field_name, value in self.model_dump(
+                mode="json",
+                exclude_unset=True,
+                exclude_computed_fields=True,
+                fallback=_json_value,
+            ).items()
+            for key in self.attr_keys(field_name)
+        }
 
     @classmethod
     def merge(cls, models: Sequence[AttrsModel | None]) -> tuple[Self, set[str]]:
         """Keep the fields every object of a join set to the same value.
 
-        A field they set differently describes none of them, so it drops.
-        Override this where a field accumulates instead, as STAC provenance does.
+        A field they set differently drops; one marked `MUST_AGREE` refuses,
+        since it says what the joined pixels mean. Override this where a
+        field accumulates instead, as STAC provenance does.
 
         Args:
             models: This model from each joined object, in call order, at
@@ -212,47 +160,48 @@ class AttrsModel(BaseModel):
             write). A dropped field reads as None.
 
         Raises:
-            ValueError: `models` is empty.
+            ValueError: `models` is empty, or the objects carry a field marked
+                `MUST_AGREE` differently, including one carrying it and another
+                not.
 
         Examples:
-            >>> Packing.merge([Packing(scale_factor=0.0001), Packing()])
-            (Packing(scale_factor=None, add_offset=None), {'scale_factor'})
+            >>> CFVariable.merge([CFVariable(long_name="Red"), CFVariable()])
+            (CFVariable(standard_name=None, long_name=None, units=None, cell_methods=None), {'long_name'})
         """
         if not models:
             raise ValueError(f"merging {cls.NAME} needs at least one object")
-        present = [model for model in models if model is not None]
 
-        # An object carrying no model agrees with nothing, so every field drops.
-        shared: dict[str, Any] = {}
-        if len(present) == len(models):
-            first, *others = present
-            for field_name in cls.model_fields:
-                value = getattr(first, field_name)
-                if all(
-                    attrs_equal(getattr(other, field_name), value)
-                    for other in others
-                ):
-                    shared[field_name] = value
+        for name, field_info in cls.model_fields.items():
+            if MUST_AGREE in field_info.metadata:
+                values = [None if model is None else getattr(model, name) for model in models]
+                if not all_equal(values):
+                    raise ValueError(
+                        f"{cls.NAME}.{name} must agree across the joined objects, "
+                        f"but they carry {values}; align it before joining them"
+                    )
 
-        set_fields: set[str] = set()
-        for model in present:
-            set_fields.update(model.model_fields_set)
-
-        dropped_fields = sorted(set_fields - shared.keys())
-
-        merged: dict[str, Any] = {}
-        # A dropped field is set to None, clearing the key a model had written.
-        for field_name in dropped_fields:
-            if type(None) in get_args(cls.model_fields[field_name].annotation):
-                merged[field_name] = None
-        # A field no object set stays unset, so the result clears nothing.
-        for field_name, value in shared.items():
-            if field_name in set_fields:
-                merged[field_name] = value
-        dropped_keys: set[str] = set()
-        for field_name in dropped_fields:
-            dropped_keys.update(cls.field_keys[field_name])
+        fields_set = set().union(*(m.model_fields_set for m in models if m is not None))
+        common_fields = {
+            name
+            for name in cls.model_fields
+            # An object carrying no model has nothing in common with the others.
+            if None not in models and all_equal([getattr(m, name) for m in models])
+        }
+        dropped_fields = fields_set - common_fields
+        # A dropped field set to None clears the key a model had written; a field
+        # no object set stays unset, so the result clears nothing.
+        merged = {name: getattr(models[0], name) for name in common_fields & fields_set}
+        merged |= {
+            name: None for name in dropped_fields if cls.model_fields[name].default is None
+        }
+        dropped_keys = {key for name in dropped_fields for key in cls.attr_keys(name)}
         return cls(**merged), dropped_keys
+
+
+@cache
+def _field_adapter(model: type[AttrsModel], field: str) -> TypeAdapter[Any]:
+    """Build the validator for one field's annotation, once per field."""
+    return TypeAdapter(model.model_fields[field].rebuild_annotation())
 
 
 def parse_field_value(model: type[AttrsModel], field: str, value: object) -> Any:
@@ -277,35 +226,56 @@ def parse_field_value(model: type[AttrsModel], field: str, value: object) -> Any
         >>> parse_field_value(Nodata, "fill_value", "0")
         0
     """
-    return model._field_parsers[field].validate_python(value)
+    return _field_adapter(model, field).validate_python(value)
 
 
-def resolve_model(model: type[AttrsModel] | str) -> type[AttrsModel]:
-    """Resolve a class or stable name to its registered concrete model.
+def all_equal(values: Sequence[object]) -> bool:
+    """Return whether every value equals the first, by `attrs_equal`."""
+    return all(attrs_equal(value, values[0]) for value in values[1:])
+
+
+def common_attrs(mappings: Sequence[Mapping[str, object]]) -> dict[str, object]:
+    """Return the keys every mapping carries with one value.
 
     Args:
-        model: Registered model class or stable model name.
+        mappings: Flat attrs mappings, at least one.
 
     Returns:
-        Registered concrete model class.
-
-    Raises:
-        KeyError: No model uses the supplied stable name.
-        TypeError: The class is not a registered concrete model.
+        {
+            "<attr key>": the value every mapping carries under it,
+        }
 
     Examples:
-        >>> resolve_model("acdd")
-        <class '...ACDD'>
+        >>> common_attrs([{"units": "1", "nodata": 0}, {"units": "1"}])
+        {'units': '1'}
     """
-    if isinstance(model, str):
-        try:
-            return _MODEL_TYPES[model]
-        except KeyError:
-            raise KeyError(f"no attrs model is registered as {model!r}") from None
-    model_name = getattr(model, "NAME", None)
-    if model_name is None or _MODEL_TYPES.get(model_name) is not model:
-        raise TypeError(f"{model!r} is not a registered concrete AttrsModel")
-    return model
+    first, *rest = mappings
+    return {
+        key: value
+        for key, value in first.items()
+        if all(key in other and attrs_equal(other[key], value) for other in rest)
+    }
+
+
+def parse_collection_text(value: object) -> object:
+    """Decode JSON text while leaving native values and other text unchanged.
+
+    GDAL tags are text-only, so lists and mappings come back as JSON text where
+    Zarr and netCDF return native collections; fields run this before their own
+    validation so both read the same.
+
+    Args:
+        value: Stored attr value.
+
+    Returns:
+        Decoded JSON when `value` is valid JSON text; otherwise `value` itself.
+    """
+    if not isinstance(value, str):
+        return value
+    try:
+        return orjson.loads(value)
+    except orjson.JSONDecodeError:
+        return value
 
 
 def attrs_equal(left: object, right: object) -> bool:
@@ -329,44 +299,25 @@ def attrs_equal(left: object, right: object) -> bool:
     if left is None or right is None:
         return left is right
 
-    if isinstance(left, Mapping):
-        if not isinstance(right, Mapping):
-            return False
-        if left.keys() != right.keys():
-            return False
-        for key, value in left.items():
-            if not attrs_equal(value, right[key]):
-                return False
-        return True
-
-    if isinstance(right, Mapping):
-        return False
+    if isinstance(left, Mapping) or isinstance(right, Mapping):
+        return (
+            isinstance(left, Mapping)
+            and isinstance(right, Mapping)
+            and left.keys() == right.keys()
+            and all(attrs_equal(value, right[key]) for key, value in left.items())
+        )
 
     if isinstance(left, (list, tuple)) and isinstance(right, (list, tuple)):
-        if len(left) != len(right):
-            return False
-        for left_item, right_item in zip(left, right, strict=True):
-            if not attrs_equal(left_item, right_item):
-                return False
-        return True
+        return len(left) == len(right) and all(
+            attrs_equal(left_item, right_item)
+            for left_item, right_item in zip(left, right, strict=True)
+        )
 
     return array_equiv(left, right)
 
 
-def _field_has_converter(model: type[AttrsModel], field: str) -> bool:
-    """Whether a model carries its own validator or serializer for one field.
-
-    Args:
-        model: Model to inspect.
-        field: Field name to look for.
-
-    Returns:
-        True where a field validator or serializer covers `field`, or covers
-        every field.
-    """
-    validators = model.__pydantic_decorators__.field_validators.values()
-    serializers = model.__pydantic_decorators__.field_serializers.values()
-    for decorator in (*validators, *serializers):
-        if field in decorator.info.fields or "*" in decorator.info.fields:
-            return True
-    return False
+def _json_value(value: object) -> object:
+    """Convert NumPy scalars and arrays without turning NaN into absence."""
+    if isinstance(value, np.ndarray | np.generic):
+        return value.tolist()
+    raise TypeError(f"attr value {value!r} has no JSON representation")

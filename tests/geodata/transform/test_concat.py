@@ -117,7 +117,7 @@ def test_shared_attrs_survive_and_conflicting_ones_are_dropped() -> None:
             attrs.Packing(scale_factor=0.01),
             "packing",
         ),
-        (attrs.CFVariable(units="m"), attrs.CFVariable(units="ft"), "cf.units"),
+        (attrs.CFVariable(units="m"), attrs.CFVariable(units="ft"), "cf_variable.units"),
         (
             attrs.Legend(class_map={7: "forest"}),
             attrs.Legend(class_map={7: "water"}),
@@ -138,7 +138,7 @@ def test_incompatible_pixel_semantics_are_refused(
         second_model, target="red"
     )
 
-    with pytest.raises(ValueError, match=rf"'red'.*{semantic}"):
+    with pytest.raises(ValueError, match=rf"{semantic}.*\n.*'red'"):
         concat_time([first, second])
 
 
@@ -146,7 +146,7 @@ def test_incompatible_dataarray_semantics_are_refused() -> None:
     first = series("2024-01-05", nodata=0).red
     second = series("2024-02-10", nodata=255).red
 
-    with pytest.raises(ValueError, match=r"'red'.*nodata"):
+    with pytest.raises(ValueError, match=r"nodata.fill_value must agree"):
         concat_time([first, second])
 
 
@@ -293,3 +293,13 @@ def test_a_grid_lays_end_to_end_with_itself_however_it_is_oriented() -> None:
     assert dates(joined) == ["2024-01-05", "2024-01-05"]
     with pytest.raises(ValueError, match="not equal along these coord"):
         concat_time([series("2024-01-05"), series("2024-02-10", grid=south_up)])
+
+
+def test_root_attrs_every_raster_disagrees_on_are_dropped() -> None:
+    first, second = series("2024-01-05"), series("2024-02-10")
+    first.attrs, second.attrs = {"provider": "a"}, {"provider": "b"}
+
+    with pytest.warns(DroppedAttrsWarning, match="provider"):
+        joined = concat_time([first, second])
+
+    assert "provider" not in joined.attrs

@@ -1,22 +1,25 @@
 """Create an attrs header from one STAC load.
 
-STAC names its fields its own way — `unit`, `nodata`, `scale` — so this is
-where those names become the attr keys GeoSave writes. No attrs model reaches
-back into STAC.
+STAC names its fields its own way — `unit`, `scale` — so this is where those
+names become the attr keys GeoSave writes. No attrs model reaches back into
+STAC.
 """
 
 from __future__ import annotations
 
+import warnings
 from collections.abc import Sequence
-from typing import TYPE_CHECKING, Any, Literal
+from typing import TYPE_CHECKING, Any
 
 from pydantic import TypeAdapter
 from pystac.extensions.eo import BANDS_PROP as EO_BANDS
 from pystac.extensions.raster import BANDS_PROP as RASTER_BANDS
 
+from geosave_engine.geodata.errors import DroppedAttrsWarning
 from geosave_engine.geodata.utils.datetime import naive_utc
 
 from ..header import AttrsHeader
+from ..model import common_attrs
 
 if TYPE_CHECKING:
     from collections.abc import Mapping
@@ -24,16 +27,17 @@ if TYPE_CHECKING:
     import pystac
     import xarray as xr
 
-type StacGroupby = Literal["solar_day", "id", "time"]
-
 _CORE_BANDS = "bands"
 _BAND_LISTINGS = (RASTER_BANDS, EO_BANDS, _CORE_BANDS)
 _BAND_LISTING = TypeAdapter(list[dict[str, Any]])
 
-type AssetConflict = Literal["drop", "reject"]
-
-_LABELLING = {"unit": "units", "description": "long_name"}
-_PACKING = {"scale": "scale_factor", "offset": "add_offset"}
+# STAC asset field mapped to the attr key that carries it on a loaded variable.
+_ATTR_KEYS = {
+    "unit": "units",
+    "description": "long_name",
+    "scale": "scale_factor",
+    "offset": "add_offset",
+}
 
 
 def create_header(
@@ -50,7 +54,7 @@ def create_header(
 
     The collection describes the whole raster and the items record where it
     came from, so both land on the root; each asset describes the variable it
-    loads into.
+    loads into, where a field the items publish differently is dropped.
 
     Args:
         items: Items making up one load, in search order.
@@ -67,8 +71,11 @@ def create_header(
         Header to rebase onto the loaded Dataset.
 
     Raises:
-        ValueError: `items` is empty, an item publishes no instant to record,
-            or the items publish different values for a field decoding pixels.
+        ValueError: `items` is empty, or an item publishes no instant to record.
+
+    Warns:
+        DroppedAttrsWarning: The items publish a field differently, or only
+            some of them publish it.
 
     Examples:
         >>> header = create_header(matched, collection, loaded, groupby="solar_day")
@@ -109,18 +116,32 @@ def create_header(
         for item, entry in zip(items, parsed, strict=True):
             asset_name, band_index = entry.collection.band_key(str(name))
             asset = item.assets.get(asset_name)
+            fields = read_asset_fields(asset, band_index=band_index) if asset else {}
             published.append(
-                read_asset_fields(asset, band_index=band_index) if asset else {}
+                {
+                    _ATTR_KEYS[key]: value
+                    for key, value in fields.items()
+                    if key in _ATTR_KEYS
+                }
             )
-        variables[str(name)] = {
-            **_shared_fields(
-                items, str(name), published, _LABELLING, on_conflict="drop"
-            ),
-            **_shared_fields(
-                items, str(name), published, _PACKING, on_conflict="reject"
-            ),
-            **variable.attrs,
-        }
+        agreed = common_attrs(published)
+        disputed = sorted(set().union(*published) - agreed.keys())
+        if disputed:
+            values = {
+                key: {
+                    item.id: item_attrs.get(key)
+                    for item, item_attrs in zip(items, published, strict=True)
+                }
+                for key in disputed
+            }
+            warnings.warn(
+                f"STAC items publish {disputed} differently for {str(name)!r}, so "
+                f"the loaded variable carries none of them: {values}",
+                DroppedAttrsWarning,
+                stacklevel=2,
+            )
+        # The loader's own attrs describe the pixels it actually produced.
+        variables[str(name)] = {**agreed, **variable.attrs}
     return AttrsHeader.from_attrs(
         root={
             **loaded.attrs,
@@ -156,34 +177,6 @@ def read_asset_fields(asset: pystac.Asset, *, band_index: int = 1) -> dict[str, 
     return found
 
 
-def _shared_fields(
-    items: Sequence[pystac.Item],
-    variable: str,
-    published: Sequence[Mapping[str, object]],
-    fields: Mapping[str, str],
-    *,
-    on_conflict: AssetConflict,
-) -> dict[str, object]:
-    """Keep fields shared by the resolved source bands of one output variable."""
-    shared: dict[str, object] = {}
-    for key, attr_key in fields.items():
-        per_item = [entry.get(key) for entry in published]
-        if any(value is None for value in per_item):
-            continue
-        if any(value != per_item[0] for value in per_item[1:]):
-            if on_conflict == "drop":
-                continue
-            raise ValueError(
-                f"STAC items disagree on {key!r} for variable {variable!r}: "
-                f"{_disagreement(items, per_item)}. They load into one {variable!r} "
-                f"variable carrying one {key!r}, so one item's pixels would "
-                f"decode wrong. Narrow the search so every item publishes the same "
-                f"{key!r}."
-            )
-        shared[attr_key] = per_item[0]
-    return shared
-
-
 def _item_assets(
     item: pystac.Item, asset_fields: Sequence[str] | None
 ) -> dict[str, dict[str, object]]:
@@ -203,13 +196,3 @@ def _selected(
     if names is None:
         return dict(source)
     return {key: source[key] for key in names if key in source}
-
-
-def _disagreement(items: Sequence[pystac.Item], per_item: Sequence[object]) -> str:
-    """Name an item behind each distinct value of one disputed field."""
-    example: dict[str, tuple[str, object]] = {}
-    for item, value in zip(items, per_item, strict=True):
-        example.setdefault(repr(value), (item.id, value))
-    return ", ".join(
-        f"{item_id!r} publishes {value!r}" for item_id, value in example.values()
-    )

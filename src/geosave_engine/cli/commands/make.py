@@ -2,48 +2,46 @@ import typer
 from typing import Annotated, Optional
 from pathlib import Path
 
-from geosave_engine.utils.file_ops import safe_copy
+from geosave_engine.cli.core.copy import safe_copy
 
-from ..core.templates import BOILERPLATE_DIR, get_boilerplate
+from ..core.templates import SCAFFOLDS_DIR, get_scaffolds
 from ..core.prompts import prompt_select
 
 
 def make(
-    boilerplate: Annotated[
+    scaffold: Annotated[
         Optional[str],
         typer.Argument(
-            help="The name of the boilerplate to scaffold.",
+            help="Destination category of the scaffold, such as scripts.",
         ),
     ] = None,
     filename: Annotated[
         Optional[str],
         typer.Argument(
-            help="File to copy out of the boilerplate.",
+            help="File to copy out of the scaffold.",
         ),
     ] = None,
 ) -> None:
-    """Copy one boilerplate file into the current workspace."""
+    """Copy one scaffold file into the current workspace."""
     root = Path.cwd()
     if not (root / "geosave.toml").exists():
         raise typer.BadParameter(f"geosave.toml not found in {root}")
 
-    boilerplates = get_boilerplate()
+    scaffolds = get_scaffolds()
 
-    if boilerplate is None:
-        boilerplate = prompt_select("Select a boilerplate:", list(boilerplates))
-    elif boilerplate not in boilerplates:
-        raise typer.BadParameter(
-            f"Boilerplate '{boilerplate}' is not a valid boilerplate."
-        )
+    if scaffold is None:
+        scaffold = prompt_select("Select a scaffold:", list(scaffolds))
+    elif scaffold not in scaffolds:
+        raise typer.BadParameter(f"Scaffold '{scaffold}' is not a valid scaffold.")
 
     if filename is None:
         filename = prompt_select(
-            f"Select a file to scaffold for the boilerplate '{boilerplate}':",
-            boilerplates[boilerplate],
+            f"Select a file for '{scaffold}':",
+            scaffolds[scaffold],
         )
-    elif filename not in boilerplates[boilerplate]:
+    elif filename not in scaffolds[scaffold]:
         raise typer.BadParameter(
-            f"File '{filename}' is not a valid file for boilerplate '{boilerplate}'."
+            f"File '{filename}' is not a valid file for scaffold '{scaffold}'."
         )
 
-    safe_copy(BOILERPLATE_DIR / boilerplate / filename, root / boilerplate / filename)
+    safe_copy(SCAFFOLDS_DIR / scaffold / filename, root / scaffold / filename)

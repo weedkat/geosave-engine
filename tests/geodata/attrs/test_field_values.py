@@ -7,8 +7,12 @@ from pydantic import ValidationError, field_validator
 import pytest
 
 from geosave_engine.geodata.attrs import AttrsModel, GDALVariable, GeoTIFFTags, Legend
-from geosave_engine.geodata.attrs.model import attrs_equal, parse_field_value
-from geosave_engine.geodata.attrs.validate import parse_collection_text
+from geosave_engine.geodata.attrs.model import (
+    attrs_equal,
+    common_attrs,
+    parse_collection_text,
+    parse_field_value,
+)
 
 
 @pytest.mark.parametrize(
@@ -72,13 +76,8 @@ def test_parse_field_value_does_not_construct_a_partial_model():
         def replace_value(cls, value):
             return 99
 
-    try:
-        assert parse_field_value(DecoratedField, "decorated_value", "4") == 4
-        assert DecoratedField(decorated_value="4").decorated_value == 99
-    finally:
-        from geosave_engine.geodata.attrs import model as registry
-
-        registry._MODEL_TYPES.pop(DecoratedField.NAME)
+    assert parse_field_value(DecoratedField, "decorated_value", "4") == 4
+    assert DecoratedField(decorated_value="4").decorated_value == 99
 
 
 def test_parse_collection_text_only_decodes_text():
@@ -101,8 +100,19 @@ def test_namespace_merge_preserves_equivalent_native_timestamps():
     merged, dropped = AttrsNamespace.merge(
         [
             AttrsNamespace(foreign={"observed_at": timestamp}),
-            AttrsNamespace(foreign={"observed_at": timestamp.astype("datetime64[us]")}),
+            AttrsNamespace(foreign={"observed_at": timestamp.astype("datetime64[us]")}
+            ),
         ]
     )
     assert dropped == set()
     assert merged.foreign["observed_at"] == timestamp
+
+
+def test_common_attrs_keeps_what_every_mapping_carries_alike():
+    shared = common_attrs(
+        [{"units": "1", "nodata": np.nan, "a": 1}, {"units": "1", "nodata": float("nan")}]
+    )
+
+    assert shared.keys() == {"units", "nodata"}
+    assert np.isnan(shared["nodata"])
+    assert common_attrs([{"units": "1"}, {"units": "K"}]) == {}

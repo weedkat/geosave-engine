@@ -180,10 +180,9 @@ def test_cropping_with_a_mask_keeps_the_dtype_and_declared_fill() -> None:
     import geopandas as gpd
     import shapely
 
-    from geosave_engine.geodata.core.vector import GeoVector
 
     source = scene()
-    half = GeoVector(gpd.GeoDataFrame(geometry=[shapely.box(0, 0, 20, 40)], crs=UTM))
+    half = gpd.GeoDataFrame(geometry=[shapely.box(0, 0, 20, 40)], crs=UTM)
 
     cropped = source.gs.crop(half, mask=True)
 
@@ -244,3 +243,17 @@ def test_tree_mask_preserves_root_metadata_and_coordinates():
     assert masked.attrs == source.attrs
     xr.testing.assert_identical(masked.coords["site"], source.coords["site"])
     assert list(masked["optical"].red.values[0]) == [7, 7, 0, 0]
+
+
+def test_masking_a_stack_keeps_its_root_attrs_and_stays_lazy(
+    stack: xr.DataTree,
+) -> None:
+    titled = stack.chunk().gs.rebase(attrs.ACDD(title="scene"))
+    valid = np.array([[True, False], [True, True]])
+
+    masked = mask(titled, valid, fill=0)
+
+    red = masked.gs.rasters["optical"].red
+    assert red.chunks is not None
+    assert red.values.tolist() == [[1000, 0], [3000, 0]]
+    assert masked.gs.attrs.root.get(attrs.ACDD).title == "scene"

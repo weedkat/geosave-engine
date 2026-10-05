@@ -12,8 +12,7 @@ _INITIAL_PROJECT_VERSION = "0.1.0"
 def create_toml(
     target_dir: Path,
     name: str,
-    task: str | None,
-    method: str | None,
+    workspace: str | None,
     description: str | None = None,
 ) -> Path:
     """Write the `geosave.toml` anchoring one generated workspace.
@@ -21,8 +20,7 @@ def create_toml(
     Args:
         target_dir: Workspace root the file is written into.
         name: Project name.
-        task: Task the workspace was generated for, if any.
-        method: Method the workspace was generated for, if any.
+        workspace: Workspace starter name, if any.
         description: Free-text project description.
 
     Returns:
@@ -40,11 +38,10 @@ def create_toml(
     project.add("created_by", getpass.getuser())
     doc.add("project", project)
 
-    workspace = tomlkit.table()
-    if task and method:
-        workspace.add("task", task)
-        workspace.add("method", method)
-    doc.add("workspace", workspace)
+    selection = tomlkit.table()
+    if workspace is not None:
+        selection.add("template", workspace)
+    doc.add("workspace", selection)
 
     env = tomlkit.table()
     env.add("geosave_version", __version__)

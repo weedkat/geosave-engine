@@ -8,8 +8,9 @@ import pytest
 import pystac
 import xarray as xr
 
-from geosave_engine.geodata.attrs import CFVariable, Nodata
+from geosave_engine.geodata.attrs import CFVariable, Nodata, Packing
 from geosave_engine.geodata.attrs.headers.stac import create_header
+from geosave_engine.geodata.errors import DroppedAttrsWarning
 
 
 def _item(id: str, timestamp: dt, fields: dict[str, object]) -> pystac.Item:
@@ -75,30 +76,60 @@ def test_reading_uses_band_description_not_common_name() -> None:
     assert cf == CFVariable(long_name="Surface reflectance", units="1")
 
 
-def test_reading_skips_field_missing_from_one_item() -> None:
-    first = dt(2025, 1, 1)
-    second = dt(2025, 1, 2)
-    items = [_item("scene-1", first, {"scale": 0.0001}), _item("scene-2", second, {})]
+@pytest.mark.parametrize("second", [{}, {"scale": 0.0002}])
+def test_disagreeing_packing_drops_with_a_warning(second) -> None:
+    items = [
+        _item("scene-1", dt(2025, 1, 1), {"scale": 0.0001}),
+        _item("scene-2", dt(2025, 1, 2), second),
+    ]
+
+    with pytest.warns(DroppedAttrsWarning, match="scale_factor") as warned:
+        header = create_header(
+            items, _collection(), xr.Dataset({"red": ("x", [1])}), groupby="id"
+        )
+
+    assert header.data_vars["red"].get(Packing) is None
+    assert "'scene-2'" in str(warned[0].message)
+
+
+def test_an_item_without_the_asset_drops_its_fields_with_a_warning() -> None:
+    first = _item("scene-1", dt(2025, 1, 1), {"unit": "1"})
+    second = _item("scene-2", dt(2025, 1, 2), {"unit": "1"})
+    del second.assets["red"]
+
+    with pytest.warns(DroppedAttrsWarning, match="units"):
+        header = create_header(
+            [first, second], _collection(), xr.Dataset({"red": ("x", [1])}), groupby="id"
+        )
+
+    assert header.data_vars["red"].get(CFVariable) is None
+
+
+def test_reading_writes_no_packing_when_no_item_publishes_it() -> None:
+    items = [
+        _item("scene-1", dt(2025, 1, 1), {"unit": "1"}),
+        _item("scene-2", dt(2025, 1, 2), {"unit": "1"}),
+    ]
 
     header = create_header(
         items, _collection(), xr.Dataset({"red": ("x", [1])}), groupby="id"
     )
 
-    assert header.data_vars["red"].get(Nodata) is None
+    assert header.data_vars["red"].get(Packing) is None
 
 
-def test_reading_rejects_mixed_packing_values() -> None:
-    first = dt(2025, 1, 1)
-    second = dt(2025, 1, 2)
+def test_reading_drops_a_label_missing_from_one_item() -> None:
     items = [
-        _item("scene-1", first, {"scale": 0.0001}),
-        _item("scene-2", second, {"scale": 0.0002}),
+        _item("scene-1", dt(2025, 1, 1), {"unit": "1"}),
+        _item("scene-2", dt(2025, 1, 2), {}),
     ]
 
-    with pytest.raises(ValueError, match="'scale'"):
-        create_header(
+    with pytest.warns(DroppedAttrsWarning, match="units"):
+        header = create_header(
             items, _collection(), xr.Dataset({"red": ("x", [1])}), groupby="id"
         )
+
+    assert header.data_vars["red"].get(CFVariable) is None
 
 
 def test_reading_rejects_an_empty_item_sequence() -> None:

@@ -52,7 +52,7 @@ class TimeSpec(AttrsModel):
         array(['2024-01-01T00:00:00.000000', '2024-02-01T00:00:00.000000'], ...)
     """
 
-    NAME: ClassVar[str] = "timespec"
+    NAME: ClassVar[str] = "time_spec"
 
     time_freq: Freq | None = None
     time_closed: Literal["left", "right"] | None = None

@@ -33,6 +33,10 @@ class UnreadMaskWarning(GeoSaveWarning):
     """A band marks absence with a mask band, which GeoSave does not read."""
 
 
+class AssumedFillWarning(GeoSaveWarning):
+    """A warped variable carried no fill value, so one was chosen for it."""
+
+
 class DroppedAttrsWarning(GeoSaveWarning):
     """Joined rasters carried an attr differently, so the result carries neither value."""
 
@@ -50,12 +54,12 @@ class UnmatchedBucketsWarning(GeoSaveWarning):
 
 
 class DroppedInstantsWarning(GeoSaveWarning):
-    """Instants at one end of a time axis did not fill a window, so they were left out."""
+    """Instants at one end of a time axis did not fill a frame, so they were left out."""
 
 
 class UncoveredInstantsWarning(GeoSaveWarning):
     """Instants lie outside the interval every group covers, so they name no slot."""
 
 
-class DroppedWindowsWarning(GeoSaveWarning):
-    """A window covered a slot some group had no scene for, so it was not emitted."""
+class DroppedFramesWarning(GeoSaveWarning):
+    """A frame covered an instant some group had no scene for, so it was not emitted."""

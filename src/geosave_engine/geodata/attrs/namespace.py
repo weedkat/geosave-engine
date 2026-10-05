@@ -1,4 +1,4 @@
-"""One flat attrs mapping, parsed into the models it carries."""
+"""One flat attrs mapping, parsed into the models its scope carries."""
 
 from __future__ import annotations
 
@@ -6,14 +6,8 @@ from collections.abc import Mapping, Sequence
 from dataclasses import dataclass, field
 from typing import Any, Self, overload
 
-from .model import (
-    REGISTERED_ATTR_KEYS,
-    REGISTERED_MODELS,
-    AttrsModel,
-    attrs_equal,
-    parse_field_value,
-    resolve_model,
-)
+from .model import AttrsModel, FlatAttrs, all_equal
+from .models import MODELS, Scope, model_scope, resolve_model, scope_keys
 
 
 @dataclass(frozen=True)
@@ -21,17 +15,19 @@ class AttrsNamespace:
     """One xarray attrs mapping, split into typed models and foreign keys.
 
     Args:
-        models: Registered model name mapped to the model parsed from the
-            mapping.
-        foreign: Keys no registered model writes, kept as they came in.
+        models: Model name mapped to the model parsed from the mapping.
+        foreign: Keys no present model writes, kept as they came in.
 
     Raises:
-        KeyError: A model name is not registered.
-        TypeError: A model does not match its registered name.
-        ValueError: A foreign key is owned by a registered model.
+        KeyError: A model name names no GeoSave model.
+        TypeError: A model does not match its name.
+        ValueError: The models belong to different scopes, or a foreign key is
+            written by one of the models.
 
     Examples:
-        >>> namespace = AttrsNamespace.from_attrs({"units": "1", "mission": "S2"})
+        >>> namespace = AttrsNamespace.from_attrs(
+        ...     {"units": "1", "mission": "S2"}, "variable"
+        ... )
         >>> namespace.get(CFVariable).units, namespace.foreign
         ('1', {'mission': 'S2'})
     """
@@ -40,29 +36,40 @@ class AttrsNamespace:
     foreign: Mapping[str, object] = field(default_factory=dict[str, object])
 
     def __post_init__(self) -> None:
-        """Refuse a model filed under the wrong name, or a key claimed twice.
-
-        Raises:
-            KeyError: A model name is not registered.
-            TypeError: A model does not match its registered name.
-            ValueError: A foreign key is owned by a registered model.
-        """
+        """Refuse a model filed under the wrong name, models of two scopes, or a key claimed twice."""
         for model_name, model in self.models.items():
-            expected = resolve_model(model_name)
-            if not isinstance(model, expected):
+            model_type = resolve_model(model_name)
+            if not isinstance(model, model_type):
                 raise TypeError(
-                    f"attrs model {model_name!r} must be {expected.__name__}, "
+                    f"attrs model {model_name!r} must be {model_type.__name__}, "
                     f"got {type(model).__name__}"
                 )
-        collisions = sorted(self.foreign.keys() & REGISTERED_ATTR_KEYS)
-        if collisions:
-            raise ValueError(
-                f"foreign attrs collide with registered keys: {collisions}"
-            )
+        scopes = {model_scope(type(model)) for model in self.models.values()}
+        if len(scopes) > 1:
+            raise ValueError(f"models of different scopes cannot share a namespace: {sorted(scopes)}")
+        model_keys = {key for model in self.models.values() for key in model.attr_keys()}
+        if collisions := sorted(self.foreign.keys() & model_keys):
+            raise ValueError(f"foreign attrs collide with model keys: {collisions}")
+
+    @property
+    def scope(self) -> Scope | None:
+        """Return the scope its models belong to, None when it holds none."""
+        scopes: set[Scope] = {model_scope(type(model)) for model in self.models.values()}
+        return scopes.pop() if scopes else None
+
+    @property
+    def missing_keys(self) -> frozenset[str]:
+        """Return the keys its models mark missing, which writing removes."""
+        return frozenset(
+            key
+            for model in self.models.values()
+            for key, value in model.to_attrs().items()
+            if value is None
+        )
 
     @classmethod
-    def from_attrs(cls, attrs: Mapping[Any, Any]) -> Self:
-        """Parse one flat xarray attrs mapping.
+    def from_attrs(cls, attrs: Mapping[Any, Any], scope: Scope) -> Self:
+        """Parse one flat xarray attrs mapping against the models of one scope.
 
         A model appears where the mapping carries at least one of its keys.
         xarray types attrs keys as merely `Hashable`, but every key actually
@@ -70,6 +77,7 @@ class AttrsNamespace:
 
         Args:
             attrs: Flat attrs mapping, however its keys are typed.
+            scope: Where the mapping lives.
 
         Returns:
             Namespace holding the models the mapping carries and every key
@@ -81,39 +89,14 @@ class AttrsNamespace:
                 key.
         """
         flat_attrs = {str(key): value for key, value in attrs.items()}
-
         models: dict[str, AttrsModel] = {}
-        for model_name, model_type in REGISTERED_MODELS.items():
-            kwargs: dict[str, Any] = {}
-            for field_name, attr_keys in model_type.field_keys.items():
-                spellings = [key for key in attr_keys if key in flat_attrs]
-                if not spellings:
-                    continue
-                value = flat_attrs[spellings[0]]
-                if len(spellings) > 1:
-                    # One store may hold a spelling as text and another as a number.
-                    read = [
-                        parse_field_value(model_type, field_name, flat_attrs[key])
-                        for key in spellings
-                    ]
-                    for spelling, other in zip(spellings[1:], read[1:], strict=True):
-                        if not attrs_equal(other, read[0]):
-                            raise ValueError(
-                                f"{spellings[0]!r} is {read[0]!r} but "
-                                f"{spelling!r} is {other!r}; they spell one "
-                                f"{model_type.__name__}.{field_name}, so set "
-                                f"one of them"
-                            )
-                kwargs[field_name] = value
-            if kwargs:
-                models[model_name] = model_type(**kwargs)
-
-        foreign: dict[str, Any] = {}
-        for attr_key, value in flat_attrs.items():
-            if attr_key not in REGISTERED_ATTR_KEYS:
-                foreign[attr_key] = value
-
-        return cls(models=models, foreign=foreign)
+        for model_type in MODELS[scope]:
+            model = model_type.from_attrs(flat_attrs)
+            if model is not None:
+                models[model_type.NAME] = model
+        keys = scope_keys(scope)
+        foreign = {key: value for key, value in flat_attrs.items() if key not in keys}
+        return cls(models, foreign)
 
     @classmethod
     def merge(cls, namespaces: Sequence[AttrsNamespace]) -> tuple[Self, set[str]]:
@@ -126,54 +109,33 @@ class AttrsNamespace:
             namespaces: The mappings being merged, in call order, at least one.
 
         Returns:
-            (merged namespace, every attr key dropped from it — registered
-            and foreign alike)
+            (merged namespace, every attr key dropped from it — model and
+            foreign alike)
 
         Raises:
-            ValueError: `namespaces` is empty.
+            ValueError: `namespaces` is empty, the merged models belong to
+                different scopes, or a model refuses what the mappings disagree
+                on.
         """
         if not namespaces:
             raise ValueError("merging attrs needs at least one namespace")
-
-        # Model presence is a view of flat keys, not an independent claim of
-        # absence when another model in the same namespace carries that key.
-        namespaces = [cls.from_attrs(namespace.to_attrs()) for namespace in namespaces]
-
-        model_names: set[str] = set()
-        foreign_keys: set[str] = set()
-        for namespace in namespaces:
-            model_names.update(namespace.models)
-            foreign_keys.update(namespace.foreign)
-
         dropped: set[str] = set()
-
-        models: dict[str, AttrsModel] = {}
-        for model_name in sorted(model_names):
-            per_object = [namespace.models.get(model_name) for namespace in namespaces]
-            models[model_name], dropped_keys = resolve_model(model_name).merge(
-                per_object
-            )
-            dropped.update(dropped_keys)
+        merged_models: dict[str, AttrsModel] = {}
+        for model_name in sorted(set().union(*(n.models for n in namespaces))):
+            models = [namespace.models.get(model_name) for namespace in namespaces]
+            merged_models[model_name], dropped_keys = resolve_model(model_name).merge(models)
+            dropped |= dropped_keys
 
         foreign: dict[str, object] = {}
-        for attr_key in sorted(foreign_keys):
-            values = [
-                namespace.foreign[attr_key]
-                for namespace in namespaces
-                if attr_key in namespace.foreign
-            ]
-            if len(values) < len(namespaces):
-                dropped.add(attr_key)
-            elif all(
-                attrs_equal(value, values[0]) for value in values[1:]
-            ):
-                foreign[attr_key] = values[0]
+        for key in sorted(set().union(*(n.foreign for n in namespaces))):
+            values = [n.foreign[key] for n in namespaces if key in n.foreign]
+            if len(values) == len(namespaces) and all_equal(values):
+                foreign[key] = values[0]
             else:
-                dropped.add(attr_key)
+                dropped.add(key)
+        return cls(merged_models, foreign), dropped
 
-        return cls(models=models, foreign=foreign), dropped
-
-    def to_attrs(self) -> dict[str, Any]:
+    def to_attrs(self) -> FlatAttrs:
         """Flatten this namespace back into one xarray attrs mapping.
 
         Returns:
@@ -181,26 +143,14 @@ class AttrsNamespace:
                 "<attr key>": its value,
             }
             Foreign keys first, then every key the models write. A field set
-            to None writes nothing, marking its key absent.
-
-        Raises:
-            ValueError: Models state different values for the same attr key.
+            to None writes nothing, marking its key missing.
         """
-        values: dict[str, Any] = {}
-        owners: dict[str, str] = {}
+        model_attrs: FlatAttrs = {}
         for model in self.models.values():
-            for attr_key, value in model.to_attrs().items():
-                if attr_key in values and not attrs_equal(values[attr_key], value):
-                    raise ValueError(
-                        f"attr {attr_key!r} disagrees between models "
-                        f"{owners[attr_key]!r} and {model.NAME!r}; "
-                        "one namespace must state one value for each key"
-                    )
-                values[attr_key] = value
-                owners[attr_key] = model.NAME
+            model_attrs.update(model.to_attrs())
         return {
             **self.foreign,
-            **{key: value for key, value in values.items() if value is not None},
+            **{key: value for key, value in model_attrs.items() if value is not None},
         }
 
     @overload
@@ -210,10 +160,10 @@ class AttrsNamespace:
     def get(self, model: str) -> AttrsModel | None: ...
 
     def get[M: AttrsModel](self, model: type[M] | str) -> M | AttrsModel | None:
-        """Read one model by its class or registered name.
+        """Read one model by its class or `NAME`.
 
         Args:
-            model: Registered model class or its stable `NAME`.
+            model: Model class or its `NAME`.
 
         Returns:
             The model, or None when this namespace does not carry it.

@@ -10,36 +10,69 @@ import xarray as xr
 from odc.geo.geobox import GeoBox
 
 import geosave_engine.geodata.attrs as attrs
-from geosave_engine.geodata.attrs.headers.geobox import (
-    create_header as create_geobox_header,
-)
-from geosave_engine.geodata.transform import nodata, packing, warp
-from geosave_engine.geodata.utils.io.geotiff import write_cog, write_gtiff
+from geosave_engine.geodata.transform import nodata
 
-from .base import GeoAccessor, tensor
+from .base import GeoRasterAccessor
 from .profile import (
     BAND_DIMENSION,
-    CRS_COORDINATE,
     NOT_GEOREFERENCED_DIMENSIONS,
 )
 
 if TYPE_CHECKING:
-    from collections.abc import Mapping, Sequence
+    from collections.abc import Callable, Sequence
     from os import PathLike
     from pathlib import Path
 
     import holoviews as hv
     import torch
     from numpy.typing import DTypeLike
-    from odc.geo import SomeResolution
 
-    from geosave_engine.geodata.utils.io.geotiff import (
+    from geosave_engine.geodata.io.geotiff import (
         COGWriteOptions,
         GTiffWriteOptions,
     )
 
     from geosave_engine.geodata import DataArray, Dataset
-    from geosave_engine.geodata.transform.warp import Resampling
+
+
+def tensor(
+    pixels: Callable[[DTypeLike | None], np.ndarray],
+    dtype: str | torch.dtype | None = None,
+) -> torch.Tensor:
+    """Build a contiguous tensor, preserving pixels unless a dtype is requested.
+
+    Args:
+        pixels: Reads the pixels in the numpy dtype it is given.
+        dtype: Torch dtype or its YAML-friendly name. None preserves the
+            pixels' dtype. A dtype numpy cannot hold, such as
+            `torch.bfloat16`, is read as float32 and narrowed on conversion.
+
+    Returns:
+        Tensor over contiguous pixels, in `dtype`.
+    """
+    import torch
+
+    if isinstance(dtype, str):
+        target = getattr(torch, dtype, None)
+        if not isinstance(target, torch.dtype):
+            raise ValueError(f"Unknown torch dtype {dtype!r}")
+    else:
+        target = dtype
+
+    if target is None:
+        values = np.ascontiguousarray(pixels(None))
+        try:
+            return torch.as_tensor(values)
+        except (TypeError, ValueError) as error:
+            raise TypeError(
+                f"Cannot convert numpy dtype {values.dtype} to a torch tensor"
+            ) from error
+
+    try:
+        reading_dtype = torch.empty(0, dtype=target).numpy().dtype
+    except TypeError:
+        reading_dtype = np.dtype("float32")
+    return torch.as_tensor(np.ascontiguousarray(pixels(reading_dtype)), dtype=target)
 
 
 def array(
@@ -53,8 +86,8 @@ def array(
     """Build one band from an array on a grid.
 
     The array ends in the two spatial axes, which the geobox names, and lies
-    along the axes `coords` names ahead of them. Build several bands at
-    once with `raster`, which returns them as one Dataset.
+    along the axes `coords` names ahead of them. It is `raster` with one
+    variable, which builds several bands at once as one Dataset.
 
     Args:
         pixels: Values, ending in the two spatial axes.
@@ -86,68 +119,15 @@ def array(
           * x            (x) float64 3e+05 3e+05 ... 3.051e+05
             spatial_ref  int32 32633
     """
-    from odc.geo.xr import wrap_xr
+    from .raster import raster
 
-    spatial_dims = NOT_GEOREFERENCED_DIMENSIONS if geobox is None else geobox.dimensions
-    grid_coords = (*spatial_dims, CRS_COORDINATE)
-    band_axes = tuple(coords)
-
-    collisions = sorted(set(band_axes) & set(grid_coords))
-    if collisions:
-        raise ValueError(
-            f"{collisions} name coordinates this grid already supplies "
-            f"{list(grid_coords)}; name the leading axes something else"
-        )
-
-    if pixels.ndim != len(band_axes) + 2:
-        raise ValueError(
-            f"pixels are {pixels.ndim}-dimensional but lie along {band_axes} ahead "
-            f"of the spatial pair; a band's array ends in the two spatial axes"
-        )
-    if geobox is not None and pixels.shape[len(band_axes) :] != geobox.shape:
-        raise ValueError(
-            f"the pixels' trailing axes are {pixels.shape[len(band_axes) :]} but the "
-            f"geobox is {tuple(geobox.shape)}; place them on a matching grid first"
-        )
-
-    # coords is in array order, so a keyword's position is its axis's position.
-    miscounted = []
-    for position, (axis, labels) in enumerate(coords.items()):
-        if labels is None:
-            continue
-        length = pixels.shape[position]
-        if len(labels) != length:
-            miscounted.append(
-                f"{axis!r} got {len(labels)} labels for an axis of {length}"
-            )
-    if miscounted:
-        raise ValueError(
-            f"{'; '.join(miscounted)}; label an axis once per value along it"
-        )
-
-    band_dims = (*band_axes, *spatial_dims)
-    if geobox is None:
-        built = xr.DataArray(pixels, dims=band_dims)
-    else:
-        built = wrap_xr(pixels, geobox, dims=band_dims, axis=len(band_axes))
-
-    axis_labels = {axis: given for axis, given in coords.items() if given is not None}
-    if axis_labels:
-        built = built.assign_coords(axis_labels)
-
-    if nodata is not None:
-        built = attrs.rebase(built, attrs.Nodata(fill_value=nodata))
-
-    if geobox is not None:
-        # odc places the axes; GeoSave writes what they measure.
-        for name, semantics in create_geobox_header(geobox).coords.items():
-            built = attrs.rebase(built, semantics, target=name)
-
-    return cast("DataArray", built)
+    # A band is a one-variable raster, so it is built and checked the same way.
+    built = raster({"pixels": pixels}, geobox, nodata=nodata, **coords)
+    return cast("DataArray", built["pixels"].rename(None))
 
 
 @xr.register_dataarray_accessor("gs")
-class GeoArray(GeoAccessor["DataArray"]):
+class GeoArray(GeoRasterAccessor["DataArray"]):
     """Read and transform one raster DataArray.
 
     A DataArray is the unit a panel draws, so this accessor carries what
@@ -232,101 +212,6 @@ class GeoArray(GeoAccessor["DataArray"]):
             nodata.check_fill_fits(value, self._data.dtype, str(self._data.name))
         return attrs.rebase(self._data, attrs.Nodata(fill_value=value))
 
-    def unpack(self) -> DataArray:
-        """Read physical values out of this band's stored digital numbers.
-
-        Returns:
-            New DataArray of physical values, or this band unchanged where it
-            carries neither `scale_factor` nor `add_offset`.
-
-        Examples:
-            >>> ds["B04"].gs.unpack().max().item()
-            0.09
-        """
-        return packing.unpack(self._data)
-
-    def mask(
-        self, valid: xr.DataArray | np.ndarray, *, fill: float | int | None = None
-    ) -> DataArray:
-        """Make nodata every pixel `valid` does not keep.
-
-        Args:
-            valid: Boolean array, True where a pixel is real data. A
-                DataArray names its own axes and may span fewer than this
-                band, broadcasting over the rest; a bare numpy array names
-                none, so it is read as the grid alone and must match its
-                shape.
-            fill: Value the blanked pixels take, also written onto the result
-                if this band carries no fill value yet. None reads what it
-                already carries.
-
-        Returns:
-            New DataArray, its unkept pixels holding the fill value it
-            carries.
-
-        Raises:
-            ValueError: `valid` is not boolean, does not span the grid, spans
-                an axis this band does not, `fill` does not fit its dtype, or
-                it carries no fill value and none is given.
-
-        Examples:
-            >>> clear = ds.scl.gs.mask(ds.scl.isin([4, 5, 6, 7]))
-        """
-        return nodata.mask(self._data, valid, fill=fill)
-
-    def to_nan(self) -> DataArray:
-        """Replace this band's fill value with NaN.
-
-        Returns:
-            New DataArray holding NaN where the pixels were nodata, or this
-            band unchanged where it carries no fill value.
-
-        Examples:
-            >>> ds.red.gs.to_nan().dtype
-            dtype('float64')
-        """
-        return nodata.to_nan(self._data)
-
-    def reproject(
-        self,
-        target: warp.Target,
-        *,
-        resampling: Resampling | Mapping[str, Resampling] = "nearest",
-        resolution: SomeResolution | None = None,
-    ) -> DataArray:
-        """Warp pixels onto the grid a target names.
-
-        A target grid is adopted whole — CRS, resolution, and extent — while a
-        bare CRS only decides the projection, sizing the grid from this band.
-
-        Args:
-            target: Grid to land on, a raster already on one, or a CRS.
-            resampling: One GDAL kernel for every variable, or a mapping
-                naming each variable's own, which `"*"` answers the rest of.
-            resolution: Output pixel size, taken only for a CRS target. None
-                keeps this band's ground sampling as closely as the new CRS
-                allows.
-
-        Returns:
-            New DataArray on the target grid, carrying its own `spatial_ref`
-            and the CF semantics its axes earn.
-
-        Raises:
-            ValueError: This band or `target` sits on no locatable grid,
-                `resolution` contradicts a target grid, or `resampling` would
-                blend a band whose values are class codes.
-
-        Examples:
-            >>> ds.red.gs.reproject("EPSG:3857").gs.crs.epsg
-            3857
-            >>> dem = srtm.gs.reproject(scene.red, resampling="bilinear")
-            >>> dem.gs.geobox == scene.gs.geobox
-            True
-        """
-        return warp.reproject(
-            self._data, target, resampling=resampling, resolution=resolution
-        )
-
     def to_numpy(self, *, dtype: DTypeLike | None = None) -> np.ndarray:
         """Read this band as one model-input array.
 
@@ -376,6 +261,8 @@ class GeoArray(GeoAccessor["DataArray"]):
         *,
         map_scale: float | None = None,
         overwrite: bool = False,
+        catalog: str | PathLike[str] | None = None,
+        id: str | None = None,
         **options: Unpack[COGWriteOptions],
     ) -> Path:
         """Write this band as a Cloud Optimized GeoTIFF.
@@ -383,6 +270,8 @@ class GeoArray(GeoAccessor["DataArray"]):
         Args:
             path: Output path ending in `.tif` or `.tiff`.
             map_scale: Map denominator used to write pixels per centimetre.
+            catalog: Optional GeoParquet recording the saved asset.
+            id: Record identity; None uses the saved raster's anchor.
             overwrite: Replace an existing file when true.
             **options: COG creation options.
 
@@ -399,13 +288,19 @@ class GeoArray(GeoAccessor["DataArray"]):
             >>> ds["ndvi"].gs.to_cog("ndvi.tif")
             PosixPath('ndvi.tif')
         """
-        return write_cog(
+        from geosave_engine.geodata.io.geotiff import write_cog
+
+        from geosave_engine.geodata.io.assets import write_catalog
+
+        saved = write_cog(
             self.to_raster(),
             path,
             map_scale=map_scale,
             overwrite=overwrite,
             **options,
         )
+
+        return cast("Path", write_catalog(saved, catalog, id=id, overwrite=overwrite))
 
     def to_gtiff(
         self,
@@ -435,6 +330,8 @@ class GeoArray(GeoAccessor["DataArray"]):
                 dimension rather than a scalar coordinate.
             FileExistsError: `path` exists and `overwrite` is false.
         """
+        from geosave_engine.geodata.io.geotiff import write_gtiff
+
         return write_gtiff(
             self.to_raster(),
             path,
@@ -451,8 +348,9 @@ class GeoArray(GeoAccessor["DataArray"]):
         spanning no band axis becomes a one-variable raster named after it.
 
         Returns:
-            Dataset holding one variable per band. The array's own attrs
-            become the raster's, less the ones its bands take back.
+            Dataset holding one variable per band. Each band carries its own
+            attrs from `StackedAttrs` under the array's own attrs, which every
+            band shares; the Dataset root gets the attrs it was stacked from.
 
         Raises:
             ValueError: This array spans a `band` axis carrying no labels to
@@ -474,15 +372,12 @@ class GeoArray(GeoAccessor["DataArray"]):
                 f"{BAND_DIMENSION!r} coordinate first"
             )
 
-        parked = self.attrs.coords[BAND_DIMENSION].get(attrs.StackedAttrs)
+        stacked = self.attrs.coords[BAND_DIMENSION].get(attrs.StackedAttrs)
         raster = cast("Dataset", self._data.to_dataset(dim=BAND_DIMENSION))
-        if parked is None:
-            return raster
-
-        restored = parked.restore({str(name) for name in raster.data_vars})
-        for name, held in restored.items():
-            raster[name].attrs = held
-        raster.attrs = parked.restore_root(raster.attrs)
+        own = {} if stacked is None else stacked.variable_attrs or {}
+        for name in raster.data_vars:
+            raster[name].attrs = {**own.get(str(name), {}), **self._data.attrs}
+        raster.attrs = {} if stacked is None else dict(stacked.dataset_attrs or {})
         return raster
 
     def statistics(self) -> BandSummary:
@@ -503,7 +398,7 @@ class GeoArray(GeoAccessor["DataArray"]):
             >>> ds["B04"].gs.statistics()
             BandSummary(minimum=1.0, maximum=63.0, mean=32.0, stddev=18.2, valid_percent=98.4)
         """
-        fill = self.attrs.root.get(attrs.Nodata)
+        fill = attrs.Nodata.from_attrs(self._data.attrs)
         values = (
             self._data
             if fill is None or fill.fill_value is None
@@ -553,25 +448,24 @@ class GeoArray(GeoAccessor["DataArray"]):
             >>> ds["landcover"].gs.colorize().sizes["band"]
             3
         """
-        from geosave_engine.utils.colorize import parse_color
+        from geosave_engine.geodata.attrs.palette import parse_color
 
-        legend = self.attrs.root.get(attrs.Legend)
-        class_map = legend.class_map if legend is not None else None
-        if class_map is None:
+        legend = attrs.Legend.from_attrs(self._data.attrs)
+        class_map = None if legend is None else legend.class_map
+        if legend is None or class_map is None:
             raise ValueError(
                 "band lists no classes, so its values name none to colour; write "
                 "a Legend, or compose channels with GeoRaster.to_array"
             )
 
-        colour_of = legend.color_map if legend is not None else None
+        colour_of = legend.color_map or {}
         codes = sorted(class_map)
-        missing_colour = [code for code in codes if code not in (colour_of or {})]
+        missing_colour = [code for code in codes if code not in colour_of]
         if missing_colour:
             raise ValueError(
                 f"classes {missing_colour} carry no colour; give Legend.color_map an "
                 f"entry for every class the band lists"
             )
-        colour_of = colour_of or {}
 
         palette = np.array(
             [parse_color(colour_of[code]) for code in codes], dtype="float32"
@@ -598,7 +492,7 @@ class GeoArray(GeoAccessor["DataArray"]):
         cols: int = 4,
         title: str | None = None,
         xlabel: str | None = None,
-    ) -> hv.Element | hv.Layout:
+    ) -> hv.Element | hv.NdLayout:
         """Draw this band as an Image. Needs the `viz` extra.
 
         Draws the values as they stand, so decode a packed band first. A band
@@ -631,15 +525,14 @@ class GeoArray(GeoAccessor["DataArray"]):
         """
         from geosave_engine.geodata.viz import plot
 
-        flags = self.attrs.root.get(attrs.Legend)
-        legend = self.attrs.root.get(attrs.Legend)
+        legend = attrs.Legend.from_attrs(self._data.attrs)
         place = self.anchor.location if xlabel is None else None
         caption = place.to_address() if place is not None else xlabel
         return plot(
             self._data,
             cmap=cmap,
             clim=clim,
-            class_map=flags.class_map if flags else None,
+            class_map=legend.class_map if legend else None,
             color_map=legend.color_map if legend else None,
             cols=cols,
             title=title,

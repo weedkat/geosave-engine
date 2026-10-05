@@ -3,31 +3,43 @@
 from __future__ import annotations
 
 import os
+from enum import Enum, auto
 from typing import Literal
 
-from geosave_engine.utils.sentinel import UNSET, Unset
+
+class _Unset(Enum):
+    """Sentinel type for a keyword argument that was not passed.
+
+    Distinct from an explicit None, and single-member so that `is not _UNSET`
+    narrows a `X | None | _Unset` union down to `X | None`.
+    """
+
+    TOKEN = auto()
 
 
-def _bool_env(value: bool | Unset) -> str | Unset:
-    return value if value is UNSET else ("TRUE" if value else "FALSE")
+_UNSET = _Unset.TOKEN
+
+
+def _bool_env(value: bool | _Unset) -> str | _Unset:
+    return value if value is _UNSET else ("TRUE" if value else "FALSE")
 
 
 def configure_gdal(
     *,
-    aws_no_sign_request: bool | Unset = UNSET,
-    aws_access_key_id: str | Unset = UNSET,
-    aws_secret_access_key: str | Unset = UNSET,
-    aws_session_token: str | Unset = UNSET,
-    aws_default_region: str | Unset = UNSET,
-    gdal_disable_readdir_on_open: bool | Unset = UNSET,
-    gdal_http_max_retry: int | Unset = UNSET,
-    gdal_http_retry_delay: float | Unset = UNSET,
-    gdal_http_merge_consecutive_ranges: bool | Unset = UNSET,
-    gdal_num_threads: int | Literal["ALL_CPUS"] | Unset = UNSET,
-    cpl_vsil_curl_allowed_extensions: list[str] | Unset = UNSET,
-    vsi_cache: bool | Unset = UNSET,
-    vsi_cache_size: int | Unset = UNSET,
-    omp_num_threads: int | Unset = UNSET,
+    aws_no_sign_request: bool | _Unset = _UNSET,
+    aws_access_key_id: str | _Unset = _UNSET,
+    aws_secret_access_key: str | _Unset = _UNSET,
+    aws_session_token: str | _Unset = _UNSET,
+    aws_default_region: str | _Unset = _UNSET,
+    gdal_disable_readdir_on_open: bool | _Unset = _UNSET,
+    gdal_http_max_retry: int | _Unset = _UNSET,
+    gdal_http_retry_delay: float | _Unset = _UNSET,
+    gdal_http_merge_consecutive_ranges: bool | _Unset = _UNSET,
+    gdal_num_threads: int | Literal["ALL_CPUS"] | _Unset = _UNSET,
+    cpl_vsil_curl_allowed_extensions: list[str] | _Unset = _UNSET,
+    vsi_cache: bool | _Unset = _UNSET,
+    vsi_cache_size: int | _Unset = _UNSET,
+    omp_num_threads: int | _Unset = _UNSET,
 ) -> None:
     """Set the environment used by remote GDAL-backed raster reads.
 
@@ -60,7 +72,7 @@ def configure_gdal(
         ...     gdal_http_max_retry=3,
         ... )
     """
-    values: dict[str, str | Unset] = {
+    values: dict[str, str | _Unset] = {
         "AWS_NO_SIGN_REQUEST": _bool_env(aws_no_sign_request),
         "AWS_ACCESS_KEY_ID": aws_access_key_id,
         "AWS_SECRET_ACCESS_KEY": aws_secret_access_key,
@@ -69,33 +81,33 @@ def configure_gdal(
         "GDAL_DISABLE_READDIR_ON_OPEN": _bool_env(gdal_disable_readdir_on_open),
         "GDAL_HTTP_MAX_RETRY": (
             gdal_http_max_retry
-            if gdal_http_max_retry is UNSET
+            if gdal_http_max_retry is _UNSET
             else str(gdal_http_max_retry)
         ),
         "GDAL_HTTP_RETRY_DELAY": (
             gdal_http_retry_delay
-            if gdal_http_retry_delay is UNSET
+            if gdal_http_retry_delay is _UNSET
             else str(gdal_http_retry_delay)
         ),
         "GDAL_HTTP_MERGE_CONSECUTIVE_RANGES": _bool_env(
             gdal_http_merge_consecutive_ranges
         ),
         "GDAL_NUM_THREADS": (
-            gdal_num_threads if gdal_num_threads is UNSET else str(gdal_num_threads)
+            gdal_num_threads if gdal_num_threads is _UNSET else str(gdal_num_threads)
         ),
         "CPL_VSIL_CURL_ALLOWED_EXTENSIONS": (
             cpl_vsil_curl_allowed_extensions
-            if cpl_vsil_curl_allowed_extensions is UNSET
+            if cpl_vsil_curl_allowed_extensions is _UNSET
             else ",".join(cpl_vsil_curl_allowed_extensions)
         ),
         "VSI_CACHE": _bool_env(vsi_cache),
         "VSI_CACHE_SIZE": vsi_cache_size
-        if vsi_cache_size is UNSET
+        if vsi_cache_size is _UNSET
         else str(vsi_cache_size),
         "OMP_NUM_THREADS": (
-            omp_num_threads if omp_num_threads is UNSET else str(omp_num_threads)
+            omp_num_threads if omp_num_threads is _UNSET else str(omp_num_threads)
         ),
     }
     for key, value in values.items():
-        if value is not UNSET:
+        if value is not _UNSET:
             os.environ[key] = value

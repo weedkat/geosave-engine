@@ -214,15 +214,16 @@ def _local_variance(
     """Compute finite-weighted local spatial variance."""
     valid = np.isfinite(values)
     observed = np.where(valid, values, 0)
-    weight = uniform_filter(valid.astype(np.float32), size=size)
+    # SciPy accepts per-axis widths; its untyped default is inferred as int.
+    weight = uniform_filter(valid.astype(np.float32), size=size)  # pyright: ignore[reportArgumentType]
     mean = np.divide(
-        uniform_filter(observed, size=size),
+        uniform_filter(observed, size=size),  # pyright: ignore[reportArgumentType]
         weight,
         out=np.full_like(values, np.nan),
         where=weight > 0,
     )
     mean_sq = np.divide(
-        uniform_filter(observed**2, size=size),
+        uniform_filter(observed**2, size=size),  # pyright: ignore[reportArgumentType]
         weight,
         out=np.full_like(values, np.nan),
         where=weight > 0,

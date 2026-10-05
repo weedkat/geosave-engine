@@ -3,7 +3,7 @@ from __future__ import annotations
 import pytest
 from jsonargparse import Namespace
 
-from geosave_engine.ml.lightning.cli import GeosaveCLI
+from geosave_engine.ml.cli import GeosaveCLI
 
 
 def test_default_artifacts_use_tensorboard_only(

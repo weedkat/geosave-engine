@@ -1,0 +1,1 @@
+A segmentation workspace using GeoSave's supervised Lightning Module and DataModule.

@@ -2,9 +2,9 @@
 
 from __future__ import annotations
 
-from typing import ClassVar, Mapping
+from typing import Annotated, ClassVar, Mapping
 
-from geosave_engine.geodata.attrs.model import AttrsModel
+from geosave_engine.geodata.attrs.model import MUST_AGREE, AttrsModel
 
 
 class Nodata(AttrsModel):
@@ -26,4 +26,4 @@ class Nodata(AttrsModel):
         "fill_value": ("_FillValue", "nodata")
     }
 
-    fill_value: int | float | None = None
+    fill_value: Annotated[int | float | None, MUST_AGREE] = None

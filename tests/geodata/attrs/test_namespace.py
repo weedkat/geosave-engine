@@ -1,69 +1,75 @@
-"""One flat namespace must express one value for each shared metadata key."""
+"""Each attrs mapping is parsed against the models of the one scope it lives in."""
 
 import pytest
+import xarray as xr
 
-from geosave_engine.geodata.attrs import AttrsNamespace, CFCoordinate, CFVariable
-
-
-@pytest.mark.parametrize("reverse", [False, True])
-@pytest.mark.parametrize("units", ["kilometre", None])
-def test_conflicting_shared_values_do_not_depend_on_model_order(reverse, units):
-    models = [CFVariable(units="metre"), CFCoordinate(units=units)]
-    if reverse:
-        models.reverse()
-    namespace = AttrsNamespace(models={model.NAME: model for model in models})
-
-    with pytest.raises(ValueError, match="units"):
-        namespace.to_attrs()
+from geosave_engine.geodata.attrs import (
+    ACDD,
+    AttrsNamespace,
+    CFCoordinate,
+    CFVariable,
+    Nodata,
+    create_header,
+)
 
 
-def test_editing_a_shared_field_cannot_be_silently_overwritten():
-    namespace = AttrsNamespace.from_attrs({"units": "metre"})
-    namespace.get(CFVariable).units = "kilometre"
+def test_a_variable_with_units_carries_only_variable_semantics() -> None:
+    namespace = AttrsNamespace.from_attrs({"units": "1"}, "variable")
 
-    with pytest.raises(ValueError, match="units"):
-        namespace.to_attrs()
-
-
-@pytest.mark.parametrize("units", ["metre", None])
-def test_agreeing_shared_values_keep_foreign_null_values(units):
-    namespace = AttrsNamespace(
-        models={"cf": CFVariable(units=units), "coordinate": CFCoordinate(units=units)},
-        foreign={"provider_note": None},
-    )
-
-    expected = {"provider_note": None}
-    if units is not None:
-        expected["units"] = units
-    assert namespace.to_attrs() == expected
+    assert namespace.get(CFVariable) == CFVariable(units="1")
+    assert namespace.get(CFCoordinate) is None
 
 
-def test_unset_shared_field_is_not_an_explicit_clear():
-    namespace = AttrsNamespace(
-        models={"cf": CFVariable(units="metre"), "coordinate": CFCoordinate(axis="X")}
-    )
+def test_a_coordinate_with_units_carries_only_coordinate_semantics() -> None:
+    header = create_header(xr.Dataset(coords={"x": ("x", [0], {"units": "metre"})}))
 
-    assert namespace.to_attrs() == {"units": "metre", "axis": "X"}
+    assert header.coords["x"].get(CFCoordinate) == CFCoordinate(units="metre")
+    assert header.coords["x"].get(CFVariable) is None
 
 
-def test_equal_flat_namespaces_merge_with_different_shared_model_presence():
-    from geosave_engine.geodata.attrs import Nodata
-    from geosave_engine.geodata.attrs import model as registry
+def test_nodata_on_a_dataset_root_is_foreign() -> None:
+    header = create_header(xr.Dataset(attrs={"nodata": 0}))
 
-    class OtherNodata(Nodata):
-        NAME = "test_shared_nodata"
+    assert header.root.get(Nodata) is None
+    assert header.root.foreign == {"nodata": 0}
 
-    try:
-        first = AttrsNamespace(models={"nodata": Nodata(fill_value=0)})
-        second = AttrsNamespace(
-            models={
-                "nodata": Nodata(fill_value=0),
-                OtherNodata.NAME: OtherNodata(fill_value=0),
-            }
-        )
-        merged, dropped = AttrsNamespace.merge([first, second])
 
-        assert merged.to_attrs() == {"_FillValue": 0, "nodata": 0}
-        assert dropped == set()
-    finally:
-        registry._MODEL_TYPES.pop(OtherNodata.NAME)
+def test_fill_value_on_a_coordinate_is_foreign() -> None:
+    header = create_header(xr.Dataset(coords={"x": ("x", [0.0], {"_FillValue": 0.0})}))
+
+    assert header.coords["x"].foreign == {"_FillValue": 0.0}
+
+
+def test_a_dataarray_root_is_one_variable() -> None:
+    header = create_header(xr.DataArray([1], dims="x", attrs={"nodata": 0}))
+
+    assert header.root.scope == "variable"
+    assert header.root.get(Nodata) == Nodata(fill_value=0)
+
+
+def test_a_namespace_refuses_models_of_different_scopes() -> None:
+    with pytest.raises(ValueError, match="different scopes"):
+        AttrsNamespace(models={"nodata": Nodata(fill_value=0), "acdd": ACDD(title="x")})
+
+
+def test_a_namespace_refuses_a_foreign_key_its_models_write() -> None:
+    with pytest.raises(ValueError, match="collide"):
+        AttrsNamespace(models={"nodata": Nodata(fill_value=0)}, foreign={"nodata": 0})
+
+
+def test_namespaces_of_different_scopes_do_not_merge() -> None:
+    dataset = AttrsNamespace(models={"acdd": ACDD(title="x")})
+    variable = AttrsNamespace(models={"cf_variable": CFVariable(long_name="Red")})
+
+    with pytest.raises(ValueError, match="different scopes"):
+        AttrsNamespace.merge([dataset, variable])
+
+
+def test_namespace_owns_flat_attrs_lifecycle() -> None:
+    first = AttrsNamespace.from_attrs({"title": "source", "provider": "one"}, "dataset")
+    second = AttrsNamespace.from_attrs({"title": "source", "provider": "two"}, "dataset")
+
+    merged, dropped = AttrsNamespace.merge([first, second])
+
+    assert merged.to_attrs() == {"title": "source"}
+    assert dropped == {"provider"}

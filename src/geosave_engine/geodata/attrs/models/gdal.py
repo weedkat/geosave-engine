@@ -8,7 +8,6 @@ from pydantic import Field, field_validator
 from rasterio.enums import ColorInterp
 
 from geosave_engine.geodata.attrs.model import AttrsModel
-from geosave_engine.geodata.attrs.namespace import AttrsNamespace
 
 if TYPE_CHECKING:
     import xarray as xr
@@ -39,11 +38,10 @@ class GDALVariable(AttrsModel):
         GDALVariable(variable_name='B04', colorinterp='red')
     """
 
-    NAME: ClassVar[str] = "gdal"
+    NAME: ClassVar[str] = "gdal_variable"
 
     variable_name: Annotated[str, Field(min_length=1)] | None = None
     colorinterp: str | None = None
-    description: Annotated[str, Field(min_length=1)] | None = None
 
     @field_validator("colorinterp", mode="before")
     @classmethod
@@ -93,10 +91,7 @@ class GDALVariable(AttrsModel):
             >>> GDALVariable.rgb_indices(scene)
             (0, 1, 2)
         """
-        bands = (
-            AttrsNamespace.from_attrs(variable.attrs).get(cls)
-            for variable in ds.data_vars.values()
-        )
+        bands = (cls.from_attrs(variable.attrs) for variable in ds.data_vars.values())
         measures = [None if band is None else band.colorinterp for band in bands]
 
         absent = [colour for colour in _RGB if colour not in measures]

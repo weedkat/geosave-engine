@@ -7,7 +7,7 @@ from typing import TYPE_CHECKING, Annotated, ClassVar, Final, Literal
 
 from pydantic import Field
 
-from geosave_engine.geodata.attrs.model import AttrsModel
+from geosave_engine.geodata.attrs.model import MUST_AGREE, AttrsModel
 
 if TYPE_CHECKING:
     from collections.abc import Mapping
@@ -52,12 +52,12 @@ class CFVariable(AttrsModel):
         ... )
     """
 
-    NAME: ClassVar[str] = "cf"
+    NAME: ClassVar[str] = "cf_variable"
 
-    standard_name: CFPhrase = None
+    standard_name: Annotated[CFPhrase, MUST_AGREE] = None
     long_name: CFPhrase = None
-    units: CFPhrase = None
-    cell_methods: CFPhrase = None
+    units: Annotated[CFPhrase, MUST_AGREE] = None
+    cell_methods: Annotated[CFPhrase, MUST_AGREE] = None
 
 
 class CFCoordinate(AttrsModel):
@@ -78,7 +78,7 @@ class CFCoordinate(AttrsModel):
         'Y'
     """
 
-    NAME: ClassVar[str] = "coordinate"
+    NAME: ClassVar[str] = "cf_coordinate"
 
     standard_name: CFPhrase = None
     units: CFPhrase = None

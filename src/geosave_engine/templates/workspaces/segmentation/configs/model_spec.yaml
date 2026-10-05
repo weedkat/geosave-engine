@@ -1,0 +1,43 @@
+schema_version: 2
+rasters:
+  sentinel_2_l2a:
+    variables: [B02, B03, B04, B08]
+    coordinates: [x, y]
+    require_crs: true
+    stac:
+      collection: sentinel-2-l2a
+      endpoints:
+        - planetary_computer
+        - cdse
+      load:
+        bands: [B02, B03, B04, B08]
+preprocessing:
+  valid_pixels:
+    call: geosave_engine.geodata.transform.nodata.to_nan
+    kwargs:
+      data: !ref sentinel_2_l2a
+  image:
+    call: geosave_engine.geodata.transform.packing.unpack
+    kwargs:
+      data: !ref valid_pixels
+tiles:
+  size: 224
+  overlap: 32
+  mode: reflect
+  window: hann
+# Pixel bindings. Row-based context uses the same declaration in training and inference.
+inputs:
+  image: !ref image
+# Enable the encoder's context recipe when the data supplies its metadata:
+# context:
+#   call: geosave_engine.model.encoder.prithvi.model_context
+#   kwargs: {row: !ref row, raster: image}
+# For Clay, use geosave_engine.model.encoder.clay.model_context.
+# Run on the device after augmentation, in training, validation, and prediction.
+# Reflectance statistics per band, in the order of `rasters.sentinel_2_l2a`.
+transforms:
+  image:
+    - name: Normalize
+      init_args:
+        mean: [0.1105, 0.1355, 0.1552, 0.2743]
+        std: [0.1809, 0.1757, 0.1888, 0.1742]

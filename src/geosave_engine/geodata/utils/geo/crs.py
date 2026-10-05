@@ -123,7 +123,7 @@ def select_grid_crs(
         ValueError: The footprint carries no CRS.
 
     Examples:
-        >>> select_grid_crs(plots.footprint)
+        >>> select_grid_crs(plots.gs.footprint)
         CRS('EPSG:32749')
     """
     if to_crs is not None:

@@ -2,9 +2,9 @@
 
 from __future__ import annotations
 
-from typing import ClassVar
+from typing import Annotated, ClassVar
 
-from geosave_engine.geodata.attrs.model import AttrsModel
+from geosave_engine.geodata.attrs.model import MUST_AGREE, AttrsModel
 
 
 class Packing(AttrsModel):
@@ -26,5 +26,5 @@ class Packing(AttrsModel):
 
     NAME: ClassVar[str] = "packing"
 
-    scale_factor: float | None = None
-    add_offset: float | None = None
+    scale_factor: Annotated[float | None, MUST_AGREE] = None
+    add_offset: Annotated[float | None, MUST_AGREE] = None

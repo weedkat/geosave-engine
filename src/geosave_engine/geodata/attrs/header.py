@@ -2,10 +2,11 @@
 
 from __future__ import annotations
 
-from collections.abc import Mapping, Sequence
+from collections.abc import Iterable, Mapping, Sequence
 from dataclasses import dataclass, field
 from typing import Any, Self
 
+from .models import Scope
 from .namespace import AttrsNamespace
 
 
@@ -27,6 +28,11 @@ class DroppedAttr:
     variable: str | None
     key: str
 
+    @classmethod
+    def from_keys(cls, variable: str | None, keys: Iterable[str]) -> set[Self]:
+        """Qualify the keys a variable lost, None for the object's own attrs."""
+        return {cls(variable, key) for key in keys}
+
     def __str__(self) -> str:
         """Return the key qualified by its variable, bare for the own attrs."""
         if self.variable is None:
@@ -36,12 +42,14 @@ class DroppedAttr:
 
 @dataclass(frozen=True)
 class AttrsHeader:
-    """Every attrs mapping of one xarray object, detached from it.
+    """The attrs mappings of one xarray object it describes, detached from it.
 
     Args:
-        root: Namespace for the object's own attrs.
-        data_vars: Data variable names mapped to their namespaces.
-        coords: Coordinate names mapped to their namespaces.
+        root: Namespace for the object's own attrs: dataset attrs for a
+            Dataset or DataTree, variable attrs for a DataArray. Empty when
+            this header says nothing about them.
+        data_vars: Data variable names mapped to their variable attrs.
+        coords: Coordinate names mapped to their coordinate attrs.
 
     Examples:
         >>> header = attrs.create_header(ds)
@@ -64,6 +72,7 @@ class AttrsHeader:
         cls,
         *,
         root: Mapping[Any, Any] | None = None,
+        root_scope: Scope = "dataset",
         data_vars: Mapping[str, Mapping[Any, Any]] | None = None,
         coords: Mapping[str, Mapping[Any, Any]] | None = None,
     ) -> Self:
@@ -74,7 +83,9 @@ class AttrsHeader:
         hands over once it has translated that source into attr keys.
 
         Args:
-            root: The object's own attrs.
+            root: The object's own attrs. None says nothing about them.
+            root_scope: `dataset` for a Dataset or DataTree, `variable` for a
+                DataArray.
             data_vars: Data variable name mapped to that variable's attrs.
             coords: Coordinate name mapped to that coordinate's attrs.
 
@@ -90,13 +101,13 @@ class AttrsHeader:
             {'_FillValue': 0, 'nodata': 0}
         """
         return cls(
-            root=AttrsNamespace.from_attrs(root or {}),
+            root=AttrsNamespace.from_attrs(root or {}, root_scope),
             data_vars={
-                name: AttrsNamespace.from_attrs(attrs)
+                name: AttrsNamespace.from_attrs(attrs, "variable")
                 for name, attrs in (data_vars or {}).items()
             },
             coords={
-                name: AttrsNamespace.from_attrs(attrs)
+                name: AttrsNamespace.from_attrs(attrs, "coordinate")
                 for name, attrs in (coords or {}).items()
             },
         )
@@ -110,8 +121,8 @@ class AttrsHeader:
     def merge(cls, headers: Sequence[AttrsHeader]) -> tuple[Self, set[DroppedAttr]]:
         """Merge the headers read off the objects being joined.
 
-        The objects' own attrs merge together, and variables merge with their
-        namesakes, from whichever objects carry them.
+        The objects' own attrs merge together, and variables merge with the
+        variables of the same name, from whichever objects have them.
 
         Args:
             headers: Header read off each object being joined, in call order,
@@ -122,52 +133,41 @@ class AttrsHeader:
             that held it)
 
         Raises:
-            ValueError: `headers` is empty, or one object calls a name a data
-                variable while another calls it a coordinate.
+            ValueError: `headers` is empty, the roots are of different scopes,
+                one object has a name as a data variable while another has it
+                as a coordinate, or a model refuses what the objects disagree
+                on.
         """
         if not headers:
             raise ValueError("merging attrs needs at least one header")
 
-        root, dropped_keys = AttrsNamespace.merge([header.root for header in headers])
-        dropped = {DroppedAttr(None, key) for key in dropped_keys}
-
-        crossed = sorted(
-            {name for header in headers for name in header.data_vars}
-            & {name for header in headers for name in header.coords}
-        )
-        if crossed:
+        data_names = sorted(set().union(*(h.data_vars for h in headers)))
+        coord_names = sorted(set().union(*(h.coords for h in headers)))
+        if scope_conflicts := set(data_names) & set(coord_names):
             raise ValueError(
-                f"{crossed} are data variables of one object and coordinates "
-                f"of another, so a join of them is neither"
+                f"{sorted(scope_conflicts)} hold variable attrs in one object and "
+                f"coordinate attrs in another, so a join of them is neither"
             )
 
-        data_vars, dropped_from_vars = _merge_namesakes(
-            [header.data_vars for header in headers]
+        header_variables = [h.variables for h in headers]
+        # None stands for the root, which no variable can be called.
+        namespaces_by_name = {None: [h.root for h in headers]} | {
+            name: [variables[name] for variables in header_variables if name in variables]
+            for name in (*data_names, *coord_names)
+        }
+        merged_namespaces: dict[str | None, AttrsNamespace] = {}
+        dropped: set[DroppedAttr] = set()
+        for name, namespaces in namespaces_by_name.items():
+            try:
+                merged_namespaces[name], dropped_keys = AttrsNamespace.merge(namespaces)
+            except ValueError as error:
+                error.add_note("in the objects' own attrs" if name is None else f"in {name!r}")
+                raise
+            dropped |= DroppedAttr.from_keys(name, dropped_keys)
+
+        header = cls(
+            root=merged_namespaces[None],
+            data_vars={name: merged_namespaces[name] for name in data_names},
+            coords={name: merged_namespaces[name] for name in coord_names},
         )
-        coords, dropped_from_coords = _merge_namesakes(
-            [header.coords for header in headers]
-        )
-        return cls(root=root, data_vars=data_vars, coords=coords), (
-            dropped | dropped_from_vars | dropped_from_coords
-        )
-
-
-def _merge_namesakes(
-    groups: Sequence[Mapping[str, AttrsNamespace]],
-) -> tuple[dict[str, AttrsNamespace], set[DroppedAttr]]:
-    """Merge each name's namespace across the objects carrying that name.
-
-    Args:
-        groups: One object's namespaces per entry, keyed by variable name.
-
-    Returns:
-        (name mapped to its merged namespace, sorted by name; the attrs
-        dropped, each naming the variable that held it)
-    """
-    merged: dict[str, AttrsNamespace] = {}
-    dropped: set[DroppedAttr] = set()
-    for name in sorted({name for group in groups for name in group}):
-        carried = [group[name] for group in groups if name in group]
-        merged[name], dropped_keys = AttrsNamespace.merge(carried)
-        dropped.update(DroppedAttr(name, key) for key in dropped_keys)
-    return merged, dropped
+        return header, dropped

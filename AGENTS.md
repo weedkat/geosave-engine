@@ -4,7 +4,7 @@ GeoSave makes geospatial ML development feel like normal Python: ingest geospati
 
 The project is in active Alpha development. Prefer simple, replaceable designs. Change an obsolete design instead of building compatibility layers around it unless compatibility is explicitly required.
 
-Lead with code. Explain after showing the implementation. Always do smoke test before the design is settled. Ignore ipynb file unless asked to. Choose variable and parameter name carefully, don't make naming too verbose.
+Lead with code. Explain after showing the implementation. When comparing design options, show each option as the code a caller and a maintainer would see, then explain the difference. Always do smoke test before the design is settled. Ignore ipynb file unless asked to. Choose variable and parameter name carefully, don't make naming too verbose.
 
 ## Commands
 
@@ -26,16 +26,21 @@ uv run pre-commit run --all-files
 src/geosave_engine/
 ├── cli/          # CLI and AI workspace generation
 ├── geodata/      # raster/vector data, I/O, STAC, transforms, metadata
-├── ml/           # models, Lightning modules, callbacks, metrics, transforms
+├── model/        # what a release contains: chain, registry, encoder/decoder/head, spec, release
+├── ml/           # Lightning training: modules, datamodules, builders, callbacks, datasets
 ├── templates/    # source for generated workspaces
-├── workflow/     # Prefect workflows
-└── utils/
+└── workflow/     # Prefect workflows
 
 tests/            # mirrors src/geosave_engine
 workspace/        # generated consumer workspace, not library source
 ```
 
 `src/geosave_engine/templates/` is the source for generated workspace files.
+It contains `common/` startup, `workspaces/` starters, and optional `scaffolds/`.
+Public geospatial I/O lives in `geodata/io/`; original benchmark downloads live
+in `geodata/benchmarks/`. Internal helpers stay with their owning package.
+
+Dependencies point one way: `geodata <- model <- ml`. `geodata` imports no torch, and `model` does not import `ml`.
 
 ## Design
 
@@ -84,6 +89,18 @@ LightningCLI    -> workspace entry point and configuration
 Logger          -> experiment logging
 ```
 
+A training setup is one LightningModule and the DataModule that feeds it, kept together in `ml/<head type>/<method>/`:
+
+```text
+ml/segmentation/
+├── metrics.py        # shared by every segmentation method
+└── supervised/
+    ├── module.py     # Module(LightningModule)
+    └── data.py       # DataModule(LightningDataModule)
+```
+
+Share code across head types only once two written modules repeat it.
+
 Generated workspaces compose GeoSave and Lightning APIs; they do not own library implementations.
 
 ## Tests
@@ -91,8 +108,8 @@ Generated workspaces compose GeoSave and Lightning APIs; they do not own library
 Tests mirror the source tree:
 
 ```text
-src/geosave_engine/geodata/raster.py
-tests/geodata/test_raster.py
+src/geosave_engine/geodata/core/raster.py
+tests/geodata/core/test_raster.py
 ```
 
 Persistence changes require round-trip tests.

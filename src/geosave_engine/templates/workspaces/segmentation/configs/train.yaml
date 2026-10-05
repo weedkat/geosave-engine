@@ -1,0 +1,58 @@
+model_name: my_model
+
+trainer:
+  max_epochs: 100
+  log_every_n_steps: 10
+  callbacks:
+    - class_path: lightning.pytorch.callbacks.ModelCheckpoint
+      init_args:
+        monitor: val_loss
+        mode: min
+        save_top_k: 1
+        filename: "epoch={epoch:02d}-val_loss={val_loss:.4f}"
+        save_last: true
+    - class_path: lightning.pytorch.callbacks.LearningRateMonitor
+      init_args:
+        logging_interval: epoch
+    - class_path: lightning.pytorch.callbacks.RichProgressBar
+
+model:
+  class_path: geosave_engine.ml.segmentation.supervised.Module
+  init_args:
+    ignore_index: 255
+    model_chain:
+      encoder:
+        name: dinov3
+        init_args: {in_channels: 4, input_size: 224}
+      decoder: {name: dpt}
+      head:
+        name: segmentation
+        init_args:
+          classes: [background, target]
+    optimizer:
+      name: adamw
+      init_args: {lr: 0.001, weight_decay: 0.01}
+      groups:
+        encoder: {lr: 0.0001}
+    lr_scheduler:
+      name: cosine_annealing
+      init_args: {T_max: 100}
+      interval: epoch
+    criterion:
+      name: cross_entropy
+      init_args: {ignore_index: 255}
+    metrics: [iou.macro, f1.macro]
+
+data:
+  class_path: geosave_engine.ml.segmentation.supervised.DataModule
+  init_args:
+    spec: configs/model_spec.yaml
+    train: data/train/manifest.parquet
+    val: data/val/manifest.parquet
+    target: label
+    ignore_index: 255
+    batch_size: 8
+    num_workers: 4
+    augmentations:
+      - {name: RandomHorizontalFlip, init_args: {p: 0.5}}
+      - {name: RandomVerticalFlip, init_args: {p: 0.5}}

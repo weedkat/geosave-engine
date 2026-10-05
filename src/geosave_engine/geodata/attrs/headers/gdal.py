@@ -11,7 +11,6 @@ from geosave_engine.geodata.errors import UnreadMaskWarning
 
 from ..header import AttrsHeader
 from ..models import GDALVariable, Legend
-from ..namespace import AttrsNamespace
 
 if TYPE_CHECKING:
     import rasterio
@@ -50,7 +49,7 @@ def create_header(src: rasterio.DatasetReader) -> AttrsHeader:
     data_vars: dict[str, dict[str, Any]] = {}
     for index in src.indexes:
         position = index - 1
-        carried: dict[str, Any] = {
+        band_attrs: dict[str, Any] = {
             key: value
             for key, value in src.tags(index).items()
             if not key.startswith("STATISTICS_")
@@ -65,20 +64,20 @@ def create_header(src: rasterio.DatasetReader) -> AttrsHeader:
             "_FillValue": src.nodatavals[position],
             "colorinterp": interpretation,
         }
-        carried.update(
+        band_attrs.update(
             {key: value for key, value in native.items() if value is not None}
         )
 
-        listed = AttrsNamespace.from_attrs(carried).get(Legend)
-        if interpretation is ColorInterp.palette and listed and listed.flag_values:
+        legend = Legend.from_attrs(band_attrs)
+        if interpretation is ColorInterp.palette and legend and legend.flag_values:
             colours = src.colormap(index)
-            carried["color_map"] = {
+            band_attrs["color_map"] = {
                 value: colours[value][:3]
-                for value in listed.flag_values
+                for value in legend.flag_values
                 if value in colours
             }
 
-        identity = AttrsNamespace.from_attrs(carried).get(GDALVariable)
+        identity = GDALVariable.from_attrs(band_attrs)
         name = (
             identity.variable_name
             if identity is not None and identity.variable_name is not None
@@ -89,6 +88,6 @@ def create_header(src: rasterio.DatasetReader) -> AttrsHeader:
                 f"band {index} names variable {name!r}, which an earlier band "
                 f"already names; one file names each variable once"
             )
-        data_vars[name] = carried
+        data_vars[name] = band_attrs
 
     return AttrsHeader.from_attrs(root=src.tags(), data_vars=data_vars)

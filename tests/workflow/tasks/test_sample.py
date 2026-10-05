@@ -3,8 +3,9 @@ from dask.delayed import delayed
 import numpy as np
 import pytest
 
+from geosave_engine.geodata import read_stack
 from geosave_engine.geodata.core.raster import raster
-from geosave_engine.geodata.utils import io
+from geosave_engine.geodata import io
 import geosave_engine.workflow.tasks.sample as save_module
 
 
@@ -25,7 +26,7 @@ def test_write_sample_publishes_flat_geotiff_assets(raw, tmp_path) -> None:
 
     assert result == str(output)
     assert {path.name for path in output.iterdir()} == {"label.tif", "optical.tif"}
-    with save_module.open_sample(output, format="geotiff") as restored:
+    with read_stack(output) as restored:
         assert restored.gs.groups == ("label", "optical")
         assert restored.gs.geobox == rasters["label"].gs.geobox
         assert tuple(restored["label"].data_vars) == ("class",)
@@ -34,18 +35,26 @@ def test_write_sample_publishes_flat_geotiff_assets(raw, tmp_path) -> None:
         assert restored["optical"].red.dtype == np.dtype("uint16")
 
 
-def test_open_sample_rebuilds_the_logical_stack(raw, tmp_path) -> None:
+def test_write_sample_refuses_rasters_on_different_grids_before_writing(
+    raw, tmp_path, monkeypatch
+) -> None:
     rasters = _sample_rasters(raw)
-    output = tmp_path / "sample"
-    output.mkdir()
-    for name, value in rasters.items():
-        io.geotiff.write_cog(value, output / f"{name}.tif")
+    grid = rasters["label"].gs.geobox
+    moved = raster(
+        {"class": np.ones(grid.shape, dtype="uint8")}, grid.translate_pix(1, 1)
+    )
 
-    with save_module.open_sample(output, format="geotiff") as restored:
-        np.testing.assert_array_equal(
-            restored["label"]["class"], rasters["label"]["class"]
+    def unexpected_write(*args, **kwargs):
+        pytest.fail(f"writer called for misaligned rasters: {args}, {kwargs}")
+
+    monkeypatch.setattr(io.geotiff, "write_cog", unexpected_write)
+
+    with pytest.raises(ValueError, match="do not share a grid"):
+        save_module.write_sample(
+            {"label": moved, "optical": rasters["optical"]}, tmp_path / "sample"
         )
-        np.testing.assert_array_equal(restored["optical"].red, rasters["optical"].red)
+
+    assert list(tmp_path.iterdir()) == []
 
 
 def test_write_sample_does_not_depend_on_raster_order(raw, tmp_path) -> None:
@@ -66,7 +75,7 @@ def test_write_sample_keeps_a_singleton_time_as_a_scalar(raw, tmp_path) -> None:
 
     save_module.write_sample(rasters, tmp_path / "sample")
 
-    with save_module.open_sample(tmp_path / "sample", format="geotiff") as restored:
+    with read_stack(tmp_path / "sample") as restored:
         assert restored["optical"].time.dims == ()
         assert restored["optical"].time.values == instant
 
@@ -125,9 +134,7 @@ def test_failed_geotiff_sample_cleans_staging(raw, tmp_path) -> None:
     output = tmp_path / "sample"
 
     with pytest.raises(RuntimeError, match="delayed chunk failed"):
-        save_module.write_sample(
-            {"label": rasters["label"], "optical": failed}, output
-        )
+        save_module.write_sample({"label": rasters["label"], "optical": failed}, output)
 
     assert not output.exists()
     assert list(tmp_path.glob(f".{output.name}-*")) == []
@@ -135,15 +142,27 @@ def test_failed_geotiff_sample_cleans_staging(raw, tmp_path) -> None:
 
 def test_write_sample_zarr_round_trip(raw, tmp_path) -> None:
     rasters = _sample_rasters(raw)
-    output = tmp_path / "sample.zarr"
+    output = tmp_path / "sample"
 
     assert save_module.write_sample(rasters, output, format="zarr") == str(output)
 
-    with save_module.open_sample(output, format="zarr") as restored:
-        assert set(restored.gs.groups) == {"label", "optical"}
+    assert {path.name for path in output.iterdir()} == {"label.zarr", "optical.zarr"}
+    with read_stack(output) as restored:
+        assert restored.gs.groups == ("label", "optical")
         np.testing.assert_array_equal(
             restored["label"]["class"], rasters["label"]["class"]
         )
+
+
+def test_a_zarr_sample_keeps_a_time_series(raw, tmp_path) -> None:
+    rasters = _sample_rasters(raw)
+    days = [np.datetime64("2025-01-15"), np.datetime64("2025-01-16")]
+    rasters["optical"] = rasters["optical"].expand_dims(time=days)
+
+    save_module.write_sample(rasters, tmp_path / "sample", format="zarr")
+
+    with read_stack(tmp_path / "sample") as restored:
+        assert restored["optical"].sizes["time"] == 2
 
 
 def test_write_sample_forwards_geotiff_encoding_options(
@@ -170,19 +189,34 @@ def test_write_sample_forwards_geotiff_encoding_options(
     ]
 
 
-def test_write_sample_forwards_zarr_options_to_the_stack_writer(
-    raw, tmp_path, monkeypatch
-) -> None:
-    captured = {}
+def test_write_sample_forwards_zarr_options(raw, tmp_path, monkeypatch) -> None:
+    calls = []
+    original = io.zarr.write
 
-    def write(rasters, output, **options):
-        captured.update(options)
-        return str(output)
+    def record_options(ds, path, **options):
+        calls.append((path.name, options))
+        return original(ds, path, **options)
 
-    monkeypatch.setattr(save_module, "write_stack", write)
+    monkeypatch.setattr(io.zarr, "write", record_options)
 
     save_module.write_sample(
-        raw, tmp_path / "a.zarr", format="zarr", write_options={"consolidated": True}
+        _sample_rasters(raw),
+        tmp_path / "sample",
+        format="zarr",
+        write_options={"consolidated": True},
     )
 
-    assert captured == {"consolidated": True}
+    assert calls == [
+        ("label.zarr", {"consolidated": True}),
+        ("optical.zarr", {"consolidated": True}),
+    ]
+
+
+@pytest.mark.parametrize("name", ["scene.zarr", "product.SAFE"])
+def test_write_sample_refuses_a_destination_named_like_a_store(
+    raw, tmp_path, name: str
+) -> None:
+    with pytest.raises(ValueError, match="names a store"):
+        save_module.write_sample(_sample_rasters(raw), tmp_path / name)
+
+    assert not (tmp_path / name).exists()

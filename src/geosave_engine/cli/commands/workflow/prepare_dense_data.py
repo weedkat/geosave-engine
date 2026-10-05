@@ -12,10 +12,15 @@ _write_options_adapter = TypeAdapter(dict[str, JsonValue])
 
 
 def prepare_dense_data(
-    labels: Annotated[Path, typer.Option(help="Root containing label rasters.")],
+    labels: Annotated[
+        Path,
+        typer.Option(help="Label table as GeoParquet, or a root of label rasters."),
+    ],
     output: Annotated[Path, typer.Option(help="Prepared data directory.")],
     spec: Annotated[Path, typer.Option(help="Model specification path.")],
-    pattern: Annotated[str, typer.Option(help="Recursive label glob.")] = "**/*.tif",
+    pattern: Annotated[
+        str, typer.Option(help="Recursive label glob, for a root of rasters.")
+    ] = "**/*.tif",
     max_concurrency: Annotated[
         int,
         typer.Option(
@@ -31,10 +36,6 @@ def prepare_dense_data(
         str,
         typer.Option(help="Native writer options as JSON.", metavar="JSON"),
     ] = "{}",
-    metadata: Annotated[
-        Path | None,
-        typer.Option(help="CSV, TSV, Parquet, or XLSX sample metadata."),
-    ] = None,
 ) -> None:
     """Prepare label-aligned samples and publish their manifest."""
     try:
@@ -50,6 +51,5 @@ def prepare_dense_data(
         max_concurrency=max_concurrency,
         format=format,
         write_options=native_write_options,
-        metadata=None if metadata is None else str(metadata),
     )
     typer.echo(result)

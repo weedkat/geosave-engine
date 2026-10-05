@@ -3,6 +3,7 @@ from typer.testing import CliRunner
 
 from geosave_engine.cli.main import app
 from geosave_engine.workflow import flows
+from geosave_engine.workflow.configs import RasterAnchorConfig
 
 runner = CliRunner()
 
@@ -22,7 +23,7 @@ def test_ingest_help_lists_its_flow_options() -> None:
     result = runner.invoke(app, ["workflow", "ingest", "--help"])
 
     assert result.exit_code == 0
-    for option in ("--anchor", "--output", "--spec"):
+    for option in ("--anchor", "--output", "--spec", "--format", "--catalog"):
         assert option in result.stdout
     assert "--sources" not in result.stdout
 
@@ -39,9 +40,9 @@ def test_prepare_dense_data_help_lists_safe_concurrency_default() -> None:
         "--max-concurrency",
         "--format",
         "--write-options",
-        "--metadata",
     ):
         assert option in result.stdout
+    assert "--metadata" not in result.stdout
     assert "--sources" not in result.stdout
     assert "1" in result.stdout
     assert "geotiff" in result.stdout
@@ -54,7 +55,7 @@ def test_ingest_parses_anchor_and_prints_result(
 
     def run_flow(**arguments):
         captured.update(arguments)
-        return "data/raw.zarr"
+        return "data/scenes/s1"
 
     monkeypatch.setattr(flows, "ingest", run_flow)
     result = runner.invoke(
@@ -65,19 +66,28 @@ def test_ingest_parses_anchor_and_prints_result(
             "--anchor",
             '{"kind":"raster","path":"data/reference.tif"}',
             "--output",
-            "data/raw.zarr",
+            "data/scenes/s1",
             "--spec",
             "model_spec.yaml",
+            "--format",
+            "geotiff",
+            "--write-options",
+            '{"compress":"ZSTD"}',
+            "--catalog",
+            "data/scenes/catalog.parquet",
         ],
     )
 
     assert result.exit_code == 0
     assert captured == {
-        "anchor": {"kind": "raster", "path": "data/reference.tif"},
-        "output": "data/raw.zarr",
+        "anchor": RasterAnchorConfig(kind="raster", path="data/reference.tif"),
+        "output": "data/scenes/s1",
         "spec": "model_spec.yaml",
+        "format": "geotiff",
+        "write_options": {"compress": "ZSTD"},
+        "catalog": "data/scenes/catalog.parquet",
     }
-    assert result.stdout == "data/raw.zarr\n"
+    assert result.stdout == "data/scenes/s1\n"
 
 
 def test_prepare_dense_data_forwards_typed_options(monkeypatch) -> None:
@@ -107,8 +117,6 @@ def test_prepare_dense_data_forwards_typed_options(monkeypatch) -> None:
             "zarr",
             "--write-options",
             '{"compress":"ZSTD","blocksize":256}',
-            "--metadata",
-            "data/samples.csv",
         ],
     )
 
@@ -121,7 +129,6 @@ def test_prepare_dense_data_forwards_typed_options(monkeypatch) -> None:
         "max_concurrency": 2,
         "format": "zarr",
         "write_options": {"compress": "ZSTD", "blocksize": 256},
-        "metadata": "data/samples.csv",
     }
     assert result.stdout == "data/prepared/manifest.parquet\n"
 
@@ -146,7 +153,7 @@ def test_ingest_rejects_invalid_json_before_invoking_flow(
         "--anchor",
         '{"kind":"raster","path":"reference.tif"}',
         "--output",
-        "raw.zarr",
+        "raw",
         "--spec",
         "model_spec.yaml",
     ]
@@ -230,7 +237,7 @@ def test_flow_failure_exits_without_printing_success_path(monkeypatch) -> None:
             "--anchor",
             '{"kind":"raster","path":"reference.tif"}',
             "--output",
-            "raw.zarr",
+            "raw",
             "--spec",
             "model_spec.yaml",
         ],
@@ -238,4 +245,4 @@ def test_flow_failure_exits_without_printing_success_path(monkeypatch) -> None:
 
     assert result.exit_code != 0
     assert isinstance(result.exception, RuntimeError)
-    assert "raw.zarr" not in result.stdout
+    assert "raw" not in result.stdout

@@ -6,18 +6,18 @@ means. Whoever changes the data owns the attrs describing it.
 """
 
 from .header import AttrsHeader, DroppedAttr
-from .headers.xarray import create_header
-from .namespace import AttrsNamespace
 from .model import (
-    REGISTERED_MODELS,
+    MUST_AGREE,
     AttrsModel,
+    FlatAttrs,
     attrs_equal,
+    common_attrs,
     parse_field_value,
-    resolve_model,
 )
 from .models import (
     ACDD,
     CELL_METHODS,
+    MODELS,
     CFCoordinate,
     CFVariable,
     GDALVariable,
@@ -25,23 +25,32 @@ from .models import (
     Legend,
     Nodata,
     Packing,
+    Scope,
     StacItem,
     StacMetadata,
     StackedAttrs,
     TimeSpec,
     ZarrOrder,
+    model_scope,
+    resolve_model,
 )
-from .xarray import flag_variables, merge, rebase
+from .namespace import AttrsNamespace
+from .xarray import AttrsEdit, XarrayObject, create_header, flag_variables, merge, rebase
 
 __all__ = [
     "ACDD",
     "CELL_METHODS",
+    "MUST_AGREE",
+    "MODELS",
+    "Scope",
+    "AttrsEdit",
     "AttrsHeader",
     "AttrsNamespace",
     "AttrsModel",
     "CFCoordinate",
     "CFVariable",
     "DroppedAttr",
+    "FlatAttrs",
     "GDALVariable",
     "GeoTIFFTags",
     "Legend",
@@ -55,9 +64,11 @@ __all__ = [
     "flag_variables",
     "merge",
     "attrs_equal",
+    "common_attrs",
+    "XarrayObject",
     "create_header",
     "rebase",
-    "REGISTERED_MODELS",
+    "model_scope",
     "resolve_model",
     "parse_field_value",
 ]

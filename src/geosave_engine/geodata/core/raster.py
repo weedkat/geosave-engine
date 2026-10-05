@@ -59,9 +59,10 @@ import geosave_engine.geodata.attrs as attrs
 from geosave_engine.geodata.attrs.headers.geobox import (
     create_header as create_geobox_header,
 )
-from geosave_engine.geodata.transform import nodata, packing, warp
+from geosave_engine.geodata.transform import nodata
 
-from .base import GeoAccessor, tensor
+from .array import tensor
+from .base import GeoRasterAccessor
 from .profile import (
     BAND_DIMENSION,
     CRS_COORDINATE,
@@ -75,24 +76,21 @@ if TYPE_CHECKING:
     from dask.delayed import Delayed
     from os import PathLike
     from numpy.typing import DTypeLike
-    from odc.geo import SomeCRS, SomeResolution
-
-    from geosave_engine.geodata.transform.warp import Resampling
+    from odc.geo import SomeCRS
 
     import torch
 
-    from geosave_engine.geodata.utils.io.netcdf import (
+    from geosave_engine.geodata.io.netcdf import (
         NetCDFEngine,
         NetCDFWriteOptions,
     )
-    from geosave_engine.geodata.utils.io.geotiff import COGWriteOptions
-    from geosave_engine.geodata.utils.io.layout import LeafPath
-    from geosave_engine.geodata.utils.io.zarr import ZarrWriteOptions
+    from geosave_engine.geodata.io.geotiff import COGWriteOptions
+    from geosave_engine.geodata.io.layout import LeafPath
+    from geosave_engine.geodata.io.zarr import ZarrWriteOptions
 
     import holoviews as hv
 
     from geosave_engine.geodata import DataArray, Dataset
-    from .vector import GeoVector
 
 # One variable's pixels, alone or paired with the axes it carries.
 type RasterVariable = np.ndarray | tuple[np.ndarray, Sequence[str]]
@@ -269,13 +267,14 @@ def raster(
     if nodata is not None:
         built = built.gs.write_nodata(nodata)
 
-    if geobox is None:
-        return cast("Dataset", built)
-    return built.gs.write_crs()
+    if geobox is not None:
+        # odc places the axes; GeoSave writes what they measure.
+        built = attrs.rebase(built, create_geobox_header(geobox))
+    return cast("Dataset", built)
 
 
 @xr.register_dataset_accessor("gs")
-class GeoRaster(GeoAccessor["Dataset"]):
+class GeoRaster(GeoRasterAccessor["Dataset"]):
     """Read and transform one raster Dataset.
 
     Each member reads only what it needs, so a Dataset mid-computation still
@@ -359,8 +358,9 @@ class GeoRaster(GeoAccessor["Dataset"]):
                 the raster already carries.
 
         Returns:
-            New Dataset whose spatial coordinates carry the standard name,
-            units, and axis their grid gives them.
+            New Dataset whose spatial coordinates carry what the grid says of
+            them: odc's units, resolution, and CRS, and CF's standard name and
+            axis. Their other attrs are replaced.
 
         Raises:
             ValueError: The raster carries no locatable grid and `crs` names
@@ -383,9 +383,7 @@ class GeoRaster(GeoAccessor["Dataset"]):
                 f"raster is placed by {type(geobox).__name__}, not a regular "
                 f"grid, so its axes measure no CF coordinate"
             )
-        for name, semantics in create_geobox_header(geobox).coords.items():
-            result = attrs.rebase(result, semantics, target=name)
-        return cast("Dataset", result)
+        return cast("Dataset", attrs.rebase(result, create_geobox_header(geobox)))
 
     def write_nodata(
         self,
@@ -476,150 +474,6 @@ class GeoRaster(GeoAccessor["Dataset"]):
             )
         return written
 
-    def unpack(self) -> Dataset:
-        """Read physical values out of every variable's stored digital numbers.
-
-        Returns:
-            New Dataset of physical values, a variable unchanged where it
-            carries neither `scale_factor` nor `add_offset`.
-
-        Examples:
-            >>> ds.gs.unpack().B04.max().item()
-            0.09
-        """
-        return packing.unpack(self._data)
-
-    def mask(
-        self, valid: xr.DataArray | np.ndarray, *, fill: float | int | None = None
-    ) -> Dataset:
-        """Make nodata every pixel `valid` does not keep.
-
-        Args:
-            valid: Boolean array, True where a pixel is real data. A
-                DataArray names its own axes and may span fewer than this
-                raster, broadcasting over the rest; a bare numpy array names
-                none, so it is read as the grid alone and must match its
-                shape.
-            fill: Value the blanked pixels take, also written onto the result
-                for variables carrying no fill value yet. None reads what
-                each variable already carries.
-
-        Returns:
-            New Dataset, its unkept pixels holding the fill value their
-            variable carries.
-
-        Raises:
-            ValueError: `valid` is not boolean, does not span the grid, spans
-                an axis this raster does not, `fill` does not fit a
-                variable's dtype, or a variable carries no fill value and
-                none is given.
-
-        Examples:
-            >>> clear = ds.gs.mask(ds.scl.isin([4, 5, 6, 7]))
-        """
-        return nodata.mask(self._data, valid, fill=fill)
-
-    def to_nan(self) -> Dataset:
-        """Replace each variable's fill value with NaN.
-
-        Returns:
-            New Dataset holding NaN where the pixels were nodata, a variable
-            unchanged where it carries no fill value.
-
-        Examples:
-            >>> ds.gs.to_nan().red.dtype
-            dtype('float64')
-        """
-        return nodata.to_nan(self._data)
-
-    def reproject(
-        self,
-        target: warp.Target,
-        *,
-        resampling: Resampling | Mapping[str, Resampling] = "nearest",
-        resolution: SomeResolution | None = None,
-    ) -> Dataset:
-        """Warp pixels onto the grid a target names.
-
-        A target grid is adopted whole — CRS, resolution, and extent — while a
-        bare CRS only decides the projection, sizing the grid from this raster.
-
-        Args:
-            target: Grid to land on, a raster already on one, or a CRS.
-            resampling: One GDAL kernel for every variable, or a mapping
-                naming each variable's own, which `"*"` answers the rest of.
-            resolution: Output pixel size, taken only for a CRS target. None
-                keeps this raster's ground sampling as closely as the new CRS
-                allows.
-
-        Returns:
-            New Dataset on the target grid, carrying its own `spatial_ref` and
-            the CF semantics its axes earn.
-
-        Raises:
-            ValueError: This raster or `target` sits on no locatable grid, the
-                raster holds no data variable, `resolution` contradicts a
-                target grid, a variable does not span the grid, or `resampling`
-                would blend a variable whose values are class codes.
-
-        Examples:
-            >>> ds.gs.reproject("EPSG:3857").gs.crs.epsg
-            3857
-            >>> dem = srtm.gs.reproject(scene, resampling="bilinear")
-            >>> dem.gs.geobox == scene.gs.geobox
-            True
-        """
-        return warp.reproject(
-            self._data, target, resampling=resampling, resolution=resolution
-        )
-
-    def crop(self, vector: GeoVector, *, mask: bool = True) -> Dataset:
-        """Cut the raster down to a vector's extent.
-
-        Args:
-            vector: Geometries to cut against, in this raster's CRS.
-            mask: Also make nodata the pixels outside the geometries, which
-                then take their own variable's fill value.
-
-        Returns:
-            New Dataset covering the vector's extent.
-
-        Raises:
-            ValueError: The raster carries no CRS, `vector` is in a different
-                CRS, does not overlap the raster, the raster is placed by
-                ground control points rather than a regular grid, or `mask`
-                is set while a variable carries no fill value to mark nodata
-                with.
-        """
-        from odc.geo.geom import Geometry
-        from odc.geo.xr import rasterize
-        from shapely import union_all
-
-        crs = self.crs
-        if crs is None:
-            raise ValueError(
-                "raster carries no CRS; assign one with odc.geo.xr.assign_crs "
-                "before cropping"
-            )
-        if vector.crs != crs:
-            raise ValueError(
-                f"vector is in {vector.crs} but the raster is in {crs}; "
-                f"reproject the vector before cropping"
-            )
-        geometry = Geometry(union_all(vector.gdf.geometry.values), crs=crs)
-
-        # odc's own apply_mask writes NaN, which promotes every integer variable.
-        cut = cast("Dataset", self._data.odc.crop(geometry, apply_mask=False))
-        if not mask:
-            return cut
-        geobox = cut.gs.geobox
-        if not isinstance(geobox, GeoBox):
-            raise ValueError(
-                f"crop left {type(cut).__name__} with no locatable grid, so "
-                f"mask has nothing to rasterize the vector onto"
-            )
-        return nodata.mask(cut, rasterize(geometry, geobox))
-
     def to_array(self, *, dtype: DTypeLike | None = None) -> DataArray:
         """Stack every variable this raster carries into one array.
 
@@ -631,33 +485,37 @@ class GeoRaster(GeoAccessor["Dataset"]):
                 dtype, which every stacked variable must then share.
 
         Returns:
-            Array shaped `(*axes, band, y, x)`, carrying this raster's own
-            attrs and, on its own attrs, what every stacked variable carries
-            identically — an attr they carry differently describes no band of
-            the stack. Each variable's own attrs ride on the `band`
-            coordinate as `StackedAttrs`, so nothing is lost.
+            Array shaped `(*axes, band, y, x)`. Its own attrs are the ones
+            every band carries with one value, so it reads as one variable.
+            Each band's remaining attrs and this raster's own attrs ride on
+            the `band` coordinate as `StackedAttrs`.
 
         Raises:
             ValueError: This raster carries no variables or already spans the
                 stacked axis, the variables carry different non-spatial
                 dimensions, or they differ in dtype while `dtype` is None.
-            TypeError: A variable carries an attr with no JSON spelling.
+            TypeError: An attr has no JSON spelling.
 
         Examples:
             >>> ds[["ndvi"]].gs.to_array()
             >>> ds[["B04", "B03", "B02"]].gs.to_array()
         """
-        stacked = self._stacked(dtype)
-        carried = {
+        array = self._stacked(dtype)
+        band_attrs = {
             name: dict(self._data.variables[name].attrs) for name in self.variables
         }
-
-        parked = attrs.StackedAttrs.from_variables(
-            carried, dataset_attrs=self._data.attrs
+        # A key every band carries with one value describes the stacked array.
+        shared = attrs.common_attrs(list(band_attrs.values()))
+        array.attrs = shared
+        stacked = attrs.StackedAttrs(
+            variable_attrs={
+                name: {key: value for key, value in held.items() if key not in shared}
+                for name, held in band_attrs.items()
+            },
+            dataset_attrs=dict(self._data.attrs),
         )
-        attrs.rebase(stacked, parked.shared(), target=None, inplace=True)
-        attrs.rebase(stacked, parked, target=BAND_DIMENSION, inplace=True)
-        return cast("DataArray", stacked)
+        attrs.rebase(array, stacked, target=BAND_DIMENSION, inplace=True)
+        return cast("DataArray", array)
 
     def plot(
         self,
@@ -668,7 +526,7 @@ class GeoRaster(GeoAccessor["Dataset"]):
         cols: int = 4,
         title: str | None = None,
         xlabel: str | None = None,
-    ) -> hv.Element | hv.Layout:
+    ) -> hv.Element | hv.NdLayout:
         """Draw this raster the way `variable` names it. Needs the `viz` extra.
 
         Three names give a composite, one gives an Image, and None falls back
@@ -720,14 +578,9 @@ class GeoRaster(GeoAccessor["Dataset"]):
         array = self._data[list(selected)].gs.to_array()
 
         # A composite carries colour rather than class codes, so it draws no legend.
-        flags = None
         legend = None
         if len(selected) == 1:
-            namespace = attrs.AttrsNamespace.from_attrs(
-                self._data.variables[selected[0]].attrs
-            )
-            flags = namespace.get(attrs.Legend)
-            legend = namespace.get(attrs.Legend)
+            legend = attrs.Legend.from_attrs(self._data.variables[selected[0]].attrs)
 
         place = self.anchor.location if xlabel is None else None
         caption = place.to_address() if place is not None else xlabel
@@ -735,7 +588,7 @@ class GeoRaster(GeoAccessor["Dataset"]):
             array,
             cmap=cmap,
             clim=clim,
-            class_map=flags.class_map if flags else None,
+            class_map=legend.class_map if legend else None,
             color_map=legend.color_map if legend else None,
             cols=cols,
             title=title,
@@ -870,12 +723,14 @@ class GeoRaster(GeoAccessor["Dataset"]):
         split_bands: bool = False,
         map_scale: float | None = None,
         overwrite: bool = False,
+        catalog: str | PathLike[str] | None = None,
+        id: str | None = None,
         **options: Unpack[COGWriteOptions],
-    ) -> None:
+    ) -> Path:
         """Write this raster as a tree of Cloud Optimized GeoTIFFs.
 
         A GeoTIFF holds one instant of one grid, so a cube spreads across
-        files. `layout` decides how: see `utils.io.layout`.
+        files. `layout` decides how: see `io.layout`.
 
         Args:
             destination: Directory the tree is written into, or the file path
@@ -887,8 +742,13 @@ class GeoRaster(GeoAccessor["Dataset"]):
                 than keeping them as bands of one file per instant.
             map_scale: Map denominator used to write pixels per centimetre in
                 every leaf.
+            catalog: Optional GeoParquet recording the saved assets.
+            id: Record identity; None uses the saved raster's anchor.
             overwrite: Replace leaves that already exist.
             **options: COG creation options passed to every leaf.
+
+        Returns:
+            Saved directory or file path.
 
         Raises:
             FileExistsError: A leaf exists and `overwrite` is false.
@@ -900,9 +760,11 @@ class GeoRaster(GeoAccessor["Dataset"]):
             >>> ds.gs.to_cog("scene")  # scene/20250601T103031.tif, ...
             >>> ds.gs.to_cog("scene", layout="flat", split_bands=True)
         """
-        from geosave_engine.geodata.utils.io.layout import write_tree
+        from geosave_engine.geodata.io.layout import write_tree
 
-        write_tree(
+        from geosave_engine.geodata.io.assets import write_catalog
+
+        saved = write_tree(
             self._data,
             destination,
             layout=layout,
@@ -912,41 +774,55 @@ class GeoRaster(GeoAccessor["Dataset"]):
             **options,
         )
 
+        return cast("Path", write_catalog(saved, catalog, id=id, overwrite=overwrite))
+
     def to_zarr(
         self,
         destination: str | PathLike[str],
         *,
+        compute: bool = True,
         overwrite: bool = False,
+        catalog: str | PathLike[str] | None = None,
+        id: str | None = None,
         **write_options: Unpack[ZarrWriteOptions],
     ) -> Path | Delayed:
         """Write this raster to Zarr.
 
         Args:
             destination: Output path ending in `.zarr`.
+            compute: False defers writing pixels and publishing the catalog.
+            catalog: Optional GeoParquet recording the saved assets.
+            id: Record identity; None uses the saved raster's anchor.
             overwrite: Replace an existing destination when true.
             **write_options: Supported xarray Zarr write options.
 
         Returns:
-            Destination path, or xarray's delayed write when `compute=False`.
+            Destination path, or a delayed task returning it when `compute=False`.
 
         Raises:
             FileExistsError: The destination exists and overwrite is false.
             TypeError: An option is unsupported.
             ValueError: The destination is invalid.
         """
-        from geosave_engine.geodata.utils.io import zarr
+        from geosave_engine.geodata.io import zarr
 
-        return zarr.write(
+        from geosave_engine.geodata.io.assets import write_catalog
+
+        saved = zarr.write(
             self._data,
             destination,
+            compute=compute,
             overwrite=overwrite,
             **write_options,
         )
+
+        return write_catalog(saved, catalog, id=id, overwrite=overwrite)
 
     def to_netcdf(
         self,
         destination: str | PathLike[str],
         *,
+        compute: bool = True,
         engine: NetCDFEngine = "netcdf4",
         overwrite: bool = False,
         **write_options: Unpack[NetCDFWriteOptions],
@@ -955,23 +831,25 @@ class GeoRaster(GeoAccessor["Dataset"]):
 
         Args:
             destination: Output path ending in `.nc`, `.nc4`, or `.cdf`.
+            compute: False returns a delayed task that writes and returns its path.
             engine: Concrete xarray netCDF writing engine.
             overwrite: Replace an existing destination when true.
             **write_options: Supported xarray netCDF write options.
 
         Returns:
-            Destination path, or xarray's delayed write when `compute=False`.
+            Destination path, or a delayed task returning it when `compute=False`.
 
         Raises:
             FileExistsError: The destination exists and overwrite is false.
             TypeError: An option is unsupported.
             ValueError: The destination is invalid.
         """
-        from geosave_engine.geodata.utils.io import netcdf
+        from geosave_engine.geodata.io import netcdf
 
         return netcdf.write(
             self._data,
             destination,
+            compute=compute,
             engine=engine,
             overwrite=overwrite,
             **write_options,

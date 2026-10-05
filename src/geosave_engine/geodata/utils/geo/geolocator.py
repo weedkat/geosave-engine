@@ -5,6 +5,10 @@ from __future__ import annotations
 import functools
 import re
 from dataclasses import dataclass, fields
+from typing import TYPE_CHECKING, cast
+
+if TYPE_CHECKING:
+    from geopy.location import Location
 
 from .crs import validate_wgs84_coordinate
 
@@ -157,7 +161,11 @@ def _request_nominatim_address(
 
     try:
         client = Nominatim(user_agent="geosave-engine")
-        location = client.reverse((latitude, longitude), timeout=5, language="en")
+        # Geopy infers sentinel/bool defaults too narrowly; the default adapter is synchronous.
+        location = cast(
+            "Location | None",
+            client.reverse((latitude, longitude), timeout=5, language="en"),  # pyright: ignore[reportArgumentType]
+        )
     except GeopyError:
         return None
     if location is None:

@@ -12,7 +12,7 @@ Examples:
 
 from __future__ import annotations
 
-from typing import TYPE_CHECKING, cast, overload
+from typing import TYPE_CHECKING, cast
 
 import numpy as np
 import xarray as xr
@@ -23,25 +23,16 @@ import geosave_engine.geodata.attrs as attrs
 if TYPE_CHECKING:
     from collections.abc import Iterable
 
-    from geosave_engine.geodata import DataArray, Dataset
 
-
-@overload
-def to_nan(data: xr.DataArray) -> DataArray: ...
-
-
-@overload
-def to_nan(data: xr.Dataset) -> Dataset: ...
-
-
-def to_nan(data: xr.DataArray | xr.Dataset) -> DataArray | Dataset:
+def to_nan[T: xr.DataArray | xr.Dataset | xr.DataTree](data: T) -> T:
     """Replace each variable's fill value with NaN.
 
     A reduction reads a stored fill value as data unless it finds NaN there
-    instead. A variable carrying no fill value passes through unchanged.
+    instead. A variable carrying no fill value passes through unchanged. A
+    stack is blanked group by group.
 
     Args:
-        data: DataArray or Dataset holding stored values.
+        data: DataArray, Dataset, or DataTree holding stored values.
 
     Returns:
         New object of the same kind holding NaN where the pixels were nodata.
@@ -49,17 +40,20 @@ def to_nan(data: xr.DataArray | xr.Dataset) -> DataArray | Dataset:
 
     Examples:
         >>> to_nan(scene).red.dtype
-        dtype('float64')
+        dtype('float32')
         >>> to_nan(scene).red.attrs
         {}
     """
+    if isinstance(data, xr.DataTree):
+        return cast("T", data.map_over_datasets(lambda dataset: to_nan(dataset)))
+
     if isinstance(data, xr.DataArray):
-        return cast("DataArray", _to_nan_array(data))
+        return cast("T", _to_nan_array(data))
 
     blanked = {
         variable: _to_nan_array(data[variable]) for variable in data.gs.variables
     }
-    return cast("Dataset", data.assign(blanked))
+    return cast("T", drop_source(data.assign(blanked)))
 
 
 def _to_nan_array(array: xr.DataArray) -> xr.DataArray:
@@ -72,7 +66,7 @@ def _to_nan_array(array: xr.DataArray) -> xr.DataArray:
         New DataArray holding NaN where the pixels were nodata, its fill value
         gone from attrs, or `array` unchanged where it carries none.
     """
-    nodata = array.gs.attrs.root.get(attrs.Nodata)
+    nodata = attrs.Nodata.from_attrs(array.attrs)
     if nodata is None or nodata.fill_value is None:
         return array
 
@@ -179,15 +173,30 @@ def mask[T: xr.DataArray | xr.Dataset | xr.DataTree](
 
     if isinstance(data, xr.DataArray):
         band = data if fill is None else data.gs.write_nodata(fill)
-        return cast("T", band.where(valid, _written_fill(band)))
+        return cast("T", band.where(valid, required_fill_value(band)))
 
     # Writing it first means every variable below reads one spelling of nodata.
     raster = cast("xr.Dataset", data if fill is None else data.gs.write_nodata(fill))
     masked = {
-        str(name): array.where(valid, _written_fill(array))
+        str(name): array.where(valid, required_fill_value(array))
         for name, array in raster.data_vars.items()
     }
-    return cast("T", raster.assign(masked))
+    return cast("T", drop_source(raster.assign(masked)))
+
+
+def drop_source(data: xr.Dataset) -> xr.Dataset:
+    """Forget the file a raster was read from.
+
+    Args:
+        data: Raster whose pixels are no longer that file's.
+
+    Returns:
+        `data`, its encoding naming no source.
+    """
+    data.encoding = {
+        key: value for key, value in data.encoding.items() if key != "source"
+    }
+    return data
 
 
 def fill_value(array: xr.DataArray) -> float | int | None:
@@ -199,10 +208,8 @@ def fill_value(array: xr.DataArray) -> float | int | None:
     Returns:
         The variable's `Nodata.fill_value`, or None where it carries none.
     """
-    nodata = array.gs.attrs.root.get(attrs.Nodata)
-    if nodata is None or nodata.fill_value is None:
-        return None
-    return nodata.fill_value
+    nodata = attrs.Nodata.from_attrs(array.attrs)
+    return None if nodata is None else nodata.fill_value
 
 
 def check_fill_fits(value: float | int, dtype: np.dtype, name: str) -> None:
@@ -238,14 +245,12 @@ def required_fill_value(array: xr.DataArray) -> float | int:
         The variable's `Nodata.fill_value`.
 
     Raises:
-        ValueError: The variable carries none, so a pixel no raster covers
-            has nothing to hold.
+        ValueError: The variable carries none.
     """
     fill = fill_value(array)
     if fill is None:
         raise ValueError(
-            f"{str(array.name)!r} carries no fill value, so a pixel no raster "
-            f"covers has nothing to hold; write one with "
+            f"{str(array.name)!r} carries no fill value; write one with "
             f"raster.gs.write_nodata(...) first"
         )
     return fill
@@ -282,29 +287,6 @@ def required_fill_values(
     return {name: required_fill_value(reference[name]) for name in names}
 
 
-def _written_fill(array: xr.DataArray) -> float | int:
-    """Read the value blanked pixels take, refusing a variable that has none.
-
-    Args:
-        array: Data variable being masked.
-
-    Returns:
-        The variable's `Nodata.fill_value`.
-
-    Raises:
-        ValueError: The variable carries none, so masking has nothing to
-            write into the pixels it blanks.
-    """
-    fill = fill_value(array)
-    if fill is None:
-        raise ValueError(
-            f"{str(array.name)!r} carries no fill value, so masking has nothing "
-            f"to write into the pixels it blanks; pass fill= or write one with "
-            f"raster.gs.write_nodata(...) first"
-        )
-    return fill
-
-
 def is_fill(array: xr.DataArray) -> xr.DataArray:
     """Mark the pixels holding a variable's fill value.
 
@@ -318,19 +300,13 @@ def is_fill(array: xr.DataArray) -> xr.DataArray:
         Boolean array, True where a pixel is nodata.
 
     Raises:
-        ValueError: The variable carries no fill value, so nodata has no
-            spelling to test against.
+        ValueError: The variable carries no fill value.
 
     Examples:
         >>> int(is_fill(scene.red).sum())
         4096
     """
-    fill = fill_value(array)
-    if fill is None:
-        raise ValueError(
-            f"{str(array.name)!r} carries no fill value, so nodata has no "
-            f"spelling to test against; write one before mosaicking"
-        )
+    fill = required_fill_value(array)
     if np.isnan(fill):
         return array.isnull()
     return array == fill

@@ -6,7 +6,7 @@ No interactive backend: every element renders through matplotlib, so
 
 from __future__ import annotations
 
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, cast
 
 import holoviews as hv
 import hvplot.xarray  # noqa: F401  — registers the .hvplot accessor
@@ -17,12 +17,12 @@ import xarray as xr
 from geosave_engine.geodata.core.profile import BAND_DIMENSION, TIME_COORDINATE
 from matplotlib.colors import ListedColormap
 
-from geosave_engine.utils.colorize import parse_color
+from geosave_engine.geodata.attrs.palette import parse_color
 
 if TYPE_CHECKING:
     from collections.abc import Mapping, Sequence
 
-    from geosave_engine.utils.colorize import Palette
+    from geosave_engine.geodata.attrs.palette import Palette
 
 hv.extension("matplotlib")
 
@@ -34,7 +34,7 @@ def _captioned(
     cols: int,
     title: str | None,
     xlabel: str | None,
-) -> hv.Element | hv.Layout:
+) -> hv.Element | hv.NdLayout:
     """Put panel metadata below the axes and caller titles above them."""
 
     def decorate(panel: hv.Element, time: str | None) -> hv.Element:
@@ -46,20 +46,20 @@ def _captioned(
             options["title"] = title
         if lines:
             options["xlabel"] = "\n".join(lines)
-        return panel.opts(**options)
+        return cast("hv.Element", panel.opts(**options))
 
-    if TIME_COORDINATE in array.dims:
+    if isinstance(drawn, hv.HoloMap):
         layout = drawn.layout([TIME_COORDINATE])
         time_dimension = layout.kdims[0]
         panels = {
-            time: decorate(panel, time_dimension.pprint_value(time))
+            time: decorate(panel, str(time_dimension.pprint_value(time)))
             for time, panel in layout.items()
         }
         return hv.NdLayout(panels, kdims=layout.kdims).cols(cols)
 
     time = None
     if TIME_COORDINATE in array.coords and array[TIME_COORDINATE].ndim == 0:
-        time = hv.Dimension(TIME_COORDINATE).pprint_value(array[TIME_COORDINATE].values)
+        time = str(hv.Dimension(TIME_COORDINATE).pprint_value(array[TIME_COORDINATE].values))
     return decorate(drawn, time)
 
 
@@ -73,7 +73,7 @@ def plot(
     cols: int = 4,
     title: str | None = None,
     xlabel: str | None = None,
-) -> hv.Element | hv.Layout:
+) -> hv.Element | hv.NdLayout:
     """Draw a georeferenced array, picking the element its shape calls for.
 
     Three channels on `band` draw through `rgb`, a `class_map` through
@@ -146,7 +146,7 @@ def continuous(
     cols: int = 4,
     title: str | None = None,
     xlabel: str | None = None,
-) -> hv.Element | hv.Layout:
+) -> hv.Element | hv.NdLayout:
     """Draw one band's values as a continuous Image.
 
     Draws the values as they stand, applying no packing and reading no class
@@ -192,7 +192,7 @@ def rgb(
     cols: int = 4,
     title: str | None = None,
     xlabel: str | None = None,
-) -> hv.Element | hv.Layout:
+) -> hv.Element | hv.NdLayout:
     """Stretch and draw a three-channel composite as an RGB element.
 
     Maps `stretch` onto the unit interval, clipping outside it, reading the
@@ -275,7 +275,7 @@ def classes(
     cols: int = 4,
     title: str | None = None,
     xlabel: str | None = None,
-) -> hv.Element | hv.Layout:
+) -> hv.Element | hv.NdLayout:
     """Draw a label band through its palette, named on the colorbar.
 
     Pixels draw on their class's position rather than its code, so a sparsely

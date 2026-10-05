@@ -1,5 +1,9 @@
 # Attrs Header Factories
 
+> Updated 2026-10-03: `headers/xarray.py` merged into `attrs/xarray.py`,
+> which now holds every read and write of xarray objects; `headers/` keeps
+> only foreign sources (GDAL, GeoBox, STAC). `attrs.create_header` is unchanged.
+
 ## Purpose
 
 Make metadata construction easier to read without weakening the existing
