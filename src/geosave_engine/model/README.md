@@ -3,7 +3,7 @@
 `model` owns the native model graph, input specification, and release artifacts.
 Lightning training and development prediction live in `ml`; the examples using
 Trainer below are consumers of model APIs. See the
-[package ownership guide](../../../docs/guides/architecture.md) for the full layout.
+[package ownership guide](../../../docs/guides/architecture.md) for the full tiler.
 
 ```python
 class Encoder(nn.Module):
@@ -199,11 +199,11 @@ chain owns the constructor recipe required to rebuild the native module.
 from lightning import Trainer
 from tiler import Merger
 from torch.utils.data import DataLoader, Dataset
-from geosave_engine.geodata import GeoVector
+from geosave_engine.geodata.transform.chip import chip_windows
 from geosave_engine.ml.inputs import model_inputs
 
-# parents holds prepared xarray stacks. layouts and padding come from native Tiler.
-reference = GeoVector.from_layouts(parents, layouts, padding=padding)
+# parents holds prepared xarray stacks. tilers and padding come from native Tiler.
+reference = chip_windows(parents, tilers, padding=padding)
 reference = reference.set_index("id", drop=False)
 
 class PredictionDataset(Dataset):
@@ -216,9 +216,9 @@ class PredictionDataset(Dataset):
         return model_inputs(spec, tile.gs.rasters, row), row.id
 
 mergers = {
-    key: Merger(layout, logits=task.num_classes, window=spec.tiles.window,
+    key: Merger(tiler, logits=task.num_classes, window=spec.chips.window,
                 save_visits=False)
-    for key, layout in layouts.items()
+    for key, tiler in tilers.items()
 }
 for logits, ids in Trainer().predict(task, dataloaders=DataLoader(PredictionDataset(), batch_size=8)):
     for sample_id, prediction in zip(ids, logits.detach().cpu().numpy(), strict=True):
@@ -230,10 +230,10 @@ scene_logits = mergers["scene-a"].merge(extra_padding=padding["scene-a"])
 This example assumes finite predictions and a complete prediction run. Apply
 pixel transforms appropriate to the released model before its forward call.
 Native Merger owns weighting and pixel placement; use the original parent's
-raster grid when wrapping results. Geometry does not reconstruct layouts.
+raster grid when wrapping results. Geometry does not reconstruct tilers.
 
 The PyTorch Dataset belongs to the consuming method. GeoSave's shared
-`ml.datasets.TileDataset` has been removed. `row.gs.to_xarray()` opens both
+`ml.datasets.TileDataset` has been removed. `row.gs.to_stack()` opens both
 ordinary asset rows and windowed rows. `row.gs.crop(parent)` applies an explicit
 window to prepared native xarray data. Reads remain lazy until tensor
 conversion. No custom tile object or automatic property-triggered loading exists.

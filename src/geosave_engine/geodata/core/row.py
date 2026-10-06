@@ -2,8 +2,8 @@
 
 from __future__ import annotations
 
-from collections.abc import Collection, Mapping
-from typing import TYPE_CHECKING, cast
+from collections.abc import Collection
+from typing import TYPE_CHECKING, Any, cast
 
 import pandas as pd
 import xarray as xr
@@ -23,37 +23,74 @@ class GeoRow:
     def __init__(self, data: pd.Series):
         self._data = data
 
-    def to_xarray(self, *, layers: Collection[str] | str | None = None) -> DataTree:
-        """Open selected raster assets and apply any stored pixel window lazily.
+    @property
+    def hrefs(self) -> dict[str, str]:
+        """Return each data asset's href by key."""
+        hrefs = {}
+        for key, asset in self._data["assets"].items():
+            # Parquet keeps one struct for every row, null where a row has no such asset.
+            if asset is not None and (
+                asset.get("roles") is None or "data" in asset["roles"]
+            ):
+                hrefs[key] = asset["href"]
+        return hrefs
+
+    def to_raster(self, *, layer: str | None = None, **options: Any) -> xr.Dataset:
+        """Read this row's assets as one lazy raster.
 
         Args:
-            layers: Asset names to open; None opens every available asset.
+            layer: Asset key to read. None reads every data asset as one raster.
+            **options: Forwarded to `read_raster`. `chunks` defaults to `{}`.
 
         Returns:
-            Native DataTree containing the selected raster groups.
+            Dataset cropped to this row's pixel window where it has one.
 
         Raises:
-            KeyError: The row names no assets or a selected asset is absent.
+            KeyError: `layer` names no data asset of this row.
+            ValueError: The assets sit on different grids.
 
         Examples:
-            >>> sample = catalog.iloc[0].gs.to_xarray()
+            >>> catalog.iloc[0].gs.to_raster().gs.variables
+            ('B04', 'B08')
         """
-        from geosave_engine.geodata.io.assets import read
+        from geosave_engine.geodata.io import read_raster
 
-        if "assets" not in self._data:
-            raise KeyError("this row carries no 'assets' naming rasters")
-        assets = self._data["assets"]
-        if not isinstance(assets, Mapping):
-            raise KeyError("the row names no assets")
-        opened = read(assets, layers=layers)
-        try:
-            result = self.crop(opened)
-        except BaseException:
-            opened.close()
-            raise
-        if result is not opened:
-            result.set_close(opened.close)
-        return result
+        hrefs = self.hrefs
+        source = list(hrefs.values()) if layer is None else hrefs[layer]
+        return self.crop(read_raster(source, **{"chunks": {}, **options}))
+
+    def to_stack(
+        self, *, layers: Collection[str] | str | None = None, **options: Any
+    ) -> DataTree:
+        """Read this row's assets as a lazy stack, one group per asset.
+
+        Args:
+            layers: Asset keys to read. None reads every data asset.
+            **options: Forwarded to `read_raster`. `chunks` defaults to `{}`.
+
+        Returns:
+            DataTree cropped to this row's pixel window where it has one.
+
+        Raises:
+            KeyError: A layer names no data asset of this row.
+
+        Examples:
+            >>> samples.iloc[0].gs.to_stack(layers=["optical", "label"]).gs.groups
+            ('optical', 'label')
+        """
+        from geosave_engine.geodata.io import read_stack
+
+        hrefs = self.hrefs
+        names = (
+            [layers]
+            if isinstance(layers, str)
+            else list(hrefs if layers is None else layers)
+        )
+        return self.crop(
+            read_stack(
+                {name: hrefs[name] for name in names}, **{"chunks": {}, **options}
+            )
+        )
 
     def crop[DataT: xr.Dataset | xr.DataArray | xr.DataTree](
         self, data: DataT
@@ -66,7 +103,7 @@ class GeoRow:
         Returns:
             Cropped native data; rows without a window return it unchanged.
         """
-        from geosave_engine.geodata.transform.window import crop
+        from geosave_engine.geodata.transform.chip import crop
 
         row = self._data.to_dict()
         if "row_off" not in row or bool(pd.isna(row["row_off"])):

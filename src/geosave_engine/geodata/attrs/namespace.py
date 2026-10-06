@@ -46,26 +46,22 @@ class AttrsNamespace:
                 )
         scopes = {model_scope(type(model)) for model in self.models.values()}
         if len(scopes) > 1:
-            raise ValueError(f"models of different scopes cannot share a namespace: {sorted(scopes)}")
-        model_keys = {key for model in self.models.values() for key in model.attr_keys()}
+            raise ValueError(
+                f"models of different scopes cannot share a namespace: {sorted(scopes)}"
+            )
+        model_keys = {
+            key for model in self.models.values() for key in model.attr_keys()
+        }
         if collisions := sorted(self.foreign.keys() & model_keys):
             raise ValueError(f"foreign attrs collide with model keys: {collisions}")
 
     @property
     def scope(self) -> Scope | None:
         """Return the scope its models belong to, None when it holds none."""
-        scopes: set[Scope] = {model_scope(type(model)) for model in self.models.values()}
+        scopes: set[Scope] = {
+            model_scope(type(model)) for model in self.models.values()
+        }
         return scopes.pop() if scopes else None
-
-    @property
-    def missing_keys(self) -> frozenset[str]:
-        """Return the keys its models mark missing, which writing removes."""
-        return frozenset(
-            key
-            for model in self.models.values()
-            for key, value in model.to_attrs().items()
-            if value is None
-        )
 
     @classmethod
     def from_attrs(cls, attrs: Mapping[Any, Any], scope: Scope) -> Self:
@@ -123,7 +119,9 @@ class AttrsNamespace:
         merged_models: dict[str, AttrsModel] = {}
         for model_name in sorted(set().union(*(n.models for n in namespaces))):
             models = [namespace.models.get(model_name) for namespace in namespaces]
-            merged_models[model_name], dropped_keys = resolve_model(model_name).merge(models)
+            merged_models[model_name], dropped_keys = resolve_model(model_name).merge(
+                models
+            )
             dropped |= dropped_keys
 
         foreign: dict[str, object] = {}
@@ -142,16 +140,12 @@ class AttrsNamespace:
             {
                 "<attr key>": its value,
             }
-            Foreign keys first, then every key the models write. A field set
-            to None writes nothing, marking its key missing.
+            Foreign keys first, then every key the models write.
         """
         model_attrs: FlatAttrs = {}
         for model in self.models.values():
             model_attrs.update(model.to_attrs())
-        return {
-            **self.foreign,
-            **{key: value for key, value in model_attrs.items() if value is not None},
-        }
+        return {**self.foreign, **model_attrs}
 
     @overload
     def get[M: AttrsModel](self, model: type[M]) -> M | None: ...

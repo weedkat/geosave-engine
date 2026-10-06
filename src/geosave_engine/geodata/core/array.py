@@ -13,66 +13,27 @@ import geosave_engine.geodata.attrs as attrs
 from geosave_engine.geodata.transform import nodata
 
 from .base import GeoRasterAccessor
-from .profile import (
+from geosave_engine.geodata.conventions import (
     BAND_DIMENSION,
     NOT_GEOREFERENCED_DIMENSIONS,
 )
 
 if TYPE_CHECKING:
-    from collections.abc import Callable, Sequence
+    from collections.abc import Sequence
     from os import PathLike
     from pathlib import Path
 
     import holoviews as hv
-    import torch
+    import pystac
     from numpy.typing import DTypeLike
 
+    from geosave_engine.geodata.io.storage import StorageOptions
     from geosave_engine.geodata.io.geotiff import (
         COGWriteOptions,
         GTiffWriteOptions,
     )
 
     from geosave_engine.geodata import DataArray, Dataset
-
-
-def tensor(
-    pixels: Callable[[DTypeLike | None], np.ndarray],
-    dtype: str | torch.dtype | None = None,
-) -> torch.Tensor:
-    """Build a contiguous tensor, preserving pixels unless a dtype is requested.
-
-    Args:
-        pixels: Reads the pixels in the numpy dtype it is given.
-        dtype: Torch dtype or its YAML-friendly name. None preserves the
-            pixels' dtype. A dtype numpy cannot hold, such as
-            `torch.bfloat16`, is read as float32 and narrowed on conversion.
-
-    Returns:
-        Tensor over contiguous pixels, in `dtype`.
-    """
-    import torch
-
-    if isinstance(dtype, str):
-        target = getattr(torch, dtype, None)
-        if not isinstance(target, torch.dtype):
-            raise ValueError(f"Unknown torch dtype {dtype!r}")
-    else:
-        target = dtype
-
-    if target is None:
-        values = np.ascontiguousarray(pixels(None))
-        try:
-            return torch.as_tensor(values)
-        except (TypeError, ValueError) as error:
-            raise TypeError(
-                f"Cannot convert numpy dtype {values.dtype} to a torch tensor"
-            ) from error
-
-    try:
-        reading_dtype = torch.empty(0, dtype=target).numpy().dtype
-    except TypeError:
-        reading_dtype = np.dtype("float32")
-    return torch.as_tensor(np.ascontiguousarray(pixels(reading_dtype)), dtype=target)
 
 
 def array(
@@ -188,6 +149,11 @@ class GeoArray(GeoRasterAccessor["DataArray"]):
             if dim not in grid_dims
         }
 
+    @property
+    def nodata(self) -> float | int | None:
+        """Read the stored value standing for nodata, or None where none is set."""
+        return nodata.fill_value(self._data)
+
     def write_nodata(self, value: float | int | None) -> DataArray:
         """Write the stored value standing for this band's nodata pixels.
 
@@ -238,22 +204,6 @@ class GeoArray(GeoRasterAccessor["DataArray"]):
         ordered = self._data.transpose(*ahead, *self.grid_dims).values
         return ordered if dtype is None else ordered.astype(dtype)
 
-    def to_tensor(self, *, dtype: str | torch.dtype | None = None) -> torch.Tensor:
-        """Read this band as one model-input tensor.
-
-        Args:
-            dtype: Torch dtype or its YAML-friendly name. None preserves the
-                prepared array dtype.
-
-        Returns:
-            Tensor shaped `(*axes, band, y, x)`, or `(*axes, y, x)` where this
-            band spans no `band` axis.
-
-        Examples:
-            >>> ds["ndvi"].gs.to_tensor().dtype
-            torch.uint16
-        """
-        return tensor(lambda reading: self.to_numpy(dtype=reading), dtype)
 
     def to_cog(
         self,
@@ -261,18 +211,16 @@ class GeoArray(GeoRasterAccessor["DataArray"]):
         *,
         map_scale: float | None = None,
         overwrite: bool = False,
-        catalog: str | PathLike[str] | None = None,
-        id: str | None = None,
+        storage_options: StorageOptions | None = None,
         **options: Unpack[COGWriteOptions],
-    ) -> Path:
+    ) -> Path | str:
         """Write this band as a Cloud Optimized GeoTIFF.
 
         Args:
             path: Output path ending in `.tif` or `.tiff`.
             map_scale: Map denominator used to write pixels per centimetre.
-            catalog: Optional GeoParquet recording the saved asset.
-            id: Record identity; None uses the saved raster's anchor.
             overwrite: Replace an existing file when true.
+            storage_options: Options for the filesystem a URL names.
             **options: COG creation options.
 
         Returns:
@@ -288,19 +236,16 @@ class GeoArray(GeoRasterAccessor["DataArray"]):
             >>> ds["ndvi"].gs.to_cog("ndvi.tif")
             PosixPath('ndvi.tif')
         """
-        from geosave_engine.geodata.io.geotiff import write_cog
+        from geosave_engine.geodata.io import geotiff
 
-        from geosave_engine.geodata.io.assets import write_catalog
-
-        saved = write_cog(
+        return geotiff.write_cog(
             self.to_raster(),
             path,
             map_scale=map_scale,
             overwrite=overwrite,
+            storage_options=storage_options,
             **options,
         )
-
-        return cast("Path", write_catalog(saved, catalog, id=id, overwrite=overwrite))
 
     def to_gtiff(
         self,
@@ -308,8 +253,9 @@ class GeoArray(GeoRasterAccessor["DataArray"]):
         *,
         map_scale: float | None = None,
         overwrite: bool = False,
+        storage_options: StorageOptions | None = None,
         **options: Unpack[GTiffWriteOptions],
-    ) -> Path:
+    ) -> Path | str:
         """Write this band as a plain GeoTIFF.
 
         Reach for `to_cog` unless a consumer needs a striped or otherwise
@@ -319,6 +265,7 @@ class GeoArray(GeoRasterAccessor["DataArray"]):
             path: Output path ending in `.tif` or `.tiff`.
             map_scale: Map denominator used to write pixels per centimetre.
             overwrite: Replace an existing file when true.
+            storage_options: Options for the filesystem a URL names.
             **options: GTiff creation options.
 
         Returns:
@@ -337,6 +284,49 @@ class GeoArray(GeoRasterAccessor["DataArray"]):
             path,
             map_scale=map_scale,
             overwrite=overwrite,
+            storage_options=storage_options,
+            **options,
+        )
+
+    def to_items(
+        self,
+        path: str | PathLike[str],
+        *,
+        collection: str | None = None,
+        map_scale: float | None = None,
+        overwrite: bool = False,
+        storage_options: StorageOptions | None = None,
+        **options: Unpack[COGWriteOptions],
+    ) -> tuple[pystac.Item, ...]:
+        """Save this band as COGs and describe them as STAC Items.
+
+        Args:
+            path: Name to save the band under, as a local path or fsspec URL
+                without a TIFF suffix.
+            collection: Name the Items share. None names them after `path`.
+            map_scale: Map denominator for TIFF resolution tags.
+            overwrite: Replace existing files.
+            storage_options: Options for the filesystem a URL names.
+            **options: COG creation options.
+
+        Returns:
+            One Item per instant, each holding this band as its one asset.
+
+        Raises:
+            ValueError: This band is unnamed or timeless.
+            FileExistsError: A file exists and `overwrite` is false.
+
+        Examples:
+            >>> [item.id for item in ds["ndvi"].gs.to_items("samples/ndvi")]
+            ['ndvi_20250601T103031', 'ndvi_20250611T103031']
+        """
+        return self.to_raster().gs.to_items(
+            path,
+            driver="cog",
+            collection=collection,
+            map_scale=map_scale,
+            overwrite=overwrite,
+            storage_options=storage_options,
             **options,
         )
 
@@ -448,7 +438,7 @@ class GeoArray(GeoRasterAccessor["DataArray"]):
             >>> ds["landcover"].gs.colorize().sizes["band"]
             3
         """
-        from geosave_engine.geodata.attrs.palette import parse_color
+        from geosave_engine.geodata.utils.color import parse_color
 
         legend = attrs.Legend.from_attrs(self._data.attrs)
         class_map = None if legend is None else legend.class_map
@@ -526,7 +516,7 @@ class GeoArray(GeoRasterAccessor["DataArray"]):
         from geosave_engine.geodata.viz import plot
 
         legend = attrs.Legend.from_attrs(self._data.attrs)
-        place = self.anchor.location if xlabel is None else None
+        place = self.anchor.locate() if xlabel is None else None
         caption = place.to_address() if place is not None else xlabel
         return plot(
             self._data,

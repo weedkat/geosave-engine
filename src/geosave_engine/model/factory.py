@@ -42,7 +42,8 @@ class BuildSpec(BaseModel):
             Selected registered factory or imported class.
 
         Raises:
-            ValueError: If a registered name is unknown.
+            KeyError: If a registered name is unknown.
+            AttributeError: If the imported module has no requested class.
             TypeError: If an imported class has the wrong base type.
         """
         if self.name is not None:
@@ -50,13 +51,13 @@ class BuildSpec(BaseModel):
             try:
                 return factories[self.name.casefold()]
             except KeyError:
-                raise ValueError(
+                raise KeyError(
                     f"Unknown name {self.name!r}; available: {list(registry)}"
                 ) from None
 
         assert self.class_path is not None
         module_name, _, attribute = self.class_path.rpartition(".")
-        factory = getattr(import_module(module_name), attribute, None)
+        factory = getattr(import_module(module_name), attribute)
         if not isinstance(factory, type) or not issubclass(factory, base):
             raise TypeError(
                 f"{self.class_path!r} must name a {base.__name__} subclass"

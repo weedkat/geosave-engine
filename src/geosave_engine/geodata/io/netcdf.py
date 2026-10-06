@@ -3,13 +3,19 @@
 from __future__ import annotations
 
 from collections.abc import Hashable, Mapping, Sequence
-from pathlib import Path
+from pathlib import Path, PurePosixPath
 from typing import TYPE_CHECKING, Any, Literal, TypedDict, Unpack, cast, overload
 
 import xarray as xr
 from dask.delayed import delayed
 
-from .storage import absolute_location
+from .storage import (
+    StorageOptions,
+    absolute_location,
+    is_local,
+    local_path,
+    local_target,
+)
 
 if TYPE_CHECKING:
     from os import PathLike
@@ -68,6 +74,7 @@ def read(
     group: str | None = None,
     chunks: NetCDFChunkSpec = None,
     mask_and_scale: bool = False,
+    storage_options: StorageOptions | None = None,
     **open_options: Unpack[NetCDFOpenOptions],
 ) -> Dataset:
     """Open one netCDF group as a raster Dataset.
@@ -79,14 +86,20 @@ def read(
         chunks: Chunk configuration for the opened arrays.
         mask_and_scale: Decode CF packing to physical values instead of
             returning stored digital numbers.
+        storage_options: Accepted for a uniform call; a URL is refused.
         **open_options: Supported `xarray.open_dataset` options.
 
     Returns:
         Raster Dataset as stored.
 
     Raises:
-        ValueError: The file cannot be read.
+        ValueError: The file cannot be read, or `source` is a URL.
     """
+    if not is_local(source):
+        raise ValueError(
+            f"{source} is remote, and NetCDF reads only local files; download "
+            f"it first, or store the raster as Zarr"
+        )
     if group is not None:
         tree = read_stack(
             source,
@@ -124,6 +137,7 @@ def read_stack(
     engine: NetCDFEngine = "netcdf4",
     chunks: NetCDFChunkSpec = None,
     mask_and_scale: bool = False,
+    storage_options: StorageOptions | None = None,
     **open_options: Unpack[NetCDFOpenOptions],
 ) -> DataTree:
     """Open a netCDF hierarchy as a raster-stack DataTree.
@@ -134,14 +148,20 @@ def read_stack(
         chunks: Chunk configuration for the opened arrays.
         mask_and_scale: Decode CF packing to physical values instead of
             returning stored digital numbers.
+        storage_options: Accepted for a uniform call; a URL is refused.
         **open_options: Supported `xarray.open_datatree` options.
 
     Returns:
         DataTree whose every leaf is a raster Dataset.
 
     Raises:
-        ValueError: The file cannot be read.
+        ValueError: The file cannot be read, or `source` is a URL.
     """
+    if not is_local(source):
+        raise ValueError(
+            f"{source} is remote, and NetCDF reads only local files; download "
+            f"it first, or store the raster as Zarr"
+        )
     stack = xr.open_datatree(
         source,
         engine=engine,
@@ -167,8 +187,9 @@ def write(
     compute: Literal[True] = True,
     engine: NetCDFEngine = "netcdf4",
     overwrite: bool = False,
+    storage_options: StorageOptions | None = None,
     **write_options: Unpack[NetCDFWriteOptions],
-) -> Path: ...
+) -> Path | str: ...
 
 
 @overload
@@ -179,6 +200,7 @@ def write(
     compute: Literal[False],
     engine: NetCDFEngine = "netcdf4",
     overwrite: bool = False,
+    storage_options: StorageOptions | None = None,
     **write_options: Unpack[NetCDFWriteOptions],
 ) -> Delayed: ...
 
@@ -190,16 +212,20 @@ def write(
     compute: bool = True,
     engine: NetCDFEngine = "netcdf4",
     overwrite: bool = False,
+    storage_options: StorageOptions | None = None,
     **write_options: Unpack[NetCDFWriteOptions],
-) -> Path | Delayed:
+) -> Path | str | Delayed:
     """Write a raster or raster stack to netCDF.
 
     Args:
         raster_or_stack: Raster Dataset, or raster-stack DataTree.
-        destination: Output path ending in `.nc`, `.nc4`, or `.cdf`.
-        compute: False returns a delayed write instead of writing now.
+        destination: Output path or fsspec URL ending in `.nc`, `.nc4`, or
+            `.cdf`. A URL is uploaded once the file is written.
+        compute: False returns a delayed write instead of writing now. A URL
+            needs true.
         engine: Xarray netCDF backend.
         overwrite: Replace an existing destination when true.
+        storage_options: Options for the filesystem a URL names.
         **write_options: Supported xarray netCDF write options.
 
     Returns:
@@ -208,7 +234,8 @@ def write(
     Raises:
         FileExistsError: The destination exists and overwrite is false.
         TypeError: The input is neither a Dataset nor a DataTree.
-        ValueError: The destination path is invalid.
+        ValueError: The destination path is invalid, or a URL is asked to
+            defer its write.
     """
     if not isinstance(raster_or_stack, xr.Dataset | xr.DataTree):
         raise TypeError(
@@ -216,20 +243,35 @@ def write(
             f"{type(raster_or_stack).__name__}"
         )
 
-    path = Path(destination)
-    if path.suffix not in _FILE_SUFFIXES:
+    name = PurePosixPath(str(destination)).name
+    if PurePosixPath(name).suffix not in _FILE_SUFFIXES:
         raise ValueError(
-            f"destination {path.name!r} must end in one of {list(_FILE_SUFFIXES)}"
+            f"destination {name!r} must end in one of {list(_FILE_SUFFIXES)}"
         )
-    if path.exists() and not overwrite:
-        raise FileExistsError(f"{path} exists; pass overwrite=True to replace it")
-
+    local = is_local(destination)
     options: dict[str, Any] = dict(write_options)
-    # Passing the literal lets xarray's overloads say what each call returns.
     if not compute:
+        if not local:
+            raise ValueError(
+                f"{destination} is remote, and a NetCDF file is uploaded once "
+                f"written; pass compute=True"
+            )
+        path = local_path(destination)
+        if path.exists() and not overwrite:
+            raise FileExistsError(f"{path} exists; pass overwrite=True to replace it")
+        # Passing the literal lets xarray's overloads say what each call returns.
         written = raster_or_stack.to_netcdf(
             path, mode="w", engine=engine, compute=False, **options
         )
         return delayed(lambda _: path)(written)
-    raster_or_stack.to_netcdf(path, mode="w", engine=engine, compute=True, **options)
-    return path
+    with local_target(
+        destination, overwrite=overwrite, storage_options=storage_options
+    ) as path:
+        raster_or_stack.to_netcdf(
+            path, mode="w", engine=engine, compute=True, **options
+        )
+
+    # A local write answers with a path; an upload answers with the URL it went to.
+    if local:
+        return local_path(destination)
+    return str(destination)

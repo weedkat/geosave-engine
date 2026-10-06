@@ -25,7 +25,7 @@ from geosave_engine.geodata.attrs import (
     create_header,
     rebase,
 )
-from geosave_engine.geodata.errors import UnreadMaskWarning
+from geosave_engine.geodata.warnings import UnreadMaskWarning
 from geosave_engine.geodata.io import gdal
 from geosave_engine.geodata.io import geotiff
 
@@ -532,8 +532,10 @@ def test_absence_kept_in_a_mask_band_says_it_is_unread(tmp_path: Path) -> None:
         dst.write_mask(valid)
 
     # The mask is not one of the bands read, so its absence would vanish silently.
-    with pytest.warns(UnreadMaskWarning, match="mask band"):
+    with pytest.warns(UnreadMaskWarning, match="mask band") as caught:
         gdal.read(source)
+
+    assert Path(caught[0].filename) == Path(__file__)
 
 
 def test_a_files_own_statistics_are_not_carried_into_memory(tmp_path: Path) -> None:
@@ -547,3 +549,16 @@ def test_a_files_own_statistics_are_not_carried_into_memory(tmp_path: Path) -> N
         assert "STATISTICS_MINIMUM" in src.tags(1)
     assert restored.red.gs.statistics().minimum is not None
     assert not [key for key in restored.red.attrs if key.startswith("STATISTICS_")]
+
+
+def test_a_cog_uploads_to_a_remote_location(bucket: str) -> None:
+    import fsspec
+
+    written = build_raster(times=1).isel(time=0)
+
+    saved = geotiff.write_cog(written, f"{bucket}/scene.tif", storage_options={})
+
+    assert saved == f"{bucket}/scene.tif"
+    filesystem = fsspec.filesystem("memory")
+    with rasterio.open(saved.removeprefix("memory:/"), opener=filesystem.open) as src:
+        assert src.descriptions == ("red", "nir")

@@ -9,7 +9,8 @@ from typing import TYPE_CHECKING, Literal, overload
 
 import xarray as xr
 
-from geosave_engine.geodata.errors import DroppedAttrsWarning
+from geosave_engine import __path__ as _package_paths
+from geosave_engine.geodata.warnings import DroppedAttrsWarning
 
 from .header import AttrsHeader
 from .model import AttrsModel
@@ -48,43 +49,27 @@ def create_header(obj: XarrayObject) -> AttrsHeader:
     return AttrsHeader.from_attrs(root=obj.attrs, data_vars=data_vars, coords=coords)
 
 
-def flag_variables(obj: XarrayObject) -> tuple[str, ...]:
-    """Name the variables whose values are class codes, not measurements.
+def is_flag(array: xr.DataArray) -> bool:
+    """Say whether a variable's values are class codes, not measurements.
 
     Dtype does not say: Sentinel-2 reflectance and a land cover map are both
-    integers. Only a `Legend` listing marks the values as codes, which
-    blending or ranking them would destroy.
+    integers. A `Legend` key or a GDAL palette marks the values as codes, which
+    blending or ranking would destroy. Only the keys are read, so attrs that
+    fail `Legend` validation still answer.
 
     Args:
-        obj: Dataset, DataArray, or DataTree to inspect. A DataTree is read
-            through its whole tree, its names qualified by group.
+        array: Variable to inspect.
 
     Returns:
-        Names carrying a class map, sorted, empty when none do.
-
-    Raises:
-        ValidationError: A value does not satisfy the field that owns its key.
+        True where the attrs mark the values as class codes.
 
     Examples:
-        >>> flag_variables(scene)
-        ('landcover', 'scl')
+        >>> is_flag(scene.landcover), is_flag(scene.red)
+        (True, False)
     """
-    if isinstance(obj, xr.DataTree):
-        names = flag_variables(obj.dataset)
-        for group, child in obj.children.items():
-            names += tuple(f"{group}/{name}" for name in flag_variables(child))
-        return tuple(sorted(names))
-
-    # A DataArray is one variable, so its own attrs carry the listing.
-    if isinstance(obj, xr.DataArray):
-        return (str(obj.name),) if Legend.from_attrs(obj.attrs) is not None else ()
-
-    return tuple(
-        sorted(
-            str(name)
-            for name, variable in obj.data_vars.items()
-            if Legend.from_attrs(variable.attrs) is not None
-        )
+    return (
+        any(key in array.attrs for key in Legend.attr_keys())
+        or array.attrs.get("colorinterp") == "palette"
     )
 
 
@@ -119,7 +104,7 @@ def merge(objects: Sequence[XarrayObject]) -> AttrsHeader:
             f"joining drops attrs the objects carried differently: "
             f"{sorted(str(attr) for attr in dropped)}",
             DroppedAttrsWarning,
-            stacklevel=2,
+            skip_file_prefixes=tuple(_package_paths),
         )
     return header
 
@@ -132,6 +117,7 @@ class AttrsEdit:
         target: Variable or coordinate name, None for the object's own attrs.
         namespace: Attrs to write; its models must belong to the target's scope.
         replace: Drop the target's existing attrs before writing.
+        drop: Attr keys removed from the target before writing.
 
     Examples:
         >>> AttrsEdit("B04", namespace).write(ds)
@@ -140,11 +126,12 @@ class AttrsEdit:
     target: str | None
     namespace: AttrsNamespace
     replace: bool = False
+    drop: frozenset[str] = frozenset()
 
     def write(self, obj: XarrayObject) -> None:
         """Write the namespace onto the target in `obj`.
 
-        Keys the namespace marks missing are removed from the target.
+        Dropped keys are removed from the target before the namespace is written.
 
         Args:
             obj: Dataset, DataArray, or DataTree to write onto.
@@ -175,7 +162,7 @@ class AttrsEdit:
             )
 
         attrs = {} if self.replace else dict(target_obj.attrs)
-        for key in self.namespace.missing_keys:
+        for key in self.drop:
             attrs.pop(key, None)
         target_obj.attrs = attrs | self.namespace.to_attrs()
 
@@ -219,19 +206,19 @@ def rebase[T: XarrayObject](
         *models: Exactly one `AttrsHeader` to restore its non-empty root and
             every variable or coordinate it names; exactly one
             `AttrsNamespace` to patch onto `target` — every key it carries,
-            models' and foreign alike, overwrites `target`'s, but it cannot
-            remove a stale key, since a flat mapping cannot tell "never set"
-            from "explicitly cleared"; or any number of `AttrsModel`
-            instances to patch onto `target`, applied in order, keyword
-            models last, where a field set to None does remove its key.
+            models' and foreign alike, overwrites `target`'s and none is
+            removed; or any number of `AttrsModel` instances to patch onto
+            `target`, applied in order, keyword models last.
         target: Variable or coordinate name the namespace or models describe,
             or several of them. None writes to the object's own attrs, which
             no name can address since a variable cannot be called None.
             Invalid alongside a header.
         inplace: Write into `obj` rather than returning a new object.
         **model_kwargs: Model name mapped to its field values, e.g.
-            ``legend={"color_map": {...}}``, or to None to drop that model.
-            Invalid alongside a header or a namespace.
+            ``legend={"color_map": {...}}``. A None value removes the keys it
+            stands for from `target`: the whole model's, or one field's as in
+            ``gdal_variable={"colorinterp": None}``. Invalid alongside a
+            header or a namespace.
 
     Returns:
         New object carrying the attrs, or None when `inplace` is set.
@@ -281,17 +268,26 @@ def rebase[T: XarrayObject](
                     f"rebase needs AttrsModel instances, got "
                     f"{sorted({type(model).__name__ for model in models})}"
                 )
-            for name, values in model_kwargs.items():
-                model_type = resolve_model(name)
-                attrs_models.append(
-                    model_type.missing() if values is None else model_type(**values)
-                )
-            # One namespace per model, so models patch in order and the last wins per key.
+            # One edit per model, so models patch in order and the last wins per key.
             edits = [
                 AttrsEdit(name, AttrsNamespace({model.NAME: model}))
                 for model in attrs_models
                 for name in targets
             ]
+            for model_name, values in model_kwargs.items():
+                model_type = resolve_model(model_name)
+                if values is None:
+                    values = dict.fromkeys(model_type.model_fields)
+                set_values = {k: v for k, v in values.items() if v is not None}
+                drop = frozenset(
+                    key
+                    for field_name, value in values.items()
+                    if value is None
+                    for key in model_type.attr_keys(field_name)
+                )
+                # The model rides along even when empty, so its scope is still checked.
+                namespace = AttrsNamespace({model_name: model_type(**set_values)})
+                edits += [AttrsEdit(name, namespace, drop=drop) for name in targets]
 
     # A failed write must leave `obj` untouched, even inplace, so try every edit on a copy first.
     result = copy(obj)

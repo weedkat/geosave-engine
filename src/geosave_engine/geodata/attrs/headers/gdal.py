@@ -7,7 +7,8 @@ from typing import TYPE_CHECKING, Any
 
 from rasterio.enums import ColorInterp, MaskFlags
 
-from geosave_engine.geodata.errors import UnreadMaskWarning
+from geosave_engine import __path__ as _package_paths
+from geosave_engine.geodata.warnings import UnreadMaskWarning
 
 from ..header import AttrsHeader
 from ..models import GDALVariable, Legend
@@ -43,7 +44,7 @@ def create_header(src: rasterio.DatasetReader) -> AttrsHeader:
             f"which this reader does not read, so every pixel reads as present; "
             f"give them a fill value, or read the mask with rasterio",
             UnreadMaskWarning,
-            stacklevel=2,
+            skip_file_prefixes=tuple(_package_paths),
         )
 
     data_vars: dict[str, dict[str, Any]] = {}

@@ -12,7 +12,7 @@ from odc.geo.geobox import GeoBox
 
 from geosave_engine.geodata.core.raster import raster as build_raster
 from geosave_engine.geodata.core.stack import stack
-from geosave_engine.geodata.errors import (
+from geosave_engine.geodata.warnings import (
     DroppedInstantsWarning,
     DroppedFramesWarning,
     GeoSaveWarning,

@@ -107,8 +107,8 @@ For development prediction, build a method-owned PyTorch Dataset that reads
 asset rows and tiled rows use the same raster reader; tiled rows add a pixel
 window. The shared `ml.datasets.TileDataset` has been removed.
 
-Use `spec.tiles.layout(shape)` to construct native spatial Tilers.
-`GeoVector.from_layouts(parents, layouts, padding=...)` creates the reference
+Use `spec.chips.tiler(shape)` to construct native spatial Tilers.
+`transform.chip.chip_windows(parents, tilers, padding=...)` creates the reference
 without reading pixels. Each ID identifies a parent, native tile ID, window,
 exact grid, and per-raster timestamps/bands. Supervised references retain
 annotations, `source_id`, and `source_assets` for provenance. Those source paths
@@ -121,7 +121,7 @@ DINOv3 encoder. Context encoding is shared by training and inference; cached
 values are an optional explicit argument, not a different inference recipe.
 
 Native `tiler.Merger` accepts the row's integer tile ID and numpy prediction.
-Convert tensors with `detach().cpu().numpy()` in ML. Keep layouts and halo widths
+Convert tensors with `detach().cpu().numpy()` in ML. Keep tilers and halo widths
 with the job and pass padding to `Merger.merge(extra_padding=...)`.
 
 Supervised validation/test own completion and validity policy. They accumulate
@@ -132,5 +132,9 @@ is supported. Prediction still returns indexed logits for caller-owned merging.
 
 `ImageAugmenter` remains available from `geosave_engine.ml.transforms` for
 YAML-configured native Kornia augmentation, including nested pipelines. The
-DataModule owns joint image/target and temporal handling; custom YOLO box
-conversion is outside this segmentation training path.
+DataModule owns joint image/target and temporal handling, passing `data_keys`
+at the augmentation call. Multiple inputs require explicit keys; a single
+image can omit them. The shared augmenter
+also supports Pascal VOC `bbox_xyxy`, COCO `bbox_xywh`, and normalized
+`bbox_yolo` boxes for custom training methods; YOLO class IDs use a separate
+`class` or `label` tensor.

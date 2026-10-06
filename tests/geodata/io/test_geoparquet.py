@@ -1,3 +1,4 @@
+from geosave_engine.geodata.transform.chip import chip_windows
 from pathlib import Path
 from uuid import uuid4
 
@@ -34,8 +35,8 @@ def test_tile_reference_round_trip_preserves_exact_grids(tmp_path, kind):
     sources = [plain] if kind == "plain" else [geo, plain] if kind == "mixed" else [geo]
     parent_ids = [f"parent-{position}" for position in range(len(sources))]
     parents = dict(zip(parent_ids, sources, strict=True))
-    layouts = {key: Tiler((12, 16), (6, 8), overlap=2) for key in parents}
-    reference = GeoVector.from_layouts(parents, layouts)
+    tilers = {key: Tiler((12, 16), (6, 8), overlap=2) for key in parents}
+    reference = chip_windows(parents, tilers)
     path = geoparquet.write(reference, tmp_path / "reference.parquet", index=False)
     restored = geoparquet.read(path).sample(frac=1, random_state=41)
     lookup = restored.set_index("id", verify_integrity=True)
@@ -117,7 +118,7 @@ def memory_catalog() -> str:
     return f"memory://geosave-tests/{uuid4()}/catalog.parquet"
 
 
-def test_remote_stac_table_round_trip_filters_and_materializes_hrefs() -> None:
+def test_remote_reference_table_round_trip_filters_and_materializes_hrefs() -> None:
     destination = memory_catalog()
     parent = destination.rsplit("/", 1)[0]
     vector = gpd.GeoDataFrame(
@@ -132,7 +133,7 @@ def test_remote_stac_table_round_trip_filters_and_materializes_hrefs() -> None:
         crs="EPSG:4326",
     )
 
-    written = vector.gs.to_geoparquet(destination)
+    written = vector.gs.to_geoparquet(destination, write_covering_bbox=True)
     selected = read_vector(
         destination,
         bbox=(-1, -1, 2, 2),
@@ -140,14 +141,12 @@ def test_remote_stac_table_round_trip_filters_and_materializes_hrefs() -> None:
     )
 
     filesystem, target = fsspec.core.url_to_fs(destination)
-    expected_asset = filesystem.unstrip_protocol(
-        f"{target.rsplit('/', 1)[0]}/rasters/near.zarr"
-    )
+    expected_asset = f"{parent}/rasters/near.zarr"
     assert written == destination
     assert list(selected.id) == ["near"]
     assert selected.iloc[0].assets["data"]["href"] == expected_asset
     stored = pq.read_table(target, filesystem=filesystem).column("assets")[0].as_py()
-    assert stored["data"]["href"] == "rasters/near.zarr"
+    assert stored["data"]["href"] == "./rasters/near.zarr"
     assert "token" not in selected
     assert not hasattr(selected, "source")
 

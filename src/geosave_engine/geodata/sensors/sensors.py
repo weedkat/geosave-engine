@@ -26,10 +26,10 @@ def _get_sensor(sensor: str) -> dict:
         That sensor's metadata dict.
 
     Raises:
-        ValueError: `sensor` not in `SENSOR_METADATA`.
+        KeyError: `sensor` not in `SENSOR_METADATA`.
     """
     if sensor not in SENSOR_METADATA:
-        raise ValueError(
+        raise KeyError(
             f"{sensor!r} not in SENSOR_METADATA; must be one of {list(SENSOR_METADATA)}"
         )
     return SENSOR_METADATA[sensor]
@@ -47,12 +47,12 @@ def _band_values(sensor: str, bands: list[str], field: str) -> list[float]:
         One value per band, in `bands` order.
 
     Raises:
-        ValueError: `sensor` unknown, or a band in `bands` has no `field` entry.
+        KeyError: `sensor` unknown, or a band in `bands` has no `field` entry.
     """
     values = _get_sensor(sensor)["bands"][field]
     missing = [b for b in bands if b not in values]
     if missing:
-        raise ValueError(f"{field} missing for band(s) {missing} in sensor {sensor!r}")
+        raise KeyError(f"{field} missing for band(s) {missing} in sensor {sensor!r}")
     return [values[b] for b in bands]
 
 
@@ -66,7 +66,7 @@ def sensor_bands(sensor: str) -> list[str]:
         Band names, in the sensor's own canonical order.
 
     Raises:
-        ValueError: `sensor` not in `SENSOR_METADATA`.
+        KeyError: `sensor` not in `SENSOR_METADATA`.
     """
     return list(_get_sensor(sensor)["band_order"])
 
@@ -85,7 +85,7 @@ def sensor_gsd(sensor: str) -> float:
         Ground sample distance in meters.
 
     Raises:
-        ValueError: `sensor` not in `SENSOR_METADATA`.
+        KeyError: `sensor` not in `SENSOR_METADATA`.
     """
     return float(_get_sensor(sensor)["gsd"])
 
@@ -101,7 +101,7 @@ def band_wavelengths(sensor: str, bands: list[str]) -> list[float]:
         One wavelength per band, in `bands` order.
 
     Raises:
-        ValueError: `sensor` unknown, or a band in `bands` has no wavelength entry.
+        KeyError: `sensor` unknown, or a band in `bands` has no wavelength entry.
     """
     return _band_values(sensor, bands, "wavelength")
 
@@ -117,7 +117,7 @@ def band_mean(sensor: str, bands: list[str]) -> list[float]:
         One mean per band, in `bands` order.
 
     Raises:
-        ValueError: `sensor` unknown, or a band in `bands` has no mean entry.
+        KeyError: `sensor` unknown, or a band in `bands` has no mean entry.
     """
     return _band_values(sensor, bands, "mean")
 
@@ -133,7 +133,7 @@ def band_std(sensor: str, bands: list[str]) -> list[float]:
         One std per band, in `bands` order.
 
     Raises:
-        ValueError: `sensor` unknown, or a band in `bands` has no std entry.
+        KeyError: `sensor` unknown, or a band in `bands` has no std entry.
     """
     return _band_values(sensor, bands, "std")
 
@@ -152,7 +152,7 @@ def band_gsd(sensor: str, bands: list[str]) -> list[float]:
         One ground sample distance per band, in `bands` order.
 
     Raises:
-        ValueError: `sensor` not in `SENSOR_METADATA`.
+        KeyError: `sensor` not in `SENSOR_METADATA`.
     """
     metadata = _get_sensor(sensor)
     overrides = metadata["bands"].get("gsd", {})

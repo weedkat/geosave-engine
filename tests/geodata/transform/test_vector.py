@@ -240,3 +240,53 @@ def test_crop_takes_a_vector_in_another_crs() -> None:
 
     assert geographic.shape == native.shape
     assert geographic.values.tolist() == native.values.tolist()
+
+
+def test_crop_takes_an_odc_geometry_carrying_its_own_crs() -> None:
+    from odc.geo.geom import box
+
+    cropped = _band().gs.crop(box(10, 10, 30, 30, "EPSG:32633"))
+
+    assert cropped.shape == (2, 2)
+    assert cropped.values.tolist() == [[1, 1], [1, 1]]
+
+
+def test_crop_takes_a_geoseries() -> None:
+    cropped = _band().gs.crop(_triangle().geometry)
+
+    assert cropped.values.tolist() == [[1, 0, 0], [1, 1, 0], [1, 1, 1]]
+
+
+def test_crop_keeps_every_disconnected_geometry_and_masks_the_gap() -> None:
+    import geopandas as gpd
+    import shapely
+
+    corners = gpd.GeoDataFrame(
+        geometry=[shapely.box(0, 0, 10, 10), shapely.box(30, 30, 40, 40)],
+        crs="EPSG:32633",
+    )
+
+    cropped = _band().gs.crop(corners)
+
+    assert cropped.shape == (4, 4)
+    # North is the first row, so the box at y 30-40 is the top-right pixel.
+    assert cropped.values.tolist() == [
+        [0, 0, 0, 1],
+        [0, 0, 0, 0],
+        [0, 0, 0, 0],
+        [1, 0, 0, 0],
+    ]
+
+
+def test_crop_refuses_a_bare_shapely_geometry_that_names_no_crs() -> None:
+    import shapely
+
+    with pytest.raises(TypeError, match="CRS"):
+        _band().gs.crop(shapely.box(10, 10, 30, 30))
+
+
+def test_crop_refuses_an_odc_geometry_that_names_no_crs() -> None:
+    from odc.geo.geom import box
+
+    with pytest.raises(TypeError, match="CRS"):
+        _band().gs.crop(box(10, 10, 30, 30, None))

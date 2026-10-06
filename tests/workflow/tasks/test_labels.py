@@ -29,28 +29,28 @@ def test_find_labels_preserves_tree_and_removes_only_the_final_suffix(
     assert find_labels(tmp_path, "**/*.tif") == {"north/a.v1": first, "south/b": second}
 
 
-def test_a_directory_and_its_table_read_as_the_same_labels(tmp_path: Path) -> None:
-    root = tmp_path / "labels"
-    _label(root / "north" / "a.tif")
-    _label(root / "south" / "b.tif")
+def test_a_label_directory_becomes_one_row_per_label(tmp_path: Path) -> None:
+    first = _label(tmp_path / "north" / "a.tif")
+    _label(tmp_path / "south" / "b.tif")
 
-    indexed = read_labels(root)
-    table = indexed.gs.to_geoparquet(tmp_path / "labels.parquet")
-    read = read_labels(table)
+    labels = read_labels(tmp_path)
 
-    assert indexed["id"].tolist() == ["north/a", "south/b"]
-    assert read["id"].tolist() == indexed["id"].tolist()
-    assert [assets["label"]["href"] for assets in read["assets"]] == [
-        str(root / "north" / "a.tif"),
-        str(root / "south" / "b.tif"),
-    ]
-    assert read["start_datetime"].tolist() == indexed["start_datetime"].tolist()
+    assert labels["id"].tolist() == ["north/a", "south/b"]
+    assert labels.iloc[0]["assets"]["label"]["href"] == str(first)
 
 
 def test_a_label_table_keeps_its_caller_columns(tmp_path: Path) -> None:
     root = tmp_path / "labels"
     _label(root / "a.tif")
-    labels = read_labels(root).assign(quality=[0.97], surveyor=[None])
+    labels = GeoVector.from_geometry(
+        Point(0, 0),
+        properties={
+            "id": "a",
+            "assets": {"label": {"href": str(root / "a.tif")}},
+            "quality": 0.97,
+            "surveyor": None,
+        },
+    )
 
     read = read_labels(labels.gs.to_geoparquet(tmp_path / "labels.parquet"))
 
@@ -103,7 +103,18 @@ def test_a_label_table_needs_ids_that_name_one_sample_each(
     root = tmp_path / "labels"
     _label(root / "a.tif")
     _label(root / "b.tif")
-    table = read_labels(root)
+    table = GeoVector.concat(
+        [
+            GeoVector.from_geometry(
+                Point(0, 0),
+                properties={
+                    "id": name,
+                    "assets": {"label": {"href": str(root / f"{name}.tif")}},
+                },
+            )
+            for name in ("a", "b")
+        ]
+    )
     table["id"] = ids
     path = tmp_path / "labels.parquet"
     table.to_parquet(path)

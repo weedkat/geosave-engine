@@ -12,7 +12,7 @@ from odc.geo.geobox import GeoBox
 from odc.geo.geom import CRS
 
 from geosave_engine.geodata.core.raster import raster as build_raster
-from geosave_engine.geodata.errors import DroppedAttrsWarning, GeoSaveWarning
+from geosave_engine.geodata.warnings import DroppedAttrsWarning, GeoSaveWarning
 from geosave_engine.geodata.transform.composite import mosaic
 
 UTM = "EPSG:32633"

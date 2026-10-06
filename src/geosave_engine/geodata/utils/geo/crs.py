@@ -11,46 +11,6 @@ MAX_LONGITUDE = 180.0
 UPS_NORTH_EPSG = 5041
 UPS_SOUTH_EPSG = 5042
 
-# Short filename tokens for the non-metre linear units EPSG actually uses.
-UNIT_SUFFIXES = {
-    "US survey foot": "ft",
-    "foot": "ft",
-    "British foot (Sears 1922)": "ft",
-    "link": "li",
-    "chain": "ch",
-}
-
-
-def format_ground_size(value: float, unit: str) -> str:
-    """Render a ground distance in its CRS unit as a filename-safe token.
-
-    Metres scale to the nearest of centimetres, metres, or kilometres. Every
-    other unit keeps its own magnitude and takes a short suffix.
-
-    Args:
-        value: Non-negative distance, in `unit`.
-        unit: Axis unit name as a CRS reports it, e.g. `"metre"`.
-
-    Returns:
-        Token such as `"10m"`, `"5km"`, or `"0.0001deg"`.
-
-    Examples:
-        >>> format_ground_size(5000.0, "metre")
-        '5km'
-        >>> format_ground_size(0.0001, "degree")
-        '0.0001deg'
-    """
-    if unit.startswith("degree"):
-        return f"{value:g}deg"
-    if unit != "metre":
-        return f"{value:g}{UNIT_SUFFIXES.get(unit, unit.replace(' ', '-'))}"
-    if value < 1:
-        return f"{value * 100:g}cm"
-    if value < 1000:
-        return f"{value:g}m"
-    return f"{value / 1000:g}km"
-
-
 def validate_wgs84_bbox(bbox: tuple[float, float, float, float] | None) -> None:
     """Check WGS84 bounds and axis order.
 

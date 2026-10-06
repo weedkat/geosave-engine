@@ -9,6 +9,7 @@ import xarray as xr
 from dask.delayed import Delayed
 
 from geosave_engine.geodata.attrs import Nodata, rebase
+from geosave_engine.geodata import read_raster
 from geosave_engine.geodata.io import zarr
 
 from tests.geodata.conftest import build_raster
@@ -155,3 +156,35 @@ def test_a_variable_declaring_no_fill_leaves_zarr_its_own_default(
 
     stored = orjson.loads((destination / "red" / "zarr.json").read_bytes())
     assert stored["fill_value"] == 0
+
+
+def test_a_raster_round_trips_through_a_remote_store(
+    bucket: str, tmp_path: Path, monkeypatch
+) -> None:
+    monkeypatch.chdir(tmp_path)
+    written = build_raster(times=2)
+    destination = f"{bucket}/scene.zarr"
+
+    # zarr maps `memory://` to its own store and refuses unused storage_options.
+    saved = written.gs.to_zarr(destination)
+
+    assert saved == destination
+    assert list(tmp_path.iterdir()) == []
+    local = written.gs.to_zarr(tmp_path / "local.zarr")
+    with read_raster(saved) as restored, read_raster(local) as expected:
+        xr.testing.assert_identical(restored, expected)
+
+
+def test_a_remote_store_refuses_to_be_replaced_silently(bucket: str) -> None:
+    written = build_raster()
+    destination = f"{bucket}/scene.zarr"
+    written.gs.to_zarr(destination)
+
+    with pytest.raises(FileExistsError):
+        written.gs.to_zarr(destination)
+    assert written.gs.to_zarr(destination, overwrite=True) == destination
+
+
+def test_a_remote_store_needs_the_zarr_suffix(bucket: str) -> None:
+    with pytest.raises(ValueError, match=".zarr"):
+        build_raster().gs.to_zarr(f"{bucket}/scene.store")

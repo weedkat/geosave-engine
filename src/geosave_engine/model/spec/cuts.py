@@ -1,4 +1,4 @@
-"""Cuts a model reads its rasters through: frames along time, tiles in space."""
+"""Cuts a model reads its rasters through: frames along time, chips in space."""
 
 from __future__ import annotations
 
@@ -71,22 +71,22 @@ class FramesSpec(SpecModel):
         )
 
 
-class TilesSpec(SpecModel):
-    """Declare how a raster is cut into tiles and how results are merged back.
+class ChipsSpec(SpecModel):
+    """Declare how a raster is cut into chips and how results are merged back.
 
     Args:
-        size: Tile side in pixels, or height and width.
-        overlap: Pixels neighbouring tiles share.
-        mode: How a tile reaching past the raster is filled.
-        window: How overlapping tiles are weighed when merged. None weighs
-            every tile alike.
+        size: Chip side in pixels, or height and width.
+        overlap: Pixels neighbouring chips share.
+        mode: How a chip reaching past the raster is filled.
+        window: How overlapping chips are weighed when merged. None weighs
+            every chip alike.
 
     Raises:
         ValueError: Overlap cannot provide coverage for the selected window.
 
     Examples:
-        >>> layout = TilesSpec(size=224, overlap=32).layout((600, 800))
-        >>> tuple(layout.tile_shape)
+        >>> tiler = ChipsSpec(size=224, overlap=32).tiler((600, 800))
+        >>> tuple(tiler.tile_shape)
         (224, 224)
     """
 
@@ -99,7 +99,7 @@ class TilesSpec(SpecModel):
     def _validate_window(self) -> Self:
         if self.window is not None and not self.overlap:
             raise ValueError(
-                f"window {self.window!r} weighs overlapping tiles; set overlap"
+                f"window {self.window!r} weighs overlapping chips; set overlap"
             )
         # Zero or negative edge weights need two pixels of shared support.
         if self.overlap == 1 and self.window in (
@@ -117,14 +117,14 @@ class TilesSpec(SpecModel):
 
     @property
     def shape(self) -> tuple[int, int]:
-        """Return the tile height and width."""
+        """Return the chip height and width."""
         if isinstance(self.size, int):
             return self.size, self.size
         height, width = self.size
         return height, width
 
-    def layout(self, shape: tuple[int, int]) -> Tiler:
-        """Build a native spatial layout from pixel dimensions.
+    def tiler(self, shape: tuple[int, int]) -> Tiler:
+        """Build a native spatial Tiler from pixel dimensions.
 
         Args:
             shape: Parent height and width, before any optional halo padding.

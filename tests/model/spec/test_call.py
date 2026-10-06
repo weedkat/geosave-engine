@@ -57,7 +57,7 @@ def test_call_selects_only_referenced_roots() -> None:
 def test_call_rejects_missing_inputs_before_invocation() -> None:
     spec = CallSpec(call="builtins.dict", kwargs={"value": Ref("missing")})
 
-    with pytest.raises(ValueError, match="missing"):
+    with pytest.raises(KeyError, match="missing"):
         spec.select_inputs({"unused": object()})
 
 

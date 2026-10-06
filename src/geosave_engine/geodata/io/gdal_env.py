@@ -31,6 +31,8 @@ def configure_gdal(
     aws_secret_access_key: str | _Unset = _UNSET,
     aws_session_token: str | _Unset = _UNSET,
     aws_default_region: str | _Unset = _UNSET,
+    aws_s3_endpoint: str | _Unset = _UNSET,
+    aws_virtual_hosting: bool | _Unset = _UNSET,
     gdal_disable_readdir_on_open: bool | _Unset = _UNSET,
     gdal_http_max_retry: int | _Unset = _UNSET,
     gdal_http_retry_delay: float | _Unset = _UNSET,
@@ -53,6 +55,10 @@ def configure_gdal(
         aws_secret_access_key: AWS secret key.
         aws_session_token: Temporary AWS session token.
         aws_default_region: Default AWS region.
+        aws_s3_endpoint: Host of an S3-compatible service, such as
+            ``s3.hf.co`` for Hugging Face buckets.
+        aws_virtual_hosting: False addresses buckets as path segments, which
+            S3-compatible gateways need.
         gdal_disable_readdir_on_open: Skip remote directory listing before
             opening an asset.
         gdal_http_max_retry: Maximum HTTP retry attempts.
@@ -78,6 +84,8 @@ def configure_gdal(
         "AWS_SECRET_ACCESS_KEY": aws_secret_access_key,
         "AWS_SESSION_TOKEN": aws_session_token,
         "AWS_DEFAULT_REGION": aws_default_region,
+        "AWS_S3_ENDPOINT": aws_s3_endpoint,
+        "AWS_VIRTUAL_HOSTING": _bool_env(aws_virtual_hosting),
         "GDAL_DISABLE_READDIR_ON_OPEN": _bool_env(gdal_disable_readdir_on_open),
         "GDAL_HTTP_MAX_RETRY": (
             gdal_http_max_retry

@@ -13,7 +13,7 @@ from torch import nn
 from torch.utils.data import DataLoader, Dataset
 
 from geosave_engine.geodata import raster, stack
-from geosave_engine.model.spec import TilesSpec
+from geosave_engine.model.spec import ChipsSpec
 from tests.ml.test_inputs import _samples
 from types import SimpleNamespace
 from geosave_engine.ml.segmentation.callbacks import DensePredictionLogger
@@ -58,9 +58,9 @@ class Samples(Dataset[tuple[dict[str, torch.Tensor], torch.Tensor, str, torch.Te
         scene = raster({"red": np.ones((4, 4), "float32")}, grid)
         samples = _samples({"a": scene}, (4, 4))
         self.reference = samples.reference
-        self.layouts = samples.layouts
+        self.tilers = samples.tilers
         self.padding = samples.padding
-        self.spec = SimpleNamespace(tiles=TilesSpec(size=4))
+        self.spec = SimpleNamespace(chips=ChipsSpec(size=4))
         self.target = "label"
         label = raster({"label": np.zeros((4, 4), "float32")}, grid)
         self.parents = {"a": stack({"image": scene, "label": label})}

@@ -24,7 +24,7 @@ from torchvision.models.detection.faster_rcnn import FastRCNNPredictor, TwoMLPHe
 from torchvision.ops import MultiScaleRoIAlign, batched_nms
 
 from geosave_engine.geodata import GeoVector, io, raster
-from geosave_engine.ml.inputs import model_inputs
+from geosave_engine.ml.inputs import model_inputs, to_tensor
 from geosave_engine.ml.segmentation.transforms import softmax_argmax
 from geosave_engine.model.chain import ModelChain, chain_step
 from geosave_engine.model.head import (
@@ -159,7 +159,6 @@ def prepare_reference(root: str) -> str:
 
 
 def read_record_inputs(parent, row, spec):
-    reference = gpd.GeoDataFrame([row], geometry="geometry", crs="EPSG:4326" if row.geometry is not None else None)
     pixels = row.gs.crop(parent)
     inputs = model_inputs(spec, {"image": pixels}, row)
     image = inputs["image"]
@@ -188,7 +187,7 @@ def infer(root: str, reference_path: str) -> dict:
     expected = {}
     with torch.inference_mode():
         for parent_id, parent in parents.items():
-            image = torch.nan_to_num(parent.gs.to_tensor()).unsqueeze(0)
+            image = torch.nan_to_num(to_tensor(parent)).unsqueeze(0)
             expected[parent_id] = {
                 name: value[0].numpy() for name, value in dense(image=image).items()
             }

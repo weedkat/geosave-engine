@@ -10,8 +10,7 @@ from geosave_engine.geodata.io import zarr
 from tests.geodata.conftest import build_raster
 
 
-def test_relative_store_registers_after_changing_directory(tmp_path, monkeypatch):
-    from geosave_engine.geodata import GeoVector
+def test_relative_store_opens_after_changing_directory(tmp_path, monkeypatch):
 
     source = build_raster(times=2).isel(time=0)
     tree = xr.DataTree.from_dict(
@@ -24,10 +23,6 @@ def test_relative_store_registers_after_changing_directory(tmp_path, monkeypatch
         child = opened.gs.rasters["image"]
         assert "time" in child.coords
         assert "spatial_ref" in child.coords
-        row = GeoVector.from_xarray(opened, id="scene").iloc[0]
-        assert row.assets["image"]["href"] == str(tmp_path / "scene.zarr")
-        with row.gs.to_xarray() as restored:
-            xr.testing.assert_equal(restored.gs.rasters["image"], child)
 
 
 def test_stacked_band_metadata_survives_storage(tmp_path):

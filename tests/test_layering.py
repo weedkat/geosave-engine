@@ -4,6 +4,7 @@ import ast
 import importlib.util
 import subprocess
 import sys
+from pathlib import Path
 
 import pytest
 
@@ -21,7 +22,10 @@ def _run(code: str) -> str:
 
 def _loads(imports: str, module: str) -> bool:
     """Report whether importing `imports` also loads `module`."""
-    return _run(f"import sys\nimport {imports}\nprint({module!r} in sys.modules)") == "True"
+    return (
+        _run(f"import sys\nimport {imports}\nprint({module!r} in sys.modules)")
+        == "True"
+    )
 
 
 @pytest.mark.parametrize(
@@ -43,10 +47,32 @@ def _loads(imports: str, module: str) -> bool:
         "geosave_engine.ml.lightning",
         "geosave_engine.ml.metrics",
         "geosave_engine.ml.transforms.semantic_segmentation",
+        "geosave_engine.geodata.core.profile",
+        "geosave_engine.geodata.utils.gdal_env",
+        "geosave_engine.geodata.transform.window",
     ],
 )
 def test_old_path_is_gone(path):
     assert importlib.util.find_spec(path) is None
+
+
+def test_geodata_has_no_torch_or_ml_imports():
+    root = Path(__file__).parents[1] / "src" / "geosave_engine" / "geodata"
+    for path in root.rglob("*.py"):
+        for node in ast.walk(ast.parse(path.read_text())):
+            if isinstance(node, ast.Import):
+                modules = [alias.name for alias in node.names]
+            elif isinstance(node, ast.ImportFrom):
+                modules = [node.module or ""]
+            else:
+                continue
+            assert not any(
+                module == "torch"
+                or module.startswith("torch.")
+                or module == "geosave_engine.ml"
+                or module.startswith("geosave_engine.ml.")
+                for module in modules
+            ), path
 
 
 @pytest.mark.slow
@@ -78,7 +104,9 @@ def test_every_stage_package_registers_its_models():
 
 @pytest.mark.slow
 def test_spec_and_workflow_load_no_torch():
-    assert not _loads("geosave_engine.model.spec, geosave_engine.workflow.flows", "torch")
+    assert not _loads(
+        "geosave_engine.model.spec, geosave_engine.workflow.flows", "torch"
+    )
 
 
 @pytest.mark.slow

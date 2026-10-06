@@ -5,12 +5,13 @@ from __future__ import annotations
 from typing import TYPE_CHECKING, Any, Literal, overload
 
 import numpy as np
+import pandas as pd
 import xarray as xr
 
 import geosave_engine.geodata.attrs as attrs
 from geosave_engine.geodata.utils.datetime import parse_daterange
 
-from .profile import TIME_COORDINATE
+from geosave_engine.geodata.conventions import TIME_COORDINATE
 
 if TYPE_CHECKING:
     import geopandas as gpd
@@ -19,6 +20,7 @@ if TYPE_CHECKING:
     from odc.geo import CRS, BoundingBox, Resolution
     from odc.geo.gcp import GCPGeoBox
     from odc.geo.geobox import GeoBox
+    from odc.geo.geom import Geometry
 
     from geosave_engine.geodata.attrs import AttrsHeader, AttrsModel, AttrsNamespace
     from odc.geo import SomeResolution
@@ -231,19 +233,35 @@ class GeoRasterAccessor[DataT: xr.Dataset | xr.DataArray | xr.DataTree]:
         return min(start for start, _ in covered), max(end for _, end in covered)
 
     @property
+    def times(self) -> pd.DatetimeIndex | None:
+        """Read the time coordinate labels.
+
+        Returns:
+            Labels in axis order, or None for timeless data.
+
+        Examples:
+            >>> ds.gs.times.strftime("%Y%m%d").tolist()
+            ['20250601', '20250611']
+        """
+        coords = self._data.coords
+        if TIME_COORDINATE not in coords:
+            return None
+        return pd.DatetimeIndex(coords[TIME_COORDINATE].values)
+
+    @property
     def anchor(self) -> GeoAnchor:
         """Read exact spatial and temporal coverage.
 
         Returns:
             Anchor over this object's grid and time span, which names its
-            centroid, filename stem, and place.
+            centroid and place and formats both into a filename.
 
         Raises:
             ValueError: This object carries no locatable grid.
 
         Examples:
-            >>> ds["ndvi"].gs.anchor.stem
-            '13.0016E_45.0011N_5.12kmx5.12km_10m'
+            >>> ds["ndvi"].gs.anchor.format("{lat:.2f}N_{lon:.2f}E_{start:%Y%m%d}")
+            '45.00N_13.00E_20250601'
         """
         from odc.geo.geobox import GeoBox
 
@@ -350,26 +368,31 @@ class GeoRasterAccessor[DataT: xr.Dataset | xr.DataArray | xr.DataTree]:
             self._data, target, resampling=resampling, resolution=resolution
         )
 
-    def crop(self, vector: gpd.GeoDataFrame, *, mask: bool = True) -> DataT:
-        """Cut this object down to a vector's extent.
+    def crop(
+        self, region: Geometry | gpd.GeoSeries | gpd.GeoDataFrame, *, mask: bool = True
+    ) -> DataT:
+        """Cut this object down to the extent of a region.
 
         Args:
-            vector: Geometries to cut against, reprojected onto this
-                object's CRS where they sit in another.
+            region: Geometry, or geometries, to cut against, reprojected onto
+                this object's CRS where they sit in another. Disconnected
+                geometries share one cut.
             mask: Also make nodata the pixels outside the geometries, which
                 then take their own variable's fill value.
 
         Returns:
-            New object covering the vector's extent, its dtype unchanged.
+            New object covering the region's extent, its dtype unchanged.
 
         Raises:
-            ValueError: This object carries no CRS, `vector` is empty or does
+            TypeError: `region` carries no CRS, as a bare shapely geometry.
+            ValueError: This object carries no CRS, `region` is empty or does
                 not overlap it, or `mask` is set while a variable carries no
                 fill value.
 
         Examples:
             >>> ds.gs.crop(field_boundaries)
+            >>> ds.gs.crop(box(10, 10, 30, 30, "EPSG:32633"))
         """
         from geosave_engine.geodata.transform import vector as vectors
 
-        return vectors.crop(self._data, vector, mask=mask)
+        return vectors.crop(self._data, region, mask=mask)

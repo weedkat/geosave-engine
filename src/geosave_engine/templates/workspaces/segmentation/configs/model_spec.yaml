@@ -20,7 +20,7 @@ preprocessing:
     call: geosave_engine.geodata.transform.packing.unpack
     kwargs:
       data: !ref valid_pixels
-tiles:
+chips:
   size: 224
   overlap: 32
   mode: reflect

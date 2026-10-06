@@ -47,11 +47,12 @@ Examples:
 
 from __future__ import annotations
 
-from pathlib import Path
-from typing import TYPE_CHECKING, Any, NamedTuple, Unpack, cast
+from pathlib import Path, PurePosixPath
+from typing import TYPE_CHECKING, Any, Literal, NamedTuple, Unpack, cast, overload
 
 import numpy as np
 import odc.geo.xr  # noqa: F401  — registers the .odc accessor
+import pandas as pd
 import xarray as xr
 from odc.geo.geobox import GeoBox
 
@@ -61,13 +62,11 @@ from geosave_engine.geodata.attrs.headers.geobox import (
 )
 from geosave_engine.geodata.transform import nodata
 
-from .array import tensor
 from .base import GeoRasterAccessor
-from .profile import (
+from geosave_engine.geodata.conventions import (
     BAND_DIMENSION,
     CRS_COORDINATE,
     NOT_GEOREFERENCED_DIMENSIONS,
-    TIME_COORDINATE,
 )
 
 
@@ -78,19 +77,22 @@ if TYPE_CHECKING:
     from numpy.typing import DTypeLike
     from odc.geo import SomeCRS
 
-    import torch
 
     from geosave_engine.geodata.io.netcdf import (
         NetCDFEngine,
         NetCDFWriteOptions,
     )
     from geosave_engine.geodata.io.geotiff import COGWriteOptions
-    from geosave_engine.geodata.io.layout import LeafPath
     from geosave_engine.geodata.io.zarr import ZarrWriteOptions
+    from geosave_engine.geodata.io.storage import StorageOptions
 
     import holoviews as hv
+    import pystac
 
     from geosave_engine.geodata import DataArray, Dataset
+
+# Format `to_items` saves an unsaved raster in.
+type RasterDriver = Literal["cog", "zarr", "netcdf"]
 
 # One variable's pixels, alone or paired with the axes it carries.
 type RasterVariable = np.ndarray | tuple[np.ndarray, Sequence[str]]
@@ -325,25 +327,29 @@ class GeoRaster(GeoRasterAccessor["Dataset"]):
             names: Data variable names the caller supplied.
 
         Raises:
-            ValueError: A name is not a data variable of this raster.
+            KeyError: A name is not a data variable of this raster.
         """
         unknown = sorted(set(names) - set(self.variables))
         if unknown:
-            raise ValueError(
+            raise KeyError(
                 f"{unknown} are not data variables of this raster; it carries "
                 f"{list(self.variables)}"
             )
 
     @property
-    def times(self) -> np.ndarray | None:
-        """Read the time coordinate labels.
+    def nodata(self) -> dict[str, float | int | None]:
+        """Read the stored value standing for nodata in each variable.
 
         Returns:
-            Labels in axis order, or None for timeless data.
+            {
+                variable name: its fill value, or None where it carries none,
+            }
+
+        Examples:
+            >>> ds.gs.nodata
+            {'red': 0, 'nir': 0}
         """
-        if TIME_COORDINATE not in self._data.coords:
-            return None
-        return self._data.variables[TIME_COORDINATE].values
+        return {name: self._data[name].gs.nodata for name in self.variables}
 
     def write_crs(self, crs: SomeCRS | None = None) -> Dataset:
         """Write onto the spatial coordinates what they measure.
@@ -404,7 +410,7 @@ class GeoRaster(GeoRasterAccessor["Dataset"]):
             New Dataset whose named variables carry `value` as their fill.
 
         Raises:
-            ValueError: `target` names something that is not a data variable.
+            KeyError: `target` names something that is not a data variable.
             ValidationError: `value` is not a stored fill value.
 
         Examples:
@@ -447,8 +453,8 @@ class GeoRaster(GeoRasterAccessor["Dataset"]):
             other variable left uninterpreted.
 
         Raises:
-            ValueError: A name is not a data variable, or one variable is named
-                for two channels.
+            KeyError: A name is not a data variable.
+            ValueError: One variable is named for two channels.
 
         Examples:
             >>> ds.gs.write_rgb("B04", "B03", "B02").gs.plot()
@@ -465,14 +471,38 @@ class GeoRaster(GeoRasterAccessor["Dataset"]):
         # A band left interpreted would compose a second, stale colour.
         written = attrs.rebase(
             self._data,
-            attrs.GDALVariable(colorinterp=None),
             target=self.variables,
+            gdal_variable={"colorinterp": None},
         )
         for colour, name in channels.items():
             written = attrs.rebase(
                 written, attrs.GDALVariable(colorinterp=colour), target=name
             )
         return written
+
+    def statistics(self) -> pd.DataFrame:
+        """Summarise every variable's present pixels, reading each of them.
+
+        Returns:
+            One row per variable, in Dataset order, its columns the fields of
+            `GeoArray.statistics`.
+
+        Raises:
+            ValueError: A variable holds no present pixel.
+
+        Examples:
+            >>> ds.gs.statistics()
+                 minimum  maximum  mean  stddev  valid_percent
+            red      1.0     96.0  45.6    29.9          100.0
+            nir      8.0     98.0  56.7    23.2          100.0
+        """
+        return pd.DataFrame.from_dict(
+            {
+                name: self._data[name].gs.statistics()._asdict()
+                for name in self.variables
+            },
+            orient="index",
+        )
 
     def to_array(self, *, dtype: DTypeLike | None = None) -> DataArray:
         """Stack every variable this raster carries into one array.
@@ -550,7 +580,8 @@ class GeoRaster(GeoRasterAccessor["Dataset"]):
             panel per `time` value, `cols` wide.
 
         Raises:
-            ValueError: A named variable is absent, `variable` is None while
+            KeyError: A named variable is absent.
+            ValueError: `variable` is None while
                 this raster carries more than one variable and measures no
                 red, green, and blue among them, two variables measure one
                 colour, or the drawing refuses the raster.
@@ -582,7 +613,7 @@ class GeoRaster(GeoRasterAccessor["Dataset"]):
         if len(selected) == 1:
             legend = attrs.Legend.from_attrs(self._data.variables[selected[0]].attrs)
 
-        place = self.anchor.location if xlabel is None else None
+        place = self.anchor.locate() if xlabel is None else None
         caption = place.to_address() if place is not None else xlabel
         return draw(
             array,
@@ -692,89 +723,205 @@ class GeoRaster(GeoRasterAccessor["Dataset"]):
         )
         return stacked if dtype is None else stacked.astype(dtype)
 
-    def to_tensor(self, *, dtype: str | torch.dtype | None = None) -> torch.Tensor:
-        """Stack every variable this raster carries into one model-input tensor.
-
-        Select and order the variables with xarray before stacking them.
-
-        Args:
-            dtype: Torch dtype or its YAML-friendly name. None preserves the
-                prepared raster dtype. A dtype numpy cannot hold, such as
-                `torch.bfloat16`, stacks as float32 and narrows on conversion.
-
-        Returns:
-            Tensor shaped `(*axes, band, y, x)`.
-
-        Raises:
-            ValueError: This raster carries no variables, or they carry
-                different non-spatial dimensions.
-
-        Examples:
-            >>> ds[["B04", "B08"]].gs.to_tensor().dtype
-            torch.uint16
-        """
-        return tensor(lambda stacking: self.to_numpy(dtype=stacking), dtype)
 
     def to_cog(
         self,
-        destination: str | PathLike[str],
+        path: str | PathLike[str],
         *,
-        layout: str | LeafPath = "nested",
         split_bands: bool = False,
         map_scale: float | None = None,
         overwrite: bool = False,
-        catalog: str | PathLike[str] | None = None,
-        id: str | None = None,
+        storage_options: StorageOptions | None = None,
         **options: Unpack[COGWriteOptions],
-    ) -> Path:
-        """Write this raster as a tree of Cloud Optimized GeoTIFFs.
-
-        A GeoTIFF holds one instant of one grid, so a cube spreads across
-        files. `layout` decides how: see `io.layout`.
+    ) -> tuple[Path | str, ...]:
+        """Write this raster as Cloud Optimized GeoTIFFs named after `path`.
 
         Args:
-            destination: Directory the tree is written into, or the file path
-                when the raster carries no time axis and `split_bands` is off,
-                which writes it as one file.
-            layout: `"nested"`, `"flat"`, or a callable placing one leaf from
-                its instant and variable. Ignored unless `split_bands` is set.
-            split_bands: Give each variable its own single-band file, rather
-                than keeping them as bands of one file per instant.
-            map_scale: Map denominator used to write pixels per centimetre in
-                every leaf.
-            catalog: Optional GeoParquet recording the saved assets.
-            id: Record identity; None uses the saved raster's anchor.
-            overwrite: Replace leaves that already exist.
-            **options: COG creation options passed to every leaf.
+            path: Name of the raster, as a local path or fsspec URL without a
+                TIFF suffix.
+            split_bands: Write a separate COG for each band.
+            map_scale: Map denominator for TIFF resolution tags.
+            overwrite: Replace existing files.
+            storage_options: Options for the filesystem a URL names.
+            **options: COG creation options.
 
         Returns:
-            Saved directory or file path.
+            Exactly the files written, in time then variable order.
 
         Raises:
-            FileExistsError: A leaf exists and `overwrite` is false.
-            KeyError: `layout` names no known arrangement.
-            ValueError: This raster carries no locatable grid, or spans a
-                non-spatial axis other than time.
+            ValueError: `path` ends in a TIFF suffix, or the raster cannot be
+                arranged as COGs.
+            FileExistsError: A file exists and `overwrite` is false.
 
         Examples:
-            >>> ds.gs.to_cog("scene")  # scene/20250601T103031.tif, ...
-            >>> ds.gs.to_cog("scene", layout="flat", split_bands=True)
+            >>> ds.gs.to_cog("samples/forest")[0]
+            PosixPath('samples/forest/forest_20250601T103031.tif')
         """
-        from geosave_engine.geodata.io.layout import write_tree
+        from geosave_engine.geodata.io import cogs
 
-        from geosave_engine.geodata.io.assets import write_catalog
-
-        saved = write_tree(
+        # The path is a name, so a TIFF suffix would yield `scene.tif.tif`.
+        if PurePosixPath(str(path)).suffix.lower() in (".tif", ".tiff"):
+            raise ValueError(
+                f"{path} names one file, but to_cog names a raster and arranges "
+                f"its files; write one file with io.geotiff.write_cog"
+            )
+        return cogs.write(
             self._data,
-            destination,
-            layout=layout,
+            path,
             split_bands=split_bands,
             map_scale=map_scale,
             overwrite=overwrite,
+            storage_options=storage_options,
             **options,
         )
 
-        return cast("Path", write_catalog(saved, catalog, id=id, overwrite=overwrite))
+    @overload
+    def to_items(
+        self, path: None = None, *, collection: str | None = None
+    ) -> tuple[pystac.Item, ...]: ...
+
+    @overload
+    def to_items(
+        self,
+        path: str | PathLike[str],
+        *,
+        driver: Literal["cog"] = "cog",
+        collection: str | None = None,
+        split_bands: bool = True,
+        map_scale: float | None = None,
+        overwrite: bool = False,
+        storage_options: StorageOptions | None = None,
+        **options: Unpack[COGWriteOptions],
+    ) -> tuple[pystac.Item, ...]: ...
+
+    @overload
+    def to_items(
+        self,
+        path: str | PathLike[str],
+        *,
+        driver: Literal["zarr"],
+        collection: str | None = None,
+        overwrite: bool = False,
+        **options: Unpack[ZarrWriteOptions],
+    ) -> tuple[pystac.Item, ...]: ...
+
+    @overload
+    def to_items(
+        self,
+        path: str | PathLike[str],
+        *,
+        driver: Literal["netcdf"],
+        collection: str | None = None,
+        overwrite: bool = False,
+        storage_options: StorageOptions | None = None,
+        **options: Unpack[NetCDFWriteOptions],
+    ) -> tuple[pystac.Item, ...]: ...
+
+    def to_items(
+        self,
+        path: str | PathLike[str] | None = None,
+        *,
+        driver: RasterDriver = "cog",
+        collection: str | None = None,
+        **options: Any,
+    ) -> tuple[pystac.Item, ...]:
+        """Describe this raster's saved files as STAC Items, saving it first if needed.
+
+        A raster read from one file or store is described where it sits. Any
+        other raster is written to `path` by the writer `driver` names, then
+        described from the pixels written.
+
+        Args:
+            path: Where to save an unsaved raster, as `to_cog`, `to_zarr` or
+                `to_netcdf` takes it. None describes the file or store this
+                raster was read from.
+            driver: Format to save in. `"cog"` writes one file per band and
+                instant, which every geospatial tool opens; `"zarr"` and
+                `"netcdf"` write one store holding every instant.
+            collection: Name the Items share. None names them after `path`.
+            **options: Forwarded to `to_cog`, `to_zarr` or `to_netcdf`. COGs
+                split bands unless `split_bands=False`, so each band is an
+                asset of its own.
+
+        Returns:
+            One Item per instant for COGs, or one Item for a store.
+
+        Raises:
+            ValueError: `path` is None and this raster was not read from one
+                file or store, or its pixels changed since; or the raster is
+                timeless, which `stac.item.from_assets(..., datetime=...)`
+                dates by hand.
+            FileExistsError: A file exists and `overwrite` is false.
+
+        Examples:
+            >>> items = ds.gs.to_items("samples/forest")
+            >>> [item.id for item in items]
+            ['forest_20250601T103031', 'forest_20250611T103031']
+            >>> ds.gs.to_items("samples/forest.zarr", driver="zarr")[0].id
+            'forest'
+            >>> read_raster("samples/forest.zarr").gs.to_items()[0].id
+            'forest'
+        """
+        from geosave_engine.geodata.io import cogs
+        from geosave_engine.geodata.stac import asset, item
+
+        # A saved raster is described from the one file or store it was read from.
+        if path is None:
+            source = self._data.encoding.get("source")
+            if source is None:
+                raise ValueError(
+                    "this raster is not saved, so no file describes it; pass a "
+                    "path to save it to"
+                )
+            if Path(source).is_dir() and PurePosixPath(source).suffix != ".zarr":
+                raise ValueError(
+                    f"{source} is a folder of files, and this raster no longer "
+                    f"says which instant each one holds; index it when writing, "
+                    f"with to_items(path)"
+                )
+            name = PurePosixPath(source).stem
+            assets = {asset.default_key(self._data): asset.from_path(source)}
+            saved = item.from_assets(assets, id=name, collection=collection or name)
+            return (saved,)
+
+        # COGs: one Item per scene, each file described from the pixels it holds.
+        if driver == "cog":
+            name = PurePosixPath(str(path).rstrip("/")).name
+            # Catalogs key assets by band, so each band gets a file of its own.
+            split_bands = options.pop("split_bands", True)
+            self.to_cog(path, split_bands=split_bands, **options)
+
+            scenes: dict[str, dict[str, pystac.Asset]] = {}
+            for file in cogs.layout(self._data, path, split_bands=split_bands):
+                if file.scene not in scenes:
+                    scenes[file.scene] = {}
+                key = asset.default_key(file.raster)
+                scenes[file.scene][key] = asset.from_raster(
+                    file.raster, file.path, driver="cog"
+                )
+
+            items = []
+            for scene, assets in scenes.items():
+                scene_item = item.from_assets(
+                    assets, id=scene, collection=collection or name
+                )
+                items.append(scene_item)
+            return tuple(items)
+
+        # A store holds every instant, so it is one Item. It has to be written
+        # now: a deferred write leaves nothing to describe.
+        if driver == "zarr":
+            self.to_zarr(path, compute=True, **options)
+        else:
+            self.to_netcdf(path, compute=True, **options)
+        name = PurePosixPath(str(path)).stem
+        assets = {
+            asset.default_key(self._data): asset.from_raster(
+                self._data, path, driver=driver
+            )
+        }
+        store_item = item.from_assets(assets, id=name, collection=collection or name)
+        return (store_item,)
 
     def to_zarr(
         self,
@@ -782,17 +929,13 @@ class GeoRaster(GeoRasterAccessor["Dataset"]):
         *,
         compute: bool = True,
         overwrite: bool = False,
-        catalog: str | PathLike[str] | None = None,
-        id: str | None = None,
         **write_options: Unpack[ZarrWriteOptions],
-    ) -> Path | Delayed:
+    ) -> Path | str | Delayed:
         """Write this raster to Zarr.
 
         Args:
             destination: Output path ending in `.zarr`.
-            compute: False defers writing pixels and publishing the catalog.
-            catalog: Optional GeoParquet recording the saved assets.
-            id: Record identity; None uses the saved raster's anchor.
+            compute: False defers writing pixels.
             overwrite: Replace an existing destination when true.
             **write_options: Supported xarray Zarr write options.
 
@@ -806,17 +949,13 @@ class GeoRaster(GeoRasterAccessor["Dataset"]):
         """
         from geosave_engine.geodata.io import zarr
 
-        from geosave_engine.geodata.io.assets import write_catalog
-
-        saved = zarr.write(
+        return zarr.write(
             self._data,
             destination,
             compute=compute,
             overwrite=overwrite,
             **write_options,
         )
-
-        return write_catalog(saved, catalog, id=id, overwrite=overwrite)
 
     def to_netcdf(
         self,
@@ -825,8 +964,9 @@ class GeoRaster(GeoRasterAccessor["Dataset"]):
         compute: bool = True,
         engine: NetCDFEngine = "netcdf4",
         overwrite: bool = False,
+        storage_options: StorageOptions | None = None,
         **write_options: Unpack[NetCDFWriteOptions],
-    ) -> Path | Delayed:
+    ) -> Path | str | Delayed:
         """Write this raster to netCDF.
 
         Args:
@@ -834,6 +974,7 @@ class GeoRaster(GeoRasterAccessor["Dataset"]):
             compute: False returns a delayed task that writes and returns its path.
             engine: Concrete xarray netCDF writing engine.
             overwrite: Replace an existing destination when true.
+            storage_options: Options for the filesystem a URL names.
             **write_options: Supported xarray netCDF write options.
 
         Returns:
@@ -850,7 +991,8 @@ class GeoRaster(GeoRasterAccessor["Dataset"]):
             self._data,
             destination,
             compute=compute,
-            engine=engine,
             overwrite=overwrite,
+            engine=engine,
+            storage_options=storage_options,
             **write_options,
         )

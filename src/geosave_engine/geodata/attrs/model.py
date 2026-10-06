@@ -89,7 +89,9 @@ class AttrsModel(BaseModel):
                 continue
             if len(spellings) > 1:
                 # One store may hold a spelling as text and another as a number.
-                typed = [parse_field_value(cls, field_name, attrs[key]) for key in spellings]
+                typed = [
+                    parse_field_value(cls, field_name, attrs[key]) for key in spellings
+                ]
                 for spelling, other in zip(spellings[1:], typed[1:], strict=True):
                     if not attrs_equal(other, typed[0]):
                         raise ValueError(
@@ -100,16 +102,6 @@ class AttrsModel(BaseModel):
             field_values[field_name] = attrs[spellings[0]]
         return cls(**field_values) if field_values else None
 
-    @classmethod
-    def missing(cls) -> Self:
-        """Return the model with every field missing, so writing it removes its keys.
-
-        Examples:
-            >>> Nodata.missing().to_attrs()
-            {'_FillValue': None, 'nodata': None}
-        """
-        return cls.model_construct(**dict.fromkeys(cls.model_fields))
-
     def to_attrs(self) -> FlatAttrs:
         """Read this model back as a flat attrs mapping.
 
@@ -119,10 +111,9 @@ class AttrsModel(BaseModel):
 
         Returns:
             {
-                "<attr key>": its value, None where the field marks the attr
-                    missing,
+                "<attr key>": its value,
             }
-            Only fields that were explicitly set appear, each under every key
+            Only fields explicitly set to a value appear, each under every key
             it writes.
 
         Raises:
@@ -140,6 +131,7 @@ class AttrsModel(BaseModel):
                 exclude_computed_fields=True,
                 fallback=_json_value,
             ).items()
+            if value is not None
             for key in self.attr_keys(field_name)
         }
 
@@ -173,7 +165,9 @@ class AttrsModel(BaseModel):
 
         for name, field_info in cls.model_fields.items():
             if MUST_AGREE in field_info.metadata:
-                values = [None if model is None else getattr(model, name) for model in models]
+                values = [
+                    None if model is None else getattr(model, name) for model in models
+                ]
                 if not all_equal(values):
                     raise ValueError(
                         f"{cls.NAME}.{name} must agree across the joined objects, "
@@ -188,12 +182,7 @@ class AttrsModel(BaseModel):
             if None not in models and all_equal([getattr(m, name) for m in models])
         }
         dropped_fields = fields_set - common_fields
-        # A dropped field set to None clears the key a model had written; a field
-        # no object set stays unset, so the result clears nothing.
         merged = {name: getattr(models[0], name) for name in common_fields & fields_set}
-        merged |= {
-            name: None for name in dropped_fields if cls.model_fields[name].default is None
-        }
         dropped_keys = {key for name in dropped_fields for key in cls.attr_keys(name)}
         return cls(**merged), dropped_keys
 

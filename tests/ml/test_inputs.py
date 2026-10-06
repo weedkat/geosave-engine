@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from geosave_engine.geodata.transform.chip import chip_windows
 import numpy as np
 import pytest
 import xarray as xr
@@ -7,12 +8,44 @@ from odc.geo.geobox import GeoBox
 from odc.geo.xr import xr_coords
 
 from geosave_engine.geodata.core.stack import stack
-from geosave_engine.geodata import GeoVector
-from geosave_engine.ml.inputs import model_inputs
+from geosave_engine.ml.inputs import model_inputs, to_tensor
 from torch.utils.data import Dataset
 from tiler import Merger, Tiler
 
 torch = pytest.importorskip("torch")
+
+
+@pytest.mark.parametrize("kind", ["array", "dataset", "tree"])
+@pytest.mark.parametrize("dtype", [None, "float32", torch.bfloat16])
+def test_native_rasters_convert_with_explicit_tensor_dtype(kind, dtype):
+    source = _optical().isel(time=0)
+    data = source.B04 if kind == "array" else source
+    if kind == "tree":
+        data = stack({"optical": source})
+
+    result = to_tensor(data, dtype=dtype)
+    if kind == "tree":
+        assert tuple(result) == ("optical",)
+        result = result["optical"]
+    expected_dtype = (
+        torch.uint16
+        if dtype is None
+        else torch.bfloat16
+        if dtype is torch.bfloat16
+        else torch.float32
+    )
+    assert result.dtype == expected_dtype
+    assert result.shape == ((8, 8) if kind == "array" else (2, 8, 8))
+    assert result.is_contiguous()
+    expected = source.B04 if kind == "array" else source
+    torch.testing.assert_close(
+        result, torch.as_tensor(expected.gs.to_numpy(), dtype=expected_dtype)
+    )
+
+
+def test_tensor_conversion_rejects_unknown_dtype():
+    with pytest.raises(ValueError, match="Unknown torch dtype"):
+        to_tensor(_raster(8, 8), dtype="unknown")
 
 
 def _raster(height: int, width: int, seed: int = 0) -> xr.Dataset:
@@ -65,7 +98,7 @@ def test_a_small_model_and_shuffled_native_merge_rebuild_each_parent(window):
     samples = _samples(parents, (6, 8), overlap=2, halo=window == "hann")
     mergers = {
         key: Merger(layout, logits=3, window=window, save_visits=False)
-        for key, layout in samples.layouts.items()
+        for key, layout in samples.tilers.items()
     }
     model = torch.nn.Conv2d(2, 3, 1).eval()
     with torch.inference_mode():
@@ -82,7 +115,7 @@ def test_a_small_model_and_shuffled_native_merge_rebuild_each_parent(window):
                 mergers[row.parent_id].add(int(row.tile_id), output)
         for key, parent in parents.items():
             actual = mergers[key].merge(extra_padding=samples.padding[key])
-            expected = model(parent.gs.to_tensor()[None])[0].numpy()
+            expected = model(to_tensor(parent)[None])[0].numpy()
             np.testing.assert_allclose(actual, expected, rtol=1e-5, atol=1e-6)
 
 
@@ -192,7 +225,7 @@ def test_lazy_reader_matches_native_fringe_padding_and_bounds(mode):
     position = len(samples) - 1
     actual, _ = samples[position]
     native = Tiler((2, 13, 19), (2, 6, 8), overlap=2, channel_dimension=0, mode=mode)
-    expected = native.get_tile(parent.gs.to_tensor().numpy(), position)
+    expected = native.get_tile(to_tensor(parent).numpy(), position)
     np.testing.assert_array_equal(actual["image"].numpy(), expected)
     assert tasks
     assert all(location[-2][0] >= 8 and location[-1][0] >= 10 for location in tasks)
@@ -229,12 +262,12 @@ def test_named_inputs_preserve_different_leading_axes_and_tile_grid():
 class Samples(Dataset):
     """Consumer-owned Dataset exercising the public read and input APIs."""
 
-    def __init__(self, parents, layouts, spec=None, *, padding=None):
-        self.parents, self.layouts, self.spec = parents, layouts, spec
+    def __init__(self, parents, tilers, spec=None, *, padding=None):
+        self.parents, self.tilers, self.spec = parents, tilers, spec
         self.padding = padding or {key: [(0, 0), (0, 0)] for key in parents}
-        self.reference = GeoVector.from_layouts(
-            parents, layouts, padding=self.padding
-        ).set_index("id", drop=False)
+        self.reference = chip_windows(parents, tilers, padding=self.padding).set_index(
+            "id", drop=False
+        )
 
     def __len__(self):
         return len(self.reference)
@@ -247,7 +280,7 @@ class Samples(Dataset):
         row = self.reference.iloc[position]
         tile = self.read(position)
         inputs = (
-            {"image": tile.gs.to_tensor()}
+            {"image": to_tensor(tile)}
             if self.spec is None
             else model_inputs(self.spec, tile.gs.rasters, row)
         )
@@ -255,7 +288,7 @@ class Samples(Dataset):
 
 
 def _samples(parents, shape, *, overlap=0, mode="reflect", halo=False, spec=None):
-    layouts, padding = {}, {}
+    tilers, padding = {}, {}
     for key, parent in parents.items():
         spatial = parent.gs.grid_dims
         layout = Tiler(
@@ -265,8 +298,8 @@ def _samples(parents, shape, *, overlap=0, mode="reflect", halo=False, spec=None
         if halo:
             padded_shape, padding[key] = layout.calculate_padding()
             layout.recalculate(data_shape=padded_shape)
-        layouts[key] = layout
-    return Samples(parents, layouts, spec, padding=padding)
+        tilers[key] = layout
+    return Samples(parents, tilers, spec, padding=padding)
 
 
 @pytest.mark.parametrize("kind", ["array", "dataset", "stack"])
@@ -296,3 +329,56 @@ def test_explicit_halo_uses_native_constant_value(kind, fill):
         )
         expected = layout.get_tile(padded, index)
         np.testing.assert_allclose(actual, expected, equal_nan=True)
+
+
+def _optical() -> xr.Dataset:
+    """Build two dated bands with distinct stored integer values."""
+    source = _raster(8, 8)
+    source = source.assign(
+        B04=xr.full_like(source.B04, 4, dtype="uint16"),
+        B08=xr.full_like(source.B08, 8, dtype="uint16"),
+    )
+    return source.expand_dims(
+        time=np.array(["2024-01-01", "2024-02-01"], dtype="datetime64[ns]")
+    )
+
+
+def test_to_tensor_preserves_the_prepared_dtype_by_default() -> None:
+    tensor = to_tensor(_optical())
+
+    assert tensor.dtype is torch.uint16
+    assert tuple(tensor.shape) == (2, 2, 8, 8)
+
+
+def test_to_tensor_honours_a_requested_dtype() -> None:
+    assert to_tensor(_optical(), dtype=torch.int16).dtype is torch.int16
+
+
+def test_to_tensor_accepts_a_yaml_dtype_name() -> None:
+    tensor = to_tensor(_optical(), dtype="float32")
+
+    assert tensor.dtype is torch.float32
+
+
+def test_to_tensor_rejects_an_unknown_dtype_name() -> None:
+    with pytest.raises(ValueError, match="not-a-dtype"):
+        to_tensor(_optical(), dtype="not-a-dtype")
+
+
+def test_a_stack_preserves_and_explicitly_casts_group_dtypes() -> None:
+    scene = stack({"optical": _optical()})
+
+    assert to_tensor(scene)["optical"].dtype is torch.uint16
+    assert to_tensor(scene, dtype="float32")["optical"].dtype is torch.float32
+
+
+def test_tensor_conversion_places_spatial_axes_last():
+    scrambled = xr.DataArray(np.zeros((8, 8, 3), "uint16"), dims=("y", "x", "band"))
+    assert to_tensor(scrambled).shape == (3, 8, 8)
+
+
+def test_tensor_conversion_of_one_band_preserves_or_casts_dtype():
+    band = _optical().B04
+    assert to_tensor(band).dtype is torch.uint16
+    assert to_tensor(band, dtype="float32").dtype is torch.float32
+    assert to_tensor(band, dtype=torch.bfloat16).dtype is torch.bfloat16

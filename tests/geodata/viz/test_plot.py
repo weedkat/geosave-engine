@@ -20,9 +20,7 @@ hv.extension("matplotlib")
 
 @pytest.fixture(autouse=True)
 def resolved_location(monkeypatch: pytest.MonkeyPatch) -> None:
-    monkeypatch.setattr(
-        GeoAnchor, "location", property(lambda _: Place(city="Test City"))
-    )
+    monkeypatch.setattr(GeoAnchor, "locate", lambda _: Place(city="Test City"))
 
 
 def geobox() -> GeoBox:
@@ -150,7 +148,7 @@ class TestClassMap:
 
 class TestConstraints:
     def test_unknown_variable_refuses(self, optical: xr.Dataset) -> None:
-        with pytest.raises(ValueError, match="not data variables"):
+        with pytest.raises(KeyError, match="not data variables"):
             optical.gs.plot("B99")
 
     def test_selecting_first_draws(self, optical: xr.Dataset) -> None:

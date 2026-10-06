@@ -23,10 +23,11 @@ Examples:
 from __future__ import annotations
 
 from collections.abc import Mapping
-from pathlib import Path
-from typing import TYPE_CHECKING, Literal, Unpack, cast, overload
+from pathlib import Path, PurePosixPath
+from typing import TYPE_CHECKING, Any, Literal, Unpack, cast, overload
 
 import odc.geo.xr  # noqa: F401  — registers the .odc accessor
+import pandas as pd
 import xarray as xr
 from odc.geo.geobox import GeoBox
 
@@ -34,7 +35,7 @@ import geosave_engine.geodata.attrs as attrs
 from geosave_engine.geodata.transform import warp
 
 from .base import GeoRasterAccessor
-from .profile import CRS_COORDINATE
+from geosave_engine.geodata.conventions import CRS_COORDINATE
 
 if TYPE_CHECKING:
     from collections.abc import Callable
@@ -43,7 +44,7 @@ if TYPE_CHECKING:
     from os import PathLike
     import holoviews as hv
     import numpy as np
-    import torch
+    import pystac
     from numpy.typing import DTypeLike
 
     from geosave_engine.geodata.io.netcdf import (
@@ -52,11 +53,13 @@ if TYPE_CHECKING:
     )
     from geosave_engine.geodata.transform.warp import Resampling
     from geosave_engine.geodata.utils.datetime import DateRange
+
+    from .raster import RasterDriver
     from odc.geo import SomeResolution
     from geosave_engine.geodata import DataTree, Dataset
     from geosave_engine.geodata.io.geotiff import COGWriteOptions
-    from geosave_engine.geodata.io.layout import LeafPath
     from geosave_engine.geodata.io.zarr import ZarrWriteOptions
+    from geosave_engine.geodata.io.storage import StorageOptions
 
     from .anchor import GeoAnchor
 
@@ -244,20 +247,37 @@ class GeoStack(GeoRasterAccessor["DataTree"]):
         return (min(start for start, _ in spans), max(end for _, end in spans))
 
     @property
+    def times(self) -> pd.DatetimeIndex | None:
+        """Read every instant any group reaches, in order.
+
+        Returns:
+            Sorted labels across the groups, each instant once, or None where
+            no group is dated.
+        """
+        dated = [
+            times
+            for times in (raster.gs.times for raster in self.rasters.values())
+            if times is not None
+        ]
+        if not dated:
+            return None
+        return pd.DatetimeIndex(dated[0].append(dated[1:]).unique().sort_values())
+
+    @property
     def anchor(self) -> GeoAnchor:
         """Read exact spatial and temporal coverage.
 
         Returns:
             Anchor over the shared grid and everything the groups jointly
-            cover in time, which names the stack's centroid, filename stem,
-            and place.
+            cover in time, which names the stack's centroid and place and
+            formats both into a filename.
 
         Raises:
             ValueError: The groups do not share a grid.
 
         Examples:
-            >>> scene.gs.anchor.stem
-            '26.3970E_50.8960N_800mx800m_202506-20250611T000000.000000_100m'
+            >>> scene.gs.anchor.format("{lat:.2f}N_{lon:.2f}E_{start:%Y%m%d}")
+            '50.90N_26.40E_20250601'
         """
         from .anchor import GeoAnchor
 
@@ -434,7 +454,7 @@ class GeoStack(GeoRasterAccessor["DataTree"]):
         panels: list[hv.Element] = []
         for name in self.groups:
             raster = self._data.children[name].to_dataset(inherit="all_coords")
-            place = raster.gs.anchor.location
+            place = raster.gs.anchor.locate()
             caption = name if place is None else f"{name}\n{place.to_address()}"
             drawn = raster.gs.plot(xlabel=caption)
             panels.extend(drawn.values() if isinstance(drawn, hv.NdLayout) else [drawn])
@@ -470,89 +490,146 @@ class GeoStack(GeoRasterAccessor["DataTree"]):
             for name, raster in self.rasters.items()
         }
 
-    def to_tensor(
-        self, *, dtype: str | torch.dtype | None = None
-    ) -> dict[str, torch.Tensor]:
-        """Stack each group's variables into one model-input tensor.
-
-        Args:
-            dtype: Torch dtype or its YAML-friendly name for every group. None
-                preserves each prepared raster dtype.
-
-        Returns:
-            {
-                group name: tensor shaped `(*axes, band, y, x)`,
-            }
-
-        Raises:
-            ValueError: A group's variables carry different non-spatial
-                dimensions.
-
-        Examples:
-            >>> {name: t.shape for name, t in scene.gs.to_tensor().items()}
-            {'sentinel-2-l2a': (2, 4, 256, 256), 'dem': (1, 256, 256)}
-        """
-        return {
-            name: raster.gs.to_tensor(dtype=dtype)
-            for name, raster in self.rasters.items()
-        }
 
     def to_cog(
         self,
         destination: str | PathLike[str],
         *,
-        layout: str | LeafPath = "nested",
         split_bands: bool = False,
         map_scale: float | None = None,
         overwrite: bool = False,
-        catalog: str | PathLike[str] | None = None,
-        id: str | None = None,
+        storage_options: StorageOptions | None = None,
         **options: Unpack[COGWriteOptions],
-    ) -> Path:
-        """Write every group as a tree of Cloud Optimized GeoTIFFs.
-
-        Each group writes into its own directory named after the group, so the
-        groups stay separable on disk.
+    ) -> dict[str, tuple[Path | str, ...]]:
+        """Write every group as Cloud Optimized GeoTIFFs named after the group.
 
         Args:
-            destination: Directory the groups are written into.
-            layout: `"nested"`, `"flat"`, or a callable placing one leaf,
-                applied to every group. Ignored unless `split_bands` is set.
+            destination: Directory or fsspec URL the groups are written into.
             split_bands: Give each variable its own single-band file, rather
                 than keeping them as bands of one file per instant.
             map_scale: Map denominator used to write pixels per centimetre in
-                every leaf.
-            catalog: Optional GeoParquet recording the saved assets.
-            id: Record identity; None uses the saved raster's anchor.
-            overwrite: Replace leaves that already exist.
-            **options: COG creation options passed to every leaf.
+                every file.
+            overwrite: Replace files that already exist.
+            storage_options: Options for the filesystem a URL names.
+            **options: COG creation options passed to every file.
 
         Returns:
-            The directory written, holding one tree per group.
+            Group names mapped to exactly the files written for each group,
+            which `read_stack` reads back.
 
         Raises:
-            FileExistsError: A leaf exists and `overwrite` is false.
-            KeyError: `layout` names no known arrangement.
+            FileExistsError: A file exists and `overwrite` is false.
             ValueError: A group spans a non-spatial axis other than time.
 
         Examples:
-            >>> scene.gs.to_cog("scene")  # scene/sentinel-2-l2a/..., scene/dem/...
+            >>> paths = scene.gs.to_cog("scene")
+            >>> paths["dem"]
+            (PosixPath('scene/dem.tif'),)
         """
-        from geosave_engine.geodata.io.assets import write_catalog
+        from geosave_engine.geodata.io import cogs
 
-        root = Path(destination)
-        for name, raster in self.rasters.items():
-            raster.gs.to_cog(
-                root / name,
-                layout=layout,
+        return {
+            name: cogs.write(
+                raster,
+                f"{str(destination).rstrip('/')}/{name}",
                 split_bands=split_bands,
                 map_scale=map_scale,
                 overwrite=overwrite,
+                storage_options=storage_options,
                 **options,
             )
-        return cast(
-            "Path", write_catalog(root, catalog, id=id, stack=True, overwrite=overwrite)
-        )
+            for name, raster in self.rasters.items()
+        }
+
+    def to_items(
+        self,
+        path: str | PathLike[str],
+        *,
+        driver: RasterDriver = "cog",
+        collection: str | None = None,
+        **options: Any,
+    ) -> tuple[pystac.Item, ...]:
+        """Save every group and describe the stack as STAC Items.
+
+        Each group is one asset, keyed by its name. COGs give one Item per
+        instant any group reaches, a timeless group joining every one; a
+        store driver gives one Item, with one store per group.
+
+        Args:
+            path: Folder the groups are saved into, as a local path or fsspec
+                URL.
+            driver: Format to save each group in.
+            collection: Name the Items share. None names them after `path`.
+            **options: Forwarded to each group's `to_cog`, `to_zarr` or
+                `to_netcdf`.
+
+        Returns:
+            One Item per instant for COGs, or one Item for a store driver.
+
+        Raises:
+            ValueError: No group is dated, which
+                `stac.item.from_assets(..., datetime=...)` dates by hand.
+            FileExistsError: A file exists and `overwrite` is false.
+
+        Examples:
+            >>> items = sample.gs.to_items("samples/s0")
+            >>> sorted(items[0].assets)
+            ['label', 'optical']
+        """
+        from geosave_engine.geodata.io import cogs
+        from geosave_engine.geodata.stac import asset, item
+        from geosave_engine.geodata.utils.datetime import format_instant
+
+        # Names are joined as text, so a URL keeps its `scheme://`.
+        root = str(path).rstrip("/")
+        name = PurePosixPath(root).name
+        if collection is None:
+            collection = name
+
+        # A store driver writes one store per group, and the stack is one Item.
+        if driver != "cog":
+            suffix = ".zarr" if driver == "zarr" else ".nc"
+            assets: dict[str, pystac.Asset] = {}
+            for group, raster in self.rasters.items():
+                store = f"{root}/{group}{suffix}"
+                if driver == "zarr":
+                    raster.gs.to_zarr(store, compute=True, **options)
+                else:
+                    raster.gs.to_netcdf(store, compute=True, **options)
+                assets[group] = asset.from_raster(raster, store, driver=driver)
+            stack_item = item.from_assets(assets, id=name, collection=collection)
+            return (stack_item,)
+
+        # COGs: every group is written, then its files are sorted by instant.
+        self.to_cog(root, **options)
+        timeless: dict[str, pystac.Asset] = {}
+        dated: dict[pd.Timestamp, dict[str, pystac.Asset]] = {}
+        for group, raster in self.rasters.items():
+            for file in cogs.layout(raster, f"{root}/{group}"):
+                described = asset.from_raster(file.raster, file.path, driver="cog")
+                if file.time is None:
+                    timeless[group] = described
+                    continue
+                if file.time not in dated:
+                    dated[file.time] = {}
+                dated[file.time][group] = described
+
+        # A stack no group dates is still one Item, which `from_assets` refuses
+        # until it is given a time.
+        if not dated:
+            return (item.from_assets(timeless, id=name, collection=collection),)
+
+        items = []
+        for instant in sorted(dated):
+            # A timeless group, such as a DEM, belongs to every instant.
+            scene_assets = {**dated[instant], **timeless}
+            scene_item = item.from_assets(
+                scene_assets,
+                id=f"{name}_{format_instant(instant)}",
+                collection=collection,
+            )
+            items.append(scene_item)
+        return tuple(items)
 
     def to_zarr(
         self,
@@ -560,17 +637,13 @@ class GeoStack(GeoRasterAccessor["DataTree"]):
         *,
         compute: bool = True,
         overwrite: bool = False,
-        catalog: str | PathLike[str] | None = None,
-        id: str | None = None,
         **write_options: Unpack[ZarrWriteOptions],
-    ) -> Path | Delayed:
+    ) -> Path | str | Delayed:
         """Write this raster stack to Zarr.
 
         Args:
             destination: Output path ending in `.zarr`.
-            compute: False defers writing pixels and publishing the catalog.
-            catalog: Optional GeoParquet recording the saved assets.
-            id: Record identity; None uses the saved raster's anchor.
+            compute: False defers writing pixels.
             overwrite: Replace an existing destination when true.
             **write_options: Supported xarray Zarr write options.
 
@@ -584,17 +657,13 @@ class GeoStack(GeoRasterAccessor["DataTree"]):
         """
         from geosave_engine.geodata.io import zarr
 
-        from geosave_engine.geodata.io.assets import write_catalog
-
-        saved = zarr.write(
+        return zarr.write(
             self._data,
             destination,
             compute=compute,
             overwrite=overwrite,
             **write_options,
         )
-
-        return write_catalog(saved, catalog, id=id, stack=True, overwrite=overwrite)
 
     def to_netcdf(
         self,
@@ -603,15 +672,17 @@ class GeoStack(GeoRasterAccessor["DataTree"]):
         compute: bool = True,
         engine: NetCDFEngine = "netcdf4",
         overwrite: bool = False,
+        storage_options: StorageOptions | None = None,
         **write_options: Unpack[NetCDFWriteOptions],
-    ) -> Path | Delayed:
+    ) -> Path | str | Delayed:
         """Write this raster stack to netCDF.
 
         Args:
             destination: Output path ending in `.nc`, `.nc4`, or `.cdf`.
-            compute: False returns a delayed task that writes and returns its path.
+            compute: False defers writing pixels.
             engine: Concrete xarray netCDF writing engine.
             overwrite: Replace an existing destination when true.
+            storage_options: Options for the filesystem a URL names.
             **write_options: Supported xarray netCDF write options.
 
         Returns:
@@ -628,7 +699,8 @@ class GeoStack(GeoRasterAccessor["DataTree"]):
             self._data,
             destination,
             compute=compute,
-            engine=engine,
             overwrite=overwrite,
+            engine=engine,
+            storage_options=storage_options,
             **write_options,
         )

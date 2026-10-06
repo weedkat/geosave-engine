@@ -1,248 +1,360 @@
-"""Raster writers publish matching GeoVector records only after writing pixels."""
+"""A catalog built from the Items a raster describes itself with."""
 
-import shutil
+from __future__ import annotations
 
-from dask import delayed
-from dask.delayed import Delayed
+from pathlib import Path
+
 import numpy as np
-import pyarrow.parquet as pq
 import pytest
+import xarray as xr
+from dask.callbacks import Callback
 
-from geosave_engine.geodata import (
-    GeoVector,
-    read_raster,
-    read_stack,
-    read_vector,
-    stack,
-)
+from geosave_engine.geodata import GeoVector, read_raster, read_vector
+
 from tests.geodata.conftest import build_raster
 
 
-@pytest.mark.parametrize("entry", ["from_assets", "from_xarray", "writer"])
-def test_dataset_registration_names_metadata_after_the_saved_asset(tmp_path, entry):
-    source = build_raster(times=1).isel(time=0)
-    saved = source.gs.to_cog(tmp_path / "optical.tif")
-    if entry == "from_assets":
-        row = GeoVector.from_assets(saved).iloc[0]
-    elif entry == "from_xarray":
-        with read_raster(saved) as opened:
-            row = GeoVector.from_xarray(opened).iloc[0]
-    else:
-        source.gs.to_cog(saved, catalog=tmp_path / "catalog.parquet", overwrite=True)
-        row = read_vector(tmp_path / "catalog.parquet").iloc[0]
-    assert set(row.assets) == set(row.raster_metadata) == {"optical"}
-    assert list(row.raster_metadata["optical"]["bands"]) == ["red", "nir"]
-    with row.gs.to_xarray() as reopened:
-        np.testing.assert_array_equal(reopened["optical"].red.values, source.red.values)
+def test_an_unsaved_raster_is_saved_as_cogs_and_lists_one_row_per_scene(
+    tmp_path: Path,
+) -> None:
+    # Catalogs key assets by band, so indexing splits bands unless told not to.
+    items = build_raster(times=2).gs.to_items(tmp_path / "forest")
+
+    catalog = GeoVector.from_items(items)
+
+    assert catalog["id"].tolist() == [
+        "forest_20250601T000000",
+        "forest_20250602T000000",
+    ]
+    assert catalog.crs == "EPSG:4326"
+    assert sorted(catalog.iloc[0]["assets"]) == ["nir", "red"]
+    red = tmp_path / "forest/forest_20250601T000000/red.tif"
+    assert catalog.iloc[0]["assets"]["red"]["href"] == str(red)
 
 
-@pytest.mark.parametrize("entry", ["from_assets", "from_xarray", "writer"])
-def test_registration_reads_saved_metadata_once(tmp_path, monkeypatch, entry):
-    from dask.callbacks import Callback
-    from geosave_engine.geodata import io
-
-    source = build_raster(times=1).isel(time=0)
-    saved = source.gs.to_cog(tmp_path / "image.tif")
-    opened = read_raster(saved)
-    reads = []
-    pixel_tasks = []
-    read = io.read_raster
-
-    def observe(path, **options):
-        reads.append(path)
-        return read(path, **options)
-
-    monkeypatch.setattr(io, "read_raster", observe)
-    try:
-        with Callback(pretask=lambda key, *_: pixel_tasks.append(key)):
-            if entry == "from_assets":
-                GeoVector.from_assets(saved)
-            elif entry == "from_xarray":
-                GeoVector.from_xarray(opened)
-            else:
-                io.assets.write_catalog(saved, tmp_path / "catalog.parquet")
-        assert len(reads) == 1
-        assert pixel_tasks == []
-    finally:
-        opened.close()
+def test_a_name_with_a_dot_stays_whole_in_the_scene_id(tmp_path: Path) -> None:
+    for split_bands in (False, True):
+        items = build_raster(times=2).gs.to_items(
+            tmp_path / str(split_bands) / "scene.v2", split_bands=split_bands
+        )
+        assert items[0].id == "scene.v2_20250601T000000"
+        assert items[0].collection_id == "scene.v2"
 
 
-@pytest.mark.parametrize("writer", ["to_cog", "to_zarr"])
-def test_dataset_writer_returns_path_and_registers_changed_pixels(tmp_path, writer):
-    original = build_raster(times=1).isel(time=0)
-    source = original.gs.to_zarr(tmp_path / "source.zarr")
-    changed = read_raster(source, chunks="auto")
-    changed = changed.assign(red=changed.red + 7)
-    destination = tmp_path / ("image.tif" if writer == "to_cog" else "image.zarr")
-    saved = getattr(changed.gs, writer)(
-        destination, catalog=tmp_path / "catalog.parquet", id="image"
+def test_each_scene_is_dated_and_bounded(tmp_path: Path) -> None:
+    from datetime import UTC, datetime
+
+    items = build_raster(times=2).gs.to_items(tmp_path / "forest")
+
+    assert [item.datetime for item in items] == [
+        datetime(2025, 6, 1, tzinfo=UTC),
+        datetime(2025, 6, 2, tzinfo=UTC),
+    ]
+    assert all(len(item.bbox) == 4 for item in items)
+
+
+def test_rows_of_one_raster_share_its_name_as_their_collection(tmp_path: Path) -> None:
+    cube = build_raster(times=2)
+
+    scenes = GeoVector.from_items(cube.gs.to_items(tmp_path / "forest"))
+    lone = GeoVector.from_items(cube.isel(time=[0]).gs.to_items(tmp_path / "water"))
+    store = GeoVector.from_items(
+        cube.gs.to_items(tmp_path / "copy.zarr", driver="zarr")
     )
 
-    assert saved == destination
-    row = read_vector(tmp_path / "catalog.parquet").iloc[0]
-    assert row.id == "image"
-    restored = row.gs.to_xarray().gs.rasters["image"]
-    np.testing.assert_array_equal(restored.red.values, original.red.values + 7)
-    assert restored.red.chunks is not None
-    assert restored.gs.geobox == original.gs.geobox
-    stored = pq.read_table(tmp_path / "catalog.parquet").column("assets")[0].as_py()
-    assert stored["image"]["href"] == destination.name
+    assert scenes["collection"].tolist() == ["forest", "forest"]
+    assert lone["collection"].tolist() == ["water"]
+    assert store["collection"].tolist() == ["copy"]
 
 
-@pytest.mark.parametrize("writer", ["to_cog", "to_zarr"])
-def test_stack_catalog_and_assets_can_move_together(tmp_path, writer):
-    optical = build_raster(times=2)
-    sample = stack(
-        {"optical": optical, "label": optical[["red"]].isel(time=0, drop=True)}
-    )
-    root = tmp_path / "original"
-    root.mkdir()
-    destination = root / ("sample" if writer == "to_cog" else "sample.zarr")
-    options = {"split_bands": True} if writer == "to_cog" else {}
-    saved = getattr(sample.gs, writer)(
-        destination, catalog=root / "catalog.parquet", id="sample", **options
-    )
-    assert saved == destination
-    moved = tmp_path / "moved"
-    shutil.copytree(root, moved)
-    row = read_vector(moved / "catalog.parquet").iloc[0]
-    restored = row.gs.to_xarray()
+@pytest.mark.parametrize(
+    ("driver", "name"), [("zarr", "forest.zarr"), ("netcdf", "forest.nc")]
+)
+def test_a_store_driver_saves_one_store_as_one_row(tmp_path, driver, name) -> None:
+    (item,) = build_raster(times=2).gs.to_items(tmp_path / name, driver=driver)
 
-    for name, raster in sample.gs.rasters.items():
-        actual = restored.gs.rasters[name]
-        assert actual.gs.geobox == raster.gs.geobox
-        for variable in raster.data_vars:
-            np.testing.assert_array_equal(
-                actual[variable].values, raster[variable].values
-            )
-            assert actual[variable].chunks is not None
-    np.testing.assert_array_equal(restored["optical"].time.values, optical.time.values)
-    if writer == "to_zarr":
-        assert row.assets["optical"]["group"] == "optical"
-        assert row.assets["label"]["group"] == "label"
-        assert row.assets["optical"]["href"] == row.assets["label"]["href"]
+    assert item.id == "forest"
+    assert item.assets["image"].href == str(tmp_path / name)
 
 
-def test_read_stack_can_register_one_zarr_store(tmp_path):
-    optical = build_raster(times=2)
-    source = stack(
-        {"optical": optical, "label": optical[["red"]].isel(time=0, drop=True)}
-    )
-    saved = source.gs.to_zarr(tmp_path / "sample.zarr")
+def test_a_saved_raster_describes_itself_from_where_it_was_read(tmp_path: Path) -> None:
+    store = build_raster(times=2).gs.to_zarr(tmp_path / "forest.zarr")
 
-    record = GeoVector.from_xarray(read_stack(saved), id="sample")
-    row = record.iloc[0]
-    assert row.assets["optical"]["group"] == "optical"
-    np.testing.assert_array_equal(
-        row.gs.to_xarray()["optical"].red.values, optical.red.values
+    with read_raster(store) as saved:
+        (item,) = saved.gs.to_items()
+
+    assert item.id == "forest"
+    assert item.collection_id == "forest"
+    assert item.assets["image"].href == str(store)
+
+
+def test_a_raster_read_from_a_folder_of_cogs_is_indexed_when_written(tmp_path) -> None:
+    build_raster(times=2).gs.to_cog(tmp_path / "scenes")
+
+    with read_raster(tmp_path / "scenes") as saved:
+        with pytest.raises(ValueError, match="index it when writing"):
+            saved.gs.to_items()
+
+
+def test_a_collection_is_named_by_the_caller_or_by_the_path(tmp_path: Path) -> None:
+    cube = build_raster(times=1)
+
+    (named,) = cube.gs.to_items(tmp_path / "a", collection="sentinel-2")
+    (pathed,) = cube.gs.to_items(tmp_path / "b")
+
+    assert named.collection_id == "sentinel-2"
+    assert pathed.collection_id == "b"
+
+
+def test_a_scalar_instant_raster_is_one_scene_named_by_the_path(tmp_path: Path) -> None:
+    from datetime import UTC, datetime
+
+    (item,) = build_raster(times=1).isel(time=0).gs.to_items(tmp_path / "label")
+
+    assert (item.id, item.datetime) == ("label", datetime(2025, 6, 1, tzinfo=UTC))
+    assert sorted(item.assets) == ["nir", "red"]
+
+
+def test_one_file_per_scene_is_keyed_as_image(tmp_path: Path) -> None:
+    items = build_raster(times=2).gs.to_items(tmp_path / "forest", split_bands=False)
+
+    assert [sorted(item.assets) for item in items] == [["image"], ["image"]]
+    assert items[0].assets["image"].href == str(
+        tmp_path / "forest/forest_20250601T000000.tif"
     )
 
 
-def test_zarr_group_pointer_selects_only_that_group(tmp_path):
+def test_a_timeless_raster_refuses_and_names_the_way_out(tmp_path: Path) -> None:
+    with pytest.raises(ValueError, match="datetime="):
+        build_raster().gs.to_items(tmp_path / "dem")
+
+
+def test_writer_options_reach_the_writer(tmp_path: Path) -> None:
+    import rasterio
+
+    (item,) = build_raster(times=1).gs.to_items(tmp_path / "forest", compress="ZSTD")
+
+    with rasterio.open(item.assets["red"].href) as src:
+        assert src.compression.name == "zstd"
+
+
+def test_an_unsaved_raster_without_a_path_refuses(tmp_path: Path) -> None:
+    store = build_raster(times=2).gs.to_zarr(tmp_path / "forest.zarr")
+
+    with pytest.raises(ValueError, match="not saved"):
+        build_raster(times=2).gs.to_items()
+    # Pixels changed since the read are no longer what the store holds.
+    with read_raster(store) as saved, pytest.raises(ValueError, match="not saved"):
+        saved.gs.to_nan().gs.to_items()
+
+
+def test_a_band_indexes_as_the_raster_it_converts_to(tmp_path: Path) -> None:
     source = build_raster(times=2)
-    store = stack({"optical": source, "other": source[["red"]]}).gs.to_zarr(
-        tmp_path / "sample.zarr"
-    )
-    row = GeoVector.from_assets(
-        {"image": {"href": store, "group": "optical"}}, id="sample"
-    ).iloc[0]
-    restored = row.gs.to_xarray()
-    assert restored.gs.groups == ("image",)
-    np.testing.assert_array_equal(restored["image"].time.values, source.time.values)
+
+    items = source["red"].gs.to_items(tmp_path / "red", collection="forest")
+
+    assert [item.id for item in items] == ["red_20250601T000000", "red_20250602T000000"]
+    assert [sorted(item.assets) for item in items] == [["red"], ["red"]]
+    assert {item.collection_id for item in items} == {"forest"}
+    restored = GeoVector.from_items(items).gs.to_raster()
+    np.testing.assert_array_equal(restored.red, source.red)
 
 
-@pytest.mark.parametrize("as_stack", [False, True])
-def test_deferred_zarr_write_publishes_catalog_after_compute(tmp_path, as_stack):
-    source = build_raster(times=2).chunk()
-    data = stack({"image": source}) if as_stack else source
-    catalog = tmp_path / "catalog.parquet"
-    saved = data.gs.to_zarr(
-        tmp_path / "image.zarr", catalog=catalog, id="image", compute=False
-    )
-    assert isinstance(saved, Delayed)
-    assert not catalog.exists()
-    assert saved.compute() == tmp_path / "image.zarr"
-    np.testing.assert_array_equal(
-        read_vector(catalog).iloc[0].gs.to_xarray()["image"].time.values,
-        source.time.values,
+def test_rasters_register_into_one_catalog(tmp_path: Path) -> None:
+    cube = build_raster(times=1)
+    forest = GeoVector.from_items(cube.gs.to_items(tmp_path / "forest"))
+    water = GeoVector.from_items(
+        cube.gs.to_items(tmp_path / "water.zarr", driver="zarr")
     )
 
+    catalog = forest.gs.upsert(water, on="id")
 
-def test_failed_pixel_write_does_not_publish_catalog(tmp_path):
-    import dask.array as da
-
-    @delayed
-    def fail():
-        raise RuntimeError("pixel read failed")
-
-    source = build_raster(times=1)
-    source["red"].data = da.from_delayed(fail(), shape=(1, 2, 2), dtype="uint16")
-    catalog = tmp_path / "catalog.parquet"
-    with pytest.raises(RuntimeError, match="pixel read failed"):
-        source.gs.to_zarr(tmp_path / "image.zarr", catalog=catalog)
-    assert not catalog.exists()
+    assert sorted(catalog["id"]) == ["forest_20250601T000000", "water"]
 
 
-def test_companion_catalog_does_not_append_to_existing_records(tmp_path):
-    source = build_raster(times=1)
-    catalog = tmp_path / "catalog.parquet"
-    source.gs.to_zarr(tmp_path / "first.zarr", catalog=catalog, id="first")
-    with pytest.raises(FileExistsError):
-        source.gs.to_zarr(tmp_path / "second.zarr", catalog=catalog, id="second")
-    assert read_vector(catalog).id.tolist() == ["first"]
+def _catalog(tmp_path: Path, source: xr.Dataset, **options) -> Path:
+    items = source.gs.to_items(tmp_path / "forest", **options)
+    return GeoVector.from_items(items).gs.to_geoparquet(tmp_path / "catalog.parquet")
 
 
-def test_dataarray_cog_can_publish_its_asset_record(tmp_path):
-    source = build_raster(times=1).isel(time=0).red
-    saved = source.gs.to_cog(
-        tmp_path / "red.tif", catalog=tmp_path / "catalog.parquet", id="red"
+@pytest.mark.parametrize("split_bands", [False, True])
+def test_a_registered_raster_reads_back_through_a_query(tmp_path, split_bands) -> None:
+    source = build_raster(times=2, packed=True)
+    table = _catalog(tmp_path, source, split_bands=split_bands)
+    started: list[object] = []
+
+    with Callback(pretask=lambda key, *_: started.append(key)):
+        restored = read_vector(table).gs.query(source).gs.to_raster()
+
+    assert started == []
+    assert restored.red.chunks is not None
+    with read_raster(tmp_path / "forest", chunks={}) as expected:
+        xr.testing.assert_identical(restored, expected)
+    np.testing.assert_array_equal(restored.red, source.red)
+
+
+def test_a_one_date_target_selects_one_scene(tmp_path: Path) -> None:
+    source = build_raster(times=2)
+    catalog = read_vector(_catalog(tmp_path, source))
+
+    restored = catalog.gs.query(source.isel(time=[0])).gs.to_raster()
+
+    np.testing.assert_array_equal(restored.time, source.time[:1])
+
+
+def test_a_store_row_reads_back(tmp_path: Path) -> None:
+    source = build_raster(times=2)
+    store = tmp_path / "forest.zarr"
+    items = source.gs.to_items(store, driver="zarr")
+    table = GeoVector.from_items(items).gs.to_geoparquet(tmp_path / "catalog.parquet")
+
+    with read_raster(store, chunks={}) as expected:
+        xr.testing.assert_identical(read_vector(table).gs.to_raster(), expected)
+
+
+def test_an_empty_selection_refuses(tmp_path: Path) -> None:
+    catalog = read_vector(_catalog(tmp_path, build_raster(times=1)))
+
+    with pytest.raises(ValueError, match="at least one source"):
+        catalog.iloc[0:0].gs.to_raster()
+
+
+def test_one_raster_registered_in_two_formats_refuses_to_read_as_one(tmp_path) -> None:
+    source = build_raster(times=2)
+    scenes = GeoVector.from_items(source.gs.to_items(tmp_path / "forest"))
+    store = GeoVector.from_items(
+        source.gs.to_items(tmp_path / "copy.zarr", driver="zarr")
     )
-    assert saved == tmp_path / "red.tif"
-    np.testing.assert_array_equal(
-        read_vector(tmp_path / "catalog.parquet")
-        .iloc[0]
-        .gs.to_xarray()["red"]
-        .red.values,
-        source.values,
+
+    with pytest.raises(ValueError, match="one variable at one instant"):
+        GeoVector.concat([scenes, store]).gs.to_raster()
+
+
+def test_a_written_catalog_loads_in_odc_stac(tmp_path: Path) -> None:
+    import odc.stac
+    import stac_geoparquet
+
+    source = build_raster(times=2)
+    catalog = read_vector(_catalog(tmp_path, source, split_bands=True))
+
+    loaded = odc.stac.load(list(stac_geoparquet.to_item_collection(catalog)), chunks={})
+
+    assert set(loaded.data_vars) == {"red", "nir"}
+    assert loaded.odc.geobox == source.odc.geobox
+    np.testing.assert_array_equal(loaded.time, source.time)
+    np.testing.assert_array_equal(loaded.red, source.red)
+
+
+def test_the_loop_runs_on_a_bucket(bucket: str) -> None:
+    source = build_raster(times=2)
+    store = f"{bucket}/samples/forest.zarr"
+
+    catalog = GeoVector.from_items(source.gs.to_items(store, driver="zarr"))
+    table = catalog.gs.to_geoparquet(f"{bucket}/samples/catalog.parquet")
+    restored = read_vector(table).gs.query(source).gs.to_raster()
+
+    assert catalog["id"].tolist() == ["forest"]
+    assert catalog.iloc[0]["assets"]["image"]["href"] == store
+    np.testing.assert_array_equal(restored.red, source.red)
+    np.testing.assert_array_equal(restored.time, source.time)
+
+
+def test_remote_assets_keep_urls_in_a_local_table(bucket: str, tmp_path: Path) -> None:
+    import fsspec
+    import pyarrow.parquet as pq
+
+    store = f"{bucket}/forest.zarr"
+    catalog = GeoVector.from_items(
+        build_raster(times=2).gs.to_items(store, driver="zarr")
     )
 
-
-def test_a_local_file_uri_registers_and_reopens_the_same_raster(tmp_path):
-    source = build_raster(times=1).isel(time=0)
-    saved = source.gs.to_cog(tmp_path / "image.tif")
-    row = GeoVector.from_assets({"image": {"href": saved.as_uri()}}).iloc[0]
-    assert row.assets["image"]["href"] == str(saved)
-    np.testing.assert_array_equal(
-        row.gs.to_xarray()["image"].red.values, source.red.values
+    elsewhere = catalog.gs.to_geoparquet(tmp_path / "catalog.parquet")
+    catalog.gs.to_geoparquet(f"{bucket}/catalog.parquet")
+    beside = pq.read_table(
+        f"{bucket}/catalog.parquet".removeprefix("memory:/"),
+        filesystem=fsspec.filesystem("memory"),
     )
 
-
-def test_deferred_failure_does_not_publish_a_catalog(tmp_path):
-    import dask.array as da
-
-    @delayed
-    def fail():
-        raise RuntimeError("pixel read failed")
-
-    source = build_raster(times=1)
-    source["red"].data = da.from_delayed(fail(), shape=(1, 2, 2), dtype="uint16")
-    catalog = tmp_path / "catalog.parquet"
-    saved = source.gs.to_zarr(tmp_path / "image.zarr", catalog=catalog, compute=False)
-    with pytest.raises(RuntimeError, match="pixel read failed"):
-        saved.compute()
-    assert not catalog.exists()
+    # A table on another filesystem keeps the URL; one beside the assets shortens it.
+    stored = pq.read_table(elsewhere).column("assets")[0].as_py()
+    assert stored["image"]["href"] == store
+    assert beside.column("assets")[0].as_py()["image"]["href"] == "./forest.zarr"
 
 
-def test_overwrite_replaces_the_catalog_explicitly(tmp_path):
-    source = build_raster(times=1)
-    catalog = tmp_path / "catalog.parquet"
-    source.gs.to_zarr(tmp_path / "image.zarr", catalog=catalog, id="before")
-    changed = source.assign(red=source.red + 9)
-    changed.gs.to_zarr(
-        tmp_path / "image.zarr", catalog=catalog, id="after", overwrite=True
+@pytest.fixture
+def hf_bucket():
+    """Yield a unique prefix in the Hugging Face test bucket and empty it afterwards."""
+    import uuid
+
+    import fsspec
+    from huggingface_hub import get_token
+
+    if get_token() is None:
+        pytest.skip("HF_TOKEN or `hf auth login` is required")
+    prefix = f"hf://buckets/fatmur/test/geosave-tests/{uuid.uuid4()}"
+    filesystem, path = fsspec.core.url_to_fs(prefix)
+    yield prefix
+    if filesystem.exists(path):
+        filesystem.rm(path, recursive=True)
+
+
+@pytest.mark.integration
+def test_a_zarr_raster_round_trips_through_a_hugging_face_bucket(
+    hf_bucket: str,
+) -> None:
+    source = build_raster(times=2)
+    items = source.gs.to_items(f"{hf_bucket}/forest.zarr", driver="zarr")
+
+    table = GeoVector.from_items(items).gs.to_geoparquet(f"{hf_bucket}/catalog.parquet")
+    restored = read_vector(table).gs.to_raster()
+
+    np.testing.assert_array_equal(restored.red, source.red)
+
+
+@pytest.mark.integration
+def test_cogs_round_trip_through_a_hugging_face_bucket(hf_bucket: str) -> None:
+    import os
+
+    from geosave_engine.geodata import configure_gdal
+
+    if "AWS_ACCESS_KEY_ID" not in os.environ:
+        pytest.skip("S3 credentials generated from the HF token are required")
+    # The gateway serves no ListObjectsV1, which GDAL's open-time listing uses.
+    configure_gdal(
+        aws_s3_endpoint="s3.hf.co",
+        aws_virtual_hosting=False,
+        aws_default_region="us-east-1",
+        gdal_disable_readdir_on_open=True,
     )
-    row = read_vector(catalog).iloc[0]
-    assert row.id == "after"
-    np.testing.assert_array_equal(
-        row.gs.to_xarray()["image"].red.values, changed.red.values
+    source = build_raster(times=2, packed=True)
+
+    items = source.gs.to_items(f"{hf_bucket}/forest", split_bands=True)
+    table = GeoVector.from_items(items).gs.to_geoparquet(f"{hf_bucket}/catalog.parquet")
+    restored = read_vector(table).gs.query(source).gs.to_raster()
+
+    assert sum(len(item.assets) for item in items) == 4
+    np.testing.assert_array_equal(restored.red, source.red)
+    np.testing.assert_array_equal(restored.time, source.time)
+
+
+def test_a_local_asset_keeps_its_path_in_a_remote_table(bucket: str, tmp_path) -> None:
+    items = build_raster(times=2).gs.to_items(tmp_path / "forest.zarr", driver="zarr")
+
+    table = GeoVector.from_items(items).gs.to_geoparquet(f"{bucket}/catalog.parquet")
+
+    href = read_vector(table).iloc[0]["assets"]["image"]["href"]
+    assert href == str(tmp_path / "forest.zarr")
+
+
+def test_an_item_table_is_written_as_stac_geoparquet(tmp_path: Path) -> None:
+    import pyarrow.parquet as pq
+
+    from geosave_engine.geodata import GeoVector as Vector
+
+    table = _catalog(tmp_path, build_raster(times=1))
+    plain = Vector.from_geometry("POINT (13 52)").gs.to_geoparquet(
+        tmp_path / "plain.parquet"
     )
+
+    assert b"stac-geoparquet" in pq.read_schema(table).metadata
+    assert b"stac-geoparquet" not in pq.read_schema(plain).metadata

@@ -4,8 +4,20 @@ import inspect
 
 import pytest
 import yaml
+import xarray as xr
 
 from geosave_engine.model.spec import CallSpec, ModelSpec, Ref
+
+
+def test_preprocessing_preserves_missing_variable_error_and_raster_context():
+    spec = ModelSpec.model_validate(
+        {"schema_version": 2, "rasters": {"image": {"variables": ["red"]}}}
+    )
+
+    with pytest.raises(KeyError, match="red") as caught:
+        spec.preprocess({"image": xr.Dataset()})
+
+    assert caught.value.__notes__ == ["While validating raster 'image'"]
 
 
 @pytest.mark.parametrize(
@@ -224,11 +236,11 @@ def test_transforms_must_name_a_pixel_input(name):
 def test_cuts_round_trip(tmp_path):
     spec = _spec(
         frames={"length": 4, "stride": 2, "tolerance": "10D"},
-        tiles={"size": [224, 256], "overlap": 32, "window": "hann"},
+        chips={"size": [224, 256], "overlap": 32, "window": "hann"},
     )
 
     restored = ModelSpec.load(spec.save(tmp_path))
 
     assert restored == spec
-    assert restored.tiles is not None and restored.tiles.shape == (224, 256)
+    assert restored.chips is not None and restored.chips.shape == (224, 256)
     assert restored.frames is not None and restored.frames.mode == "strict"

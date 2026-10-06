@@ -20,8 +20,8 @@ Examples:
 
 A leaf is named `T{tile}_{instant}_{band}_{resolution}m.jp2`, so its band and
 instant are read from the filename rather than from metadata inside the file.
-This is what separates a vendor product from the trees `layout` writes, whose
-leaves name their own variables in their band descriptions.
+This is what separates a vendor product from the COGs `cogs` writes, which
+name their own variables in their band descriptions.
 
 The resolution groups sit on different grids, so a whole product is a stack
 rather than a cube: `read_stack` gives one group per resolution, and `read`
@@ -46,8 +46,8 @@ if TYPE_CHECKING:
 
 _UNBUILT = (
     "reading a SAFE product is not built yet; open its JP2 leaves with "
-    "`io.gdal.read` and combine them yourself, or convert the product to a "
-    "COG tree and read it with `io.read_tree`"
+    "`io.gdal.read` and combine them yourself, or convert the product to "
+    "COGs and read them with `read_raster`"
 )
 
 

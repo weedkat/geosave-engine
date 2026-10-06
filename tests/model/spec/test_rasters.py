@@ -242,7 +242,7 @@ def test_required_coordinates_are_present_without_computing():
     tasks = []
 
     with Callback(pretask=lambda *args: tasks.append(args)):
-        with pytest.raises(ValueError, match="coordinates.*x"):
+        with pytest.raises(KeyError, match="coordinates.*x"):
             requirement.select_raster(data)
 
     assert tasks == []
@@ -297,12 +297,12 @@ def test_ambiguous_or_unreachable_requirements_are_rejected(changes):
 
 def test_missing_variables_dimensions_and_dtype_fail_without_conversion():
     data = packed()
-    for requirement in (
-        RasterRequirement(variables=("missing",)),
-        RasterRequirement(variables=("red",), dims=("time", "y", "x")),
-        RasterRequirement(variables=("red",), dtypes=("uint16",)),
+    for requirement, error_type in (
+        (RasterRequirement(variables=("missing",)), KeyError),
+        (RasterRequirement(variables=("red",), dims=("time", "y", "x")), ValueError),
+        (RasterRequirement(variables=("red",), dtypes=("uint16",)), ValueError),
     ):
-        with pytest.raises(ValueError):
+        with pytest.raises(error_type):
             requirement.select_raster(data)
     assert data.red.dtype == "float64"
 

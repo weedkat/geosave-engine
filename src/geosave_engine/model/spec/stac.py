@@ -21,6 +21,7 @@ from requests.exceptions import RequestException
 import xarray as xr
 
 from geosave_engine.geodata.core import GeoAnchor
+from geosave_engine.geodata.errors import CollectionNotFoundError
 from geosave_engine.geodata.stac.client import StacClient, StacProvider
 from geosave_engine.geodata.stac.query import StacQuery
 from geosave_engine.geodata.stac.source import StacSourceConfig
@@ -144,15 +145,12 @@ def _open_client(collection: str, endpoints: tuple[str, ...]) -> StacClient:
     """Open and cache the first catalog publishing a collection."""
     failures = []
     last_error: Exception | None = None
-    missing = f"collection {collection!r} not found on this STAC endpoint"
     for endpoint in endpoints:
         try:
             client = StacClient.open(endpoint)
             try:
                 metadata = client.collection(collection)
-            except ValueError as error:
-                if missing not in str(error):
-                    raise
+            except CollectionNotFoundError:
                 metadata = None
         except (RequestException, APIError) as error:
             if not _endpoint_unavailable(error):

@@ -43,7 +43,7 @@ def test_build_spec_resolves_registered_names() -> None:
 def test_build_spec_rejects_unknown_registered_names() -> None:
     spec = BuildSpec(name="missing")
 
-    with pytest.raises(ValueError, match="Unknown name"):
+    with pytest.raises(KeyError, match="Unknown name"):
         spec.resolve({"CROSS_ENTROPY": nn.CrossEntropyLoss}, nn.Module)
 
 
@@ -114,7 +114,7 @@ def test_optimizer_rejects_unknown_and_overlapping_groups() -> None:
             {"name": "adamw", "groups": {"first": {}, "second": {}}},
             model,
         )
-    with pytest.raises(ValueError, match="Unknown model groups"):
+    with pytest.raises(KeyError, match="Unknown model groups"):
         build_optimizer({"name": "adamw", "groups": {"missing": {}}}, model)
 
 

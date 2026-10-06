@@ -23,8 +23,9 @@ def test_ingest_help_lists_its_flow_options() -> None:
     result = runner.invoke(app, ["workflow", "ingest", "--help"])
 
     assert result.exit_code == 0
-    for option in ("--anchor", "--output", "--spec", "--format", "--catalog"):
+    for option in ("--anchor", "--output", "--spec", "--format"):
         assert option in result.stdout
+    assert "--catalog" not in result.stdout
     assert "--sources" not in result.stdout
 
 
@@ -73,8 +74,6 @@ def test_ingest_parses_anchor_and_prints_result(
             "geotiff",
             "--write-options",
             '{"compress":"ZSTD"}',
-            "--catalog",
-            "data/scenes/catalog.parquet",
         ],
     )
 
@@ -85,7 +84,6 @@ def test_ingest_parses_anchor_and_prints_result(
         "spec": "model_spec.yaml",
         "format": "geotiff",
         "write_options": {"compress": "ZSTD"},
-        "catalog": "data/scenes/catalog.parquet",
     }
     assert result.stdout == "data/scenes/s1\n"
 

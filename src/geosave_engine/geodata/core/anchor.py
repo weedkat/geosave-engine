@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-import math
 from dataclasses import dataclass
 from typing import TYPE_CHECKING, Literal, Self, get_args
 
@@ -13,12 +12,9 @@ from odc.geo.geom import BoundingBox, point
 from geosave_engine.geodata.utils.datetime import (
     AnchorDatetime,
     DateRange,
-    format_stem_dates,
-    naive_utc,
     parse_daterange,
 )
 from geosave_engine.geodata.utils.geo.crs import (
-    format_ground_size,
     select_grid_crs,
     validate_wgs84_bbox,
     validate_wgs84_coordinate,
@@ -74,7 +70,7 @@ class GeoAnchor:
         return self.geobox.resolution
 
     @property
-    def geographic_centroid(self) -> tuple[float, float]:
+    def lonlat(self) -> tuple[float, float]:
         """Return the grid centroid in WGS84 longitude/latitude order.
 
         Returns:
@@ -83,9 +79,8 @@ class GeoAnchor:
         longitude, latitude = self.geobox.extent.centroid.to_crs("EPSG:4326").coords[0]
         return float(longitude), float(latitude)
 
-    @property
-    def location(self) -> Place | None:
-        """Reverse geocode the grid centroid.
+    def locate(self) -> Place | None:
+        """Reverse geocode the grid centroid, asking Nominatim over the network.
 
         Returns:
             Resolved place, or None when Nominatim has no result or is
@@ -93,47 +88,55 @@ class GeoAnchor:
         """
         from geosave_engine.geodata.utils.geo.geolocator import Place
 
-        longitude, latitude = self.geographic_centroid
+        longitude, latitude = self.lonlat
         return Place.from_coordinate(latitude, longitude)
 
-    @property
-    def stem(self) -> str:
-        """Return a deterministic, human-readable filename stem.
+    def format(self, template: str) -> str:
+        """Spell this anchor through a `str.format` template.
 
-        The stem describes centroid, ground extent, temporal coverage, and
-        pixel size, all in the grid's own CRS unit. It is descriptive rather
-        than a collision-proof identity.
+        Each field takes its own format spec, so a date field reads `strftime`
+        directives and a number reads a precision.
+
+        Args:
+            template: Template naming any of `lon` and `lat` (WGS84 centroid,
+                degrees), `start` and `end` (timespan edges), `res` (pixel
+                size along x), `width` and `height` (ground extent) — the last
+                three in grid CRS units — and `epsg`.
 
         Returns:
-            Filename-safe anchor description.
+            The template with every field filled in.
+
+        Raises:
+            ValueError: The template names a field this anchor does not offer,
+                as `start` on a timeless one.
 
         Examples:
-            >>> anchor = GeoAnchor.from_coordinates(52, 13, 500, 10)
-            >>> anchor.stem
-            '12.9999E_52.0000N_5kmx5km_10m'
+            >>> anchor = GeoAnchor.from_coordinates(
+            ...     52, 13, 500, 10, timespan="2025-06-01/2025-06-11"
+            ... )
+            >>> anchor.format("{lat:.2f}N_{lon:.2f}E_{start:%Y%m%d}_{res:g}m")
+            '52.00N_13.00E_20250601_10m'
+            >>> anchor.format("{start:%Y}/{start:%m}/{epsg}")
+            '2025/06/32633'
         """
-        longitude, latitude = self.geographic_centroid
-        longitude_token = f"{abs(longitude):.4f}{'E' if longitude >= 0 else 'W'}"
-        latitude_token = f"{abs(latitude):.4f}{'N' if latitude >= 0 else 'S'}"
-
-        unit = self.crs.units[0]
+        longitude, latitude = self.lonlat
         bounds = self.geobox.boundingbox
-        extent_token = (
-            f"{format_ground_size(bounds.span_x, unit)}x"
-            f"{format_ground_size(bounds.span_y, unit)}"
-        )
-
-        x_size, y_size = self.resolution.map(abs).xy
-        resolution_token = format_ground_size(x_size, unit)
-        if not math.isclose(x_size, y_size):
-            resolution_token += f"x{format_ground_size(y_size, unit)}"
-
-        parts = [longitude_token, latitude_token, extent_token]
+        fields: dict[str, object] = {
+            "lon": longitude,
+            "lat": latitude,
+            "res": abs(self.resolution.x),
+            "width": bounds.span_x,
+            "height": bounds.span_y,
+            "epsg": self.crs.epsg,
+        }
         if self.timespan is not None:
-            start, end = self.timespan
-            parts.append(format_stem_dates((naive_utc(start), naive_utc(end))))
-        parts.append(resolution_token)
-        return "_".join(parts)
+            fields["start"], fields["end"] = self.timespan
+        try:
+            return template.format(**fields)
+        except KeyError as error:
+            raise ValueError(
+                f"anchor has no {error.args[0]!r} to format; it offers {sorted(fields)}"
+            ) from None
 
     @classmethod
     def from_bbox(

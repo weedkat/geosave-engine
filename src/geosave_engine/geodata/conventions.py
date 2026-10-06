@@ -72,6 +72,8 @@ which odc supplies and `attrs.headers.geobox.create_header` describes.
 # Dimensions a raster spans when odc resolves no grid, odc's own first choice.
 NOT_GEOREFERENCED_DIMENSIONS = ("y", "x")
 
+GEOREGEFERENCED_DIMENSIONS = ("latitude", "longitude")
+
 # Scalar coordinate holding the CRS, which CF reaches through `grid_mapping`.
 CRS_COORDINATE = "spatial_ref"
 

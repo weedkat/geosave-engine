@@ -1,8 +1,9 @@
 """Read a label set as a table of STAC items."""
 
+from geosave_engine.geodata.stac import asset, item
 from pathlib import Path, PurePosixPath
 
-from geosave_engine.geodata import GeoDataFrame, GeoVector, read_raster, read_vector
+from geosave_engine.geodata import GeoDataFrame, GeoVector, read_vector
 
 _TABLE_SUFFIXES = (".parquet", ".geoparquet")
 
@@ -22,7 +23,7 @@ def find_labels(root: Path, pattern: str) -> dict[str, Path]:
 
 
 def read_labels(source: str | Path, pattern: str = "**/*.tif") -> GeoDataFrame:
-    """Read a label set, indexing a directory of label rasters into a table.
+    """Read a label table, or list a directory of label rasters as one.
 
     Args:
         source: GeoParquet STAC table with one row per label, each naming its
@@ -43,11 +44,11 @@ def read_labels(source: str | Path, pattern: str = "**/*.tif") -> GeoDataFrame:
     if path.suffix.lower() not in _TABLE_SUFFIXES:
         rows = []
         for sample_id, label_path in find_labels(path, pattern).items():
-            with read_raster(label_path) as label:
-                if label.gs.timespan is None:
-                    raise ValueError(f"Label raster has no time: {label_path}")
-            rows.append(GeoVector.from_assets({"label": label_path}, id=sample_id))
-        return GeoVector.concat(rows)
+            label = asset.from_path(label_path)
+            if label.common_metadata.start_datetime is None:
+                raise ValueError(f"Label raster has no time: {label_path}")
+            rows.append(item.from_assets({"label": label}, id=sample_id))
+        return GeoVector.from_items(rows)
 
     labels = read_vector(path)
     absent = [name for name in ("id", "assets") if name not in labels]
@@ -72,12 +73,15 @@ def read_labels(source: str | Path, pattern: str = "**/*.tif") -> GeoDataFrame:
     if outside:
         raise ValueError(f"Label ids must name folders inside the output: {outside}")
     noncanonical = [
-        sample_id for sample_id in ids
+        sample_id
+        for sample_id in ids
         if not PurePosixPath(sample_id).parts
         or PurePosixPath(sample_id).as_posix() != sample_id
     ]
     if noncanonical:
-        raise ValueError(f"Label ids must name canonical relative folders: {noncanonical}")
+        raise ValueError(
+            f"Label ids must name canonical relative folders: {noncanonical}"
+        )
 
     missing = [
         sample_id

@@ -1,5 +1,8 @@
 from __future__ import annotations
 
+import inspect
+from pathlib import Path
+
 import numpy as np
 import pandas as pd
 import pytest
@@ -7,6 +10,7 @@ import xarray as xr
 from odc.geo import CRS
 from odc.geo.geobox import GeoBox
 
+from geosave_engine.geodata import GeoArray, GeoRaster, GeoStack
 from geosave_engine.geodata.attrs import (
     ACDD,
     GDALVariable,
@@ -15,9 +19,57 @@ from geosave_engine.geodata.attrs import (
     StackedAttrs,
     rebase,
 )
+from geosave_engine.geodata.core.array import BandSummary
 from geosave_engine.geodata.core.raster import raster
+from geosave_engine.geodata.io import gdal
+
+from tests.geodata.conftest import build_raster
 
 UTM = "EPSG:32633"
+
+
+@pytest.mark.parametrize(
+    ("times", "split_bands", "count"),
+    [
+        (0, False, 1),
+        (0, True, 2),
+        (1, False, 1),
+        (1, True, 2),
+        (2, False, 2),
+        (2, True, 4),
+    ],
+)
+def test_cog_export_returns_readable_files(
+    tmp_path: Path, times: int, split_bands: bool, count: int
+) -> None:
+    written = build_raster(times=times)
+
+    paths = written.gs.to_cog(tmp_path / "scene.v2", split_bands=split_bands)
+
+    assert isinstance(paths, tuple)
+    assert len(paths) == count
+    for path in paths:
+        with gdal.read(path) as restored:
+            expected = written.sel(time=restored.time) if times else written
+            assert restored.gs.geobox == written.gs.geobox
+            assert len(restored.data_vars) == (1 if split_bands else 2)
+            for name in restored.data_vars:
+                np.testing.assert_array_equal(restored[name], expected[name])
+
+
+@pytest.mark.parametrize("suffix", [".tif", ".tiff", ".TIF"])
+def test_cog_export_refuses_a_path_that_names_a_tiff(
+    tmp_path: Path, suffix: str
+) -> None:
+    destination = tmp_path / f"scene{suffix}"
+
+    with pytest.raises(ValueError, match="io.geotiff.write_cog"):
+        build_raster().gs.to_cog(destination)
+    assert not destination.exists()
+
+
+def test_to_cog_takes_no_id() -> None:
+    assert "id" not in inspect.signature(GeoRaster.to_cog).parameters
 
 
 def geobox(*, crs: str = UTM, shape: tuple[int, int] = (8, 8)) -> GeoBox:
@@ -306,6 +358,28 @@ def test_statistics_summarise_only_the_present_pixels() -> None:
     assert summary.valid_percent == pytest.approx(98.4375)
 
 
+def test_nodata_reads_back_what_was_written() -> None:
+    box = geobox()
+    pixels = np.zeros(box.shape, "uint16")
+    built = raster({"red": pixels, "nir": pixels}, box).gs.write_nodata(0, target="red")
+
+    assert built.red.gs.nodata == 0
+    assert built.nir.gs.nodata is None
+    assert built.gs.nodata == {"red": 0, "nir": None}
+
+
+def test_raster_statistics_tabulate_each_variable_as_its_band_does() -> None:
+    box = geobox()
+    pixels = np.arange(64, dtype="uint16").reshape(box.shape)
+    built = raster({"red": pixels, "nir": pixels * 2}, box, nodata=0)
+
+    table = built.gs.statistics()
+
+    assert list(table.index) == ["red", "nir"]
+    assert list(table.columns) == list(BandSummary._fields)
+    assert table.loc["nir"].tolist() == list(built.nir.gs.statistics())
+
+
 def test_statistics_refuse_a_band_holding_no_present_pixel() -> None:
     box = geobox()
     band = raster({"red": np.zeros(box.shape, "uint16")}, box, nodata=0)["red"]
@@ -334,7 +408,10 @@ def test_band_stacking_stores_root_values_in_their_json_spelling():
 
 def test_an_edit_on_the_stacked_array_reaches_every_band():
     source = raster(
-        {"red": np.ones(geobox().shape, "int16"), "nir": np.ones(geobox().shape, "int16")},
+        {
+            "red": np.ones(geobox().shape, "int16"),
+            "nir": np.ones(geobox().shape, "int16"),
+        },
         geobox(),
     )
     source.red.attrs = {"nodata": 0, "units": "1"}
@@ -347,7 +424,10 @@ def test_an_edit_on_the_stacked_array_reaches_every_band():
 
 def test_bands_with_different_nodata_round_trip():
     source = raster(
-        {"red": np.ones(geobox().shape, "int16"), "nir": np.ones(geobox().shape, "int16")},
+        {
+            "red": np.ones(geobox().shape, "int16"),
+            "nir": np.ones(geobox().shape, "int16"),
+        },
         geobox(),
     )
     source.red.attrs = {"nodata": 0, "units": "1"}
@@ -430,3 +510,34 @@ def test_array_refuses_what_raster_refuses(pixels, coords, message) -> None:
 
     with pytest.raises(ValueError, match=message):
         array(pixels, geobox(), **coords)
+
+
+@pytest.mark.parametrize(
+    "writer",
+    [
+        GeoRaster.to_cog,
+        GeoRaster.to_zarr,
+        GeoRaster.to_netcdf,
+        GeoStack.to_cog,
+        GeoStack.to_zarr,
+        GeoStack.to_netcdf,
+        GeoArray.to_cog,
+    ],
+)
+def test_writers_take_no_catalog_argument(writer) -> None:
+    assert "catalog" not in inspect.signature(writer).parameters
+
+
+@pytest.mark.parametrize(
+    "writer",
+    [
+        GeoRaster.to_zarr,
+        GeoRaster.to_netcdf,
+        GeoStack.to_cog,
+        GeoStack.to_zarr,
+        GeoStack.to_netcdf,
+        GeoArray.to_cog,
+    ],
+)
+def test_writers_that_name_nothing_take_no_id(writer) -> None:
+    assert "id" not in inspect.signature(writer).parameters

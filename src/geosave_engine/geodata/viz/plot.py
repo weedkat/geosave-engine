@@ -14,15 +14,15 @@ import numpy as np
 import odc.geo.xr  # noqa: F401  — registers the .odc accessor
 import xarray as xr
 
-from geosave_engine.geodata.core.profile import BAND_DIMENSION, TIME_COORDINATE
+from geosave_engine.geodata.conventions import BAND_DIMENSION, TIME_COORDINATE
 from matplotlib.colors import ListedColormap
 
-from geosave_engine.geodata.attrs.palette import parse_color
+from geosave_engine.geodata.utils.color import parse_color
 
 if TYPE_CHECKING:
     from collections.abc import Mapping, Sequence
 
-    from geosave_engine.geodata.attrs.palette import Palette
+    from geosave_engine.geodata.utils.color import Palette
 
 hv.extension("matplotlib")
 
@@ -59,7 +59,9 @@ def _captioned(
 
     time = None
     if TIME_COORDINATE in array.coords and array[TIME_COORDINATE].ndim == 0:
-        time = str(hv.Dimension(TIME_COORDINATE).pprint_value(array[TIME_COORDINATE].values))
+        time = str(
+            hv.Dimension(TIME_COORDINATE).pprint_value(array[TIME_COORDINATE].values)
+        )
     return decorate(drawn, time)
 
 

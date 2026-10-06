@@ -5,6 +5,8 @@ Input conversion and decoding are ordinary functions outside the neural model.
 Only STAC endpoint discovery is replaced by a local fixture.
 """
 
+from geosave_engine.ml.inputs import to_tensor
+
 from datetime import UTC, datetime
 from itertools import batched
 import json
@@ -29,7 +31,7 @@ import xarray as xr
 from geosave_engine.geodata import GeoAnchor, GeoVector, io
 from geosave_engine.geodata.core.array import array
 from geosave_engine.geodata.stac.source import StacSource
-from geosave_engine.geodata.transform import window
+from geosave_engine.geodata.transform import chip
 from geosave_engine.model.chain import Published, chain_step
 from geosave_engine.model.registry import build_model, register_model
 from geosave_engine.model.spec import CallSpec, ModelSpec, Ref
@@ -63,7 +65,7 @@ def prepare_inputs(image: xr.Dataset) -> dict[str, torch.Tensor]:
     longitude, latitude = image.gs.anchor.geographic_centroid
     return {
         # Native raster stacking is T,C,H,W; this encoder expects C,T,H,W.
-        "image": image.gs.to_tensor(dtype="float32").permute(1, 0, 2, 3),
+        "image": to_tensor(image, dtype="float32").permute(1, 0, 2, 3),
         "temporal_coords": torch.tensor(
             np.stack([dates.year, dates.dayofyear - 1], axis=-1),
             dtype=torch.float32,
@@ -279,7 +281,7 @@ def run(root: Path) -> dict[str, object]:
         for rows in batched(reference.iloc[::-1].iterrows(), 3):
             samples = []
             for sample_id, row in rows:
-                tile = window.crop(
+                tile = chip.crop(
                     image,
                     (int(row.row_off), int(row.col_off)),
                     (int(row.height), int(row.width)),

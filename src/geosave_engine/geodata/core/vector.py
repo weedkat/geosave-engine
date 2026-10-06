@@ -2,16 +2,16 @@
 
 from __future__ import annotations
 
-import datetime as dt
-from collections.abc import Iterable, Mapping, Sequence
+from collections.abc import Iterable, Mapping
 from os import PathLike
 from pathlib import Path
-from typing import TYPE_CHECKING, Literal, cast, get_args
+from typing import TYPE_CHECKING, Any, Literal, cast, get_args
 
 import geopandas as gpd
 import numpy as np
 import pandas as pd
 import xarray as xr
+import pystac
 from odc.geo import SomeCRS
 from odc.geo.crs import CRS as OdcCRS
 from odc.geo.geom import Geometry
@@ -20,12 +20,10 @@ from geosave_engine.geodata.utils.datetime import naive_utc
 from geosave_engine.geodata.utils.geo.geometry import SomeGeometry, to_shapely
 
 if TYPE_CHECKING:
-    from tiler import Tiler
     from numpy.typing import DTypeLike
     from typing_extensions import Unpack
 
     from geosave_engine.geodata import GeoDataFrame
-    from geosave_engine.geodata.stac.item import Asset
     from geosave_engine.geodata.io.geojson import GeoJSONWriteOptions
     from geosave_engine.geodata.io.geopackage import GeoPackageWriteOptions
     from geosave_engine.geodata.io.geoparquet import GeoParquetWriteOptions
@@ -58,8 +56,8 @@ class GeoVector:
         >>> plots = read_vector("plots.geojson")
         >>> plots.gs.crs.to_epsg()
         4326
-        >>> record = GeoVector.from_assets({"prediction": "rasters/prediction.zarr"})
-        >>> catalog = GeoVector.concat([catalog, record])
+        >>> catalog = GeoVector.from_items(ds.gs.to_items("dataset/forest"))
+        >>> catalog = catalog.gs.upsert(another_item, on="id")
         >>> matches = labels.gs.query(prediction)
         >>> catalog.gs.to_geoparquet("dataset/catalog.parquet")
         PosixPath('dataset/catalog.parquet')
@@ -76,6 +74,33 @@ class GeoVector:
         if data.active_geometry_name is None:
             raise AttributeError("gs needs an active geometry column")
         self._data = data
+
+    def to_raster(self, **options: Any) -> xr.Dataset:
+        """Read the data assets of every row as one lazy raster.
+
+        Select rows first, with pandas or `query`. Variables of split-band
+        scenes come back in asset-key order; select by name where order matters.
+
+        Args:
+            **options: Forwarded to `read_raster`. `chunks` defaults to `{}`.
+
+        Returns:
+            Dataset joining the rows' scenes along `time`.
+
+        Raises:
+            ValueError: The frame holds no row, or its assets sit on different
+                grids or repeat an instant.
+
+        Examples:
+            >>> catalog.gs.query(scene).gs.to_raster().sizes["time"]
+            2
+        """
+        from geosave_engine.geodata.io import read_raster
+
+        hrefs = [
+            href for _, row in self._data.iterrows() for href in row.gs.hrefs.values()
+        ]
+        return read_raster(hrefs, **{"chunks": {}, **options})
 
     @property
     def crs(self) -> OdcCRS:
@@ -173,9 +198,9 @@ class GeoVector:
     ) -> Path | str:
         """Write this vector as one GeoParquet file.
 
-        A table with an `assets` column is written as a STAC table: asset
-        hrefs below the file's folder are stored relative to it, and the
-        bounding box and the `stac-geoparquet` file key are added.
+        A table of STAC Items is written as STAC GeoParquet, whose schema and
+        file metadata stac-geoparquet owns. Geometry options such as
+        `write_covering_bbox` apply only to ordinary tables.
 
         Args:
             path: Output path or URL ending in `.parquet` or `.geoparquet`.
@@ -187,8 +212,7 @@ class GeoVector:
 
         Raises:
             FileExistsError: The path exists and `overwrite` is false.
-            ValueError: The suffix is wrong, or a STAC table has a null or
-                repeated `id` or is not in longitude/latitude.
+            ValueError: The suffix is wrong.
 
         Examples:
             >>> plots.gs.to_geoparquet("plots.parquet")
@@ -202,6 +226,34 @@ class GeoVector:
         from geosave_engine.geodata.io import geoparquet
 
         return geoparquet.write(self._data, path, overwrite=overwrite, **options)
+
+    @classmethod
+    def from_items(cls, items: Iterable[pystac.Item]) -> GeoDataFrame:
+        """Build a native GeoDataFrame from STAC Items without mutating them.
+
+        Args:
+            items: Items with self hrefs for resolving any relative assets.
+
+        Returns:
+            Frame with library-converted STAC properties and absolute assets.
+
+        Raises:
+            ValueError: No Items are supplied.
+            pystac.STACError: A relative asset lacks an Item self href.
+        """
+        from stac_geoparquet.arrow import parse_stac_items_to_arrow
+
+        clones = []
+        for item in items:
+            clone = item.clone()
+            clone.make_asset_hrefs_absolute()
+            clones.append(clone)
+        if not clones:
+            raise ValueError("from_items needs at least one STAC Item")
+        table = parse_stac_items_to_arrow(
+            clones, drop_invalid_properties=False
+        ).read_all()
+        return cast("GeoDataFrame", gpd.GeoDataFrame.from_arrow(table))
 
     @classmethod
     def concat(cls, vectors: Iterable[gpd.GeoDataFrame]) -> GeoDataFrame:
@@ -246,11 +298,13 @@ class GeoVector:
             ),
         )
 
-    def upsert(self, records: gpd.GeoDataFrame, *, on: str) -> GeoDataFrame:
+    def upsert(
+        self, records: gpd.GeoDataFrame | pystac.Item, *, on: str
+    ) -> GeoDataFrame:
         """Replace matching keyed rows and append new keys.
 
         Args:
-            records: Incoming rows in the same CRS.
+            records: Incoming frame in the same CRS, or one native STAC Item.
             on: Property column containing explicit record identity.
 
         Returns:
@@ -261,6 +315,8 @@ class GeoVector:
             KeyError: Either collection lacks the key column.
             ValueError: CRSs differ or incoming keys are null or duplicated.
         """
+        if isinstance(records, pystac.Item):
+            records = type(self).from_items([records])
         if self.crs != records.gs.crs:
             raise ValueError(
                 f"the vectors' CRSs differ ({self.crs} and {records.gs.crs}); "
@@ -269,14 +325,14 @@ class GeoVector:
         for label, frame in (("existing", self._data), ("incoming", records)):
             if on not in frame:
                 raise KeyError(f"the {label} vector has no {on!r} column")
-        incoming = cast("pd.Series", records[on])
-        if incoming.isna().any():
+        keys = cast("pd.Series", records[on])
+        if keys.isna().any():
             raise ValueError(f"incoming {on!r} keys must not be null")
-        duplicates = incoming[incoming.duplicated(keep=False)].tolist()
+        duplicates = keys[keys.duplicated(keep=False)].tolist()
         if duplicates:
             raise ValueError(f"incoming {on!r} keys must be unique, got {duplicates}")
-        retained = self._data.loc[~self._data[on].isin(incoming)]
-        return type(self).concat([retained, records])
+        others = self._data.loc[~self._data[on].isin(keys)]
+        return type(self).concat([others, records])
 
     def query(
         self,
@@ -286,12 +342,9 @@ class GeoVector:
     ) -> GeoDataFrame:
         """Select the rows related to an anchor in space and in time.
 
-        The predicate reads from each row to the anchor's ground: `within`
-        selects rows within it, while `contains` selects rows that contain it.
-        Time is compared where both sides state one: the anchor has a timespan
-        and the table has `datetime`, `start_datetime`, and `end_datetime`. A
-        row is then read by its span, or by its `datetime` where its span is
-        null, and matches when that overlaps the anchor's timespan.
+        The predicate reads from each row to the anchor's ground. Where the
+        anchor has a timespan and the table a `datetime`, a row must also
+        overlap it, by its `start_datetime` and `end_datetime` or its `datetime`.
 
         Args:
             target: Anchor, or a geolocated xarray object whose anchor is used.
@@ -325,13 +378,13 @@ class GeoVector:
         matched = candidates.loc[getattr(candidates.geometry, predicate)(ground)]
 
         span = anchor.timespan
-        times = ("datetime", "start_datetime", "end_datetime")
-        if span is not None and all(name in matched for name in times):
+        if span is not None and "datetime" in matched:
             start, end = (pd.Timestamp(naive_utc(edge), tz="UTC") for edge in span)
-            instant, first, last = (
-                pd.to_datetime(matched[name], utc=True) for name in times
+            instant = pd.to_datetime(matched["datetime"], utc=True)
+            first, last = (
+                pd.to_datetime(matched.get(name, instant), utc=True).fillna(instant)
+                for name in ("start_datetime", "end_datetime")
             )
-            first, last = first.fillna(instant), last.fillna(instant)
             matched = matched.loc[(first <= end) & (last >= start)]
         return cast("GeoDataFrame", matched.copy())
 
@@ -465,173 +518,3 @@ class GeoVector:
                 crs=geometry_crs or crs or "EPSG:4326",
             ),
         )
-
-    @classmethod
-    def from_layouts(
-        cls,
-        parents: Mapping[str, xr.Dataset | xr.DataArray | xr.DataTree],
-        layouts: Mapping[str, Tiler],
-        *,
-        padding: Mapping[str, Sequence[tuple[int, int]]] | None = None,
-    ) -> gpd.GeoDataFrame:
-        """Associate native tile IDs with pixel windows and optional exact grids.
-
-        Args:
-            parents: Original prepared scenes or frames keyed by persistent ID.
-            layouts: Native spatial Tiler for each parent.
-            padding: Halo widths used to extend each layout's data shape.
-                None means no halo; native fringe padding needs no entry.
-
-        Returns:
-            Metadata-only reference with an `id` column. Footprints use WGS84;
-            unreferenced parents have null geometry and projection fields.
-
-        Raises:
-            ValueError: Parents are empty, IDs are empty, keys differ, or a
-                layout does not describe two spatial dimensions.
-
-        Examples:
-            >>> reference = GeoVector.from_layouts(parents, layouts)
-            >>> reference.set_index("id").loc["scene-a/tile-0", "tile_id"]
-            0
-        """
-        from geosave_engine.geodata.transform.vector import from_layouts
-
-        return from_layouts(parents, layouts, padding=padding)
-
-    @classmethod
-    def from_assets(
-        cls,
-        assets: Mapping[str, Asset] | str | PathLike[str],
-        *,
-        id: str | None = None,
-        datetime: dt.datetime | None = None,
-        geometry: SomeGeometry | None = None,
-        properties: Mapping[str, object] | None = None,
-    ) -> GeoDataFrame:
-        """Register stored rasters as one STAC item, read from the files.
-
-        The row is read off what is on disk, so it cannot describe pixels that
-        were never written. No pixel is read.
-
-        Args:
-            assets: Where each raster is stored, by layer name. A value is a
-                path or URL, or a STAC asset mapping stating `href` and an
-                optional Zarr/NetCDF `group`. One bare path uses its file stem.
-            id: Item identifier. None uses the anchor stem.
-            datetime: Item instant. None leaves it null, which the timespan in
-                `start_datetime` and `end_datetime` then stands in for.
-            geometry: Semantic geometry to retain. None uses the grid extent.
-            properties: Caller-owned scalar columns.
-
-        Returns:
-            One-row frame in longitude/latitude describing the rasters, its
-            `sources` listing the provider items they were loaded from.
-
-        Raises:
-            OSError: An asset names no stored raster.
-            ValueError: The rasters share no grid, an asset states no href,
-                the item has no time, or a property takes the name of an item
-                column.
-
-        Examples:
-            >>> record = GeoVector.from_assets(
-            ...     {
-            ...         "label": "samples/s1/label.tif",
-            ...         "sentinel_2_l2a": "samples/s1/sentinel_2_l2a.tif",
-            ...     },
-            ...     properties={"land_cover": "forest"},
-            ... )
-            >>> record.loc[0, "id"]
-            '2.7415W_5.6550N_5.1kmx5.1km_20181226_10m'
-        """
-        from geosave_engine.geodata.io.assets import normalize, read
-        from geosave_engine.geodata.stac.item import record
-
-        absolute = normalize(assets)
-        with read(absolute) as stored:
-            return record(
-                stored,
-                assets=absolute,
-                id=id,
-                datetime=datetime,
-                geometry=geometry,
-                properties=properties,
-            )
-
-    @classmethod
-    def from_xarray(
-        cls,
-        data: xr.Dataset | xr.DataTree,
-        *,
-        id: str | None = None,
-        datetime: dt.datetime | None = None,
-        geometry: SomeGeometry | None = None,
-        properties: Mapping[str, object] | None = None,
-    ) -> GeoDataFrame:
-        """Register an object by the file it was read from.
-
-        The path is found on the object and the row is read from that file,
-        as `from_assets` reads it. An object GeoSave changed since it was read,
-        or one selected, renamed, or joined so that it no longer matches its
-        file, must be written first. Plain xarray arithmetic keeps both the
-        path and the shape, so the row then describes the file, not the
-        changed values.
-
-        Args:
-            data: Raster read from a file, or a stack whose groups each were;
-                a group's name becomes its asset key.
-            id: Item identifier. None uses the anchor stem.
-            datetime: Item instant, as `from_assets` takes it.
-            geometry: Semantic geometry to retain. None uses the grid extent.
-            properties: Caller-owned scalar columns.
-
-        Returns:
-            One-row frame in longitude/latitude describing the stored rasters.
-
-        Raises:
-            ValueError: A raster was not read from a file, its grid, variables
-                or shape no longer match, or the input is a single band.
-
-        Examples:
-            >>> GeoVector.from_xarray(read_raster("samples/s1/scene.tif"))
-        """
-        unsaved = "write it, then register the path with GeoVector.from_assets"
-        if isinstance(data, xr.DataTree):
-            rasters = data.gs.rasters
-        elif isinstance(data, xr.Dataset):
-            rasters = {"": data}
-        else:
-            raise ValueError(
-                f"a row is read from a raster's file, and a {type(data).__name__} "
-                f"is one band of it; {unsaved}"
-            )
-
-        from geosave_engine.geodata.io.assets import read
-        from geosave_engine.geodata.stac.item import file_assets, record
-
-        assets = file_assets(data)
-
-        # Compare metadata with the selected stored group, without reading pixels.
-        stored = read(assets)
-        try:
-            for name, raster in zip(assets, rasters.values(), strict=True):
-                original = stored.gs.rasters[name]
-                if (
-                    original.gs.geobox != raster.gs.geobox
-                    or tuple(original.data_vars) != tuple(raster.data_vars)
-                    or dict(original.sizes) != dict(raster.sizes)
-                ):
-                    raise ValueError(
-                        f"{name} no longer matches its stored raster; {unsaved}"
-                    )
-            return record(
-                stored,
-                assets=assets,
-                id=id,
-                datetime=datetime,
-                geometry=geometry,
-                properties=properties,
-            )
-        finally:
-            stored.close()

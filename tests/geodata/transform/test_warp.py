@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import numpy as np
+from pathlib import Path
 import pytest
 import xarray as xr
 from odc.geo.geobox import GeoBox
@@ -49,6 +50,22 @@ def test_a_geobox_target_lands_exactly_on_it() -> None:
     warped = reproject(scene(), target)
 
     assert warped.gs.geobox == target
+
+
+@pytest.mark.parametrize("mode", ["direct", "accessor", "stack"])
+def test_fill_warning_points_to_the_caller(mode: str) -> None:
+    from geosave_engine.geodata.warnings import AssumedFillWarning
+
+    source = landcover()
+    with pytest.warns(AssumedFillWarning) as caught:
+        if mode == "direct":
+            reproject(source, WGS84)
+        elif mode == "accessor":
+            source.gs.reproject(WGS84)
+        else:
+            reproject(build_stack({"cover": source}), WGS84)
+
+    assert all(Path(warning.filename) == Path(__file__) for warning in caught)
 
 
 def test_a_warped_raster_reports_the_crs_it_landed_on() -> None:
@@ -112,13 +129,24 @@ def test_warping_a_stack_onto_a_geobox_lands_every_group_on_it() -> None:
 
 @pytest.mark.parametrize("resampling", ["bilinear", "cubic", "average"])
 def test_a_blending_kernel_refuses_class_codes(resampling: str) -> None:
-    with pytest.raises(ValueError, match="carry a class map"):
+    with pytest.raises(ValueError, match="class codes"):
         reproject(landcover(), WGS84, resampling=resampling)
+
+
+def test_a_palette_band_refuses_a_blending_kernel_without_a_legend() -> None:
+    painted = attrs.rebase(
+        build_raster({"cover": np.ones(utm_box().shape, "uint8")}, utm_box()),
+        attrs.GDALVariable(colorinterp="palette"),
+        target="cover",
+    )
+
+    with pytest.raises(ValueError, match="class codes"):
+        reproject(painted, WGS84, resampling="bilinear")
 
 
 @pytest.mark.parametrize("resampling", ["nearest", "mode"])
 def test_a_value_preserving_kernel_accepts_class_codes(resampling: str) -> None:
-    from geosave_engine.geodata.errors import AssumedFillWarning
+    from geosave_engine.geodata.warnings import AssumedFillWarning
 
     # The class map carries no fill value, so uncovered pixels take uint8's.
     with pytest.warns(AssumedFillWarning, match="255"):
@@ -296,7 +324,7 @@ def test_reproject_keeps_a_bands_name() -> None:
 def test_reproject_gives_an_integer_with_no_fill_value_one_and_warns(
     dtype: str, fill: int
 ) -> None:
-    from geosave_engine.geodata.errors import AssumedFillWarning
+    from geosave_engine.geodata.warnings import AssumedFillWarning
 
     source = _small(dtype, None)
 
@@ -322,7 +350,7 @@ def test_reproject_stays_quiet_for_a_variable_carrying_a_fill_value() -> None:
 
 
 def test_reproject_records_nan_for_a_float_with_no_fill_value_and_warns() -> None:
-    from geosave_engine.geodata.errors import AssumedFillWarning
+    from geosave_engine.geodata.warnings import AssumedFillWarning
 
     source = _small("float32", None)
 

@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-from collections.abc import Mapping, Sequence
 from typing import TYPE_CHECKING, Literal, cast
 
 import geopandas as gpd
@@ -10,11 +9,11 @@ import numpy as np
 import pandas as pd
 import xarray as xr
 from odc.geo.geobox import GeoBox
+from odc.geo.geom import Geometry
 
 from geosave_engine.geodata.transform import nodata
 
 if TYPE_CHECKING:
-    from tiler import Tiler
     from numpy.typing import DTypeLike
 
     from geosave_engine.geodata import GeoDataFrame
@@ -83,9 +82,7 @@ def vectorize(
             )
         values = values.astype("int32")
     if values.dtype not in supported:
-        raise ValueError(
-            f"raster polygonization does not support dtype {values.dtype}"
-        )
+        raise ValueError(f"raster polygonization does not support dtype {values.dtype}")
     valid = np.isfinite(values)
     fill = nodata.fill_value(flags)
     if fill is not None:
@@ -245,35 +242,38 @@ def rasterize(
 
 
 def crop[T: xr.DataArray | xr.Dataset | xr.DataTree](
-    data: T, vector: gpd.GeoDataFrame, *, mask: bool = True
+    data: T, region: Geometry | gpd.GeoSeries | gpd.GeoDataFrame, *, mask: bool = True
 ) -> T:
-    """Cut a raster, band, or stack down to a vector's extent.
+    """Cut a raster, band, or stack down to the extent of a region.
 
     Args:
         data: Dataset or DataArray on a regular grid, or a stack of them,
             which is cut group by group.
-        vector: Geometries to cut against, reprojected onto `data`'s CRS
-            where they sit in another.
+        region: Geometry, or geometries, to cut against, reprojected onto
+            `data`'s CRS where they sit in another. Disconnected geometries
+            share one cut, and `mask` blanks the pixels between them.
         mask: Also make nodata the pixels outside the geometries, which then
             take their own variable's fill value.
 
     Returns:
-        `data` covering the vector's extent, its dtype unchanged.
+        `data` covering the region's extent, its dtype unchanged.
 
     Raises:
-        ValueError: `data` carries no CRS, `vector` is empty or does not
+        TypeError: `region` carries no CRS, as a bare shapely geometry.
+        ValueError: `data` carries no CRS, `region` is empty or does not
             overlap `data`, the crop leaves no regular grid to mask on, or
             `mask` is set while a variable carries no fill value.
 
     Examples:
         >>> crop(scene, field_boundaries).gs.geobox.shape
         (64, 48)
+        >>> crop(scene, box(10, 10, 30, 30, "EPSG:32633"))
     """
     if isinstance(data, xr.DataTree):
         from geosave_engine.geodata.core.stack import map_groups
 
         return cast(
-            "T", map_groups(data, lambda raster: crop(raster, vector, mask=mask))
+            "T", map_groups(data, lambda raster: crop(raster, region, mask=mask))
         )
 
     crs = data.odc.crs
@@ -282,8 +282,8 @@ def crop[T: xr.DataArray | xr.Dataset | xr.DataTree](
             f"{type(data).__name__} carries no CRS; write one with "
             f"gs.write_crs before cropping"
         )
-    # A vector follows the raster's grid; the raster's pixels never move here.
-    vector = vector.to_crs(crs)
+    # A region follows the raster's grid; the raster's pixels never move here.
+    vector = _as_frame(region).to_crs(crs)
 
     # odc's own apply_mask writes NaN, which promotes every integer variable.
     cut = cast("T", data.odc.crop(vector.gs.footprint, apply_mask=False))
@@ -301,102 +301,15 @@ def crop[T: xr.DataArray | xr.Dataset | xr.DataTree](
     return nodata.mask(cut, rasterize(vector, cut).values)
 
 
-def from_layouts(
-    parents: Mapping[str, xr.Dataset | xr.DataArray | xr.DataTree],
-    layouts: Mapping[str, Tiler],
-    *,
-    padding: Mapping[str, Sequence[tuple[int, int]]] | None = None,
-) -> gpd.GeoDataFrame:
-    """Associate native tile IDs with pixel windows and optional exact grids.
-
-    Args:
-        parents: Original prepared scenes or frames keyed by persistent ID.
-        layouts: Native spatial Tiler for each parent.
-        padding: Halo widths used to extend each layout's data shape.
-            None means no halo; native fringe padding needs no entry.
-
-    Returns:
-        Metadata-only reference with an `id` column. Footprints use WGS84;
-        unreferenced parents have null geometry and projection fields.
-
-    Raises:
-        ValueError: Parents are empty, IDs are empty, keys differ, or a
-            layout does not describe two spatial dimensions.
-
-    Examples:
-        >>> reference = from_layouts(parents, layouts)
-        >>> reference.set_index("id").loc["scene-a/tile-0", "tile_id"]
-        0
-    """
-    from geosave_engine.geodata.stac.item import raster_metadata
-
-    if not parents or parents.keys() != layouts.keys():
-        raise ValueError("layouts must match at least one parent")
-    if any(not isinstance(key, str) or not key for key in parents):
-        raise ValueError("parent IDs must be non-empty strings")
-    if padding is not None and padding.keys() != parents.keys():
-        raise ValueError("padding must match parent keys")
-    # Layout bounds describe pixels independently of geographic coordinates.
-    rows = []
-    for parent_id, parent in parents.items():
-        layout = layouts[parent_id]
-        if len(layout.data_shape) != 2:
-            raise ValueError("reference layouts must have two spatial dimensions")
-        widths = [(0, 0), (0, 0)] if padding is None else padding[parent_id]
-        grid = parent.gs.geobox
-        metadata = raster_metadata(parent)
-        for tile_id in range(len(layout)):
-            near, far = layout.get_tile_bbox(tile_id)
-            row_off, col_off = (
-                int(start) - before
-                for start, (before, _) in zip(near, widths, strict=True)
-            )
-            height, width = map(int, far - near)
-            row = {
-                "id": f"{parent_id}/tile-{tile_id}",
-                "parent_id": parent_id,
-                "tile_id": tile_id,
-                "row_off": row_off,
-                "col_off": col_off,
-                "height": height,
-                "width": width,
-                "raster_metadata": metadata,
-                "padding": [list(width) for width in widths],
-                "padding_mode": layout.mode,
-                "padding_value": float(layout.constant_value)
-                if layout.mode == "constant"
-                else None,
-                **_tile_grid(grid, (row_off, col_off), (height, width)),
-            }
-            rows.append(row)
-    # Pixel-only references have an active geometry column, but no CRS.
-    geographic = any(row["geometry"] is not None for row in rows)
-    return gpd.GeoDataFrame(
-        rows, geometry="geometry", crs="EPSG:4326" if geographic else None
+def _as_frame(region: Geometry | gpd.GeoSeries | gpd.GeoDataFrame) -> gpd.GeoDataFrame:
+    if isinstance(region, gpd.GeoDataFrame):
+        return region
+    if isinstance(region, Geometry) and region.crs is not None:
+        return gpd.GeoDataFrame(geometry=[region.geom], crs=region.crs.proj)
+    if isinstance(region, gpd.GeoSeries):
+        return gpd.GeoDataFrame(geometry=region)
+    # Shapely carries no CRS, and assuming one would cut the wrong ground.
+    raise TypeError(
+        f"{type(region).__name__} carries no CRS; pass an odc Geometry, "
+        f"GeoSeries, or GeoDataFrame"
     )
-
-
-def _tile_grid(
-    grid: GeoBox | None,
-    offset: tuple[int, int],
-    shape: tuple[int, int],
-) -> dict[str, object]:
-    """Describe a tile's exact grid, or null fields for unreferenced pixels."""
-    if not isinstance(grid, GeoBox) or grid.crs is None:
-        return {
-            "geometry": None,
-            "proj:shape": None,
-            "proj:transform": None,
-            "proj:code": None,
-            "proj:wkt2": None,
-        }
-
-    tile = grid.translate_pix(offset[1], offset[0]).crop(shape)
-    epsg = grid.crs.epsg
-    return {
-        "geometry": tile.extent.to_crs("EPSG:4326").geom,
-        "proj:shape": shape,
-        "proj:transform": tuple(tile.transform)[:6],
-        "proj:code": f"EPSG:{epsg}" if epsg is not None else None,
-        "proj:wkt2": grid.crs.to_wkt() if epsg is None else None,
-    }

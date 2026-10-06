@@ -1,123 +1,86 @@
+"""Items built from the assets of saved rasters."""
+
 from __future__ import annotations
 
 from datetime import UTC, datetime
+from pathlib import Path
 
+import numpy as np
+import pyarrow.parquet as pq
 import pytest
+from odc.geo.geobox import GeoBox
+from stac_geoparquet.arrow import stac_table_to_items
 
-from geosave_engine.geodata.attrs.models.stac import StacItem, StacMetadata
-from geosave_engine.geodata.core.stack import stack
-from geosave_engine.geodata.stac.item import ITEM_COLUMNS, item, sources
+from geosave_engine.geodata import GeoVector, io, raster
+from geosave_engine.geodata.stac.asset import from_path
+from geosave_engine.geodata.stac.item import from_assets
 
 from tests.geodata.conftest import build_raster
 
-
-def test_an_item_lists_its_columns_in_stac_order() -> None:
-    row = item(build_raster(times=2), assets={"image": "image.tif"})
-
-    assert list(row)[:6] == [
-        "id",
-        "type",
-        "stac_version",
-        "stac_extensions",
-        "links",
-        "datetime",
-    ]
-    assert list(row)[-2:] == ["assets", "sources"]
-    assert set(row) <= set(ITEM_COLUMNS)
-    assert row["proj:code"] == "EPSG:32749"
-    assert tuple(row["proj:shape"]) == (2, 2)
+IDS = ["forest_20250601T000000", "forest_20250602T000000"]
 
 
-def test_an_asset_is_described_from_the_raster_it_names() -> None:
-    row = item(build_raster(times=1), assets={"image": "scene/image.tif"})
-
-    assert row["assets"]["image"] == {
-        "href": "scene/image.tif",
-        "type": "image/tiff; application=geotiff",
-        "roles": ["data"],
-        "bands": [{"name": "red"}, {"name": "nir"}],
-    }
+@pytest.mark.integration
+def test_items_validate_against_the_stac_schemas(tmp_path: Path) -> None:
+    for item in build_raster(times=2).gs.to_items(tmp_path / "forest"):
+        item.validate()
 
 
-def test_an_asset_key_names_a_layer_of_a_stack() -> None:
-    raster = build_raster(times=1)
-    sample = stack({"optical": raster[["red"]], "infrared": raster[["nir"]]})
-
-    row = item(sample, assets={"optical": "optical.tif", "infrared": "infrared.tif"})
-
-    assert row["assets"]["optical"]["bands"] == [{"name": "red"}]
-    assert row["assets"]["infrared"]["bands"] == [{"name": "nir"}]
-    with pytest.raises(ValueError, match="thermal"):
-        item(sample, assets={"thermal": "thermal.tif"})
-
-
-def test_an_asset_states_its_own_roles() -> None:
-    row = item(
-        build_raster(times=1),
-        assets={"label": {"href": "label.tif", "roles": ["labels"]}},
+def test_from_assets_names_layers_and_leaves_them_unowned(tmp_path: Path) -> None:
+    optical = from_path(build_raster(times=2).gs.to_zarr(tmp_path / "optical.zarr"))
+    label = from_path(
+        build_raster(times=1).isel(time=0).gs.to_cog(tmp_path / "label")[0]
     )
 
-    assert row["assets"]["label"]["roles"] == ["labels"]
-    assert row["assets"]["label"]["bands"] == [{"name": "red"}, {"name": "nir"}]
-    with pytest.raises(ValueError, match="href"):
-        item(build_raster(times=1), assets={"label": {"roles": ["labels"]}})
+    item = from_assets({"optical": optical, "label": label}, id="s0")
+
+    assert item.id == "s0"
+    assert list(item.assets) == ["optical", "label"]
+    assert item.datetime is None
+    assert item.common_metadata.start_datetime == optical.common_metadata.start_datetime
+    assert item.common_metadata.end_datetime == optical.common_metadata.end_datetime
+    assert optical.owner is None and label.owner is None
 
 
-def test_a_timeless_item_needs_a_datetime() -> None:
+def test_from_assets_dates_timeless_assets_explicitly(tmp_path: Path) -> None:
+    dem = from_path(build_raster().gs.to_cog(tmp_path / "dem")[0])
+    instant = datetime(2020, 1, 1, tzinfo=UTC)
+
+    assert from_assets({"dem": dem}, id="dem", datetime=instant).datetime == instant
     with pytest.raises(ValueError, match="datetime="):
-        item(build_raster(), assets={"image": "image.tif"})
+        from_assets({"dem": dem}, id="dem")
 
-    row = item(
-        build_raster(),
-        assets={"image": "image.tif"},
-        datetime=datetime(2025, 6, 1, tzinfo=UTC),
+
+def test_a_footprint_is_built_for_a_grid_without_an_epsg_code(tmp_path: Path) -> None:
+    crs = "+proj=laea +lat_0=12.34 +lon_0=56.78 +datum=WGS84 +units=m"
+    grid = GeoBox.from_bbox((0, 0, 40, 40), crs=crs, resolution=10)
+    label = raster({"class": np.ones((4, 4), dtype="uint8")}, grid).assign_coords(
+        time=np.datetime64("2025-01-15T12:00:00")
     )
+    path = io.geotiff.write_cog(label, tmp_path / "laea.tif")
 
-    assert row["datetime"] == datetime(2025, 6, 1, tzinfo=UTC)
-    assert row["start_datetime"] is None and row["end_datetime"] is None
+    item = from_assets({"label": from_path(path)}, id="laea")
 
-
-def _loaded(prefix: str, days: tuple[int, ...], **properties: object) -> StacMetadata:
-    return StacMetadata(
-        stac_items=tuple(
-            StacItem(
-                id=f"{prefix}_{day:02d}",
-                datetime=datetime(2025, 6, day, 2, 30),
-                properties={"eo:cloud_cover": 10.0 * day, **properties},
-            )
-            for day in days
-        )
-    )
+    assert item.bbox[0] == pytest.approx(56.78, abs=0.01)
+    assert item.bbox[1] == pytest.approx(12.34, abs=0.01)
 
 
-def test_sources_list_every_layers_provider_items_once() -> None:
-    raster = build_raster(times=1)
-    optical = raster[["red"]].gs.rebase(_loaded("S2A", (1, 3), platform="sentinel-2a"))
-    radar = raster[["nir"]].gs.rebase(_loaded("S1A", (2,), platform="sentinel-1a"))
+def test_items_survive_the_table(tmp_path: Path) -> None:
+    items = build_raster(times=2).gs.to_items(tmp_path / "forest")
 
-    found = sources(stack({"optical": optical, "radar": radar}))
+    table = GeoVector.from_items(items).gs.to_geoparquet(tmp_path / "catalog.parquet")
 
-    assert found == [
-        {
-            "eo:cloud_cover": 10.0,
-            "platform": "sentinel-2a",
-            "id": "S2A_01",
-            "datetime": "2025-06-01T02:30:00",
-        },
-        {
-            "eo:cloud_cover": 30.0,
-            "platform": "sentinel-2a",
-            "id": "S2A_03",
-            "datetime": "2025-06-03T02:30:00",
-        },
-        {
-            "eo:cloud_cover": 20.0,
-            "platform": "sentinel-1a",
-            "id": "S1A_02",
-            "datetime": "2025-06-02T02:30:00",
-        },
+    restored = list(stac_table_to_items(pq.read_table(table)))
+    assert [entry["id"] for entry in restored] == IDS
+    assert [band["name"] for band in restored[0]["assets"]["red"]["eo:bands"]] == [
+        "red"
     ]
 
 
-def test_a_raster_loaded_from_no_catalog_has_no_sources() -> None:
-    assert sources(build_raster(times=1)) is None
+def test_an_asset_without_a_grid_cannot_place_an_item() -> None:
+    import pystac
+
+    bare = pystac.Asset("s0/notes.txt", roles=["data"])
+
+    with pytest.raises(ValueError, match="states no grid"):
+        from_assets({"notes": bare}, id="s0")

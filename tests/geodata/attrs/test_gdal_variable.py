@@ -95,7 +95,7 @@ def test_write_rgb_leaves_its_source_alone() -> None:
 
 
 def test_write_rgb_refuses_a_name_the_raster_does_not_carry() -> None:
-    with pytest.raises(ValueError, match="not data variables"):
+    with pytest.raises(KeyError, match="not data variables"):
         build_bands(None, None).gs.write_rgb("b0", "b1", "b2")
 
 

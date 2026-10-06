@@ -7,151 +7,91 @@ from contextlib import suppress
 from collections.abc import Mapping, Sequence
 from os import PathLike
 from pathlib import Path, PurePosixPath
-from typing import TYPE_CHECKING, Any, Literal, TypedDict, Unpack, cast
+from typing import Any, Literal, TypedDict, Unpack, cast
 
 import geopandas as gpd
 import numpy as np
-import pandas as pd
-import pyarrow.parquet as pq
+from stac_geoparquet.arrow import to_parquet
 from fsspec.core import split_protocol
+from pystac.utils import make_absolute_href, make_relative_href
 
 from .storage import (
     StorageOptions,
+    absolute_location,
     filesystem_path,
     is_local_filesystem,
-    resolve_asset_path,
-    stored_asset_path,
 )
-
-if TYPE_CHECKING:
-    from fsspec.spec import AbstractFileSystem
 
 _FILE_SUFFIXES = (".parquet", ".geoparquet")
 
-# The file key the stac-geoparquet specification names itself by.
-_STAC_KEY = b"stac-geoparquet"
-_STAC_VALUE = b'{"version": "1.0.0"}'
 
-
-def is_stac(frame: gpd.GeoDataFrame) -> bool:
-    """Report whether a table is a STAC table, which is one carrying assets."""
-    return "assets" in frame
-
-
-def stored_assets(
-    frame: gpd.GeoDataFrame, *, filesystem: AbstractFileSystem, catalog_path: str
-) -> gpd.GeoDataFrame:
-    """Check a STAC table and shorten its asset hrefs for storage.
+def relative_hrefs(frame: gpd.GeoDataFrame, table: str) -> gpd.GeoDataFrame:
+    """Rewrite asset hrefs relative to the table that stores them.
 
     Args:
-        frame: Table carrying `assets`.
-        filesystem: Filesystem the table is written to.
-        catalog_path: Protocol-free path of the table on that filesystem.
+        frame: Table carrying `assets` with absolute hrefs.
+        table: Absolute path or URL of the table.
 
     Returns:
-        Copy whose hrefs below the table's folder are relative to it.
+        Copy whose hrefs on the table's own filesystem are relative to it.
 
     Raises:
         TypeError: An href is neither a string nor path-like.
-        ValueError: `id` is absent, null, or repeated, or the table is not in
-            longitude/latitude.
     """
-    if "id" not in frame:
-        raise ValueError("a STAC table needs an 'id' column naming each item")
-    ids = cast("pd.Series", frame["id"])
-    if ids.isna().any():
-        raise ValueError("STAC item ids must not be null")
-    duplicates = sorted(set(ids[ids.duplicated()]))
-    if duplicates:
-        raise ValueError(f"STAC item ids must be unique, got {duplicates}")
-    if frame.crs != "EPSG:4326":
-        raise ValueError(
-            f"a STAC table states footprints in EPSG:4326, got {frame.crs}; "
-            "call to_crs('EPSG:4326') first"
-        )
-
-    # A cell is one row's assets, or null where the row has none.
-    def shorten(cell: object) -> object:
+    assets = []
+    for cell in frame["assets"]:
+        # A cell is one row's assets, or null where the row has none.
         if not isinstance(cell, Mapping):
-            return cell
-        assets = {}
-        for name, asset in cell.items():
+            assets.append(cell)
+            continue
+        row = {}
+        for key, asset in cell.items():
+            if asset is None:
+                continue
             href = asset["href"]
             if not isinstance(href, (str, PathLike)):
                 raise TypeError(
                     f"asset href must be string or path-like, got {type(href).__name__}"
                 )
-            assets[name] = {
-                **asset,
-                "href": stored_asset_path(
-                    href, filesystem=filesystem, catalog_path=catalog_path
-                ),
-            }
-        return assets
-
-    return cast(
-        "gpd.GeoDataFrame",
-        frame.assign(assets=[shorten(cell) for cell in frame["assets"]]),
-    )
+            row[key] = {**asset, "href": make_relative_href(str(href), table)}
+        assets.append(row)
+    return cast("gpd.GeoDataFrame", frame.assign(assets=assets))
 
 
-def resolved_assets(
-    frame: gpd.GeoDataFrame, *, filesystem: AbstractFileSystem, catalog_path: str
-) -> gpd.GeoDataFrame:
-    """Expand a stored STAC table's hrefs into directly openable ones.
+def absolute_hrefs(frame: gpd.GeoDataFrame, table: str) -> gpd.GeoDataFrame:
+    """Rewrite the hrefs a table stores into directly openable ones.
 
     Args:
         frame: Table as read, carrying `assets`.
-        filesystem: Filesystem the table was read from.
-        catalog_path: Protocol-free path of the table on that filesystem.
+        table: Absolute path or URL the table was read from.
 
     Returns:
-        Table whose rows hold only the assets they have, each with an href
-        usable as written.
+        Table whose rows hold only the assets they have, each with an
+        absolute href.
     """
-
-    def expand(cell: object) -> object:
+    assets = []
+    for cell in frame["assets"]:
         if not isinstance(cell, Mapping):
-            return cell
-        assets = {}
-        for name, asset in cell.items():
+            assets.append(cell)
+            continue
+        row = {}
+        for key, asset in cell.items():
             # Parquet stores one struct for every row, null where a row has none.
             if asset is None:
                 continue
             fields = {
-                key: value.tolist() if isinstance(value, np.ndarray) else value
-                for key, value in asset.items()
+                name: value.tolist() if isinstance(value, np.ndarray) else value
+                for name, value in asset.items()
                 if value is not None
             }
-            fields["href"] = str(
-                resolve_asset_path(
-                    fields["href"], filesystem=filesystem, catalog_path=catalog_path
-                )
-            )
-            assets[name] = fields
-        return assets
-
-    return cast(
-        "gpd.GeoDataFrame",
-        frame.assign(assets=[expand(cell) for cell in frame["assets"]]),
-    )
-
-
-def _stamp_stac(
-    path: str | Path,
-    *,
-    filesystem: AbstractFileSystem | None = None,
-    **parquet_options: Any,
-) -> None:
-    """Rewrite a table with the stac-geoparquet file key beside its own."""
-    table = pq.read_table(path, filesystem=filesystem)
-    metadata = {**(table.schema.metadata or {}), _STAC_KEY: _STAC_VALUE}
-    pq.write_table(
-        table.replace_schema_metadata(metadata),
-        path,
-        filesystem=filesystem,
-        **parquet_options,
-    )
+            # An href stored whole, as a URL or a rooted path, names its file already.
+            href = str(fields["href"])
+            protocol, _ = split_protocol(href)
+            if protocol is None and not href.startswith("/"):
+                href = make_absolute_href(href, table)
+            row[key] = {**fields, "href": href}
+        assets.append(row)
+    return cast("gpd.GeoDataFrame", frame.assign(assets=assets))
 
 
 class GeoParquetOpenOptions(TypedDict, total=False):
@@ -213,9 +153,9 @@ def write(
 ) -> Path | str:
     """Write one GeoDataFrame to local or fsspec-backed GeoParquet.
 
-    Nothing is reprojected. A table carrying `assets` is written as a STAC
-    table: hrefs below the file are stored relative to it, and the bounding
-    box and the `stac-geoparquet` file key are added.
+    A table of STAC Items is written as STAC GeoParquet, stating each row's
+    `bbox` from the geometry written; GeoPandas geometry options then do not
+    apply. Asset hrefs on the table's filesystem are stored relative to it.
 
     Args:
         gdf: Frame to write.
@@ -230,62 +170,66 @@ def write(
         FileExistsError: The path exists and `overwrite` is false.
         TypeError: An option is unsupported or supplied twice.
         ValueError: The suffix is wrong, a direct option is repeated in
-            `parquet_options`, or a STAC table has a null or repeated `id` or
-            is not in longitude/latitude.
+            `parquet_options`.
     """
     storage_options = write_options.pop("storage_options", None)
-    protocol, _ = split_protocol(str(path))
     filesystem, target = filesystem_path(path, storage_options)
-    suffix = PurePosixPath(target).suffix.lower()
-    if suffix not in _FILE_SUFFIXES:
+    target_name = PurePosixPath(target).name
+    if PurePosixPath(target).suffix.lower() not in _FILE_SUFFIXES:
         raise ValueError(
-            f"destination {PurePosixPath(target).name!r} must end in one of "
-            f"{list(_FILE_SUFFIXES)}"
+            f"destination {target_name!r} must end in one of {list(_FILE_SUFFIXES)}"
+        )
+    if not overwrite and filesystem.exists(target):
+        raise FileExistsError(f"{path} exists; pass overwrite=True to replace it")
+
+    # Assets beside the table are stored relative to it, so the two move together.
+    frame = gdf
+    if "assets" in gdf:
+        frame = relative_hrefs(gdf, absolute_location(path))
+
+    # PyArrow accepts engine-specific keywords that GeoPandas cannot type.
+    parquet_options = cast(
+        "dict[str, Any]", dict(write_options.pop("parquet_options", {}))
+    )
+
+    def save(destination: str | Path, **location: Any) -> None:
+        # A table of STAC Items carries `stac_version`; anything else is plain vectors.
+        if "stac_version" not in frame:
+            frame.to_parquet(
+                destination, **location, **write_options, **parquet_options
+            )
+            return
+
+        # GeoPandas drops the covering bbox on read, so every write states the current one.
+        bounds = frame.geometry.bounds
+        bounds.columns = ["xmin", "ymin", "xmax", "ymax"]
+        items = frame.assign(bbox=bounds.to_dict("records"))
+        table = items.to_arrow(index=write_options.get("index"))
+        serializer_options = {
+            name: value for name, value in write_options.items() if name != "index"
+        }
+        to_parquet(
+            table, destination, **location, **serializer_options, **parquet_options
         )
 
-    frame = gdf
-    stac = is_stac(gdf)
-    if stac:
-        frame = stored_assets(gdf, filesystem=filesystem, catalog_path=target)
-        write_options["write_covering_bbox"] = True
-
-    parquet_options = dict(write_options.pop("parquet_options", {}))
-    # PyArrow accepts engine-specific keywords that GeoPandas cannot type.
-    parquet_kwargs = cast("dict[str, Any]", parquet_options)
-    stamp_options = {**parquet_kwargs}
-    if "compression" in write_options:
-        stamp_options["compression"] = write_options["compression"]
+    # A local table is written beside its destination, then moved over it whole.
     if is_local_filesystem(filesystem):
-        local_target = Path(target)
-        if local_target.exists() and not overwrite:
-            raise FileExistsError(
-                f"{local_target} exists; pass overwrite=True to replace it"
-            )
-        draft = local_target.with_name(
-            f".{local_target.stem}.staging{local_target.suffix}"
+        destination = Path(target)
+        staging = destination.with_name(
+            f".{destination.stem}.staging{destination.suffix}"
         )
         try:
-            frame.to_parquet(draft, **write_options, **parquet_kwargs)
-            if stac:
-                _stamp_stac(draft, **stamp_options)
-            os.replace(draft, local_target)
+            save(staging)
+            os.replace(staging, destination)
         except BaseException:
-            draft.unlink(missing_ok=True)
+            staging.unlink(missing_ok=True)
             raise
-        return Path(target) if protocol is not None else Path(path)
+        return destination
 
+    # A remote table is streamed to its URL, and a failed first write is removed.
     existed = filesystem.exists(target)
-    if existed and not overwrite:
-        raise FileExistsError(f"{path} exists; pass overwrite=True to replace it")
     try:
-        frame.to_parquet(
-            target,
-            filesystem=filesystem,
-            **write_options,
-            **parquet_kwargs,
-        )
-        if stac:
-            _stamp_stac(target, filesystem=filesystem, **stamp_options)
+        save(target, filesystem=filesystem)
     except BaseException:
         if not existed:
             # Cleanup is best-effort and must not replace the write error.

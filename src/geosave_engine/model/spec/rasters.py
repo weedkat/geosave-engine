@@ -268,6 +268,7 @@ class RasterRequirement(SpecModel):
 
         Raises:
             TypeError: The supplied value is not a Dataset.
+            KeyError: A declared variable or coordinate is absent.
             ValueError: Selection is ambiguous or a requirement is unsatisfied.
         """
         if not isinstance(raster, xr.Dataset):
@@ -296,7 +297,7 @@ class RasterRequirement(SpecModel):
     def _validate_coordinates(self, raster: xr.Dataset) -> None:
         """Check that required coordinate arrays are present."""
         if missing := set(self.coordinates) - raster.coords.keys():
-            raise ValueError(f"Missing raster coordinates: {sorted(missing)}")
+            raise KeyError(f"Missing raster coordinates: {sorted(missing)}")
 
     def _select_variables(self, raster: xr.Dataset) -> xr.Dataset:
         """Select named data variables in their declared order."""
@@ -304,7 +305,7 @@ class RasterRequirement(SpecModel):
         if variables is None:
             raise ValueError("Named variable selection requires variables")
         if missing := set(variables) - raster.data_vars.keys():
-            raise ValueError(f"Missing raster variables: {sorted(missing)}")
+            raise KeyError(f"Missing raster variables: {sorted(missing)}")
         return raster[list(variables)]
 
     def _select_channels(self, raster: xr.Dataset) -> xr.Dataset:

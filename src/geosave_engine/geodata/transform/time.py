@@ -28,9 +28,10 @@ import pandas as pd
 import xarray as xr
 
 import geosave_engine.geodata.attrs as attrs
-from geosave_engine.geodata.core.profile import TIME_COORDINATE
+from geosave_engine.geodata.conventions import TIME_COORDINATE
 from geosave_engine.geodata.core.stack import stack
-from geosave_engine.geodata.errors import (
+from geosave_engine import __path__ as _package_paths
+from geosave_engine.geodata.warnings import (
     DroppedInstantsWarning,
     DroppedFramesWarning,
     UncoveredInstantsWarning,
@@ -110,7 +111,7 @@ def _spans(labels: np.ndarray, length: int, stride: int | None) -> list[slice]:
             f"axis do not fill a frame of {length}, so they were left out; cut "
             f"at a length and stride the axis divides by",
             DroppedInstantsWarning,
-            stacklevel=3,
+            skip_file_prefixes=tuple(_package_paths),
         )
     return [slice(start, start + length) for start in range(0, end - length + 1, step)]
 
@@ -288,7 +289,7 @@ def _joint_axis(
             f"group covers, so they name no instant of the joint axis; the groups "
             f"observe over different periods",
             UncoveredInstantsWarning,
-            stacklevel=3,
+            skip_file_prefixes=tuple(_package_paths),
         )
 
     instants = reduce(pd.Index.union, inside.values())
@@ -453,6 +454,6 @@ def stack_frames(
             f"group observed nothing within {reach} of, so they were not emitted; "
             f"widen the tolerance or interpolate the gaps to keep them",
             DroppedFramesWarning,
-            stacklevel=2,
+            skip_file_prefixes=tuple(_package_paths),
         )
     return tuple(cut)

@@ -21,9 +21,9 @@ from geosave_engine.geodata.attrs import (
 )
 from geosave_engine.geodata.attrs.headers.gdal import create_header
 
-from geosave_engine.geodata.core.profile import TIME_COORDINATE
+from geosave_engine.geodata.conventions import TIME_COORDINATE
 from geosave_engine.geodata.utils.datetime import parse_stem_dates
-from .storage import absolute_location
+from .storage import absolute_location, gdal_path
 
 if TYPE_CHECKING:
     from os import PathLike
@@ -56,7 +56,8 @@ def read(
     stays on the variable, the description as `long_name` unless it is the name.
 
     Args:
-        source: Local path or URI to a raster GDAL can open.
+        source: Local path or URI to a raster GDAL can open. An
+            `hf://buckets/` URL is read through the bucket's S3 gateway.
         chunks: Chunk configuration for the opened variables.
         mask_and_scale: Decode CF packing to physical values instead of
             returning stored digital numbers.
@@ -70,8 +71,8 @@ def read(
         whole period places the raster at its first instant.
 
     Raises:
-        ValueError: The file cannot be read, holds subdatasets, or names one
-            variable on two bands.
+        RasterioIOError: The file cannot be opened or read.
+        ValueError: The file holds subdatasets or names one variable on two bands.
 
     Examples:
         >>> read("scene.tif").gs.variables
@@ -79,7 +80,7 @@ def read(
         >>> read("20190507_red.tif").time.item()
         datetime.datetime(2019, 5, 7, 0, 0)
     """
-    with rasterio.open(source) as src:
+    with rasterio.open(gdal_path(source)) as src:
         header = create_header(src)
         cube = rioxarray.open_rasterio(
             src,

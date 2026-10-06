@@ -1,5 +1,8 @@
 from __future__ import annotations
 
+from geosave_engine.ml.inputs import to_tensor
+
+from geosave_engine.geodata.transform.chip import chip_windows
 from pathlib import Path
 
 import numpy as np
@@ -10,7 +13,7 @@ from torch import nn
 from torch.utils.data import default_collate
 from transformers import AutoModel
 
-from geosave_engine.geodata import Dataset, GeoVector, raster
+from geosave_engine.geodata import Dataset, raster
 from tiler import Tiler
 from geosave_engine.geodata.attrs import TimeSpec
 from tests.ml.test_inputs import _samples
@@ -36,7 +39,7 @@ def scene() -> Dataset:
 
 def _row(data):
     y, x = data.gs.grid_dims
-    return GeoVector.from_layouts(
+    return chip_windows(
         {"scene": data},
         {
             "scene": Tiler(
@@ -246,7 +249,7 @@ def test_transformers_reload_runs_on_prithvi_context(
     inputs = default_collate(
         [
             {
-                "image": tiles.read(index).gs.to_tensor(),
+                "image": to_tensor(tiles.read(index)),
                 "temporal_coords": prithvi.temporal_coords(tiles.reference.iloc[index]),
                 "location_coords": prithvi.location_coords(tiles.reference.iloc[index]),
             }

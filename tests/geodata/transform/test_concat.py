@@ -14,7 +14,7 @@ from odc.geo.geom import CRS
 import geosave_engine.geodata.attrs as attrs
 from geosave_engine.geodata.core.raster import raster as build_raster
 from geosave_engine.geodata.core.stack import stack
-from geosave_engine.geodata.errors import DroppedAttrsWarning, GeoSaveWarning
+from geosave_engine.geodata.warnings import DroppedAttrsWarning, GeoSaveWarning
 from geosave_engine.geodata.transform.concat import concat_time
 
 UTM = "EPSG:32633"

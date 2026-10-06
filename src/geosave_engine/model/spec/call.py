@@ -151,9 +151,9 @@ class CallSpec(SpecModel):
         return frozenset(reference.root for reference in self.references)
 
     def select_inputs(self, state: Mapping[str, object]) -> dict[str, object]:
-        """Select only referenced roots from the current stage state."""
+        """Select referenced roots, raising KeyError for missing inputs."""
         if missing := self.inputs - state.keys():
-            raise ValueError(f"Missing call inputs: {sorted(missing)}")
+            raise KeyError(f"Missing call inputs: {sorted(missing)}")
         return {
             reference.root: state[reference.root] for reference in self.references
         }

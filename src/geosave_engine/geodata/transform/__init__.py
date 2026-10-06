@@ -14,6 +14,7 @@ Examples:
 """
 
 from . import (
+    chip,
     composite,
     concat,
     merge,
@@ -22,10 +23,10 @@ from . import (
     time,
     vector,
     warp,
-    window,
 )
 
 __all__ = [
+    "chip",
     "composite",
     "concat",
     "merge",
@@ -34,5 +35,4 @@ __all__ = [
     "time",
     "vector",
     "warp",
-    "window",
 ]

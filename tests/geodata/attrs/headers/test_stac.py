@@ -10,7 +10,7 @@ import xarray as xr
 
 from geosave_engine.geodata.attrs import CFVariable, Nodata, Packing
 from geosave_engine.geodata.attrs.headers.stac import create_header
-from geosave_engine.geodata.errors import DroppedAttrsWarning
+from geosave_engine.geodata.warnings import DroppedAttrsWarning
 
 
 def _item(id: str, timestamp: dt, fields: dict[str, object]) -> pystac.Item:

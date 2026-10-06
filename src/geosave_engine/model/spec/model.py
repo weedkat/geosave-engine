@@ -13,7 +13,7 @@ from yaml.nodes import ScalarNode
 
 from .base import Name, SpecModel, Text
 from .call import CallSpec, Ref
-from .cuts import FramesSpec, TilesSpec
+from .cuts import FramesSpec, ChipsSpec
 from .rasters import RasterRequirement
 from .stage import StageSpec
 from geosave_engine.geodata.core import GeoAnchor
@@ -74,7 +74,7 @@ class ModelSpec(SpecModel):
         rasters: Rasters the model reads, by name.
         preprocessing: Named raster calls run on each frame.
         frames: How a sample's time axis is cut. None cuts nothing.
-        tiles: How a raster is cut in space and merged back.
+        chips: How a raster is cut in space and merged back.
         inputs: What the model chain takes, by input name. A reference is a
             raster's pixels.
         context: Optional row-based model context recipe, shared by training and inference.
@@ -94,7 +94,7 @@ class ModelSpec(SpecModel):
     rasters: dict[Name, RasterRequirement]
     preprocessing: StageSpec = Field(default_factory=StageSpec)
     frames: FramesSpec | None = None
-    tiles: TilesSpec | None = None
+    chips: ChipsSpec | None = None
     inputs: dict[Name, Ref] = Field(default_factory=dict)
     context: CallSpec | None = None
     transforms: dict[Name, list[TransformSpec]] = Field(default_factory=dict)
@@ -179,6 +179,7 @@ class ModelSpec(SpecModel):
 
         Raises:
             TypeError: A raster is not an xarray Dataset.
+            KeyError: A supplied raster lacks a declared variable or coordinate.
             ValueError: A raster does not meet its requirement, or
                 preprocessing reads one that was not supplied.
 
@@ -192,7 +193,7 @@ class ModelSpec(SpecModel):
                 continue
             try:
                 selected[name] = requirement.select_raster(rasters[name])
-            except (TypeError, ValueError) as error:
+            except Exception as error:
                 error.add_note(f"While validating raster {name!r}")
                 raise
         return {**selected, **self.preprocessing.run({**rasters, **selected})}

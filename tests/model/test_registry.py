@@ -94,10 +94,28 @@ def test_explicit_arguments_override_published_values(model_factories: None) -> 
 
 
 def test_unknown_constructor_arguments_are_not_dropped(model_factories: None) -> None:
-    with pytest.raises(TypeError, match="encoder.*featre_channels"):
+    with pytest.raises(TypeError, match="featre_channels") as caught:
         build_model(
             {"encoder": {"name": "test", "init_args": {"featre_channels": 7}}}
         )
+    assert caught.value.__notes__ == ["While building stage 'encoder'"]
+
+
+@pytest.mark.parametrize("error_type", [TypeError, ValueError, RuntimeError])
+def test_build_model_preserves_constructor_errors(monkeypatch, error_type) -> None:
+    failure = error_type("invalid layout")
+
+    def failing_encoder() -> nn.Module:
+        raise failure
+
+    list_models()
+    monkeypatch.setitem(MODEL_REGISTRY, "encoder", {"FAIL": failing_encoder})
+
+    with pytest.raises(error_type) as caught:
+        build_model({"encoder": {"name": "fail"}})
+
+    assert caught.value is failure
+    assert failure.__notes__ == ["While building stage 'encoder'"]
 
 
 def test_empty_model_is_rejected() -> None:
@@ -119,7 +137,7 @@ def test_empty_model_is_rejected() -> None:
 def test_model_chain_rejects_malformed_stage_selectors(
     spec: dict[str, object], model_factories: None
 ) -> None:
-    with pytest.raises((TypeError, ValueError)):
+    with pytest.raises((TypeError, ValueError, KeyError)):
         build_model({"encoder": spec})
 
 

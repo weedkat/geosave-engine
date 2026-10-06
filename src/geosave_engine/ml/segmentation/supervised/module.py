@@ -20,6 +20,7 @@ from geosave_engine.ml.builders import (
 )
 from geosave_engine.model.chain import ModelChain
 from geosave_engine.model.registry import build_model
+from geosave_engine.geodata.warnings import GeoSaveWarning
 
 
 @dataclass
@@ -35,7 +36,7 @@ class Module(LightningModule):
 
     A batch is ``(model_inputs, target, ids, valid)``. Training scores each tile;
     validation and test merge tile logits and score each raster whole, so
-    their datasets supply original parents, reference IDs, native layouts,
+    their datasets supply original parents, reference IDs, native tilers,
     and explicit padding. Scene evaluation currently requires a single device;
     tile-sharded distributed evaluation cannot complete the local scenes.
 
@@ -248,7 +249,8 @@ class Module(LightningModule):
                 "validation ended before any raster was whole, so nothing was "
                 "scored and val_loss was not logged; a raster is scored once "
                 "all its tiles have been read, so let validation read at least "
-                "one whole raster (raise limit_val_batches)"
+                "one whole raster (raise limit_val_batches)",
+                category=GeoSaveWarning,
             )
 
     def _merge(
@@ -277,9 +279,9 @@ class Module(LightningModule):
             parent_id = row.parent_id
             if parent_id not in state.mergers:
                 state.mergers[parent_id] = Merger(
-                    dataset.layouts[parent_id],
+                    dataset.tilers[parent_id],
                     logits=self.num_classes + 1,
-                    window=dataset.spec.tiles.window,
+                    window=dataset.spec.chips.window,
                     save_visits=False,
                     data_dtype=np.float64,
                     weights_dtype=np.float64,

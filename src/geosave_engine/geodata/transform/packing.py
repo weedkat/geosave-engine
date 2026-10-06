@@ -70,7 +70,7 @@ def _unpack_array(array: xr.DataArray) -> xr.DataArray:
         return array
 
     # A class code names a class, so scaling it yields a number naming none.
-    if attrs.flag_variables(array):
+    if attrs.is_flag(array):
         raise ValueError(
             f"{str(array.name)!r} holds class codes and declares packing, which "
             f"cannot both be true; drop its Legend or its Packing, whichever "

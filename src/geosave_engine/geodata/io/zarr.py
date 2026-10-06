@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 from collections.abc import Hashable, Mapping, Sequence
-from pathlib import Path
+from pathlib import Path, PurePosixPath
 from typing import TYPE_CHECKING, Any, TypedDict, Unpack, Literal, cast, overload
 
 import xarray as xr
@@ -11,7 +11,7 @@ from dask.delayed import delayed
 from xarray.core.types import T_Chunks
 
 from geosave_engine.geodata.attrs import Nodata, ZarrOrder, rebase
-from .storage import absolute_location
+from .storage import absolute_location, is_local, local_path
 
 
 if TYPE_CHECKING:
@@ -61,6 +61,7 @@ class ZarrWriteOptions(TypedDict, total=False):
     write_empty_chunks: bool | None
     chunkmanager_store_kwargs: dict[str, Any] | None
     synchronizer: Any
+    storage_options: Mapping[str, Any] | None
 
 
 def read(
@@ -227,7 +228,7 @@ def write(
     compute: Literal[True] = True,
     overwrite: bool = False,
     **write_options: Unpack[ZarrWriteOptions],
-) -> Path: ...
+) -> Path | str: ...
 
 
 @overload
@@ -248,7 +249,7 @@ def write(
     compute: bool = True,
     overwrite: bool = False,
     **write_options: Unpack[ZarrWriteOptions],
-) -> Path | Delayed:
+) -> Path | str | Delayed:
     """Write a raster or raster stack to a Zarr store.
 
     A Zarr group records no member order, so a Dataset's variable order
@@ -256,7 +257,7 @@ def write(
 
     Args:
         raster_or_stack: Raster Dataset, or raster-stack DataTree.
-        destination: Output path ending in `.zarr`.
+        destination: Output path or fsspec URL ending in `.zarr`.
         compute: False returns a delayed write instead of writing now.
         overwrite: Replace an existing destination when true.
         **write_options: Supported xarray Zarr write options.
@@ -279,9 +280,14 @@ def write(
             f"{type(raster_or_stack).__name__}"
         )
 
-    path = Path(destination)
-    if path.suffix != _STORE_SUFFIX:
-        raise ValueError(f"destination {path.name!r} must end in {_STORE_SUFFIX!r}")
+    name = PurePosixPath(str(destination)).name
+    if PurePosixPath(name).suffix != _STORE_SUFFIX:
+        raise ValueError(f"destination {name!r} must end in {_STORE_SUFFIX!r}")
+    # A URL passes to xarray as written; `Path` would fold its `scheme://`.
+    if is_local(destination):
+        path: Path | str = local_path(destination)
+    else:
+        path = str(destination)
 
     # A Zarr group records no member order, so every node's own travels in attrs.
     if isinstance(raster_or_stack, xr.Dataset):

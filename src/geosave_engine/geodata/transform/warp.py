@@ -34,7 +34,8 @@ from odc.geo.geobox import (
 )
 
 import geosave_engine.geodata.attrs as attrs
-from geosave_engine.geodata.errors import AssumedFillWarning
+from geosave_engine import __path__ as _package_paths
+from geosave_engine.geodata.warnings import AssumedFillWarning
 from geosave_engine.geodata.transform import nodata
 
 if TYPE_CHECKING:
@@ -300,7 +301,7 @@ def _warp_band(band: xr.DataArray, geobox: GeoBox, kernel: Resampling) -> xr.Dat
             f"does not cover take {fill}; choose one with gs.write_nodata(...) "
             f"before warping",
             AssumedFillWarning,
-            stacklevel=3,
+            skip_file_prefixes=tuple(_package_paths),
         )
         band = band.gs.write_nodata(fill)
 
@@ -384,7 +385,7 @@ def reproject[T: xr.DataArray | xr.Dataset | xr.DataTree](
 
         >>> reproject(landcover, scene, resampling="bilinear")
         Traceback (most recent call last):
-        ValueError: ['landcover'] carry a class map, so 'bilinear' would blend ...
+        ValueError: ['landcover'] hold class codes, which ['bilinear'] would blend ...
         >>> reproject(scene, target, resampling={"*": "bilinear", "labels/mask": "mode"})
     """
     if not isinstance(data, xr.DataArray | xr.Dataset | xr.DataTree):
@@ -393,19 +394,20 @@ def reproject[T: xr.DataArray | xr.Dataset | xr.DataTree](
             f"{type(data).__name__}"
         )
 
+    # A stack's names are group-qualified, as its `resampling` mapping keys them.
     blended: dict[str, Resampling] = {}
-    for name in attrs.flag_variables(data):
+    for name in data.gs.variables:
+        band = data if isinstance(data, xr.DataArray) else data[name]
         kernel = _variable_resampling(resampling, name)
-        if kernel not in _VALUE_PRESERVING:
+        if attrs.is_flag(band) and kernel not in _VALUE_PRESERVING:
             blended[name] = kernel
     if blended:
         named = ", ".join(f"{name!r}: 'mode'" for name in sorted(blended))
         raise ValueError(
-            f"{sorted(blended)} carry a class map, so "
-            f"{sorted(set(blended.values()))} would blend their codes into values "
-            f"naming no class; warp them with a value-preserving kernel, as "
-            f"resampling={{'*': ..., {named}}}, or drop the "
-            f"Legend first"
+            f"{sorted(blended)} hold class codes, which "
+            f"{sorted(set(blended.values()))} would blend into values naming no "
+            f"class; warp them with a value-preserving kernel, as "
+            f"resampling={{'*': ..., {named}}}, or drop the Legend first"
         )
 
     source = _source_geobox(data)

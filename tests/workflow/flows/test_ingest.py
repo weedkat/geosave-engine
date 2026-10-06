@@ -1,3 +1,4 @@
+import inspect
 from importlib import import_module
 
 import numpy as np
@@ -162,41 +163,6 @@ def test_ingest_run_opens_a_json_anchor(tmp_path, prefect_server, monkeypatch) -
     assert shapes == [(4, 4)]
 
 
-def test_ingest_records_its_row_in_a_catalog(tmp_path, stac_server):
-    from shapely.geometry import Point
-
-    from geosave_engine.geodata import GeoVector, read_vector
-
-    url, _, anchor = stac_server
-    label = raster(
-        {"class": np.ones((4, 4), dtype="uint8")}, anchor.geobox
-    ).assign_coords(time=np.datetime64("2025-01-15"))
-    label_path = io.geotiff.write_cog(label, tmp_path / "label.tif")
-    catalog = tmp_path / "scenes" / "catalog.parquet"
-    catalog.parent.mkdir()
-    earlier = GeoVector.from_geometry(
-        Point(12, 45),
-        properties={"id": "earlier", "assets": {"optical": {"href": "x.zarr"}}},
-    )
-    stale = earlier.assign(id=["s1"])
-    GeoVector.concat([earlier, stale]).gs.to_geoparquet(catalog)
-
-    ingest.fn(
-        anchor=RasterAnchorConfig(kind="raster", path=str(label_path)),
-        output=str(tmp_path / "scenes" / "s1"),
-        spec=str(model_spec(tmp_path, url)),
-        format="geotiff",
-        catalog=str(catalog),
-    )
-
-    recorded = read_vector(catalog)
-    assert recorded["id"].tolist() == ["earlier", "s1"]
-    assert recorded.set_index("id").loc["s1"].gs.to_xarray().gs.groups == ("optical",)
-    assert recorded.loc[1, "assets"]["optical"]["href"] == str(
-        tmp_path / "scenes" / "s1" / "optical.tif"
-    )
-
-
 def test_ingest_refuses_an_existing_output(tmp_path, stac_server):
     url, requests, anchor = stac_server
     label = raster(
@@ -213,55 +179,5 @@ def test_ingest_refuses_an_existing_output(tmp_path, stac_server):
         )
 
 
-def test_ingest_starts_a_new_catalog(tmp_path, stac_server):
-    from geosave_engine.geodata import read_vector
-
-    url, _, anchor = stac_server
-    label = raster(
-        {"class": np.ones((4, 4), dtype="uint8")}, anchor.geobox
-    ).assign_coords(time=np.datetime64("2025-01-15"))
-    label_path = io.geotiff.write_cog(label, tmp_path / "label.tif")
-    catalog = tmp_path / "catalogs" / "catalog.parquet"
-
-    ingest.fn(
-        anchor=RasterAnchorConfig(kind="raster", path=str(label_path)),
-        output=str(tmp_path / "scenes" / "s1"),
-        spec=str(model_spec(tmp_path, url)),
-        catalog=str(catalog),
-    )
-
-    assert read_vector(catalog)["id"].tolist() == ["s1"]
-
-
-@pytest.mark.parametrize("problem", ["suffix", "no id", "crs"])
-def test_ingest_refuses_an_unusable_catalog_before_loading(
-    tmp_path, monkeypatch, problem: str
-):
-    from shapely.geometry import Point
-
-    from geosave_engine.geodata import GeoVector
-
-    loads = []
-    monkeypatch.setattr(
-        ModelSpec, "load_rasters", lambda model, anchor: loads.append(anchor)
-    )
-    catalog = tmp_path / ("catalog.gpkg" if problem == "suffix" else "catalog.parquet")
-    if problem == "no id":
-        GeoVector.from_geometry(Point(0, 0)).gs.to_geoparquet(catalog)
-    elif problem == "crs":
-        GeoVector.from_geometry(
-            Point(0, 0), crs="EPSG:3857", properties={"id": "a"}
-        ).gs.to_geoparquet(catalog)
-
-    with pytest.raises(ValueError, match="catalog"):
-        ingest.fn(
-            anchor=CoordinateAnchorConfig(
-                kind="coordinates", latitude=45, longitude=12, shape=4, resolution=10
-            ),
-            output=str(tmp_path / "scenes" / "s1"),
-            spec=str(model_spec(tmp_path, "https://stac.test")),
-            catalog=str(catalog),
-        )
-
-    assert loads == []
-    assert not (tmp_path / "scenes" / "s1").exists()
+def test_ingest_takes_no_catalog_argument() -> None:
+    assert "catalog" not in inspect.signature(ingest.fn).parameters

@@ -289,3 +289,19 @@ publication constraints remain.
 Final verification: **1,413 default tests passed**, **7 explicit worker/import
 and two-process tests passed**, Ruff passed, whole-source BasedPyright reported
 **zero errors**, documentation build passed, and `git diff --check` passed.
+
+### Augmentation correction (2026-10-06)
+
+The user requested restoring the explicit supported `DataKey` list and YOLO
+box conversion. This supersedes the YOLO removal in task 5: these formats are
+part of the configurable training augmentation API even before a built-in
+detection training method exists. `ImageAugmenter` contains one native Kornia
+pipeline; it converts normalized YOLO boxes to pixel `xyxy` at its boundary
+and normalizes results with the output image size. Pascal VOC, COCO, masks,
+keypoints, and class labels continue through Kornia's native handlers.
+
+The follow-up API correction moves `data_keys` to the augmentation call. One
+image defaults to `input`; multiple tensors require explicit keys. The wrapper
+is an `nn.Module` containing Kornia rather than subclassing its container.
+The unused `inverse()` and parameter-replay interfaces were removed, and the
+supervised DataModule passes its joint image/mask keys explicitly at each call.

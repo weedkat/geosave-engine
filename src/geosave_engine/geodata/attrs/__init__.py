@@ -35,7 +35,7 @@ from .models import (
     resolve_model,
 )
 from .namespace import AttrsNamespace
-from .xarray import AttrsEdit, XarrayObject, create_header, flag_variables, merge, rebase
+from .xarray import AttrsEdit, XarrayObject, create_header, is_flag, merge, rebase
 
 __all__ = [
     "ACDD",
@@ -61,7 +61,7 @@ __all__ = [
     "StackedAttrs",
     "TimeSpec",
     "ZarrOrder",
-    "flag_variables",
+    "is_flag",
     "merge",
     "attrs_equal",
     "common_attrs",

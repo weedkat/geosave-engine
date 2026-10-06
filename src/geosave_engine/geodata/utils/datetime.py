@@ -7,6 +7,7 @@ from datetime import datetime as dt
 from datetime import timedelta, timezone
 from typing import Literal
 
+import pandas as pd
 from pandas.tseries.frequencies import to_offset
 
 DateRange = tuple[dt, dt]
@@ -25,7 +26,7 @@ _DATETIME_PATTERN = re.compile(
     r"(?:-?(?P<day>\d{2})"
     r"(?:[T ](?P<hour>\d{2})"
     r"(?::?(?P<minute>\d{2})"
-    r"(?::?(?P<second>\d{2})(?P<fraction>\.\d{1,6})?)?"
+    r"(?::?(?P<second>\d{2})(?P<fraction>\.\d{1,9})?)?"
     r")?(?P<timezone>Z|[+-]\d{2}:?\d{2})?"
     r")?)?)?$"
 )
@@ -129,7 +130,7 @@ def _parse_daterange(value: str) -> DateRange:
     minute = int(match.group("minute") or 0)
     second = int(match.group("second") or 0)
     fraction = match.group("fraction")
-    microsecond = round(float(fraction) * 1_000_000) if fraction else 0
+    microsecond = int(fraction[1:7].ljust(6, "0")) if fraction else 0
     start = dt(
         year,
         month,
@@ -229,87 +230,29 @@ def freq_offset(freq: Freq) -> str:
         ) from e
 
 
-def _compact_token(value: dt, depth: int) -> str:
-    """Compact token for `value`, keeping fields up to `depth` (1 year .. 7 microsecond)."""
-    parts = [
-        f"{value.year:04d}",
-        f"{value.month:02d}",
-        f"{value.day:02d}",
-        f"T{value.hour:02d}",
-        f"{value.minute:02d}",
-        f"{value.second:02d}",
-        f".{value.microsecond:06d}",
-    ]
-    return "".join(parts[:depth])
-
-
-def _min_depth(value: dt, bound: Literal[0, 1]) -> int:
-    """Coarsest depth whose token parses back to `value` as `bound` (0 start, 1 end)."""
-    for depth in range(1, 8):
-        if _parse_daterange(_compact_token(value, depth))[bound] == value:
-            return depth
-    return 7
-
-
-def format_instant(value: dt) -> str:
+def format_instant(value: pd.Timestamp) -> str:
     """Compact filename token for one instant, as ESA stamps its granules.
 
     Args:
-        value: Instant at whole-second precision.
+        value: Instant at up to nanosecond precision.
 
     Returns:
-        Token shaped `YYYYMMDDTHHMMSS`.
-
-    Raises:
-        ValueError: `value` carries sub-second precision, which neither a
-            filename nor a GeoTIFF datetime tag holds.
+        Token shaped `YYYYMMDDTHHMMSS`, followed by `_` and nine fraction
+        digits where the instant carries sub-second precision.
 
     Examples:
-        >>> format_instant(dt(2025, 6, 1, 10, 30, 31))
+        >>> format_instant(pd.Timestamp("2025-06-01T10:30:31"))
         '20250601T103031'
     """
-    if value.microsecond:
-        raise ValueError(
-            f"{value} carries sub-second precision, which a filename and "
-            f"TIFFTAG_DATETIME both round away; resample the time axis first"
-        )
-    return _compact_token(value, 6)
-
-
-def format_stem_dates(value: DateRange) -> str:
-    """Compact filename token(s) naming the period a range covers.
-
-    Args:
-        value: Inclusive `(start, end)` range, microsecond precision.
-
-    Returns:
-        One token where the whole range parses back out of it, else
-        `"<start>-<end>"`.
-
-    Examples:
-        A whole day is one token; two days need both ends:
-
-        >>> format_stem_dates((dt(2019, 5, 7), dt(2019, 5, 7, 23, 59, 59, 999999)))
-        '20190507'
-        >>> format_stem_dates((dt(2019, 5, 7), dt(2019, 5, 9, 23, 59, 59, 999999)))
-        '20190507-20190509'
-    """
-    start, end = value
-    # coarsest token that parses back to this exact range wins
-    for depth in range(1, 8):
-        token = _compact_token(start, depth)
-        if parse_daterange(token) == (start, end):
-            return token
-    start_token = _compact_token(start, _min_depth(start, 0))
-    end_token = _compact_token(end, _min_depth(end, 1))
-    return f"{start_token}-{end_token}"
+    token = value.strftime("%Y%m%dT%H%M%S")
+    fraction = value.microsecond * 1000 + value.nanosecond
+    return f"{token}_{fraction:09d}" if fraction else token
 
 
 def parse_stem_dates(stem: str) -> DateRange | None:
     """Read the period a filename stem names, off the date tokens it carries.
 
-    Reads `format_stem_dates` back, and any stem spelling its dates that same
-    compact way. Every token parsing as a datetime counts, a four-digit
+    Reads any stem spelling its dates compactly, as `20190507`. Every token parsing as a datetime counts, a four-digit
     identifier among them, as the year it spells.
 
     Args:

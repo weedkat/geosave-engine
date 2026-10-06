@@ -1,5 +1,6 @@
 """Generated segmentation workspaces compose library Lightning classes."""
 
+from geosave_engine.geodata.stac import asset, item
 import runpy
 import subprocess
 import sys
@@ -50,8 +51,8 @@ def test_segmentation_configs_agree_on_model_inputs(workspace):
     )
     data = supervised.DataModule(**config["data"]["init_args"])
     assert data.spec == spec
-    assert spec.tiles is not None
-    assert spec.tiles.shape == (encoder["input_size"],) * 2
+    assert spec.chips is not None
+    assert spec.chips.shape == (encoder["input_size"],) * 2
     assert spec.pixel_inputs == ("image",)
     assert len(spec.transforms["image"][0].init_args["mean"]) == 4
     assert [step["name"] for step in data.augmentations] == [
@@ -114,16 +115,19 @@ def test_generated_entrypoint_parses_library_lightning_pair(
 def test_segmentation_workspace_trains_on_prepared_samples(workspace):
     from pathlib import Path
 
-    from geosave_engine.geodata import GeoVector, read_stack
+    from geosave_engine.geodata import GeoVector
 
     examples = Path(__file__).parents[3] / "examples/data/dw_imagery"
-    samples = GeoVector.concat(
-        [
-            GeoVector.from_xarray(read_stack(path), id=path.name)
-            for path in sorted(examples.iterdir())
-            if path.is_dir()
-        ]
-    )
+    # Each sample folder holds one raster per layer, named after it.
+    entries = [
+        item.from_assets(
+            {layer.stem: asset.from_path(layer) for layer in sorted(path.iterdir())},
+            id=path.name,
+        )
+        for path in sorted(examples.iterdir())
+        if path.is_dir()
+    ]
+    samples = GeoVector.from_items(entries)
     for split in ("train", "val"):
         (workspace / f"data/{split}").mkdir(parents=True, exist_ok=True)
         samples.gs.to_geoparquet(

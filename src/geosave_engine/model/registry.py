@@ -92,8 +92,9 @@ def build_model(
                     init_args[name] = argument
             init_args = deepcopy(init_args)
             modules[stage] = factory(**kwargs)
-        except TypeError as error:
-            raise TypeError(f"Building stage {stage!r} failed: {error}") from error
+        except Exception as error:
+            error.add_note(f"While building stage {stage!r}")
+            raise
 
         if "pretrained" in signature.parameters:
             init_args["pretrained"] = False

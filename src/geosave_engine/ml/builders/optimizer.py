@@ -42,7 +42,8 @@ def build_optimizer(
 
     Raises:
         TypeError: If group configuration is not a mapping.
-        ValueError: If groups are unknown, overlap, or no parameters train.
+        KeyError: If a group is not a direct child of the model.
+        ValueError: If groups overlap, override params, or no parameters train.
     """
     configured = OptimizerSpec.model_validate(spec)
     groups = configured.groups
@@ -50,7 +51,7 @@ def build_optimizer(
     children = dict(model.named_children())
     unknown_groups = set(groups) - set(children)
     if unknown_groups:
-        raise ValueError(f"Unknown model groups: {sorted(unknown_groups)}")
+        raise KeyError(f"Unknown model groups: {sorted(unknown_groups)}")
 
     selected: set[int] = set()
     parameter_groups: list[dict[str, Any]] = []

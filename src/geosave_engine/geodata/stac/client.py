@@ -10,6 +10,8 @@ from pystac_client import Client
 from pystac_client.stac_api_io import StacApiIO
 from urllib3.util import Retry
 
+from geosave_engine.geodata.errors import CollectionNotFoundError
+
 from .query import StacQuery
 from .source import StacSource
 
@@ -121,12 +123,12 @@ class StacClient:
             The collection as the catalog publishes it.
 
         Raises:
-            ValueError: `collection` is not on this catalog.
+            CollectionNotFoundError: `collection` is not on this catalog.
         """
         if collection not in self._collections:
             found = self._client.get_collection(collection)
             if found is None:
-                raise ValueError(
+                raise CollectionNotFoundError(
                     f"collection {collection!r} not found on this STAC endpoint; "
                     f"call collections() to see what is available"
                 )
@@ -146,7 +148,7 @@ class StacClient:
             Source for `collection`.
 
         Raises:
-            ValueError: `collection` is not on this catalog.
+            CollectionNotFoundError: `collection` is not on this catalog.
 
         Examples:
             >>> source = client.source("sentinel-2-l1c").set_config(bands=["B02"])

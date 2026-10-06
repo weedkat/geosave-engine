@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+from geosave_engine.ml.inputs import to_tensor
+
 import gc
 import os
 from datetime import UTC, datetime
@@ -9,6 +11,7 @@ from types import SimpleNamespace
 import geopandas as gpd
 import numpy as np
 import pytest
+import pystac
 import torch
 import xarray as xr
 from lightning import LightningDataModule
@@ -23,12 +26,9 @@ from geosave_engine.model.spec import ModelSpec, Ref
 SIZE = 20
 
 
-def test_batch_pipelines_are_native_kornia_with_default_crop_size(tmp_path):
-    from kornia.augmentation import AugmentationSequential
-
+def test_batch_augmentation_uses_default_crop_size(tmp_path):
     data = _training(_data(tmp_path, augmentations=[{"name": "RandomCrop"}]), True)
     data.setup("fit")
-    assert isinstance(data._augmenter, AugmentationSequential)
     image, target, _, _ = data.on_after_batch_transfer(_batch(), 0)
     assert image["image"].shape[-2:] == (8, 8)
     assert target.shape[-2:] == (8, 8)
@@ -79,8 +79,22 @@ def _manifest(root: Path, *, times: int = 0, label: bool = True) -> gpd.GeoDataF
             io.geotiff.write_cog(classes, folder / "label.tif")
             assets["label"] = folder / "label.tif"
         records.append(
-            GeoVector.from_assets(
-                assets, id=f"s{index}", datetime=datetime(2025, 6, 1, tzinfo=UTC)
+            GeoVector.from_items(
+                [
+                    pystac.Item(
+                        id=f"s{index}",
+                        geometry=optical.gs.geobox.extent.to_crs("EPSG:4326").json,
+                        bbox=list(
+                            optical.gs.geobox.extent.to_crs("EPSG:4326").boundingbox
+                        ),
+                        datetime=datetime(2025, 6, 1, tzinfo=UTC),
+                        properties={},
+                        assets={
+                            name: pystac.Asset(str(href))
+                            for name, href in assets.items()
+                        },
+                    )
+                ]
             )
         )
     path = GeoVector.concat(records).gs.to_geoparquet(root / "manifest.parquet")
@@ -100,7 +114,7 @@ def _spec(**changes: object) -> ModelSpec:
                     "kwargs": {"data": Ref("optical")},
                 }
             },
-            "tiles": {"size": 8, "overlap": 2, "window": "hann"},
+            "chips": {"size": 8, "overlap": 2, "window": "hann"},
             "inputs": {
                 "image": Ref("image"),
             },
@@ -134,7 +148,7 @@ def test_a_dataset_numbers_every_tile_of_every_sample(tmp_path: Path) -> None:
 
     # A 20-pixel side takes four 8-pixel tiles stepping by 6, so 16 per sample.
     assert len(dataset) == 32
-    assert sum(map(len, dataset.layouts.values())) == 32
+    assert sum(map(len, dataset.tilers.values())) == 32
 
 
 def test_a_sample_holds_the_declared_inputs_a_target_and_its_number(
@@ -169,7 +183,7 @@ def test_each_tile_reads_its_own_location(tmp_path: Path) -> None:
 
 
 def test_a_target_pixel_the_raster_lacks_is_ignored(tmp_path: Path) -> None:
-    spec = _spec(tiles={"size": 8, "overlap": 2, "mode": "constant"})
+    spec = _spec(chips={"size": 8, "overlap": 2, "mode": "constant"})
     dataset = supervised.Dataset(_manifest(tmp_path), spec, ignore_index=7)
 
     model_inputs, target, _, _ = dataset[0]
@@ -185,11 +199,11 @@ def test_a_row_lacking_a_layer_is_refused_by_name(tmp_path: Path) -> None:
         supervised.Dataset(manifest, _spec())
 
 
-def test_a_spec_without_tiles_or_inputs_is_refused(tmp_path: Path) -> None:
+def test_a_spec_without_chips_or_inputs_is_refused(tmp_path: Path) -> None:
     manifest = _manifest(tmp_path)
 
-    with pytest.raises(ValueError, match="tiles"):
-        supervised.Dataset(manifest, _spec(tiles=None))
+    with pytest.raises(ValueError, match="chips"):
+        supervised.Dataset(manifest, _spec(chips=None))
     with pytest.raises(ValueError, match="inputs"):
         supervised.Dataset(manifest, _spec(inputs={}))
 
@@ -200,7 +214,7 @@ def test_merged_tiles_rebuild_every_sample(tmp_path: Path) -> None:
     dataset = supervised.Dataset(_manifest(tmp_path), _spec())
     mergers = {
         key: Merger(layout, logits=2, window="hann", save_visits=False)
-        for key, layout in dataset.layouts.items()
+        for key, layout in dataset.tilers.items()
     }
     for number in range(len(dataset)):
         model_inputs, _, sample_id, _ = dataset[number]
@@ -210,7 +224,7 @@ def test_merged_tiles_rebuild_every_sample(tmp_path: Path) -> None:
         key = f"s{index}"
         rebuilt = mergers[key].merge(extra_padding=dataset.padding[key])
         np.testing.assert_allclose(rebuilt[0], 2 * _pixels(index), rtol=1e-5)
-        labels = dataset.parents[key][dataset.target].dataset.gs.to_tensor()
+        labels = to_tensor(dataset.parents[key][dataset.target].dataset)
         assert labels.shape == (1, SIZE, SIZE)
         assert (labels == index).all()
 
@@ -502,9 +516,9 @@ def test_prepared_reference_retains_provenance_without_advertising_raw_assets(
     assert "assets" not in row
     assert set(row.raster_metadata) == {"image", "label"}
     with pytest.raises(KeyError, match="assets"):
-        row.gs.to_xarray()
+        row.gs.to_stack()
     tile = row.gs.crop(dataset.parents[row.parent_id])
-    assert tile.gs.rasters["label"].gs.to_tensor().shape == (1, 8, 8)
+    assert to_tensor(tile.gs.rasters["label"]).shape == (1, 8, 8)
     expected = (
         2 * _pixels(1, 4)[1:3, 3:11, 3:11] if frames else 2 * _pixels(1)[3:11, 3:11]
     )

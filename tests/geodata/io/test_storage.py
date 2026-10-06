@@ -1,13 +1,17 @@
 from pathlib import Path
 
 import fsspec
+import pytest
 from fsspec.spec import AbstractFileSystem
 
+from geosave_engine.geodata import io
 from geosave_engine.geodata.io.storage import (
     filesystem_path,
-    resolve_asset_path,
-    stored_asset_path,
+    gdal_path,
+    local_target,
 )
+
+from tests.geodata.conftest import build_raster
 
 
 def test_filesystem_path_forwards_storage_options(monkeypatch) -> None:
@@ -35,54 +39,74 @@ def test_filesystem_path_forwards_storage_options(monkeypatch) -> None:
     }
 
 
-def test_remote_asset_paths_round_trip_without_contacting_the_asset() -> None:
-    filesystem, catalog_path = filesystem_path(
-        "memory://dataset/catalog.parquet"
-    )
-
-    assert stored_asset_path(
-        "memory://dataset/rasters/prediction.zarr",
-        filesystem=filesystem,
-        catalog_path=catalog_path,
-    ) == "rasters/prediction.zarr"
-    assert resolve_asset_path(
-        "rasters/prediction.zarr",
-        filesystem=filesystem,
-        catalog_path=catalog_path,
-    ) == "memory:///dataset/rasters/prediction.zarr"
-    assert stored_asset_path(
-        "s3://other-bucket/prediction.zarr",
-        filesystem=filesystem,
-        catalog_path=catalog_path,
-    ) == "s3://other-bucket/prediction.zarr"
+def test_a_local_location_is_its_own_target(tmp_path: Path) -> None:
+    with local_target(tmp_path / "scene.tif") as target:
+        assert target == tmp_path / "scene.tif"
 
 
-def test_parent_relative_asset_is_allowed_without_asset_lookup() -> None:
-    filesystem, catalog_path = filesystem_path(
-        "memory://dataset/catalogs/catalog.parquet"
-    )
+def test_a_remote_location_uploads_what_was_written(bucket: str) -> None:
+    with local_target(f"{bucket}/scene.tif") as target:
+        assert target.name == "scene.tif"
+        target.write_bytes(b"pixels")
 
-    assert resolve_asset_path(
-        "../shared/prediction.zarr",
-        filesystem=filesystem,
-        catalog_path=catalog_path,
-    ) == "memory:///dataset/shared/prediction.zarr"
+    assert fsspec.open(f"{bucket}/scene.tif").open().read() == b"pixels"
+    assert not target.exists()
 
 
-def test_local_asset_paths_are_lexical_and_portable(tmp_path: Path) -> None:
-    catalog = tmp_path / "dataset" / "catalog.parquet"
-    inside = tmp_path / "dataset" / "rasters" / "prediction.zarr"
-    outside = tmp_path / "shared" / "prediction.zarr"
-    filesystem, catalog_path = filesystem_path(catalog)
+def test_a_failed_write_uploads_nothing(bucket: str) -> None:
+    with pytest.raises(RuntimeError), local_target(f"{bucket}/scene.tif") as target:
+        target.write_bytes(b"partial")
+        raise RuntimeError("writer failed")
 
-    assert stored_asset_path(
-        inside, filesystem=filesystem, catalog_path=catalog_path
-    ) == "rasters/prediction.zarr"
-    assert stored_asset_path(
-        outside, filesystem=filesystem, catalog_path=catalog_path
-    ) == str(outside)
-    assert resolve_asset_path(
-        "../shared/prediction.zarr",
-        filesystem=filesystem,
-        catalog_path=catalog_path,
-    ) == outside
+    assert not fsspec.filesystem("memory").exists(f"{bucket}/scene.tif")
+
+
+def test_an_existing_remote_object_refuses_without_overwrite(bucket: str) -> None:
+    with local_target(f"{bucket}/scene.tif") as target:
+        target.write_bytes(b"first")
+
+    with pytest.raises(FileExistsError), local_target(f"{bucket}/scene.tif"):
+        pytest.fail("the body must not run")
+    with local_target(f"{bucket}/scene.tif", overwrite=True) as target:
+        target.write_bytes(b"second")
+    assert fsspec.open(f"{bucket}/scene.tif").open().read() == b"second"
+
+
+@pytest.mark.parametrize(
+    ("location", "expected"),
+    [
+        ("hf://buckets/me/samples/forest/a.tif", "s3://me/samples/forest/a.tif"),
+        ("s3://bucket/forest/a.tif", "s3://bucket/forest/a.tif"),
+        ("https://example.com/a.tif", "https://example.com/a.tif"),
+        ("/data/a.tif", "/data/a.tif"),
+    ],
+)
+def test_gdal_reads_an_hf_bucket_through_its_s3_gateway(location, expected) -> None:
+    assert gdal_path(location) == expected
+
+
+def test_only_hf_buckets_have_an_s3_form() -> None:
+    with pytest.raises(ValueError, match="buckets"):
+        gdal_path("hf://datasets/me/repo/a.tif")
+
+
+@pytest.mark.parametrize(
+    ("name", "write"),
+    [
+        ("forest.tif", lambda cube, url: io.geotiff.write_cog(cube.isel(time=0), url)),
+        ("forest.zarr", lambda cube, url: io.zarr.write(cube, url)),
+        ("forest.nc", lambda cube, url: io.netcdf.write(cube, url)),
+    ],
+)
+def test_a_file_url_writes_to_the_local_path_it_names(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, name, write
+) -> None:
+    elsewhere = tmp_path / "cwd"
+    elsewhere.mkdir()
+    monkeypatch.chdir(elsewhere)
+
+    written = write(build_raster(times=1), f"file://{tmp_path}/{name}")
+
+    assert written == tmp_path / name
+    assert (tmp_path / name).exists()
+    assert list(elsewhere.iterdir()) == []

@@ -6,7 +6,6 @@ import xarray as xr
 from dask.delayed import Delayed
 
 from geosave_engine.geodata.io import netcdf
-from geosave_engine.geodata import GeoVector
 from tests.geodata.conftest import build_raster
 
 
@@ -61,7 +60,7 @@ def test_netcdf_deferred_write_returns_a_delayed_result(tmp_path: Path) -> None:
     assert netcdf.read(destination).gs.geobox == build_raster().gs.geobox
 
 
-def test_netcdf_groups_register_and_reopen_inherited_coordinates(tmp_path, monkeypatch):
+def test_netcdf_groups_reopen_inherited_coordinates(tmp_path, monkeypatch):
     raster = build_raster(times=2).isel(time=0)
     tree = xr.DataTree.from_dict(
         {"/": xr.Dataset(coords=raster.coords), "/image": raster}
@@ -74,9 +73,27 @@ def test_netcdf_groups_register_and_reopen_inherited_coordinates(tmp_path, monke
         group = opened.gs.rasters["image"]
         assert "time" in group.coords
         assert "spatial_ref" in group.coords
-        row = GeoVector.from_xarray(opened, id="scene").iloc[0]
-        assert row.assets["image"]["group"] == "image"
-        with row.gs.to_xarray() as restored:
-            xr.testing.assert_equal(restored.gs.rasters["image"], group)
+
     finally:
         opened.close()
+
+
+def test_netcdf_uploads_but_does_not_read_remotely(bucket: str, tmp_path) -> None:
+    import fsspec
+
+    from geosave_engine.geodata import read_raster
+
+    written = build_raster(times=2)
+
+    saved = written.gs.to_netcdf(f"{bucket}/scene.nc", storage_options={})
+
+    assert saved == f"{bucket}/scene.nc"
+    fsspec.filesystem("memory").get(
+        saved.removeprefix("memory:/"), str(tmp_path / "copy.nc")
+    )
+    with read_raster(tmp_path / "copy.nc") as restored:
+        np.testing.assert_array_equal(restored.red, written.red)
+    with pytest.raises(ValueError, match="local"):
+        read_raster(saved)
+    with pytest.raises(ValueError, match="compute"):
+        written.gs.to_netcdf(f"{bucket}/later.nc", compute=False)

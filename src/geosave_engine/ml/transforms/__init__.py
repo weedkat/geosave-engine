@@ -1,3 +1,3 @@
-from .augmenter import ImageAugmenter
+from .augmenter import DataKey, ImageAugmenter
 
-__all__ = ["ImageAugmenter"]
+__all__ = ["DataKey", "ImageAugmenter"]

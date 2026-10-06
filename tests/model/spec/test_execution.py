@@ -109,7 +109,7 @@ def test_preprocess_validates_rasters_before_calls() -> None:
         }
     )
 
-    with pytest.raises(ValueError, match="red"):
+    with pytest.raises(KeyError, match="red"):
         model.preprocess({"optical": xr.Dataset()})
 
     assert _events == []
@@ -183,7 +183,7 @@ def test_preprocess_checks_a_supplied_raster_no_call_reads(raw) -> None:
         }
     )
 
-    with pytest.raises(ValueError, match="dem") as caught:
+    with pytest.raises(KeyError, match="dem") as caught:
         model.preprocess({"optical": raw["optical"], "elevation": raw["optical"]})
 
     assert caught.value.__notes__ == ["While validating raster 'elevation'"]

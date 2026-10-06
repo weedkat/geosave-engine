@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+from geosave_engine.ml.inputs import to_tensor
+
 from pathlib import Path
 import runpy
 
@@ -12,6 +14,7 @@ import yaml
 from torch.multiprocessing.spawn import ProcessRaisedException
 
 from geosave_engine.ml.cli import GeosaveCLI
+from geosave_engine.geodata.warnings import GeoSaveWarning
 from geosave_engine.ml.segmentation import supervised
 from geosave_engine.model.chain import chain_step
 
@@ -277,7 +280,7 @@ def test_unknown_optimizer_groups_fail_before_optimizer_construction(stages, gro
         },
     )
     task.configure_model()
-    with pytest.raises(ValueError, match="Unknown model groups"):
+    with pytest.raises(KeyError, match="Unknown model groups"):
         task.configure_optimizers()
 
 
@@ -600,7 +603,7 @@ def test_lightning_predict_tiles_stitches_logits_on_source_grid(stages, tmp_path
     assert predictions is not None
     assert len(centres) > 1
     merger = Merger(
-        samples.layouts["scene-a"], logits=2, window="hann", save_visits=False
+        samples.tilers["scene-a"], logits=2, window="hann", save_visits=False
     )
     indices = []
     for logits, index in predictions:
@@ -611,7 +614,7 @@ def test_lightning_predict_tiles_stitches_logits_on_source_grid(stages, tmp_path
     output = merger.merge(extra_padding=samples.padding["scene-a"])
     torch.testing.assert_close(
         torch.from_numpy(output).float(),
-        scene.gs.to_tensor(),
+        to_tensor(scene),
         rtol=1e-5,
         atol=1e-6,
     )
@@ -691,7 +694,7 @@ def test_test_scores_each_raster_whole_and_once(stages, tmp_path):
 def test_a_validation_run_cut_short_scores_no_partial_raster(stages, tmp_path):
     task, loader, trainer, scored = _evaluation(stages, tmp_path, limit_val_batches=2)
 
-    with pytest.warns(UserWarning, match="before any raster was whole"):
+    with pytest.warns(GeoSaveWarning, match="before any raster was whole"):
         validation = trainer.validate(task, dataloaders=loader, verbose=False)
 
     assert scored == []
@@ -719,9 +722,9 @@ def test_completed_parent_reads_original_classes_instead_of_blending_tile_target
         parents=parents,
         target="label",
         reference=reference,
-        layouts=samples.layouts,
+        tilers=samples.tilers,
         padding=samples.padding,
-        spec=SimpleNamespace(tiles=SimpleNamespace(window="hann")),
+        spec=SimpleNamespace(chips=SimpleNamespace(window="hann")),
     )
     loader = SimpleNamespace(dataset=dataset)
     task = supervised.Module(model_chain=stages)
@@ -779,9 +782,9 @@ def test_native_evaluation_retains_nodata_and_finite_overlap(stages, all_invalid
         parents=parents,
         target="label",
         reference=samples.reference,
-        layouts=samples.layouts,
+        tilers=samples.tilers,
         padding=samples.padding,
-        spec=SimpleNamespace(tiles=SimpleNamespace(window="hann")),
+        spec=SimpleNamespace(chips=SimpleNamespace(window="hann")),
     )
     task = supervised.Module(model_chain=stages)
     task.configure_model()

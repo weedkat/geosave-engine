@@ -12,7 +12,7 @@ from matplotlib.backends.backend_agg import FigureCanvasAgg
 from matplotlib.figure import Figure
 from matplotlib.patches import Patch
 
-from geosave_engine.geodata.attrs.palette import Palette, parse_color
+from geosave_engine.geodata.utils.color import Palette, parse_color
 
 
 def _colorize(

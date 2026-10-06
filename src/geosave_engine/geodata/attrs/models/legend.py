@@ -6,8 +6,12 @@ from typing import TYPE_CHECKING, Annotated, Any, ClassVar, NamedTuple, Self
 
 from pydantic import BeforeValidator, model_validator
 
-from geosave_engine.geodata.attrs.model import MUST_AGREE, AttrsModel, parse_collection_text
-from geosave_engine.geodata.attrs.palette import Palette
+from geosave_engine.geodata.attrs.model import (
+    MUST_AGREE,
+    AttrsModel,
+    parse_collection_text,
+)
+from geosave_engine.geodata.utils.color import Palette
 
 if TYPE_CHECKING:
     from collections.abc import Mapping

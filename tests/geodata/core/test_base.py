@@ -1,7 +1,9 @@
 from datetime import datetime as dt
 from typing import TYPE_CHECKING, assert_type
 
+import dask.array as da
 import numpy as np
+import pandas as pd
 import pytest
 import xarray as xr
 
@@ -9,6 +11,7 @@ import geosave_engine.geodata as gs
 
 from geosave_engine.geodata import GeoAnchor, GeoArray, GeoRaster, GeoStack, GeoVector
 from geosave_engine.geodata.attrs import CFVariable
+from geosave_engine.geodata.utils.geo.geolocator import Place
 
 from tests.geodata.conftest import build_raster
 
@@ -85,7 +88,75 @@ def test_anchor_and_vector_construction() -> None:
 
     assert anchor.geobox.crs is not None
     assert anchor.geobox.crs.to_epsg() == 32633
-    assert anchor.stem == "13.0000E_52.0000N_10mx10m_10m"
+
+
+def test_anchor_formats_place_and_time_through_a_template() -> None:
+    anchor = GeoAnchor.from_coordinates(
+        52, 13, 500, 10, timespan="2025-06-01/2025-06-11"
+    )
+
+    assert (
+        anchor.format("{lat:.4f}N_{lon:.4f}E_{start:%Y%m%d}-{end:%Y%m%d}_{res:g}m")
+        == "52.0000N_12.9999E_20250601-20250611_10m"
+    )
+    assert anchor.format("{start:%Y}/{start:%m}/{epsg}") == "2025/06/32633"
+    assert anchor.format("{width:.0f}x{height:.0f}") == "5000x5000"
+
+
+def test_timeless_anchor_refuses_a_date_field() -> None:
+    anchor = GeoAnchor.from_coordinates(52, 13, 500, 10)
+
+    with pytest.raises(ValueError, match="no 'start'"):
+        anchor.format("{start:%Y}")
+
+
+def test_anchor_refuses_a_field_it_does_not_offer() -> None:
+    anchor = GeoAnchor.from_coordinates(52, 13, 500, 10)
+
+    with pytest.raises(ValueError, match="'place'.*lat.*lon"):
+        anchor.format("{place}")
+
+
+def test_anchor_centroid_reads_longitude_first() -> None:
+    longitude, latitude = GeoAnchor.from_coordinates(52, 13, 500, 10).lonlat
+
+    assert longitude == pytest.approx(13, abs=1e-3)
+    assert latitude == pytest.approx(52, abs=1e-3)
+
+
+def test_locate_geocodes_the_centroid(monkeypatch: pytest.MonkeyPatch) -> None:
+    asked: list[tuple[float, float]] = []
+
+    def resolve(latitude: float, longitude: float) -> Place:
+        asked.append((latitude, longitude))
+        return Place(city="Berlin")
+
+    monkeypatch.setattr(Place, "from_coordinate", resolve)
+
+    place = GeoAnchor.from_coordinates(52, 13, 500, 10).locate()
+
+    assert place == Place(city="Berlin")
+    assert asked[0] == pytest.approx((52, 13), abs=1e-3)
+
+
+def test_times_format_as_a_datetime_index_on_a_raster_and_a_band() -> None:
+    raster = build_raster(times=2)
+
+    assert isinstance(raster.gs.times, pd.DatetimeIndex)
+    assert raster.gs.times.strftime("%Y%m%d").tolist() == ["20250601", "20250602"]
+    assert raster.red.gs.times.equals(raster.gs.times)
+
+
+def test_timeless_data_has_no_times(raster: xr.Dataset) -> None:
+    assert raster.gs.times is None
+    assert raster.red.gs.times is None
+
+
+def test_times_leave_chunked_pixels_uncomputed() -> None:
+    raster = build_raster(times=2).chunk()
+
+    assert len(raster.gs.times) == 2
+    assert isinstance(raster.red.data, da.Array)
 
 
 def test_odc_geometry_keeps_its_crs() -> None:
@@ -130,7 +201,6 @@ def test_unbucketed_time_covers_what_its_labels_spell(
     )
 
     assert raster.gs.timespan == tuple(dt.fromisoformat(edge) for edge in span)
-
 
 
 def test_the_accessor_rebases_a_header_and_a_namespace() -> None:

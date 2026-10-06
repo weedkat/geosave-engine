@@ -6,7 +6,7 @@ from types import SimpleNamespace
 
 import geosave_engine.model.spec.stac as stac_module
 from geosave_engine.geodata.core import GeoAnchor
-from geosave_engine.geodata.errors import AnchorFetchError
+from geosave_engine.geodata.errors import AnchorFetchError, CollectionNotFoundError
 from geosave_engine.model.spec import ModelSpec, RasterRequirement, StacRecipe
 
 
@@ -110,10 +110,7 @@ def test_open_client_falls_back_when_native_client_reports_missing_collection(
     collection = "sentinel-2-l2a"
 
     def missing(_collection):
-        raise ValueError(
-            f"collection {collection!r} not found on this STAC endpoint; "
-            "call collections() to see what is available"
-        )
+        raise CollectionNotFoundError("This provider does not publish that collection")
 
     primary = SimpleNamespace(collection=missing)
     backup = SimpleNamespace(
@@ -130,6 +127,21 @@ def test_open_client_falls_back_when_native_client_reports_missing_collection(
         collection,
         ("https://primary.test/stac", "https://backup.test/stac"),
     ) is backup
+
+
+def test_collection_validation_error_does_not_trigger_fallback(monkeypatch):
+    failure = ValueError("collection 'optical' not found on this STAC endpoint")
+
+    def invalid(_collection):
+        raise failure
+
+    client = SimpleNamespace(collection=invalid)
+    monkeypatch.setattr(stac_module.StacClient, "open", lambda _endpoint: client)
+
+    with pytest.raises(ValueError) as caught:
+        stac_module._open_client("optical", ("https://primary.test/stac",))
+
+    assert caught.value is failure
 
 
 def test_stac_module_has_no_concurrency_configuration() -> None:

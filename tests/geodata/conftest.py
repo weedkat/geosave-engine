@@ -71,3 +71,17 @@ def raster() -> xr.Dataset:
 @pytest.fixture
 def stack(raster: xr.Dataset) -> xr.DataTree:
     return build_stack({"optical": raster[["red"]], "infrared": raster[["nir"]]})
+
+
+@pytest.fixture
+def bucket():
+    """Yield a unique `memory://` prefix and empty it afterwards."""
+    import uuid
+
+    import fsspec
+
+    filesystem = fsspec.filesystem("memory")
+    prefix = f"memory://geosave-tests/{uuid.uuid4()}"
+    yield prefix
+    if filesystem.exists(prefix):
+        filesystem.rm(prefix, recursive=True)

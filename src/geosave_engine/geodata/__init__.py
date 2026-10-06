@@ -17,9 +17,8 @@ from .core import (
     stack,
 )
 from . import io
-from .utils.gdal_env import configure_gdal
+from .io.gdal_env import configure_gdal
 from .io import read_raster, read_stack, read_vector
-from .io.layout import LAYOUTS, write_tree
 
 
 if TYPE_CHECKING:
@@ -68,7 +67,6 @@ else:
 
 
 __all__ = [
-    "LAYOUTS",
     "GeoAnchor",
     "GeoArray",
     "DataArray",
@@ -79,7 +77,6 @@ __all__ = [
     "GeoStack",
     "GeoVector",
     "GeoRow",
-    "write_tree",
     "configure_gdal",
     "io",
     "raster",

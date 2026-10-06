@@ -1,21 +1,23 @@
-"""Create an attrs header from one STAC load.
+"""Create an attrs header from one STAC load, and name a variable's attrs for STAC.
 
 STAC names its fields its own way — `unit`, `scale` — so this is where those
-names become the attr keys GeoSave writes. No attrs model reaches back into
-STAC.
+names and the attr keys GeoSave writes are exchanged. No attrs model reaches
+back into STAC.
 """
 
 from __future__ import annotations
 
 import warnings
 from collections.abc import Sequence
-from typing import TYPE_CHECKING, Any
+from typing import TYPE_CHECKING, Any, Required, TypedDict
 
+import numpy as np
 from pydantic import TypeAdapter
 from pystac.extensions.eo import BANDS_PROP as EO_BANDS
 from pystac.extensions.raster import BANDS_PROP as RASTER_BANDS
 
-from geosave_engine.geodata.errors import DroppedAttrsWarning
+from geosave_engine import __path__ as _package_paths
+from geosave_engine.geodata.warnings import DroppedAttrsWarning
 from geosave_engine.geodata.utils.datetime import naive_utc
 
 from ..header import AttrsHeader
@@ -138,7 +140,7 @@ def create_header(
                 f"STAC items publish {disputed} differently for {str(name)!r}, so "
                 f"the loaded variable carries none of them: {values}",
                 DroppedAttrsWarning,
-                stacklevel=2,
+                skip_file_prefixes=tuple(_package_paths),
             )
         # The loader's own attrs describe the pixels it actually produced.
         variables[str(name)] = {**agreed, **variable.attrs}
@@ -196,3 +198,56 @@ def _selected(
     if names is None:
         return dict(source)
     return {key: source[key] for key in names if key in source}
+
+
+class BandFields(TypedDict, total=False):
+    """One saved variable in the names STAC gives a band."""
+
+    name: Required[str]
+    data_type: Required[str]
+    nodata: float | int
+    unit: str
+    description: str
+    scale: float
+    offset: float
+
+
+def band_fields(variable: xr.DataArray) -> BandFields:
+    """Describe one saved variable in the names STAC gives a band.
+
+    Args:
+        variable: Variable as its file stores it.
+
+    Returns:
+        {
+            "name": variable name,
+            "data_type": stored dtype name,
+            "nodata": fill value, where the variable declares one,
+            "unit" | "description" | "scale" | "offset": the attr `_ATTR_KEYS`
+                maps to that field, where the variable carries it,
+        }
+    """
+    attrs = variable.attrs
+    fields: BandFields = {
+        "name": str(variable.name),
+        "data_type": variable.dtype.name,
+    }
+
+    # JSON holds native numbers, and a file hands back numpy ones.
+    nodata = attrs.get("_FillValue")
+    if nodata is not None:
+        fields["nodata"] = nodata.item() if isinstance(nodata, np.generic) else nodata
+
+    unit = attrs.get("units")
+    if unit is not None:
+        fields["unit"] = str(unit)
+    description = attrs.get("long_name")
+    if description is not None:
+        fields["description"] = str(description)
+    scale = attrs.get("scale_factor")
+    if scale is not None:
+        fields["scale"] = float(scale)
+    offset = attrs.get("add_offset")
+    if offset is not None:
+        fields["offset"] = float(offset)
+    return fields

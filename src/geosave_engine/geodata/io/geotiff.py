@@ -33,8 +33,10 @@ from geosave_engine.geodata.attrs import (
 )
 from geosave_engine.geodata.attrs.model import attrs_equal
 
-from geosave_engine.geodata.core.profile import TIME_COORDINATE
-from geosave_engine.geodata.attrs.palette import parse_color
+from geosave_engine.geodata.conventions import TIME_COORDINATE
+from geosave_engine.geodata.utils.color import parse_color
+
+from .storage import StorageOptions, is_local, local_path, local_target
 
 if TYPE_CHECKING:
     from rasterio.io import DatasetWriter
@@ -124,8 +126,9 @@ def write_cog(
     *,
     map_scale: float | None = None,
     overwrite: bool = False,
+    storage_options: StorageOptions | None = None,
     **options: Unpack[COGWriteOptions],
-) -> Path:
+) -> Path | str:
     """Write one Dataset as a Cloud Optimized GeoTIFF, a band per variable.
 
     Each variable names itself in its band's metadata. A scalar `time`
@@ -134,9 +137,10 @@ def write_cog(
 
     Args:
         ds: Cube of `(y, x)` variables sharing one grid.
-        path: Output path ending in ``.tif`` or ``.tiff``.
+        path: Output path or fsspec URL ending in ``.tif`` or ``.tiff``.
         map_scale: Map denominator used to write pixels per centimetre.
         overwrite: Replace an existing file when true.
+        storage_options: Options for the filesystem a URL names.
         **options: COG creation options.
 
     Returns:
@@ -158,6 +162,7 @@ def write_cog(
         "COG",
         map_scale=map_scale,
         overwrite=overwrite,
+        storage_options=storage_options,
         options=options,
     )
 
@@ -168,8 +173,9 @@ def write_gtiff(
     *,
     map_scale: float | None = None,
     overwrite: bool = False,
+    storage_options: StorageOptions | None = None,
     **options: Unpack[GTiffWriteOptions],
-) -> Path:
+) -> Path | str:
     """Write one Dataset as a plain GeoTIFF, a band per variable.
 
     Reach for `write_cog` unless a consumer needs a striped or otherwise
@@ -177,9 +183,10 @@ def write_gtiff(
 
     Args:
         ds: Cube of `(y, x)` variables sharing one grid.
-        path: Output path ending in ``.tif`` or ``.tiff``.
+        path: Output path or fsspec URL ending in ``.tif`` or ``.tiff``.
         map_scale: Map denominator used to write pixels per centimetre.
         overwrite: Replace an existing file when true.
+        storage_options: Options for the filesystem a URL names.
         **options: GTiff creation options.
 
     Returns:
@@ -201,6 +208,7 @@ def write_gtiff(
         "GTiff",
         map_scale=map_scale,
         overwrite=overwrite,
+        storage_options=storage_options,
         options=options,
     )
 
@@ -212,115 +220,123 @@ def _write(
     *,
     map_scale: float | None,
     overwrite: bool,
+    storage_options: StorageOptions | None,
     options: Mapping[str, Any],
-) -> Path:
+) -> Path | str:
     """Encode one cube through the GDAL driver `driver` names.
 
     Args:
         ds: Cube of `(y, x)` variables sharing one grid.
-        path: Output path ending in ``.tif`` or ``.tiff``.
+        path: Output path or fsspec URL ending in ``.tif`` or ``.tiff``.
         driver: GDAL driver creating the file.
         map_scale: Map denominator used to write pixels per centimetre.
         overwrite: Replace an existing file when true.
+        storage_options: Options for the filesystem a URL names.
         options: Creation options the driver supports.
 
     Returns:
-        The written path.
+        The written path, or the URL a remote file was uploaded to.
 
     Raises:
         FileExistsError: The path exists and `overwrite` is false.
         ValueError: The suffix or the `time` axis is invalid, or the variables
             declare more than one fill value.
     """
-    target = Path(path)
-    if target.suffix not in _FILE_SUFFIXES:
-        raise ValueError(
-            f"destination {target.name!r} must end in one of {list(_FILE_SUFFIXES)}"
-        )
-    if target.exists() and not overwrite:
-        raise FileExistsError(f"{target} exists; pass overwrite=True to replace it")
-
-    # A GCP grid writes back as no geotransform at all, leaving the file unplaced.
-    grid = ds.odc.geobox
-    if grid is not None and not isinstance(grid, GeoBox):
-        raise ValueError(
-            f"this raster is placed by {type(grid).__name__}, which a GeoTIFF "
-            f"records as ground control points GeoSave does not write; reproject "
-            f"it onto a regular grid with warp.reproject first"
-        )
-
-    ds = _repack(ds)
-    header = create_header(ds)
-
-    cube = ds
-    # One file holds one instant, however the axis spells it.
-    if TIME_COORDINATE in cube.dims:
-        if cube.sizes[TIME_COORDINATE] > 1:
+    with local_target(
+        path, overwrite=overwrite, storage_options=storage_options
+    ) as target:
+        if target.suffix.lower() not in _FILE_SUFFIXES:
             raise ValueError(
-                f"one GeoTIFF holds one instant, but this cube spans "
-                f"{cube.sizes[TIME_COORDINATE]}; select one with .isel(time=0) "
-                f"or resample the time axis away first"
+                f"destination {target.name!r} must end in one of {list(_FILE_SUFFIXES)}"
             )
-        cube = cube.squeeze(TIME_COORDINATE)
 
-    tags = GeoTIFFTags.from_xarray(cube, map_scale=map_scale)
-    if TIME_COORDINATE in cube.coords:
-        cube = cube.drop_vars(TIME_COORDINATE)
+        # A GCP grid writes back as no geotransform at all, leaving the file unplaced.
+        grid = ds.odc.geobox
+        if grid is not None and not isinstance(grid, GeoBox):
+            raise ValueError(
+                f"this raster is placed by {type(grid).__name__}, which a GeoTIFF "
+                f"records as ground control points GeoSave does not write; reproject "
+                f"it onto a regular grid with warp.reproject first"
+            )
 
-    names = [str(name) for name in cube.data_vars]
-    bands = [header.data_vars[name] for name in names]
+        ds = _repack(ds)
+        header = create_header(ds)
 
-    # GDAL writes one fill value for the whole file, so the bands must share one.
-    fill_values = [(band.get(Nodata) or Nodata()).fill_value for band in bands]
-    if not all(attrs_equal(fill_value, fill_values[0]) for fill_value in fill_values):
-        raise ValueError(
-            f"one GeoTIFF holds one fill value, but these bands declare "
-            f"{dict(zip(names, fill_values, strict=True))}; write one across "
-            f"them with raster.gs.write_nodata(...) first"
+        cube = ds
+        # One file holds one instant, however the axis spells it.
+        if TIME_COORDINATE in cube.dims:
+            if cube.sizes[TIME_COORDINATE] > 1:
+                raise ValueError(
+                    f"one GeoTIFF holds one instant, but this cube spans "
+                    f"{cube.sizes[TIME_COORDINATE]}; select one with .isel(time=0) "
+                    f"or resample the time axis away first"
+                )
+            cube = cube.squeeze(TIME_COORDINATE)
+
+        tags = GeoTIFFTags.from_xarray(cube, map_scale=map_scale)
+        if TIME_COORDINATE in cube.coords:
+            cube = cube.drop_vars(TIME_COORDINATE)
+
+        names = [str(name) for name in cube.data_vars]
+        bands = [header.data_vars[name] for name in names]
+
+        # GDAL writes one fill value for the whole file, so the bands must share one.
+        fill_values = [(band.get(Nodata) or Nodata()).fill_value for band in bands]
+        if not all(
+            attrs_equal(fill_value, fill_values[0]) for fill_value in fill_values
+        ):
+            raise ValueError(
+                f"one GeoTIFF holds one fill value, but these bands declare "
+                f"{dict(zip(names, fill_values, strict=True))}; write one across "
+                f"them with raster.gs.write_nodata(...) first"
+            )
+
+        written = rebase(cube, tags)
+        # A band names itself in its own metadata; GDAL owns the interpretation.
+        for name in names:
+            written = rebase(written, GDALVariable(variable_name=name), target=name)
+
+        # A header names its variables; the cube's order decides their bands.
+        snapshot = create_header(written)
+        header = AttrsHeader(
+            root=snapshot.root,
+            data_vars={name: snapshot.data_vars[name] for name in names},
         )
 
-    written = rebase(cube, tags)
-    # A band names itself in its own metadata; GDAL owns the interpretation.
-    for name in names:
-        written = rebase(written, GDALVariable(variable_name=name), target=name)
+        # rioxarray turns any attr it is handed into a tag, so it is handed none.
+        cube = cube.copy(deep=False)
+        cube.attrs = {}
+        for name in names:
+            cube[name].attrs = {}
 
-    # A header names its variables; the cube's order decides their bands.
-    snapshot = create_header(written)
-    header = AttrsHeader(
-        root=snapshot.root,
-        data_vars={name: snapshot.data_vars[name] for name in names},
-    )
+        target.parent.mkdir(parents=True, exist_ok=True)
+        with TemporaryDirectory(dir=target.parent) as workspace:
+            # A COG is copied from a source raster, which its own options create.
+            if driver == "COG":
+                source = Path(workspace) / target.name
+                source_options: Mapping[str, Any] = {"tiled": True}
+            else:
+                source = target
+                source_options = options
 
-    # rioxarray turns any attr it is handed into a tag, so it is handed none.
-    cube = cube.copy(deep=False)
-    cube.attrs = {}
-    for name in names:
-        cube[name].attrs = {}
+            cube.rio.to_raster(
+                source,
+                driver="GTiff",
+                # rioxarray computes a chunked cube whole unless told to walk its windows.
+                windowed=bool(cube.chunks),
+                **source_options,
+            )
+            # GDAL honours metadata on an open dataset, not as creation options.
+            with rasterio.open(source, "r+") as dst:
+                write_header(dst, header)
 
-    target.parent.mkdir(parents=True, exist_ok=True)
-    with TemporaryDirectory(dir=target.parent) as workspace:
-        # A COG is copied from a source raster, which its own options create.
-        if driver == "COG":
-            source = Path(workspace) / target.name
-            source_options: Mapping[str, Any] = {"tiled": True}
-        else:
-            source = target
-            source_options = options
+            if driver == "COG":
+                copy(source, target, driver="COG", **options)
 
-        cube.rio.to_raster(
-            source,
-            driver="GTiff",
-            # rioxarray computes a chunked cube whole unless told to walk its windows.
-            windowed=bool(cube.chunks),
-            **source_options,
-        )
-        # GDAL honours metadata on an open dataset, not as creation options.
-        with rasterio.open(source, "r+") as dst:
-            write_header(dst, header)
-
-        if driver == "COG":
-            copy(source, target, driver="COG", **options)
-    return target
+    # A local write answers with a path; an upload answers with the URL it went to.
+    if is_local(path):
+        return local_path(path)
+    return str(path)
 
 
 def write_header(dst: DatasetWriter, header: AttrsHeader) -> None:

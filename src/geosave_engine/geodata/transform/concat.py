@@ -7,7 +7,7 @@ from typing import TYPE_CHECKING, Literal, cast
 import xarray as xr
 
 import geosave_engine.geodata.attrs as attrs
-from geosave_engine.geodata.core.profile import TIME_COORDINATE
+from geosave_engine.geodata.conventions import TIME_COORDINATE
 from geosave_engine.geodata.transform import nodata
 
 if TYPE_CHECKING:

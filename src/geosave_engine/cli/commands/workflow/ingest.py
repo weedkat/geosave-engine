@@ -28,10 +28,6 @@ def ingest(
         str,
         typer.Option(help="Native writer options as JSON.", metavar="JSON"),
     ] = "{}",
-    catalog: Annotated[
-        Path | None,
-        typer.Option(help="GeoParquet table recording what was written."),
-    ] = None,
 ) -> None:
     """Load model rasters on one anchor and write them as one sample."""
     try:
@@ -49,6 +45,5 @@ def ingest(
             spec=str(spec),
             format=format,
             write_options=native_write_options,
-            catalog=None if catalog is None else str(catalog),
         )
     )

@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from geosave_engine.geodata.transform.chip import chip_windows
 from collections.abc import Sequence
 
 import gc
@@ -12,10 +13,10 @@ from lightning import LightningDataModule
 from torch.utils.data import DataLoader
 from torch.utils.data import Dataset as TorchDataset
 
-from geosave_engine.geodata import GeoVector, read_vector, stack
-from geosave_engine.geodata.stac.item import ITEM_COLUMNS
-from geosave_engine.ml.inputs import model_inputs
-from geosave_engine.ml.transforms import ImageAugmenter
+from geosave_engine.geodata import read_vector, stack
+from stac_geoparquet import to_dict
+from geosave_engine.ml.inputs import model_inputs, to_tensor
+from geosave_engine.ml.transforms import DataKey, ImageAugmenter
 from geosave_engine.model.spec import ModelSpec
 
 if TYPE_CHECKING:
@@ -27,7 +28,7 @@ if TYPE_CHECKING:
 
 def _read_target(data: xr.Dataset, ignore_index: int) -> torch.Tensor:
     """Read categorical labels using one nodata-to-ignore conversion."""
-    target = data.gs.to_tensor().squeeze(0)
+    target = to_tensor(data).squeeze(0)
     if target.is_floating_point():
         target = torch.where(torch.isfinite(target), target, ignore_index)
     return target.long()
@@ -36,21 +37,21 @@ def _read_target(data: xr.Dataset, ignore_index: int) -> torch.Tensor:
 class Dataset(
     TorchDataset[tuple[dict[str, torch.Tensor], torch.Tensor, str, torch.Tensor]]
 ):
-    """Read a manifest's samples as model inputs and targets, one tile each.
+    """Read a manifest's samples as model inputs and targets, one chip each.
 
     Every sample is cut as the model spec declares: frames along time, its
-    preprocessing on each frame, then tiles in space. Every tile of every frame
+    preprocessing on each frame, then chips in space. Every chip of every frame
     is one sample; nothing is drawn at random.
 
     Args:
         manifest: STAC table whose rows name each sample's rasters as assets.
-        spec: Model spec declaring `tiles`, `inputs`, and optionally `frames`
+        spec: Model spec declaring `chips`, `inputs`, and optionally `frames`
             and `preprocessing`.
         target: Layer holding the labels, read raw.
         ignore_index: Label a target pixel takes where its raster has none.
 
     Raises:
-        ValueError: The spec declares no `tiles` or no `inputs`, or a row
+        ValueError: The spec declares no `chips` or no `inputs`, or a row
             lacks a layer the spec or `target` names.
 
     Examples:
@@ -68,9 +69,9 @@ class Dataset(
         target: str = "label",
         ignore_index: int = 255,
     ) -> None:
-        """Open every sample lazily and number its tiles."""
-        if spec.tiles is None:
-            raise ValueError("the model spec declares no tiles to cut samples into")
+        """Open every sample lazily and number its chips."""
+        if spec.chips is None:
+            raise ValueError("the model spec declares no chips to cut samples into")
         if not spec.inputs:
             raise ValueError("the model spec declares no inputs for the model")
         self.spec = spec
@@ -100,27 +101,27 @@ class Dataset(
 
     def _make_reference(self, parents: dict[str, xr.DataTree]) -> gpd.GeoDataFrame:
         """Describe prepared windows, annotations and source provenance."""
-        assert self.spec.tiles is not None
-        self.layouts: dict[str, Tiler] = {}
+        assert self.spec.chips is not None
+        self.tilers: dict[str, Tiler] = {}
         self.padding: dict[str, list[tuple[int, int]]] = {}
         for key, parent in parents.items():
             y, x = parent.gs.grid_dims
-            layout = self.spec.tiles.layout((parent.sizes[y], parent.sizes[x]))
+            tiler = self.spec.chips.tiler((parent.sizes[y], parent.sizes[x]))
             self.padding[key] = [(0, 0), (0, 0)]
-            if self.spec.tiles.overlap:
-                padded_shape, self.padding[key] = layout.calculate_padding()
-                layout.recalculate(data_shape=padded_shape)
-            self.layouts[key] = layout
-        reference = GeoVector.from_layouts(parents, self.layouts, padding=self.padding)
+            if self.spec.chips.overlap:
+                padded_shape, self.padding[key] = tiler.calculate_padding()
+                tiler.recalculate(data_shape=padded_shape)
+            self.tilers[key] = tiler
+        reference = chip_windows(parents, self.tilers, padding=self.padding)
         rows = [self._source_rows[key] for key in reference.parent_id]
         reference["source_id"] = [row["id"] for row in rows]
         reference["source_assets"] = [row["assets"] for row in rows]
         # Stored STAC fields describe the raw sample, not these prepared pixels.
-        annotations = self._manifest.columns.difference(
-            [*ITEM_COLUMNS, "raster_metadata", *reference.columns], sort=False
-        )
+        properties = [to_dict(row)["properties"] for row in rows]
+        annotations = dict.fromkeys(key for fields in properties for key in fields)
         for column in annotations:
-            reference[column] = [row[column] for row in rows]
+            if column not in reference:
+                reference[column] = [fields.get(column) for fields in properties]
         return cast(
             "gpd.GeoDataFrame",
             reference.set_index("id", drop=False, verify_integrity=True),
@@ -133,7 +134,7 @@ class Dataset(
         for position in range(len(self._manifest)):
             row = self._manifest.iloc[position]
             source_id = row["id"]
-            sample = cast("xr.DataTree", row.gs.to_xarray(layers=self._layers))
+            sample = cast("xr.DataTree", row.gs.to_stack(layers=self._layers))
             frames = (
                 (sample,) if self.spec.frames is None else self.spec.frames.cut(sample)
             )
@@ -174,7 +175,7 @@ class Dataset(
         return {**self.__dict__, "_parents": None, "_pid": None}
 
     def __len__(self) -> int:
-        """Count the tiles of every frame of every sample."""
+        """Count the chips of every frame of every sample."""
         return len(self.reference)
 
     def __getitem__(
@@ -217,7 +218,7 @@ class DataModule(LightningDataModule):
     the spec's transforms in every split, and NaN pixels set to zero.
 
     Args:
-        spec: Model spec file declaring `tiles`, `inputs`, and `transforms`.
+        spec: Model spec file declaring `chips`, `inputs`, and `transforms`.
         train: Training manifest.
         val: Validation manifest.
         test: Test manifest. None leaves the test split unavailable.
@@ -289,11 +290,9 @@ class DataModule(LightningDataModule):
         if stage == "test":
             self.test_dataset = self._dataset("test")
 
-        assert self.spec.tiles is not None
-        size = self.spec.tiles.shape
-        keys = ["input" for _ in self.spec.pixel_inputs]
-        keys.append("mask")
-        self._augmenter = ImageAugmenter(self.augmentations, size, data_keys=keys)
+        assert self.spec.chips is not None
+        size = self.spec.chips.shape
+        self._augmenter = ImageAugmenter(self.augmentations, size)
         self._transforms = {
             name: ImageAugmenter([step.model_dump() for step in steps], size)
             for name, steps in self.spec.transforms.items()
@@ -372,8 +371,10 @@ class DataModule(LightningDataModule):
         shapes = [image.shape[1:-2] for image in images]
         # Labels shift up by one, leaving zero for pixels an augmentation invents.
         mask = (target + 1).unsqueeze(1).float()
+        keys: list[DataKey] = ["input" for _ in images]
+        keys.append("mask")
         *images, mask = self._augmenter(
-            *(image.flatten(1, -3) for image in images), mask
+            *(image.flatten(1, -3) for image in images), mask, data_keys=keys
         )
         target = mask.squeeze(1).round().long() - 1
         target[target < 0] = self.ignore_index

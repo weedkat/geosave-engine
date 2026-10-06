@@ -2,11 +2,11 @@
 
 from __future__ import annotations
 
-import os
-import posixpath
-from collections.abc import Mapping
+from collections.abc import Iterator, Mapping
+from contextlib import contextmanager
 from os import PathLike
 from pathlib import Path, PurePosixPath
+from tempfile import TemporaryDirectory
 from typing import TypeGuard
 
 import fsspec
@@ -17,14 +17,23 @@ from fsspec.spec import AbstractFileSystem
 type StorageOptions = Mapping[str, object]
 
 
+def is_local(location: str | PathLike[str]) -> bool:
+    """Return whether a location names a path on this machine."""
+    protocol, _ = split_protocol(str(location))
+    return protocol in (None, "file", "local")
+
+
+def local_path(location: str | PathLike[str]) -> Path:
+    """Read a local location as a path, without the `file://` it may carry."""
+    _, path = split_protocol(str(location))
+    return Path(path)
+
+
 def absolute_location(location: str | PathLike[str]) -> str:
     """Resolve local source paths while retaining remote URIs."""
-    protocol, path = split_protocol(str(location))
-    return (
-        str(Path(path).resolve())
-        if protocol in (None, "file", "local")
-        else str(location)
-    )
+    if is_local(location):
+        return str(local_path(location).resolve())
+    return str(location)
 
 
 def filesystem_path(
@@ -42,65 +51,70 @@ def is_local_filesystem(
     return isinstance(filesystem, LocalFileSystem)
 
 
-def resolve_asset_path(
-    reference: str | PathLike[str],
+def gdal_path(location: str | PathLike[str]) -> str:
+    """Spell a location the way GDAL opens it.
+
+    GDAL reads local paths and `s3://`, `gs://`, `az://` and `https://` URLs
+    itself. A Hugging Face bucket is reached through its S3 gateway, which
+    needs S3 keys and `configure_gdal` pointed at `s3.hf.co` beforehand.
+
+    Args:
+        location: Local path or URL of a raster file.
+
+    Returns:
+        `s3://<namespace>/<bucket>/<key>` for `hf://buckets/<namespace>/<bucket>/<key>`,
+        else the location unchanged.
+
+    Raises:
+        ValueError: An `hf://` URL names something other than a bucket.
+
+    Examples:
+        >>> gdal_path("hf://buckets/me/samples/forest/a.tif")
+        's3://me/samples/forest/a.tif'
+    """
+    protocol, path = split_protocol(str(location))
+    if protocol != "hf":
+        return str(location)
+    if not path.startswith("buckets/"):
+        raise ValueError(
+            f"{location} is not a Hugging Face bucket; only hf://buckets/ URLs "
+            f"are served by the S3 gateway GDAL reads through"
+        )
+    return f"s3://{path.removeprefix('buckets/')}"
+
+
+@contextmanager
+def local_target(
+    location: str | PathLike[str],
     *,
-    filesystem: AbstractFileSystem,
-    catalog_path: str,
-) -> Path | str:
-    """Expand one relative asset pointer against a catalog parent."""
-    spelled = str(reference)
-    protocol, _ = split_protocol(spelled)
-    if protocol is not None:
-        return spelled
+    overwrite: bool = False,
+    storage_options: StorageOptions | None = None,
+) -> Iterator[Path]:
+    """Yield a local path to write, then publish it at `location`.
 
-    local = Path(spelled)
-    if local.is_absolute():
-        return local
+    Args:
+        location: Local path, or fsspec URL of the file to produce.
+        overwrite: Replace an existing file or object.
+        storage_options: Options for the location's filesystem.
 
+    Yields:
+        `location` itself when it is local, else a path of the same name in a
+        temporary folder, uploaded once the block ends without an error.
+
+    Raises:
+        FileExistsError: `location` exists and `overwrite` is false.
+
+    Examples:
+        >>> with local_target("s3://bucket/scene.tif") as target:
+        ...     write(target)
+    """
+    filesystem, path = filesystem_path(location, storage_options)
+    if not overwrite and filesystem.exists(path):
+        raise FileExistsError(f"{location} exists; pass overwrite=True to replace it")
     if is_local_filesystem(filesystem):
-        joined = os.path.abspath(Path(catalog_path).parent / local)
-        return Path(joined)
-
-    joined = posixpath.normpath(
-        posixpath.join(posixpath.dirname(catalog_path), spelled)
-    )
-    return filesystem.unstrip_protocol(joined)
-
-
-def stored_asset_path(
-    reference: str | PathLike[str],
-    *,
-    filesystem: AbstractFileSystem,
-    catalog_path: str,
-) -> str:
-    """Shorten an asset pointer only when it is below the catalog parent."""
-    spelled = str(reference)
-    protocol, protocol_path = split_protocol(spelled)
-    protocols = filesystem.protocol
-    filesystem_protocols = (
-        (protocols,) if isinstance(protocols, str) else tuple(protocols)
-    )
-
-    if protocol is not None:
-        if protocol not in filesystem_protocols:
-            return spelled
-        remote_parent = PurePosixPath(posixpath.dirname(catalog_path).lstrip("/"))
-        remote_candidate = PurePosixPath(posixpath.normpath(protocol_path).lstrip("/"))
-        try:
-            return remote_candidate.relative_to(remote_parent).as_posix()
-        except ValueError:
-            return spelled
-
-    local_candidate = Path(spelled)
-    if not local_candidate.is_absolute():
-        return local_candidate.as_posix()
-    if not is_local_filesystem(filesystem):
-        return spelled
-
-    local_parent = Path(catalog_path).parent
-    normalized = Path(os.path.abspath(local_candidate))
-    try:
-        return normalized.relative_to(local_parent).as_posix()
-    except ValueError:
-        return spelled
+        yield Path(path)
+        return
+    with TemporaryDirectory() as folder:
+        target = Path(folder) / PurePosixPath(path).name
+        yield target
+        filesystem.put(str(target), path)

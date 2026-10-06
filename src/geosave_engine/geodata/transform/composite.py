@@ -23,7 +23,7 @@ from odc.geo.geobox import GeoBox, geobox_union_conservative
 from xarray.core.resample import DataArrayResample, DatasetResample
 
 import geosave_engine.geodata.attrs as attrs
-from geosave_engine.geodata.core.profile import TIME_COORDINATE
+from geosave_engine.geodata.conventions import TIME_COORDINATE
 from geosave_engine.geodata.transform import nodata, warp
 from geosave_engine.geodata.utils.datetime import freq_offset
 
@@ -172,10 +172,15 @@ def reduce(
     values = getattr(resampler, method)()
 
     # A class code neither averages nor ranks, so only a point sample keeps it.
-    flagged = attrs.flag_variables(values)
+    variables = (
+        {values.name: values} if isinstance(values, xr.DataArray) else values.data_vars
+    )
+    flagged = [
+        str(name) for name, variable in variables.items() if attrs.is_flag(variable)
+    ]
     if flagged and cell_method != "point":
         raise ValueError(
-            f"{list(flagged)} hold class codes, which {method!r} either blends "
+            f"{flagged} hold class codes, which {method!r} either blends "
             f"into codes naming no class or orders as if they ranked; reduce "
             f"them with 'first' or 'last', select the variables you mean, or "
             f"drop the Legend first"
@@ -347,10 +352,13 @@ def interpolate(
             f"no bucket observed nothing; resample it to a cadence first"
         )
 
-    flagged = attrs.flag_variables(data)
+    variables = {data.name: data} if isinstance(data, xr.DataArray) else data.data_vars
+    flagged = [
+        str(name) for name, variable in variables.items() if attrs.is_flag(variable)
+    ]
     if method == "linear" and flagged:
         raise ValueError(
-            f"{list(flagged)} hold class codes, which 'linear' blends into codes "
+            f"{flagged} hold class codes, which 'linear' blends into codes "
             f"naming no class; fill them with 'nearest', select the variables "
             f"you mean, or drop the Legend first"
         )
