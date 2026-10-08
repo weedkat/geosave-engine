@@ -26,14 +26,8 @@ def test_shipped_model_spec_round_trips_as_inert_declarations(tmp_path):
         "B04",
         "B08",
     )
-    assert spec.preprocessing["valid_pixels"].call == (
-        "geosave_engine.geodata.transform.nodata.to_nan"
-    )
-    assert spec.preprocessing["valid_pixels"].kwargs == {"data": Ref("sentinel_2_l2a")}
-    assert spec.preprocessing["image"].call == (
-        "geosave_engine.geodata.transform.packing.unpack"
-    )
-    assert spec.preprocessing["image"].kwargs == {"data": Ref("valid_pixels")}
+    assert spec.preprocessing["image"].call == Ref("sentinel_2_l2a.gs.mask_and_scale")
+    assert spec.preprocessing["image"].kwargs == {}
 
 
 def test_shipped_preprocessing_stays_lazy_and_sample_ready(raw):
@@ -53,7 +47,7 @@ def test_shipped_preprocessing_stays_lazy_and_sample_ready(raw):
         prepared = ModelSpec.load(path).preprocess({"sentinel_2_l2a": optical})
 
     assert computed == []
-    assert set(prepared) == {"sentinel_2_l2a", "valid_pixels", "image"}
+    assert set(prepared) == {"sentinel_2_l2a", "image"}
     assert list(prepared["image"].data_vars) == ["B02", "B03", "B04", "B08"]
     assert isinstance(prepared["image"].B04.data, da.Array)
     np.testing.assert_allclose(prepared["image"].B08.compute(), 0.6)

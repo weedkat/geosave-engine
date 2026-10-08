@@ -9,7 +9,7 @@ from typing import Any, Self
 
 from cql2 import Expr
 
-from geosave_engine.geodata.utils.geo.crs import validate_wgs84_bbox
+from geosave_engine.geodata.utils.crs import validate_wgs84_bbox
 
 
 @dataclass(frozen=True)

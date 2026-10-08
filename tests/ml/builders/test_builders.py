@@ -70,9 +70,7 @@ def test_build_criterion_supports_registered_names_and_class_paths(
 
 
 def test_build_criterion_exposes_ohem() -> None:
-    criterion = build_criterion(
-        {"name": "ohem", "init_args": {"ignore_index": 255}}
-    )
+    criterion = build_criterion({"name": "ohem", "init_args": {"ignore_index": 255}})
 
     assert isinstance(criterion, ProbOhemCrossEntropy2d)
 
@@ -83,9 +81,7 @@ def test_build_criterion_rejects_optimizer_classes() -> None:
 
 
 def test_optimizer_groups_exact_children_and_remaining_parameters() -> None:
-    model = nn.ModuleDict(
-        {"encoder": nn.Linear(2, 2), "head": nn.Linear(2, 1)}
-    )
+    model = nn.ModuleDict({"encoder": nn.Linear(2, 2), "head": nn.Linear(2, 1)})
     model["encoder"].bias.requires_grad_(False)
 
     optimizer = build_optimizer(

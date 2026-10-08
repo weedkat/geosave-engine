@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 from datetime import datetime as dt, timedelta
-from typing import ClassVar, Literal, Self
+from typing import Literal, Self
 
 import numpy as np
 import pandas as pd
@@ -51,8 +51,6 @@ class TimeSpec(AttrsModel):
         >>> monthly.bounds(labels)[0]
         array(['2024-01-01T00:00:00.000000', '2024-02-01T00:00:00.000000'], ...)
     """
-
-    NAME: ClassVar[str] = "time_spec"
 
     time_freq: Freq | None = None
     time_closed: Literal["left", "right"] | None = None

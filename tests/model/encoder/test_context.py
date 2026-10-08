@@ -2,7 +2,6 @@ from __future__ import annotations
 
 from geosave_engine.ml.inputs import to_tensor
 
-from geosave_engine.geodata.transform.chip import chip_windows
 from pathlib import Path
 
 import numpy as np
@@ -13,9 +12,9 @@ from torch import nn
 from torch.utils.data import default_collate
 from transformers import AutoModel
 
-from geosave_engine.geodata import Dataset, raster
-from tiler import Tiler
+from geosave_engine.geodata import Dataset, cuts, raster
 from geosave_engine.geodata.attrs import TimeSpec
+from tests.geodata.conftest import whole_windows
 from tests.ml.test_inputs import _samples
 from geosave_engine.model.encoder import clay, prithvi
 from geosave_engine.model.encoder.prithvi import (
@@ -31,22 +30,24 @@ from geosave_engine.model.release.huggingface import GeoSaveModel
 def scene() -> Dataset:
     grid = GeoBox.from_bbox((10, 50, 12, 52), "EPSG:4326", shape=(8, 8))
     return raster(
-        {"red": np.zeros((2, 8, 8), dtype="float32")},
+        {
+            "red": (
+                ("time", *("y", "x")),
+                np.zeros((2, 8, 8), dtype="float32"),
+            )
+        },
         grid,
-        time=np.array(["2024-12-31T14:00", "2024-01-01T03:00"], dtype="datetime64[m]"),
+        coords={
+            "time": np.array(
+                ["2024-12-31T14:00", "2024-01-01T03:00"], dtype="datetime64[m]"
+            )
+        },
     )
 
 
 def _row(data):
-    y, x = data.gs.grid_dims
-    return chip_windows(
-        {"scene": data},
-        {
-            "scene": Tiler(
-                (data.sizes[y], data.sizes[x]), (data.sizes[y], data.sizes[x])
-            )
-        },
-    ).iloc[0]
+    whole = whole_windows({"scene": data})
+    return cuts.chips(whole, (data.sizes["y"], data.sizes["x"])).iloc[0]
 
 
 def test_encoder_model_context_uses_one_row_contract(scene):
@@ -61,8 +62,8 @@ def test_encoder_model_context_uses_one_row_contract(scene):
 
 
 def test_location_context_accepts_wkt_only_catalog_rows(scene):
-    row = _row(scene).drop("proj:code")
-    row["proj:wkt2"] = scene.gs.geobox.crs.to_wkt()
+    row = _row(scene)
+    row["crs"] = scene.gs.geobox.crs.to_wkt()
     torch.testing.assert_close(prithvi.location_coords(row), torch.tensor([51.0, 11.0]))
 
 
@@ -115,7 +116,18 @@ def test_missing_time_raises(scene: Dataset, read_time) -> None:
 @pytest.mark.parametrize("read_centre", [clay.latlon, prithvi.location_coords])
 def test_missing_grid_raises(read_centre) -> None:
     with pytest.raises(ValueError, match="grid"):
-        read_centre(_row(raster({"red": np.zeros((2, 2), dtype="float32")})))
+        read_centre(
+            _row(
+                raster(
+                    {
+                        "red": (
+                            ("y", "x"),
+                            np.zeros((2, 2), dtype="float32"),
+                        )
+                    }
+                )
+            )
+        )
 
 
 def test_clay_refuses_multiple_frames(scene: Dataset) -> None:

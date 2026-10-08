@@ -1,45 +1,30 @@
-"""Create an attrs header from one STAC load, and name a variable's attrs for STAC.
-
-STAC names its fields its own way — `unit`, `scale` — so this is where those
-names and the attr keys GeoSave writes are exchanged. No attrs model reaches
-back into STAC.
-"""
+"""Create an attrs header from one STAC load."""
 
 from __future__ import annotations
 
 import warnings
-from collections.abc import Sequence
-from typing import TYPE_CHECKING, Any, Required, TypedDict
+from collections.abc import Mapping, Sequence
+from typing import TYPE_CHECKING, Any
 
-import numpy as np
-from pydantic import TypeAdapter
-from pystac.extensions.eo import BANDS_PROP as EO_BANDS
-from pystac.extensions.raster import BANDS_PROP as RASTER_BANDS
+import odc.stac
+from pystac.extensions.eo import AssetEOExtension, Band
+from pystac.extensions.raster import AssetRasterExtension, RasterBand
 
 from geosave_engine import __path__ as _package_paths
-from geosave_engine.geodata.warnings import DroppedAttrsWarning
 from geosave_engine.geodata.utils.datetime import naive_utc
+from geosave_engine.geodata.warnings import DroppedAttrsWarning
 
 from ..header import AttrsHeader
-from ..model import common_attrs
+from ..model import FlatAttrs
+from ..namespace import AttrsNamespace
 
 if TYPE_CHECKING:
-    from collections.abc import Mapping
-
     import pystac
     import xarray as xr
 
-_CORE_BANDS = "bands"
-_BAND_LISTINGS = (RASTER_BANDS, EO_BANDS, _CORE_BANDS)
-_BAND_LISTING = TypeAdapter(list[dict[str, Any]])
 
-# STAC asset field mapped to the attr key that carries it on a loaded variable.
-_ATTR_KEYS = {
-    "unit": "units",
-    "description": "long_name",
-    "scale": "scale_factor",
-    "offset": "add_offset",
-}
+# Asset fields that list bands, in the spelling each STAC generation used.
+_BAND_LISTINGS = ("bands", "raster:bands", "eo:bands")
 
 
 def create_header(
@@ -83,12 +68,10 @@ def create_header(
         >>> header = create_header(matched, collection, loaded, groupby="solar_day")
         >>> header.data_vars["B04"].to_attrs()
         {'units': '1', 'long_name': 'Red', '_FillValue': 0, 'nodata': 0,
-         'scale_factor': 0.0001, 'add_offset': -0.1}
+         'scale_factor': 0.0001, 'add_offset': -0.1, 'common_name': 'red'}
     """
     if not items:
         raise ValueError("creating a STAC header needs at least one item")
-
-    import odc.stac
 
     parsed = list(odc.stac.parse_items(items, cfg=stac_cfg))
     providers = collection.providers or []
@@ -118,16 +101,17 @@ def create_header(
         for item, entry in zip(items, parsed, strict=True):
             asset_name, band_index = entry.collection.band_key(str(name))
             asset = item.assets.get(asset_name)
-            fields = read_asset_fields(asset, band_index=band_index) if asset else {}
-            published.append(
-                {
-                    _ATTR_KEYS[key]: value
-                    for key, value in fields.items()
-                    if key in _ATTR_KEYS
-                }
-            )
-        agreed = common_attrs(published)
-        disputed = sorted(set().union(*published) - agreed.keys())
+            bands = read_bands(asset) if asset else []
+            # An item may lack the asset, or list fewer bands than the file holds.
+            if len(bands) >= band_index:
+                published.append(band_attrs(*bands[band_index - 1]))
+            else:
+                published.append({})
+        merged, dropped = AttrsNamespace.merge(
+            [AttrsNamespace.from_attrs(fields, "variable") for fields in published],
+            conflicts="drop",
+        )
+        disputed = sorted(dropped)
         if disputed:
             values = {
                 key: {
@@ -138,12 +122,12 @@ def create_header(
             }
             warnings.warn(
                 f"STAC items publish {disputed} differently for {str(name)!r}, so "
-                f"the loaded variable carries none of them: {values}",
+                f"those source attrs are dropped: {values}",
                 DroppedAttrsWarning,
                 skip_file_prefixes=tuple(_package_paths),
             )
         # The loader's own attrs describe the pixels it actually produced.
-        variables[str(name)] = {**agreed, **variable.attrs}
+        variables[str(name)] = {**merged.to_attrs(), **variable.attrs}
     return AttrsHeader.from_attrs(
         root={
             **loaded.attrs,
@@ -161,22 +145,125 @@ def read_asset_fields(asset: pystac.Asset, *, band_index: int = 1) -> dict[str, 
         band_index: One-based source band index.
 
     Returns:
-        Asset fields with nested band fields merged and band listings removed.
+        {
+            "<field>": its value,
+        }
+        The asset's own fields without its band listings, overlaid with the
+        selected band as the Raster and EO extensions spell it, as `"scale"`.
 
-    Raises:
-        ValidationError: A band listing is not a list of JSON objects.
+    Examples:
+        >>> read_asset_fields(asset)
+        {'gsd': 10, 'unit': '1', 'scale': 0.0001, 'name': 'B04', 'common_name': 'red'}
     """
-    source: Mapping[str, Any] = asset.extra_fields or {}
-    found = {key: value for key, value in source.items() if key not in _BAND_LISTINGS}
-
-    for listing in _BAND_LISTINGS:
-        published = source.get(listing)
-        if published is None:
-            continue
-        bands = _BAND_LISTING.validate_python(published)
-        if len(bands) >= band_index:
-            found.update(bands[band_index - 1])
+    found = {
+        key: value
+        for key, value in asset.extra_fields.items()
+        if key not in _BAND_LISTINGS
+    }
+    bands = read_bands(asset)
+    if len(bands) >= band_index:
+        stored, spectral = bands[band_index - 1]
+        found.update(stored.to_dict())
+        found.update(spectral.to_dict())
     return found
+
+
+def read_bands(asset: pystac.Asset) -> list[tuple[RasterBand, Band]]:
+    """Return an asset's bands as PySTAC's Raster and EO bands, in file order.
+
+    Args:
+        asset: Asset listing its bands as `raster:bands` and `eo:bands`, or
+            as the STAC 1.1 `bands` PySTAC has no class for.
+
+    Returns:
+        One (raster band, EO band) pair per band either listing reaches,
+        without the nulls Parquet fills absent keys with. Empty where the
+        asset lists no bands.
+
+    Examples:
+        >>> stored, spectral = read_bands(asset)[0]
+        >>> stored.scale, spectral.common_name
+        (0.0001, 'red')
+    """
+    core = asset.extra_fields.get("bands")
+    if core is not None:
+        pairs = [_legacy(band) for band in core]
+    else:
+        stored = AssetRasterExtension(asset).bands or []
+        spectral = AssetEOExtension(asset).bands or []
+        pairs = [
+            (
+                stored[index].properties if index < len(stored) else {},
+                spectral[index].properties if index < len(spectral) else {},
+            )
+            for index in range(max(len(stored), len(spectral)))
+        ]
+    return [
+        (RasterBand(_stated(stored)), Band(_stated(named))) for stored, named in pairs
+    ]
+
+
+def _legacy(band: Mapping[str, Any]) -> tuple[dict[str, Any], dict[str, Any]]:
+    """Split one STAC 1.1 band into the Raster and EO bands PySTAC models.
+
+    Args:
+        band: One entry of an asset's `bands`.
+
+    Returns:
+        (raster fields, EO fields). `raster:` and `eo:` keys lose their
+        prefix; `name` and `description` name the EO band; every other key
+        describes the stored values and stays with the raster band.
+    """
+    stored: dict[str, Any] = {}
+    spectral: dict[str, Any] = {}
+    for key, value in band.items():
+        if key.startswith("eo:"):
+            spectral[key.removeprefix("eo:")] = value
+        elif key in ("name", "description"):
+            spectral[key] = value
+        else:
+            stored[key.removeprefix("raster:")] = value
+    return stored, spectral
+
+
+def _stated(fields: Mapping[str, Any]) -> dict[str, Any]:
+    """Drop the nulls Parquet fills a key other rows carry with."""
+    return {key: value for key, value in fields.items() if value is not None}
+
+
+def band_attrs(stored: RasterBand, spectral: Band) -> FlatAttrs:
+    """Translate one band into the variable attrs it states.
+
+    `nodata` and `data_type` describe the file, and the loader that opens it
+    states them, so neither is translated.
+
+    Args:
+        stored: The band as the Raster extension describes it.
+        spectral: The band as the EO extension describes it.
+
+    Returns:
+        {
+            "<attr key>": its value,
+        }
+        The keys of every model the Raster, EO and Classification modules
+        read from the band; empty where it states none.
+
+    Examples:
+        >>> band_attrs(RasterBand.create(unit="1", scale=0.0001), Band({}))
+        {'units': '1', 'scale_factor': 0.0001}
+    """
+    # Imported here: the STAC package imports this module while it loads.
+    from geosave_engine.geodata.stac.extensions import classification, eo, raster
+
+    stated = (
+        *raster.read(stored),
+        *eo.read(spectral),
+        *classification.read(stored),
+    )
+    attrs: FlatAttrs = {}
+    for model in stated:
+        attrs.update(model.to_attrs())
+    return attrs
 
 
 def _item_assets(
@@ -198,56 +285,3 @@ def _selected(
     if names is None:
         return dict(source)
     return {key: source[key] for key in names if key in source}
-
-
-class BandFields(TypedDict, total=False):
-    """One saved variable in the names STAC gives a band."""
-
-    name: Required[str]
-    data_type: Required[str]
-    nodata: float | int
-    unit: str
-    description: str
-    scale: float
-    offset: float
-
-
-def band_fields(variable: xr.DataArray) -> BandFields:
-    """Describe one saved variable in the names STAC gives a band.
-
-    Args:
-        variable: Variable as its file stores it.
-
-    Returns:
-        {
-            "name": variable name,
-            "data_type": stored dtype name,
-            "nodata": fill value, where the variable declares one,
-            "unit" | "description" | "scale" | "offset": the attr `_ATTR_KEYS`
-                maps to that field, where the variable carries it,
-        }
-    """
-    attrs = variable.attrs
-    fields: BandFields = {
-        "name": str(variable.name),
-        "data_type": variable.dtype.name,
-    }
-
-    # JSON holds native numbers, and a file hands back numpy ones.
-    nodata = attrs.get("_FillValue")
-    if nodata is not None:
-        fields["nodata"] = nodata.item() if isinstance(nodata, np.generic) else nodata
-
-    unit = attrs.get("units")
-    if unit is not None:
-        fields["unit"] = str(unit)
-    description = attrs.get("long_name")
-    if description is not None:
-        fields["description"] = str(description)
-    scale = attrs.get("scale_factor")
-    if scale is not None:
-        fields["scale"] = float(scale)
-    offset = attrs.get("add_offset")
-    if offset is not None:
-        fields["offset"] = float(offset)
-    return fields

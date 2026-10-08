@@ -15,7 +15,10 @@ def sample_raster() -> xr.Dataset:
     grid = GeoBox.from_bbox((0, 0, 40, 40), crs="EPSG:32633", resolution=10)
     optical = raster(
         {
-            name: da.full((4, 4), value, chunks=(2, 2), dtype="uint16")
+            name: (
+                ("y", "x"),
+                da.full((4, 4), value, chunks=(2, 2), dtype="uint16"),
+            )
             for name, value in (
                 ("B02", 1000),
                 ("B03", 1500),

@@ -36,19 +36,19 @@ Examples:
     {'units': 'metre', 'resolution': -10.0, 'crs': 'EPSG:32633',
      'standard_name': 'projection_y_coordinate', 'axis': 'Y'}
 
-    A geographic CRS names the axes `latitude` and `longitude` instead,
-    following odc-geo:
+    Geographic grids span `y` and `x` too. CF metadata identifies them as
+    latitude and longitude:
 
-    >>> wgs84.gs.grid_dims
-    ('latitude', 'longitude')
-    >>> wgs84.latitude.attrs["standard_name"], wgs84.latitude.attrs["units"]
+    >>> wgs84.red.dims
+    ('y', 'x')
+    >>> wgs84.y.attrs["standard_name"], wgs84.y.attrs["units"]
     ('latitude', 'degrees_north')
 """
 
 from __future__ import annotations
 
 from pathlib import Path, PurePosixPath
-from typing import TYPE_CHECKING, Any, Literal, NamedTuple, Unpack, cast, overload
+from typing import TYPE_CHECKING, Any, Unpack, cast
 
 import numpy as np
 import odc.geo.xr  # noqa: F401  — registers the .odc accessor
@@ -63,10 +63,11 @@ from geosave_engine.geodata.attrs.headers.geobox import (
 from geosave_engine.geodata.transform import nodata
 
 from .base import GeoRasterAccessor
+from geosave_engine.geodata.utils.statistics import statistics
 from geosave_engine.geodata.conventions import (
     BAND_DIMENSION,
     CRS_COORDINATE,
-    NOT_GEOREFERENCED_DIMENSIONS,
+    SPATIAL_DIMENSIONS,
 )
 
 
@@ -77,37 +78,20 @@ if TYPE_CHECKING:
     from numpy.typing import DTypeLike
     from odc.geo import SomeCRS
 
-
-    from geosave_engine.geodata.io.netcdf import (
+    from geosave_engine.geodata.io.raster.netcdf import (
         NetCDFEngine,
         NetCDFWriteOptions,
     )
-    from geosave_engine.geodata.io.geotiff import COGWriteOptions
-    from geosave_engine.geodata.io.zarr import ZarrWriteOptions
+    from geosave_engine.geodata.io.raster.geotiff import COGWriteOptions
+    from geosave_engine.geodata.io.raster.zarr import ZarrWriteOptions
     from geosave_engine.geodata.io.storage import StorageOptions
 
     import holoviews as hv
-    import pystac
 
     from geosave_engine.geodata import DataArray, Dataset
 
-# Format `to_items` saves an unsaved raster in.
-type RasterDriver = Literal["cog", "zarr", "netcdf"]
-
-# One variable's pixels, alone or paired with the axes it carries.
-type RasterVariable = np.ndarray | tuple[np.ndarray, Sequence[str]]
-
-
-class AxisExtent(NamedTuple):
-    """How long one axis is, and which variable said so.
-
-    Args:
-        sized_by: Name of the first variable that gave the axis its length.
-        length: Positions along the axis.
-    """
-
-    sized_by: str
-    length: int
+# Native xarray variables declare all dimensions independently of coordinates.
+type RasterVariable = xr.DataArray | tuple[Sequence[str], Any]
 
 
 def raster(
@@ -115,163 +99,87 @@ def raster(
     geobox: GeoBox | None = None,
     /,
     *,
+    coords: Mapping[str, Any] | None = None,
     nodata: float | int | None = None,
-    **coords: Sequence[Any] | np.ndarray | None,
 ) -> Dataset:
-    """Build one raster from named arrays sharing a grid.
+    """Build a raster from variables with explicitly named dimensions.
 
-    Arrays end in the two spatial axes, which the geobox names, and carry the
-    axes `coords` names ahead of them. A bare array carries every axis
-    `coords` names; pair it with its own names to carry only some.
+    Dimension order comes from each variable, independently of coordinate
+    order. xarray checks ranks and shared dimension lengths without reading
+    lazy pixels. GeoSave checks the trailing spatial pair and places the grid.
 
     Args:
-        variables: Data variable name mapped to its pixels, or to a
-            `(pixels, axes)` pair naming the axes it carries.
-        geobox: Grid placing the trailing two axes. None leaves the raster
-            unreferenced, so it holds pixels without claiming ground position.
-        nodata: Value standing for nodata pixels, written on every variable
-            as `Nodata.fill_value`. None writes no fill value.
-        **coords: Leading axis name mapped to its labels, in array order. None
-            labels an axis carrying none. Pass a name Python reserves as
-            `**{"class": labels}`.
+        variables: Names mapped to native DataArrays or `(dims, pixels)`
+            tuples. Every dimension is named, including the spatial pair.
+        geobox: Grid placing the trailing `y` and `x` dimensions for any CRS.
+            None leaves pixels unreferenced.
+        coords: Native xarray coordinates. Omit a dimension's coordinate to
+            leave it unlabelled; coordinates do not declare variable dimensions.
+        nodata: Fill value written on every variable. None writes no fill value.
 
     Returns:
-        Georeferenced Dataset when `geobox` is given, its spatial coordinates
-        naming what they measure, otherwise a Dataset carrying no grid, whose
-        spatial dims are named `y` and `x`.
+        Native Dataset preserving variable order, pixel dtype, and laziness.
+        A geobox supplies spatial coordinates and CF/GDAL grid metadata.
 
     Raises:
-        ValueError: `variables` is empty, a variable names an axis no keyword gives,
-            its rank does not match the axes it carries, its trailing axes do
-            not match `geobox`, two variables size one axis differently, an
-            axis is labelled with the wrong number of values, an axis no
-            variable carries is named, or an axis name collides with a
-            coordinate the grid supplies.
+        TypeError: A variable has no explicit dimensions.
+        ValueError: Variables are empty, xarray dimensions or coordinates are
+            incompatible, a variable's trailing dimensions do not match the
+            spatial pair, its shape differs from the geobox, or supplied
+            coordinates conflict with those generated by the geobox.
 
     Examples:
-        A labelled axis becomes a coordinate every variable carrying it shares:
-
-        >>> raster({"ndvi": cube}, geobox, time=labels)
-        <xarray.Dataset> Size: 2MB
-        Dimensions:      (y: 512, x: 512, time: 2)
-        Coordinates:
-          * y            (y) float64 5.005e+06 5.005e+06 ... 5e+06
-          * x            (x) float64 3e+05 3e+05 ... 3.051e+05
-          * time         (time) datetime64[ns] 2025-06-01 2025-06-11
-            spatial_ref  int32 32633
-        Data variables:
-            ndvi         (time, y, x) float32 ...
-
-        Pairing pixels with their own axes lets variables differ in rank:
-
-        >>> raster({"ndvi": cube, "dem": (flat, ())}, geobox, time=labels)
-        <xarray.Dataset> Size: 3MB
-        Dimensions:      (y: 512, x: 512, time: 2)
-        Coordinates:
-          * y            (y) float64 5.005e+06 5.005e+06 ... 5e+06
-          * x            (x) float64 3e+05 3e+05 ... 3.051e+05
-          * time         (time) datetime64[ns] 2025-06-01 2025-06-11
-            spatial_ref  int32 32633
-        Data variables:
-            ndvi         (time, y, x) float32 ...
-            dem          (y, x) float32 ...
+        >>> scene = raster(
+        ...     {"red": (("time", "y", "x"), cube),
+        ...      "dem": (("y", "x"), elevation)},
+        ...     geobox,
+        ...     coords={"time": labels},
+        ... )
+        >>> scene.red.dims, scene.dem.dims
+        (('time', 'y', 'x'), ('y', 'x'))
     """
+    from odc.geo.xr import xr_coords
+
     if not variables:
         raise ValueError("a raster needs at least one named array")
-
-    from odc.geo.xr import wrap_xr
-
-    spatial_dims = NOT_GEOREFERENCED_DIMENSIONS if geobox is None else geobox.dimensions
-    grid_coords = (*spatial_dims, CRS_COORDINATE)
-    raster_axes = tuple(coords)
-
-    collisions = sorted(set(raster_axes) & set(grid_coords))
-    if collisions:
-        raise ValueError(
-            f"{collisions} name coordinates this grid already supplies "
-            f"{list(grid_coords)}; name the leading axes something else"
-        )
-
-    # An axis is as long as the variables along it say, and they must agree.
-    axis_extent: dict[str, AxisExtent] = {}
-    data_vars: dict[str, xr.DataArray | tuple[tuple[str, ...], np.ndarray]] = {}
-
     for name, value in variables.items():
-        if isinstance(value, tuple):
-            pixels, variable_axes = value[0], tuple(value[1])
-        else:
-            pixels, variable_axes = value, raster_axes
+        if not isinstance(value, (xr.DataArray, tuple)):
+            raise TypeError(
+                f"{name!r} needs explicit dimensions: use (dims, pixels) or a DataArray"
+            )
 
-        unknown = [axis for axis in variable_axes if axis not in raster_axes]
-        if unknown:
+    built = xr.Dataset(variables, coords=coords)
+    spatial_dims = SPATIAL_DIMENSIONS
+    for name, band in built.data_vars.items():
+        if band.dims[-2:] != spatial_dims:
             raise ValueError(
-                f"{name!r} lies along {unknown}, which no keyword names; this "
-                f"raster names {list(raster_axes)}"
+                f"{name!r}'s trailing dimensions are {band.dims[-2:]} "
+                f"but this raster's spatial dimensions are {spatial_dims}"
             )
-        if pixels.ndim != len(variable_axes) + 2:
+        if geobox is not None and band.shape[-2:] != tuple(geobox.shape):
             raise ValueError(
-                f"{name!r} is {pixels.ndim}-dimensional but lies along "
-                f"{variable_axes} ahead of the spatial pair; a raster's arrays end "
-                f"in the two spatial axes"
+                f"{name!r}'s spatial shape is {band.shape[-2:]} "
+                f"but the geobox is {tuple(geobox.shape)}"
             )
-        if geobox is not None and pixels.shape[len(variable_axes) :] != geobox.shape:
+
+    if geobox is not None:
+        grid_coords = xr_coords(geobox, always_yx=True)
+        collisions = sorted(set(built.coords) & set(grid_coords), key=str)
+        if collisions:
             raise ValueError(
-                f"{name!r}'s trailing axes are {pixels.shape[len(variable_axes) :]} "
-                f"but the geobox is {tuple(geobox.shape)}; place it on a matching "
-                f"grid first"
+                f"{collisions} name coordinates this grid already supplies; "
+                "let the geobox supply them"
             )
+        built = built.assign_coords(grid_coords)
 
-        variable_dims = (*variable_axes, *spatial_dims)
-        for position, axis in enumerate(variable_dims):
-            extent = axis_extent.setdefault(
-                axis, AxisExtent(name, pixels.shape[position])
-            )
-            if extent.length != pixels.shape[position]:
-                raise ValueError(
-                    f"{name!r} makes axis {axis!r} {pixels.shape[position]} long but "
-                    f"{extent.sized_by!r} makes it {extent.length}; one axis is one length"
-                )
+        for band in built.data_vars.values():
+            band.encoding["grid_mapping"] = CRS_COORDINATE
 
-        if geobox is None:
-            data_vars[name] = (variable_dims, pixels)
-        else:
-            data_vars[name] = wrap_xr(
-                pixels, geobox, dims=variable_dims, axis=len(variable_axes)
-            )
-
-    empty_axes = [axis for axis in raster_axes if axis not in axis_extent]
-    if empty_axes:
-        raise ValueError(
-            f"{empty_axes} are named but no variable lies along them; drop them "
-            f"or name them on a variable"
-        )
-
-    miscounted = []
-    for axis, labels in coords.items():
-        if labels is None:
-            continue
-        length = axis_extent[axis].length
-        if len(labels) != length:
-            miscounted.append(
-                f"{axis!r} got {len(labels)} labels for an axis of {length}"
-            )
-    if miscounted:
-        raise ValueError(
-            f"{'; '.join(miscounted)}; label an axis once per value along it"
-        )
-
-    built = xr.Dataset(data_vars)
-
-    axis_labels = {axis: given for axis, given in coords.items() if given is not None}
-    if axis_labels:
-        built = built.assign_coords(axis_labels)
+        built = attrs.rebase(built, create_geobox_header(geobox))
 
     if nodata is not None:
         built = built.gs.write_nodata(nodata)
 
-    if geobox is not None:
-        # odc places the axes; GeoSave writes what they measure.
-        built = attrs.rebase(built, create_geobox_header(geobox))
     return cast("Dataset", built)
 
 
@@ -290,26 +198,6 @@ class GeoRaster(GeoRasterAccessor["Dataset"]):
         >>> ds.gs.anchor.geobox.shape
         (512, 512)
     """
-
-    def __init__(self, data: xr.Dataset) -> None:
-        """Bind the Dataset.
-
-        Args:
-            data: Dataset to read through this accessor.
-        """
-        self._data = cast("Dataset", data)
-
-    @property
-    def grid_dims(self) -> tuple[str, str]:
-        """Name the two dimensions the grid spans.
-
-        Returns:
-            `("y", "x")` for a projected CRS, `("latitude", "longitude")` for a
-            geographic one, and `("y", "x")` for a raster carrying no grid,
-            whose pixels span those axes without claiming ground position.
-        """
-        grid = self._data.odc.geobox
-        return NOT_GEOREFERENCED_DIMENSIONS if grid is None else grid.dimensions
 
     @property
     def variables(self) -> tuple[str, ...]:
@@ -389,7 +277,8 @@ class GeoRaster(GeoRasterAccessor["Dataset"]):
                 f"raster is placed by {type(geobox).__name__}, not a regular "
                 f"grid, so its axes measure no CF coordinate"
             )
-        return cast("Dataset", attrs.rebase(result, create_geobox_header(geobox)))
+        header = create_geobox_header(geobox)
+        return cast("Dataset", attrs.rebase(result, header))
 
     def write_nodata(
         self,
@@ -484,8 +373,9 @@ class GeoRaster(GeoRasterAccessor["Dataset"]):
         """Summarise every variable's present pixels, reading each of them.
 
         Returns:
-            One row per variable, in Dataset order, its columns the fields of
-            `GeoArray.statistics`.
+            One row per variable, in Dataset order, with minimum, maximum,
+            mean, population stddev, and valid_percent columns. All axes of
+            each variable are reduced together.
 
         Raises:
             ValueError: A variable holds no present pixel.
@@ -496,13 +386,7 @@ class GeoRaster(GeoRasterAccessor["Dataset"]):
             red      1.0     96.0  45.6    29.9          100.0
             nir      8.0     98.0  56.7    23.2          100.0
         """
-        return pd.DataFrame.from_dict(
-            {
-                name: self._data[name].gs.statistics()._asdict()
-                for name in self.variables
-            },
-            orient="index",
-        )
+        return statistics(self._data.data_vars)
 
     def to_array(self, *, dtype: DTypeLike | None = None) -> DataArray:
         """Stack every variable this raster carries into one array.
@@ -531,20 +415,17 @@ class GeoRaster(GeoRasterAccessor["Dataset"]):
             >>> ds[["B04", "B03", "B02"]].gs.to_array()
         """
         array = self._stacked(dtype)
-        band_attrs = {
-            name: dict(self._data.variables[name].attrs) for name in self.variables
-        }
-        # A key every band carries with one value describes the stacked array.
-        shared = attrs.common_attrs(list(band_attrs.values()))
-        array.attrs = shared
-        stacked = attrs.StackedAttrs(
-            variable_attrs={
-                name: {key: value for key, value in held.items() if key not in shared}
-                for name, held in band_attrs.items()
+        shared, preserved = attrs.StackedAttrs.from_header(self.attrs)
+        header = attrs.AttrsHeader(
+            root=shared,
+            coords={
+                BAND_DIMENSION: attrs.AttrsNamespace(
+                    models={attrs.StackedAttrs: preserved}
+                )
             },
-            dataset_attrs=dict(self._data.attrs),
         )
-        attrs.rebase(array, stacked, target=BAND_DIMENSION, inplace=True)
+        array.attrs = {}
+        attrs.rebase(array, header, inplace=True)
         return cast("DataArray", array)
 
     def plot(
@@ -679,15 +560,14 @@ class GeoRaster(GeoRasterAccessor["Dataset"]):
                 f"which the stacked variables would name; rename it first"
             )
 
-        grid_dims = self.grid_dims
         ungridded = sorted(
             name
             for name in var_names
-            if not set(grid_dims) <= set(self._data.variables[name].dims)
+            if not set(SPATIAL_DIMENSIONS) <= set(self._data.variables[name].dims)
         )
         if ungridded:
             raise ValueError(
-                f"{ungridded} do not span the grid {list(grid_dims)}, so stacking "
+                f"{ungridded} do not span the grid {list(SPATIAL_DIMENSIONS)}, so stacking "
                 f"them would repeat one value across every pixel; drop them or "
                 f"place them on the grid first"
             )
@@ -696,7 +576,9 @@ class GeoRaster(GeoRasterAccessor["Dataset"]):
         axes: dict[str, tuple[str, ...]] = {}
         for name in var_names:
             dims = self._data.variables[name].dims
-            axes[name] = tuple(str(dim) for dim in dims if dim not in grid_dims)
+            axes[name] = tuple(
+                str(dim) for dim in dims if dim not in SPATIAL_DIMENSIONS
+            )
 
         drifted = sorted(
             name for name in var_names[1:] if axes[name] != axes[var_names[0]]
@@ -719,10 +601,9 @@ class GeoRaster(GeoRasterAccessor["Dataset"]):
         stacked = (
             self._data[list(var_names)]
             .to_dataarray(dim=BAND_DIMENSION)
-            .transpose(*axes[var_names[0]], BAND_DIMENSION, *grid_dims)
+            .transpose(*axes[var_names[0]], BAND_DIMENSION, *SPATIAL_DIMENSIONS)
         )
         return stacked if dtype is None else stacked.astype(dtype)
-
 
     def to_cog(
         self,
@@ -774,154 +655,6 @@ class GeoRaster(GeoRasterAccessor["Dataset"]):
             storage_options=storage_options,
             **options,
         )
-
-    @overload
-    def to_items(
-        self, path: None = None, *, collection: str | None = None
-    ) -> tuple[pystac.Item, ...]: ...
-
-    @overload
-    def to_items(
-        self,
-        path: str | PathLike[str],
-        *,
-        driver: Literal["cog"] = "cog",
-        collection: str | None = None,
-        split_bands: bool = True,
-        map_scale: float | None = None,
-        overwrite: bool = False,
-        storage_options: StorageOptions | None = None,
-        **options: Unpack[COGWriteOptions],
-    ) -> tuple[pystac.Item, ...]: ...
-
-    @overload
-    def to_items(
-        self,
-        path: str | PathLike[str],
-        *,
-        driver: Literal["zarr"],
-        collection: str | None = None,
-        overwrite: bool = False,
-        **options: Unpack[ZarrWriteOptions],
-    ) -> tuple[pystac.Item, ...]: ...
-
-    @overload
-    def to_items(
-        self,
-        path: str | PathLike[str],
-        *,
-        driver: Literal["netcdf"],
-        collection: str | None = None,
-        overwrite: bool = False,
-        storage_options: StorageOptions | None = None,
-        **options: Unpack[NetCDFWriteOptions],
-    ) -> tuple[pystac.Item, ...]: ...
-
-    def to_items(
-        self,
-        path: str | PathLike[str] | None = None,
-        *,
-        driver: RasterDriver = "cog",
-        collection: str | None = None,
-        **options: Any,
-    ) -> tuple[pystac.Item, ...]:
-        """Describe this raster's saved files as STAC Items, saving it first if needed.
-
-        A raster read from one file or store is described where it sits. Any
-        other raster is written to `path` by the writer `driver` names, then
-        described from the pixels written.
-
-        Args:
-            path: Where to save an unsaved raster, as `to_cog`, `to_zarr` or
-                `to_netcdf` takes it. None describes the file or store this
-                raster was read from.
-            driver: Format to save in. `"cog"` writes one file per band and
-                instant, which every geospatial tool opens; `"zarr"` and
-                `"netcdf"` write one store holding every instant.
-            collection: Name the Items share. None names them after `path`.
-            **options: Forwarded to `to_cog`, `to_zarr` or `to_netcdf`. COGs
-                split bands unless `split_bands=False`, so each band is an
-                asset of its own.
-
-        Returns:
-            One Item per instant for COGs, or one Item for a store.
-
-        Raises:
-            ValueError: `path` is None and this raster was not read from one
-                file or store, or its pixels changed since; or the raster is
-                timeless, which `stac.item.from_assets(..., datetime=...)`
-                dates by hand.
-            FileExistsError: A file exists and `overwrite` is false.
-
-        Examples:
-            >>> items = ds.gs.to_items("samples/forest")
-            >>> [item.id for item in items]
-            ['forest_20250601T103031', 'forest_20250611T103031']
-            >>> ds.gs.to_items("samples/forest.zarr", driver="zarr")[0].id
-            'forest'
-            >>> read_raster("samples/forest.zarr").gs.to_items()[0].id
-            'forest'
-        """
-        from geosave_engine.geodata.io import cogs
-        from geosave_engine.geodata.stac import asset, item
-
-        # A saved raster is described from the one file or store it was read from.
-        if path is None:
-            source = self._data.encoding.get("source")
-            if source is None:
-                raise ValueError(
-                    "this raster is not saved, so no file describes it; pass a "
-                    "path to save it to"
-                )
-            if Path(source).is_dir() and PurePosixPath(source).suffix != ".zarr":
-                raise ValueError(
-                    f"{source} is a folder of files, and this raster no longer "
-                    f"says which instant each one holds; index it when writing, "
-                    f"with to_items(path)"
-                )
-            name = PurePosixPath(source).stem
-            assets = {asset.default_key(self._data): asset.from_path(source)}
-            saved = item.from_assets(assets, id=name, collection=collection or name)
-            return (saved,)
-
-        # COGs: one Item per scene, each file described from the pixels it holds.
-        if driver == "cog":
-            name = PurePosixPath(str(path).rstrip("/")).name
-            # Catalogs key assets by band, so each band gets a file of its own.
-            split_bands = options.pop("split_bands", True)
-            self.to_cog(path, split_bands=split_bands, **options)
-
-            scenes: dict[str, dict[str, pystac.Asset]] = {}
-            for file in cogs.layout(self._data, path, split_bands=split_bands):
-                if file.scene not in scenes:
-                    scenes[file.scene] = {}
-                key = asset.default_key(file.raster)
-                scenes[file.scene][key] = asset.from_raster(
-                    file.raster, file.path, driver="cog"
-                )
-
-            items = []
-            for scene, assets in scenes.items():
-                scene_item = item.from_assets(
-                    assets, id=scene, collection=collection or name
-                )
-                items.append(scene_item)
-            return tuple(items)
-
-        # A store holds every instant, so it is one Item. It has to be written
-        # now: a deferred write leaves nothing to describe.
-        if driver == "zarr":
-            self.to_zarr(path, compute=True, **options)
-        else:
-            self.to_netcdf(path, compute=True, **options)
-        name = PurePosixPath(str(path)).stem
-        assets = {
-            asset.default_key(self._data): asset.from_raster(
-                self._data, path, driver=driver
-            )
-        }
-        store_item = item.from_assets(assets, id=name, collection=collection or name)
-        return (store_item,)
 
     def to_zarr(
         self,

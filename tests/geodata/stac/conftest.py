@@ -3,12 +3,14 @@ from types import SimpleNamespace
 from typing import cast
 
 import numpy as np
+import pandas as pd
 import pytest
 import pystac
 from pystac.extensions.projection import ProjectionExtension
 import rasterio
+from odc.geo.geobox import GeoBox
 
-from geosave_engine.geodata import GeoAnchor
+from geosave_engine.geodata import GeoAnchor, raster
 from geosave_engine.geodata.stac import StacSource
 from geosave_engine.geodata.stac.source import SearchClient
 
@@ -89,3 +91,31 @@ def local_source(tmp_path):
         },
     )
     return source, anchor
+
+
+@pytest.fixture
+def grid() -> GeoBox:
+    return GeoBox.from_bbox(
+        (300000, 5000000, 300640, 5000640), "EPSG:32633", resolution=10
+    )
+
+
+@pytest.fixture
+def scene(grid):
+    """Two dates of two uint16 bands with a fill value."""
+    times = pd.to_datetime(["2025-06-01", "2025-06-11"])
+    cube = np.arange(2 * 64 * 64, dtype="uint16").reshape(2, 64, 64)
+    data = raster(
+        {"red": (("time", "y", "x"), cube), "nir": (("time", "y", "x"), cube + 1)},
+        grid,
+        coords={"time": times},
+    )
+    for name in data.data_vars:
+        data[name].attrs["_FillValue"] = np.uint16(0)
+    return data
+
+
+@pytest.fixture
+def label(grid):
+    """One timeless uint8 class plane on the same grid."""
+    return raster({"label": (("y", "x"), np.ones((64, 64), dtype="uint8"))}, grid)

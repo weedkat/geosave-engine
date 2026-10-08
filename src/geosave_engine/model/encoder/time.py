@@ -12,7 +12,7 @@ def time_labels(row: pd.Series, *, raster: str = "image") -> list[datetime]:
     """Return this raster's ordered acquisition timestamps.
 
     Args:
-        row: Sample row containing per-raster metadata.
+        row: Window row stating each prepared raster's time labels.
         raster: Prepared raster whose frames the encoder receives.
 
     Returns:
@@ -21,7 +21,9 @@ def time_labels(row: pd.Series, *, raster: str = "image") -> list[datetime]:
     Raises:
         ValueError: Timestamps are missing, empty, or invalid.
     """
-    labels = np.asarray(row["raster_metadata"][raster]["times"])
+    stated = row["times"].get(raster)
+    # A table read back from Parquet states labels as an array, not a list.
+    labels = np.asarray([] if stated is None else stated)
     if (
         labels.ndim != 1
         or not labels.size

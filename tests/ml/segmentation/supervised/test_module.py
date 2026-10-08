@@ -17,6 +17,7 @@ from geosave_engine.ml.cli import GeosaveCLI
 from geosave_engine.geodata.warnings import GeoSaveWarning
 from geosave_engine.ml.segmentation import supervised
 from geosave_engine.model.chain import chain_step
+from geosave_engine.model.spec import ChipsSpec
 
 
 class SegmentationModel(nn.Module):
@@ -412,7 +413,7 @@ def test_steps_accept_model_inputs_and_target_tuples(
         (
             {"image": image},
             target,
-            ["a/tile-0"],
+            ["a/chip-0"],
             torch.ones_like(target, dtype=torch.bool),
         ),
         0,
@@ -464,7 +465,7 @@ def test_training_and_checkpoint_reload_preserve_construction(
                 (
                     {"image": image, "offset": torch.tensor(0.0)},
                     torch.tensor([[0, 1], [1, 0]]),
-                    "scene-a/tile-0",
+                    "scene-a/chip-0",
                     torch.ones_like(torch.tensor([[0, 1], [1, 0]]), dtype=torch.bool),
                 )
             ]
@@ -582,7 +583,7 @@ def test_lightning_predict_tiles_stitches_logits_on_source_grid(stages, tmp_path
             },
         }
     )
-    samples = _samples(parents, (4, 4), overlap=2, halo=True, spec=spec)
+    samples = _samples(parents, (4, 4), overlap=2, spec=spec)
     centres = {tuple(samples[number][0]["centre"].tolist()) for number in range(4)}
     loader = DataLoader(
         samples, batch_size=3, sampler=list(reversed(range(len(samples))))
@@ -609,7 +610,7 @@ def test_lightning_predict_tiles_stitches_logits_on_source_grid(stages, tmp_path
     for logits, index in predictions:
         indices.extend(index)
         for sample_id, values in zip(index, logits.numpy(), strict=True):
-            merger.add(int(samples.reference.loc[sample_id, "tile_id"]), values)
+            merger.add(int(samples.reference.loc[sample_id, "chip"]), values)
     assert indices == list(reversed(samples.reference.id.tolist()))
     output = merger.merge(extra_padding=samples.padding["scene-a"])
     torch.testing.assert_close(
@@ -620,6 +621,70 @@ def test_lightning_predict_tiles_stitches_logits_on_source_grid(stages, tmp_path
     )
 
 
+def test_predicted_chips_are_saved_then_merged_on_the_source_grid(stages, tmp_path):
+    from geosave_engine.geodata import cuts, stack
+    from geosave_engine.ml.segmentation.callbacks import ChipWriter
+    from geosave_engine.model.spec import ModelSpec, Ref
+    from tests.geodata.conftest import whole_windows
+    from tests.ml.test_inputs import _raster, _samples
+
+    scene = _raster(6, 8)
+    parents = {"scene-a": stack({"image": scene})}
+    spec = ModelSpec.model_validate(
+        {
+            "schema_version": 2,
+            "rasters": {"image": {"variables": ["B04", "B08"]}},
+            "inputs": {"image": Ref("image")},
+        }
+    )
+    samples = _samples(parents, (4, 4), overlap=2, spec=spec)
+    loader = DataLoader(
+        samples, batch_size=3, sampler=list(reversed(range(len(samples))))
+    )
+    trainer = Trainer(
+        accelerator="cpu",
+        devices=1,
+        logger=False,
+        enable_checkpointing=False,
+        enable_progress_bar=False,
+        enable_model_summary=False,
+        default_root_dir=tmp_path,
+        callbacks=[ChipWriter(tmp_path / "chips")],
+    )
+
+    trainer.predict(
+        supervised.Module(model_chain=stages),
+        dataloaders=loader,
+        return_predictions=False,
+    )
+
+    # Nothing was merged while predicting; the saved chips are merged afterwards.
+    outputs = ChipWriter.read(tmp_path / "chips")
+    assert sorted(outputs["id"].values.tolist()) == sorted(samples.reference.id)
+    merged = cuts.merge(
+        whole_windows(parents), samples.reference, outputs, taper="hann"
+    )
+    assert merged["scene-a"].gs.geobox == scene.gs.geobox
+    torch.testing.assert_close(
+        torch.from_numpy(merged["scene-a"]["logits"].values).float(),
+        to_tensor(scene),
+        rtol=1e-5,
+        atol=1e-6,
+    )
+
+
+def test_a_chip_writer_refuses_chips_left_by_an_earlier_run(stages, tmp_path):
+    from geosave_engine.ml.segmentation.callbacks import ChipWriter
+
+    from types import SimpleNamespace
+
+    (tmp_path / "chips" / "chips-0.zarr").mkdir(parents=True)
+    trainer = SimpleNamespace(global_rank=0)
+
+    with pytest.raises(FileExistsError, match="earlier run"):
+        ChipWriter(tmp_path / "chips").on_predict_start(trainer, None)
+
+
 @pytest.mark.parametrize("shape", [(2, 2, 3, 5), (2, 3, 2, 3, 5)])
 def test_predict_preserves_per_tile_context_and_indices(stages, shape):
     task = supervised.Module(
@@ -628,7 +693,7 @@ def test_predict_preserves_per_tile_context_and_indices(stages, shape):
     task.configure_model()
     image = torch.zeros(shape)
     offset = torch.tensor([3.0, 7.0]).reshape(2, *([1] * (len(shape) - 1)))
-    indices = ["scene-a/tile-19", "scene-b/tile-2"]
+    indices = ["scene-a/chip-19", "scene-b/chip-2"]
     logits, returned = task.predict_step(
         ({"image": image, "offset": offset}, indices), 0
     )
@@ -711,20 +776,18 @@ def test_completed_parent_reads_original_classes_instead_of_blending_tile_target
     from odc.geo.geobox import GeoBox
 
     grid = GeoBox.from_bbox((0, 0, 80, 60), "EPSG:32748", resolution=10)
-    image = raster({"image": np.zeros((6, 8), "float32")}, grid)
+    image = raster({"image": (("y", "x"), np.zeros((6, 8), "float32"))}, grid)
     labels = np.where(np.indices((6, 8))[1] < 4, 2.0, 4.0).astype("float32")
     labels[0, 0] = np.nan
-    label = raster({"label": labels}, grid, nodata=np.nan)
+    label = raster({"label": (("y", "x"), labels)}, grid, nodata=np.nan)
     parents = {"a": stack({"image": image, "label": label})}
-    samples = _samples(parents, (4, 4), overlap=2, halo=True)
+    samples = _samples(parents, (4, 4), overlap=2)
     reference = samples.reference
     dataset = SimpleNamespace(
         parents=parents,
         target="label",
         reference=reference,
-        tilers=samples.tilers,
-        padding=samples.padding,
-        spec=SimpleNamespace(chips=SimpleNamespace(window="hann")),
+        spec=SimpleNamespace(chips=ChipsSpec(size=4, overlap=2, window="hann")),
     )
     loader = SimpleNamespace(dataset=dataset)
     task = supervised.Module(model_chain=stages)
@@ -754,11 +817,7 @@ def test_completed_parent_excludes_input_invalid_pixels_from_scoring(stages, tmp
     for i, row in enumerate(dataset.reference.itertuples()):
         for y in range(8):
             for x in range(8):
-                if (
-                    row.parent_id == "s0"
-                    and row.row_off + y == 4
-                    and row.col_off + x == 5
-                ):
+                if row.parent == "s0" and row.row_off + y == 4 and row.col_off + x == 5:
                     masks[i, y, x] = False
     results = task._merge(logits, ids, masks, loader, 0)
     first_logits, first_target = results[0]
@@ -775,16 +834,17 @@ def test_native_evaluation_retains_nodata_and_finite_overlap(stages, all_invalid
     from tests.ml.test_inputs import _samples, _raster
 
     image = _raster(6, 8)
-    labels = raster({"label": np.zeros((6, 8), "float32")}, image.gs.geobox)
+    labels = raster(
+        {"label": (("y", "x"), np.zeros((6, 8), "float32"))},
+        image.gs.geobox,
+    )
     parents = {"a": stack({"image": image, "label": labels})}
-    samples = _samples(parents, (4, 4), overlap=2, halo=True)
+    samples = _samples(parents, (4, 4), overlap=2)
     dataset = SimpleNamespace(
         parents=parents,
         target="label",
         reference=samples.reference,
-        tilers=samples.tilers,
-        padding=samples.padding,
-        spec=SimpleNamespace(chips=SimpleNamespace(window="hann")),
+        spec=SimpleNamespace(chips=ChipsSpec(size=4, overlap=2, window="hann")),
     )
     task = supervised.Module(model_chain=stages)
     task.configure_model()

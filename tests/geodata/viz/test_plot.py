@@ -8,7 +8,7 @@ import geosave_engine.geodata.attrs as attrs
 from geosave_engine.geodata.core.anchor import GeoAnchor
 from geosave_engine.geodata.core.raster import raster as build_raster
 from geosave_engine.geodata.core.stack import stack as build_stack
-from geosave_engine.geodata.utils.geo.geolocator import Place
+from geosave_engine.geodata.utils.geolocator import Place
 
 pytest.importorskip("hvplot", reason="viz extra not installed")
 
@@ -35,7 +35,7 @@ def geobox() -> GeoBox:
 @pytest.fixture
 def optical() -> xr.Dataset:
     values = np.arange(16, dtype="uint16").reshape(4, 4) * 100
-    raster = build_raster({"B04": values}, geobox())
+    raster = build_raster({"B04": (("y", "x"), values)}, geobox())
     return raster.gs.rebase(
         attrs.Packing(scale_factor=1e-4, add_offset=0.0),
         attrs.Nodata(fill_value=0),
@@ -49,7 +49,7 @@ def labels() -> xr.Dataset:
     codes = np.array(
         [[0, 1, 8, 0], [1, 8, 0, 1], [8, 0, 1, 8], [0, 1, 8, 0]], dtype="uint8"
     )
-    raster = build_raster({"landcover": codes}, geobox())
+    raster = build_raster({"landcover": (("y", "x"), codes)}, geobox())
     return raster.gs.rebase(
         attrs.Legend(class_map={0: "water", 1: "trees", 8: "snow"}),
         attrs.Legend(color_map={0: "#419bdf", 1: "#397d49", 8: "#b39fe1"}),
@@ -60,7 +60,14 @@ def labels() -> xr.Dataset:
 @pytest.fixture
 def rgb() -> xr.Dataset:
     pixels = np.arange(16, dtype="uint16").reshape(4, 4)
-    raster = build_raster({"B04": pixels, "B03": pixels, "B02": pixels}, geobox())
+    raster = build_raster(
+        {
+            "B04": (("y", "x"), pixels),
+            "B03": (("y", "x"), pixels),
+            "B02": (("y", "x"), pixels),
+        },
+        geobox(),
+    )
     for name, colour in (("B04", "red"), ("B03", "green"), ("B02", "blue")):
         raster = raster.gs.rebase(attrs.GDALVariable(colorinterp=colour), target=name)
     return raster
@@ -125,7 +132,7 @@ class TestClassMap:
         codes = np.array(
             [[0, 1, 8, 0], [1, 8, 0, 1], [8, 0, 1, 8], [0, 1, 8, 0]], dtype="uint8"
         )
-        raster = build_raster({"cover": codes}, geobox(), nodata=0)
+        raster = build_raster({"cover": (("y", "x"), codes)}, geobox(), nodata=0)
         raster = raster.gs.rebase(
             attrs.Legend(class_map={1: "trees", 8: "snow"}),
             attrs.Legend(color_map={1: "#397d49", 8: "#b39fe1"}),
@@ -136,7 +143,9 @@ class TestClassMap:
         assert set(np.unique(drawn[~np.isnan(drawn)])) == {0.0, 1.0}
 
     def test_uncoloured_class_refuses(self) -> None:
-        raster = build_raster({"cover": np.zeros((4, 4), dtype="uint8")}, geobox())
+        raster = build_raster(
+            {"cover": (("y", "x"), np.zeros((4, 4), dtype="uint8"))}, geobox()
+        )
         raster = raster.gs.rebase(
             attrs.Legend(class_map={0: "water", 1: "trees"}),
             attrs.Legend(color_map={0: "#419bdf"}),

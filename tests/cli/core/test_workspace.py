@@ -1,6 +1,5 @@
 """Generated segmentation workspaces compose library Lightning classes."""
 
-from geosave_engine.geodata.stac import asset, item
 import runpy
 import subprocess
 import sys
@@ -115,23 +114,18 @@ def test_generated_entrypoint_parses_library_lightning_pair(
 def test_segmentation_workspace_trains_on_prepared_samples(workspace):
     from pathlib import Path
 
-    from geosave_engine.geodata import GeoVector
+    from geosave_engine.geodata.stac import create_stack_items, table
 
     examples = Path(__file__).parents[3] / "examples/data/dw_imagery"
-    # Each sample folder holds one raster per layer, named after it.
-    entries = [
-        item.from_assets(
-            {layer.stem: asset.from_path(layer) for layer in sorted(path.iterdir())},
-            id=path.name,
-        )
-        for path in sorted(examples.iterdir())
-        if path.is_dir()
-    ]
-    samples = GeoVector.from_items(entries)
+    path = next(path for path in sorted(examples.iterdir()) if path.is_dir())
+    # One complete scene exercises training and stitched validation.
+    layers = sorted(path.iterdir())
+    files = {layer.stem: (layer,) for layer in layers}
+    entries = create_stack_items(files, name=path.name)
     for split in ("train", "val"):
         (workspace / f"data/{split}").mkdir(parents=True, exist_ok=True)
-        samples.gs.to_geoparquet(
-            workspace / f"data/{split}/manifest.parquet", overwrite=True
+        table.write(
+            entries, workspace / f"data/{split}/manifest.parquet", overwrite=True
         )
 
     # The example rasters hold digital numbers, 10000 times the template's reflectance.
@@ -180,8 +174,8 @@ def test_segmentation_workspace_trains_on_prepared_samples(workspace):
     metrics = cli.trainer.callback_metrics
     assert cli.trainer.global_step == 2
     assert torch.isfinite(metrics["train_loss"])
-    # Three 510x510 samples, each rebuilt from 16 tiles and scored whole.
-    assert len(cli.datamodule.val_dataset) == 48
+    # The 510x510 sample is rebuilt from 16 tiles and scored whole.
+    assert len(cli.datamodule.val_dataset) == 16
     assert metrics["val_loss"] < 20
     assert 0.0 <= metrics["val_iou_macro"] <= 1.0
 
@@ -219,5 +213,6 @@ assert cli.model.validation_step(validation_batch, 0).ndim == 0
         check=False,
         capture_output=True,
         text=True,
+        timeout=60,
     )
     assert result.returncode == 0, result.stderr

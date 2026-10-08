@@ -76,7 +76,9 @@ def build_model(
     modules: dict[str, nn.Module] = {}
     recipe: dict[str, dict[str, Any]] = {}
     for stage, value in stages.items():
-        spec = value if isinstance(value, BuildSpec) else BuildSpec.model_validate(value)
+        spec = (
+            value if isinstance(value, BuildSpec) else BuildSpec.model_validate(value)
+        )
         factory = spec.resolve(MODEL_REGISTRY.get(stage, {}), nn.Module)
         try:
             kwargs = published_kwargs(factory, modules, spec.init_args)

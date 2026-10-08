@@ -5,10 +5,11 @@ from __future__ import annotations
 from typing import Annotated, Literal, Self
 
 from pydantic import Field, NonNegativeInt, PositiveInt, model_validator
-import xarray as xr
+import geopandas as gpd
 from tiler import Tiler
 
-from geosave_engine.geodata.transform.time import FrameMode, stack_frames
+from geosave_engine.geodata import cuts
+from geosave_engine.geodata.cuts.frames import FrameMode
 
 from .base import SpecModel, Text
 
@@ -41,8 +42,8 @@ class FramesSpec(SpecModel):
         mode: What a frame covering an instant some layer missed does.
 
     Examples:
-        >>> FramesSpec(length=4, stride=2, tolerance="10D").cut(sample)
-        (<xarray.DataTree> ..., <xarray.DataTree> ...)
+        >>> FramesSpec(length=4, stride=2, tolerance="10D").cut(windows)["id"].tolist()
+        ['s0/frame-0', 's0/frame-1']
     """
 
     length: PositiveInt
@@ -50,20 +51,20 @@ class FramesSpec(SpecModel):
     tolerance: Text
     mode: FrameMode = "strict"
 
-    def cut(self, sample: xr.DataTree) -> tuple[xr.DataTree, ...]:
-        """Cut a stack into frames, each layer keeping the dates it observed on.
+    def cut(self, windows: gpd.GeoDataFrame) -> gpd.GeoDataFrame:
+        """Cut windows into frames, each group keeping the dates it observed on.
 
         Args:
-            sample: Stack whose time-spanning layers carry a `time` coordinate.
+            windows: Windows as `cuts.stacks` or `cuts.chips` lists them.
 
         Returns:
-            One stack per frame, in time order.
+            One window per frame, in time order.
 
         Raises:
-            ValueError: The stack holds no sequence these frames fit.
+            ValueError: A window holds no sequence these frames fit.
         """
-        return stack_frames(
-            sample,
+        return cuts.frames(
+            windows,
             self.length,
             tolerance=self.tolerance,
             stride=self.stride,
@@ -85,9 +86,8 @@ class ChipsSpec(SpecModel):
         ValueError: Overlap cannot provide coverage for the selected window.
 
     Examples:
-        >>> tiler = ChipsSpec(size=224, overlap=32).tiler((600, 800))
-        >>> tuple(tiler.tile_shape)
-        (224, 224)
+        >>> ChipsSpec(size=224, overlap=32).cut(windows).iloc[0]["id"]
+        's0/chip-0'
     """
 
     size: PositiveInt | Annotated[list[PositiveInt], Field(min_length=2, max_length=2)]
@@ -123,20 +123,26 @@ class ChipsSpec(SpecModel):
         height, width = self.size
         return height, width
 
-    def tiler(self, shape: tuple[int, int]) -> Tiler:
-        """Build a native spatial Tiler from pixel dimensions.
+    def cut(self, windows: gpd.GeoDataFrame) -> gpd.GeoDataFrame:
+        """Cut windows into chips of this size.
 
         Args:
-            shape: Parent height and width, before any optional halo padding.
+            windows: Windows as `cuts.stacks` or `cuts.frames` lists them.
 
         Returns:
-            Native Tiler using this recipe. Constant padding represents missing
-            pixels with NaN. Halo setup and reference construction are separate.
+            One window per chip, each numbered within the window it was cut
+            from.
         """
-        return Tiler(
-            shape,
-            self.shape,
-            overlap=self.overlap,
-            mode=self.mode,
-            constant_value=float("nan"),
-        )
+        return cuts.chips(windows, self.shape, overlap=self.overlap, mode=self.mode)
+
+    def layout(self, shape: tuple[int, int]) -> tuple[Tiler, list[tuple[int, int]]]:
+        """Lay these chips over a window of a given shape.
+
+        Args:
+            shape: Height and width of the window chips are cut from.
+
+        Returns:
+            The Tiler laying the chips and the halo around the window, the
+            same every time, so a merge rebuilds what a cut used.
+        """
+        return cuts.layout(shape, self.shape, overlap=self.overlap, mode=self.mode)

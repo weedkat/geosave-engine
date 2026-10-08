@@ -1,32 +1,38 @@
 import re
 
+import numpy as np
 import pytest
 
-from geosave_engine.geodata.attrs import MODELS, Nodata, TimeSpec, resolve_model
+from geosave_engine.geodata.attrs import (
+    MODELS,
+    Nodata,
+    TimeSpec,
+    resolve_model,
+)
 from geosave_engine.geodata.attrs.models import model_scope
 
 
 def test_each_attr_key_has_one_owner_per_scope() -> None:
     for models in MODELS.values():
-        keys = [key for model in models for key in model.attr_keys()]
+        keys = [key for model in models.values() for key in model.attr_keys()]
         assert len(keys) == len(set(keys))
 
 
 def test_model_names_are_unique_across_scopes() -> None:
-    names = [model.NAME for models in MODELS.values() for model in models]
+    names = [name for models in MODELS.values() for name in models]
     assert len(names) == len(set(names))
 
 
 def test_every_model_resolves_by_name_and_class() -> None:
     for models in MODELS.values():
-        for model in models:
-            assert resolve_model(model.NAME) is model
+        for name, model in models.items():
+            assert resolve_model(name) is model
             assert resolve_model(model) is model
 
 
 def test_a_model_outside_the_table_is_refused() -> None:
     class Calibration(Nodata):
-        NAME = "calibration"
+        pass
 
     with pytest.raises(TypeError, match="not a GeoSave attrs model"):
         resolve_model(Calibration)
@@ -48,11 +54,13 @@ def test_one_field_reads_any_of_its_spellings() -> None:
 
 def test_model_names_are_their_class_in_snake_case() -> None:
     for models in MODELS.values():
-        for model in models:
+        for name, model in models.items():
             # GeoTIFF is one format name, not two words.
-            name = model.__name__.replace("GeoTIFF", "Geotiff")
-            words = re.sub(r"(?<=[a-z])(?=[A-Z])|(?<=[A-Z])(?=[A-Z][a-z])", "_", name)
-            assert model.NAME == words.lower()
+            class_name = model.__name__.replace("GeoTIFF", "Geotiff")
+            words = re.sub(
+                r"(?<=[a-z])(?=[A-Z])|(?<=[A-Z])(?=[A-Z][a-z])", "_", class_name
+            )
+            assert name == words.lower()
 
 
 def test_stac_metadata_merges_into_every_item_once() -> None:
@@ -95,3 +103,10 @@ def test_rasters_loaded_from_stac_merge_their_bands() -> None:
 
     items = merged.gs.attrs.root.get(StacMetadata).stac_items
     assert [item.id for item in items] == ["optical-scene", "radar-scene"]
+
+
+def test_a_numpy_integer_reads_as_a_native_integer() -> None:
+    nodata = Nodata.from_attrs({"_FillValue": np.uint16(0)})
+
+    assert nodata is not None
+    assert type(nodata.fill_value) is int

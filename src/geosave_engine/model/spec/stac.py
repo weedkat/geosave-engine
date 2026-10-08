@@ -161,7 +161,9 @@ def _open_client(collection: str, endpoints: tuple[str, ...]) -> StacClient:
                 return client
             last_error = LookupError(f"Collection {collection!r} not found")
         status = getattr(last_error, "status_code", None)
-        cause = f"HTTP {status}: {last_error}" if status is not None else str(last_error)
+        cause = (
+            f"HTTP {status}: {last_error}" if status is not None else str(last_error)
+        )
         failures.append(f"{endpoint}: {cause}")
     raise ConnectionError(
         "STAC endpoints unavailable: " + "; ".join(failures)

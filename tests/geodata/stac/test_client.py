@@ -25,9 +25,7 @@ def test_missing_collection_raises_a_lookup_error(monkeypatch):
         StacClient(native).collection("missing")
 
 
-@pytest.mark.parametrize(
-    "provider", ["planetary_computer", "cdse", "element84"]
-)
+@pytest.mark.parametrize("provider", ["planetary_computer", "cdse", "element84"])
 def test_named_provider_uses_its_stac_client_constructor(monkeypatch, provider):
     expected = object()
     monkeypatch.setattr(

@@ -9,6 +9,7 @@ from geosave_engine.geodata.attrs import (
     CFCoordinate,
     CFVariable,
     Nodata,
+    Packing,
     create_header,
 )
 
@@ -49,27 +50,83 @@ def test_a_dataarray_root_is_one_variable() -> None:
 
 def test_a_namespace_refuses_models_of_different_scopes() -> None:
     with pytest.raises(ValueError, match="different scopes"):
-        AttrsNamespace(models={"nodata": Nodata(fill_value=0), "acdd": ACDD(title="x")})
+        AttrsNamespace(models={Nodata: Nodata(fill_value=0), ACDD: ACDD(title="x")})
 
 
 def test_a_namespace_refuses_a_foreign_key_its_models_write() -> None:
     with pytest.raises(ValueError, match="collide"):
-        AttrsNamespace(models={"nodata": Nodata(fill_value=0)}, foreign={"nodata": 0})
+        AttrsNamespace(models={Nodata: Nodata(fill_value=0)}, foreign={"nodata": 0})
 
 
 def test_namespaces_of_different_scopes_do_not_merge() -> None:
-    dataset = AttrsNamespace(models={"acdd": ACDD(title="x")})
-    variable = AttrsNamespace(models={"cf_variable": CFVariable(long_name="Red")})
+    dataset = AttrsNamespace(models={ACDD: ACDD(title="x")})
+    variable = AttrsNamespace(models={CFVariable: CFVariable(long_name="Red")})
 
     with pytest.raises(ValueError, match="different scopes"):
         AttrsNamespace.merge([dataset, variable])
 
 
+def test_grouping_extracts_owned_keys_without_changing_the_source():
+    source = {
+        "units": "1",
+        "nodata": "0",
+        "_FillValue": 0,
+        "scale_factor": 0.1,
+        "vendor": {"site": 7},
+    }
+
+    namespace = AttrsNamespace.from_attrs(source, "variable")
+
+    assert set(namespace.models) == {CFVariable, Nodata, Packing}
+    assert namespace.get(Nodata).fill_value == 0
+    assert namespace.get("nodata") is namespace.get(Nodata)
+    assert namespace.foreign == {"vendor": {"site": 7}}
+    assert source == {
+        "units": "1",
+        "nodata": "0",
+        "_FillValue": 0,
+        "scale_factor": 0.1,
+        "vendor": {"site": 7},
+    }
+
+
+def test_invalid_owned_attrs_do_not_become_foreign_metadata():
+    with pytest.raises(ValueError):
+        AttrsNamespace.from_attrs(
+            {"nodata": "invalid", "vendor": "example"}, "variable"
+        )
+
+
+def test_storage_keys_are_distinct_from_logical_field_names():
+    assert Nodata.keys_for("fill_value") == ("_FillValue", "nodata")
+    assert Nodata.attr_keys() == ("_FillValue", "nodata")
+    assert Packing.keys_for("scale_factor") == ("scale_factor",)
+    with pytest.raises(KeyError, match="typo"):
+        Nodata.keys_for("typo")
+
+
 def test_namespace_owns_flat_attrs_lifecycle() -> None:
     first = AttrsNamespace.from_attrs({"title": "source", "provider": "one"}, "dataset")
-    second = AttrsNamespace.from_attrs({"title": "source", "provider": "two"}, "dataset")
+    second = AttrsNamespace.from_attrs(
+        {"title": "source", "provider": "two"}, "dataset"
+    )
 
     merged, dropped = AttrsNamespace.merge([first, second])
 
     assert merged.to_attrs() == {"title": "source"}
     assert dropped == {"provider"}
+
+
+@pytest.mark.parametrize("second", [{}, {"units": "K", "scale_factor": 0.2}])
+def test_namespace_can_drop_conflicting_required_fields(second) -> None:
+    first = AttrsNamespace.from_attrs(
+        {"units": "m", "scale_factor": 0.1, "long_name": "Height"}, "variable"
+    )
+    other = AttrsNamespace.from_attrs({**second, "long_name": "Height"}, "variable")
+
+    merged, dropped = AttrsNamespace.merge([first, other], conflicts="drop")
+
+    assert merged.to_attrs() == {"long_name": "Height"}
+    assert dropped == {"units", "scale_factor"}
+    with pytest.raises(ValueError, match="must agree"):
+        AttrsNamespace.merge([first, other])

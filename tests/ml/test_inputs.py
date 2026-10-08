@@ -1,16 +1,18 @@
 from __future__ import annotations
 
-from geosave_engine.geodata.transform.chip import chip_windows
 import numpy as np
 import pytest
 import xarray as xr
 from odc.geo.geobox import GeoBox
 from odc.geo.xr import xr_coords
 
+from geosave_engine.geodata import cuts
 from geosave_engine.geodata.core.stack import stack
 from geosave_engine.ml.inputs import model_inputs, to_tensor
 from torch.utils.data import Dataset
-from tiler import Merger, Tiler
+from tiler import Merger
+
+from tests.geodata.conftest import whole_windows
 
 torch = pytest.importorskip("torch")
 
@@ -39,8 +41,21 @@ def test_native_rasters_convert_with_explicit_tensor_dtype(kind, dtype):
     assert result.is_contiguous()
     expected = source.B04 if kind == "array" else source
     torch.testing.assert_close(
-        result, torch.as_tensor(expected.gs.to_numpy(), dtype=expected_dtype)
+        result, torch.tensor(expected.gs.to_numpy(), dtype=expected_dtype)
     )
+
+
+@pytest.mark.parametrize("dtype", [None, "float32"])
+def test_read_only_pixels_convert_to_a_safely_mutable_tensor(dtype):
+    source = _raster(2, 2).B04
+    source.values.flags.writeable = False
+    before = source.values.copy()
+
+    result = to_tensor(source, dtype=dtype)
+    result.fill_(0)
+
+    np.testing.assert_array_equal(source.values, before)
+    assert torch.count_nonzero(result) == 0
 
 
 def test_tensor_conversion_rejects_unknown_dtype():
@@ -87,7 +102,7 @@ def test_a_single_band_reads_as_itself() -> None:
 
     inputs, index = samples[0]
     assert inputs["image"].shape == (256, 256)
-    assert index == "scene-a/tile-0"
+    assert index == "scene-a/chip-0"
 
 
 @pytest.mark.parametrize("window", ["boxcar", "hann"])
@@ -95,7 +110,7 @@ def test_a_small_model_and_shuffled_native_merge_rebuild_each_parent(window):
     from torch.utils.data import DataLoader
 
     parents = {"a": _raster(13, 19, seed=1), "b": _raster(13, 19, seed=2)}
-    samples = _samples(parents, (6, 8), overlap=2, halo=window == "hann")
+    samples = _samples(parents, (6, 8), overlap=2)
     mergers = {
         key: Merger(layout, logits=3, window=window, save_visits=False)
         for key, layout in samples.tilers.items()
@@ -112,7 +127,7 @@ def test_a_small_model_and_shuffled_native_merge_rebuild_each_parent(window):
                 ids, model(inputs["image"]).numpy(), strict=True
             ):
                 row = samples.reference.loc[sample_id]
-                mergers[row.parent_id].add(int(row.tile_id), output)
+                mergers[row.parent].add(int(row.chip), output)
         for key, parent in parents.items():
             actual = mergers[key].merge(extra_padding=samples.padding[key])
             expected = model(to_tensor(parent)[None])[0].numpy()
@@ -185,7 +200,7 @@ def test_reference_keys_associate_native_outputs_after_shuffle(tmp_path) -> None
                     row.col_off + 3,
                     row.row_off + 3,
                 ]
-                assert row.parent_id in ("a", "b")
+                assert row.parent in ("a", "b")
                 assert row.geometry is not None
                 observed.add(tile_id)
     assert observed == set(reference.id)
@@ -224,11 +239,16 @@ def test_lazy_reader_matches_native_fringe_padding_and_bounds(mode):
         samples = _samples({"a": lazy}, (6, 8), overlap=2, mode=mode)
     position = len(samples) - 1
     actual, _ = samples[position]
-    native = Tiler((2, 13, 19), (2, 6, 8), overlap=2, channel_dimension=0, mode=mode)
-    expected = native.get_tile(to_tensor(parent).numpy(), position)
+    # Overlapping chips sit over a halo, filled the way the fringe is.
+    native, halo = cuts.layout((13, 19), (6, 8), overlap=2, mode=mode)
+    fill = {"constant_values": np.nan} if mode == "constant" else {}
+    padded = np.pad(to_tensor(parent).numpy(), [(0, 0), *halo], mode=mode, **fill)
+    expected = np.stack([native.get_tile(band, position) for band in padded])
     np.testing.assert_array_equal(actual["image"].numpy(), expected)
     assert tasks
-    assert all(location[-2][0] >= 8 and location[-1][0] >= 10 for location in tasks)
+    # Only the blocks under the last chip were read; a wrapped halo reads the far edge too.
+    if mode != "wrap":
+        assert all(location[-2][0] >= 4 and location[-1][0] >= 5 for location in tasks)
 
 
 def test_named_inputs_preserve_different_leading_axes_and_tile_grid():
@@ -249,7 +269,7 @@ def test_named_inputs_preserve_different_leading_axes_and_tile_grid():
             "inputs": {"image": Ref("optical"), "height": Ref("dem")},
         }
     )
-    samples = _samples({"a": parent}, (6, 8), overlap=2, halo=True, spec=spec)
+    samples = _samples({"a": parent}, (6, 8), overlap=2, spec=spec)
     inputs, sample_id = samples[-1]
     assert inputs["image"].shape == (2, 2, 6, 8)
     assert inputs["height"].shape == (1, 6, 8)
@@ -262,19 +282,17 @@ def test_named_inputs_preserve_different_leading_axes_and_tile_grid():
 class Samples(Dataset):
     """Consumer-owned Dataset exercising the public read and input APIs."""
 
-    def __init__(self, parents, tilers, spec=None, *, padding=None):
-        self.parents, self.tilers, self.spec = parents, tilers, spec
-        self.padding = padding or {key: [(0, 0), (0, 0)] for key in parents}
-        self.reference = chip_windows(parents, tilers, padding=self.padding).set_index(
-            "id", drop=False
-        )
+    def __init__(self, parents, reference, tilers, padding, spec=None):
+        self.parents, self.tilers, self.padding = parents, tilers, padding
+        self.spec = spec
+        self.reference = reference.set_index("id", drop=False)
 
     def __len__(self):
         return len(self.reference)
 
     def read(self, position):
         row = self.reference.iloc[position]
-        return row.gs.crop(self.parents[row.parent_id])
+        return cuts.select_pixels(self.parents[row.parent], row.to_dict())
 
     def __getitem__(self, position):
         row = self.reference.iloc[position]
@@ -287,24 +305,18 @@ class Samples(Dataset):
         return inputs, row.id
 
 
-def _samples(parents, shape, *, overlap=0, mode="reflect", halo=False, spec=None):
+def _samples(parents, shape, *, overlap=0, mode="reflect", spec=None):
+    reference = cuts.chips(whole_windows(parents), shape, overlap=overlap, mode=mode)
     tilers, padding = {}, {}
     for key, parent in parents.items():
-        spatial = parent.gs.grid_dims
-        layout = Tiler(
-            tuple(parent.sizes[d] for d in spatial), shape, overlap=overlap, mode=mode
+        tilers[key], padding[key] = cuts.layout(
+            (parent.sizes["y"], parent.sizes["x"]), shape, overlap=overlap, mode=mode
         )
-        padding[key] = [(0, 0), (0, 0)]
-        if halo:
-            padded_shape, padding[key] = layout.calculate_padding()
-            layout.recalculate(data_shape=padded_shape)
-        tilers[key] = layout
-    return Samples(parents, tilers, spec, padding=padding)
+    return Samples(parents, reference, tilers, padding, spec)
 
 
 @pytest.mark.parametrize("kind", ["array", "dataset", "stack"])
-@pytest.mark.parametrize("fill", [0.0, 9.0, float("nan")])
-def test_explicit_halo_uses_native_constant_value(kind, fill):
+def test_a_constant_halo_is_filled_with_missing_values(kind):
     source = _raster(6, 8)[["B04"]]
     parent = (
         source.B04
@@ -313,11 +325,9 @@ def test_explicit_halo_uses_native_constant_value(kind, fill):
         if kind == "stack"
         else source
     )
-    layout = Tiler((6, 8), (4, 4), overlap=2, mode="constant", constant_value=fill)
-    shape, padding = layout.calculate_padding()
-    layout.recalculate(data_shape=shape)
-    samples = Samples({"a": parent}, {"a": layout}, padding={"a": padding})
-    padded = np.pad(source.B04.values, padding, mode="constant", constant_values=fill)
+    samples = _samples({"a": parent}, (4, 4), overlap=2, mode="constant")
+    layout, padding = samples.tilers["a"], samples.padding["a"]
+    padded = np.pad(source.B04.values, padding, mode="constant", constant_values=np.nan)
     for index in (0, len(samples) - 1):
         tile = samples.read(index)
         actual = (

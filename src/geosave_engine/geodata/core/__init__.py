@@ -5,7 +5,6 @@ from .array import GeoArray, array
 from .raster import GeoRaster, RasterVariable, raster
 from .stack import GeoStack, stack
 from .vector import GeoVector
-from .row import GeoRow
 
 __all__ = [
     "GeoAnchor",
@@ -14,7 +13,6 @@ __all__ = [
     "GeoStack",
     "RasterVariable",
     "GeoVector",
-    "GeoRow",
     "array",
     "raster",
     "stack",

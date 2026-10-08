@@ -26,7 +26,12 @@ def series(
     """Build a raster whose every pixel reads `values[i]` at `OBSERVED[i]`."""
     box = utm_box()
     pixels = np.stack([np.full(box.shape, value, dtype) for value in values])
-    return build_raster({"red": pixels}, box, nodata=nodata, time=OBSERVED)
+    return build_raster(
+        {"red": (("time", *("y", "x")), pixels)},
+        box,
+        coords={"time": OBSERVED},
+        nodata=nodata,
+    )
 
 
 def test_the_bucketing_survives_the_reduction() -> None:
@@ -136,7 +141,15 @@ def quarterly() -> xr.Dataset:
         [np.full(box.shape, value, "uint16") for value in (100, 200, 300, 400)]
     )
     return reduce(
-        resample(build_raster({"red": pixels}, box, time=stamps), "MS"), "median"
+        resample(
+            build_raster(
+                {"red": (("time", *("y", "x")), pixels)},
+                box,
+                coords={"time": stamps},
+            ),
+            "MS",
+        ),
+        "median",
     )
 
 

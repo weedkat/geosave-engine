@@ -29,7 +29,9 @@ def stored(
 ) -> xr.Dataset:
     """Build a raster whose `red` holds `value` as a stored digital number."""
     box = utm_box()
-    raster = build_raster({"red": np.full(box.shape, value, dtype)}, box, nodata=nodata)
+    raster = build_raster(
+        {"red": (("y", "x"), np.full(box.shape, value, dtype))}, box, nodata=nodata
+    )
     packing = {}
     if scale is not None:
         packing["scale_factor"] = scale
@@ -99,7 +101,7 @@ def test_other_attrs_and_coordinates_ride_through() -> None:
 
 def test_a_variable_that_is_not_packed_rides_alongside_one_that_is() -> None:
     source = stored(1000, scale=1e-4)
-    source["dem"] = (source.gs.grid_dims, np.full(utm_box().shape, 5.0, "float32"))
+    source["dem"] = (("y", "x"), np.full(utm_box().shape, 5.0, "float32"))
 
     physical = unpack(source)
 

@@ -11,7 +11,7 @@ import geosave_engine.geodata as gs
 
 from geosave_engine.geodata import GeoAnchor, GeoArray, GeoRaster, GeoStack, GeoVector
 from geosave_engine.geodata.attrs import CFVariable
-from geosave_engine.geodata.utils.geo.geolocator import Place
+from geosave_engine.geodata.utils.geolocator import Place
 
 from tests.geodata.conftest import build_raster
 
@@ -217,3 +217,89 @@ def test_the_accessor_rebases_a_header_and_a_namespace() -> None:
     assert restored.attrs == {"title": "S2"}
     assert restored.red.attrs == {"units": "1"}
     assert patched.red.attrs == {"units": "1"}
+
+
+def _foreign() -> xr.Dataset:
+    from affine import Affine
+    from odc.geo.geobox import GeoBox
+    from odc.geo.xr import xr_coords
+
+    grid = GeoBox((2, 3), Affine(1, 0, 10, 0, -1, 20), "EPSG:4326")
+    built = xr.Dataset(
+        {"red": (("latitude", "longitude"), np.ones(grid.shape))},
+        coords=xr_coords(grid),
+    )
+    built.red.encoding["grid_mapping"] = "spatial_ref"
+    return built
+
+
+def test_gs_refuses_a_grid_not_named_y_x() -> None:
+    foreign = _foreign()
+    tree = xr.DataTree.from_dict({"/optical": foreign})
+
+    for held in (foreign, foreign.red, tree):
+        with pytest.raises(ValueError, match="rename it first"):
+            _ = held.gs
+
+
+def test_gs_reads_the_grid_once_it_is_renamed() -> None:
+    foreign = _foreign()
+
+    renamed = foreign.rename({"latitude": "y", "longitude": "x"})
+
+    assert renamed.gs.geobox == foreign.odc.geobox
+    assert renamed.gs.write_crs().y.attrs["standard_name"] == "latitude"
+
+
+@pytest.mark.parametrize("kind", ["raster", "array", "stack"])
+@pytest.mark.parametrize("lazy", [False, True])
+def test_mask_and_scale_decodes_values_and_keeps_the_source(
+    kind: str, lazy: bool
+) -> None:
+    scene = build_raster(packed=True)
+    scene.attrs["title"] = "Stored scene"
+    scene.red.attrs.update(long_name="Red", units="1", add_offset=np.float32(0.5))
+    if lazy:
+        scene = scene.chunk({"y": 1, "x": 1})
+    if kind == "array":
+        source = scene.red
+    elif kind == "stack":
+        source = xr.DataTree.from_dict(
+            {"/": xr.Dataset(attrs={"title": "Stack"}), "/optical": scene}
+        )
+    else:
+        source = scene
+    before = source.copy(deep=True)
+
+    decoded = source.gs.mask_and_scale()
+    band = (
+        decoded["optical/red"]
+        if kind == "stack"
+        else decoded
+        if kind == "array"
+        else decoded.red
+    )
+
+    assert isinstance(decoded, type(source))
+    assert isinstance(band.data, da.Array) == lazy
+    np.testing.assert_allclose(band.compute().values, [[0.6, 0.7], [0.8, np.nan]])
+    assert "scale_factor" not in band.attrs
+    assert "add_offset" not in band.attrs
+    assert "_FillValue" not in band.attrs
+    assert band.attrs["long_name"] == "Red"
+    assert band.attrs["units"] == "1"
+    assert band.gs.geobox == scene.gs.geobox
+    if kind != "array":
+        assert decoded.attrs == source.attrs
+    xr.testing.assert_identical(decoded.gs.mask_and_scale(), decoded)
+    xr.testing.assert_identical(source, before)
+
+
+def test_times_reads_a_scalar_time_coordinate() -> None:
+    from tests.geodata.conftest import build_raster
+
+    one_date = build_raster(times=2).isel(time=0)
+
+    assert one_date.gs.times.strftime("%Y%m%d").tolist() == [
+        build_raster(times=2).gs.times[0].strftime("%Y%m%d")
+    ]

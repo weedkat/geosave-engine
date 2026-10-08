@@ -12,7 +12,12 @@ import geosave_engine.workflow.tasks.sample as save_module
 def _sample_rasters(raw):
     optical = raw["optical"][["red", "nir"]].astype("uint16")
     label = raster(
-        {"class": np.ones(optical.gs.geobox.shape, dtype="uint8")},
+        {
+            "class": (
+                ("y", "x"),
+                np.ones(optical.gs.geobox.shape, dtype="uint8"),
+            )
+        },
         optical.gs.geobox,
     ).assign_coords(time=np.datetime64("2025-01-15T12:00:00"))
     return {"label": label, "optical": optical}
@@ -41,7 +46,13 @@ def test_write_sample_refuses_rasters_on_different_grids_before_writing(
     rasters = _sample_rasters(raw)
     grid = rasters["label"].gs.geobox
     moved = raster(
-        {"class": np.ones(grid.shape, dtype="uint8")}, grid.translate_pix(1, 1)
+        {
+            "class": (
+                ("y", "x"),
+                np.ones(grid.shape, dtype="uint8"),
+            )
+        },
+        grid.translate_pix(1, 1),
     )
 
     def unexpected_write(*args, **kwargs):

@@ -19,6 +19,7 @@ import xarray as xr
 from xarray.coding.variables import CFMaskCoder
 
 import geosave_engine.geodata.attrs as attrs
+from geosave_engine.geodata.conventions import SPATIAL_DIMENSIONS
 
 if TYPE_CHECKING:
     from collections.abc import Iterable
@@ -147,21 +148,20 @@ def mask[T: xr.DataArray | xr.Dataset | xr.DataTree](
         )
 
     spatial = cast("xr.DataArray | xr.Dataset", data)
-    grid_dims = spatial.gs.grid_dims
     if isinstance(valid, np.ndarray):
-        grid_shape = tuple(spatial.sizes[dim] for dim in grid_dims)
+        grid_shape = tuple(spatial.sizes[dim] for dim in SPATIAL_DIMENSIONS)
         if valid.shape != grid_shape:
             raise ValueError(
-                f"valid is shaped {valid.shape} but the grid {list(grid_dims)} is "
+                f"valid is shaped {valid.shape} but the grid {list(SPATIAL_DIMENSIONS)} is "
                 f"{grid_shape}; a bare array names no axes, so pass a DataArray "
                 f"to mask along anything else"
             )
-        valid = xr.DataArray(valid, dims=grid_dims)
+        valid = xr.DataArray(valid, dims=SPATIAL_DIMENSIONS)
 
-    if not set(grid_dims) <= set(valid.dims):
+    if not set(SPATIAL_DIMENSIONS) <= set(valid.dims):
         raise ValueError(
             f"valid spans {list(valid.dims)}, which does not cover the grid "
-            f"{list(grid_dims)}; a mask names which pixels survive, so it "
+            f"{list(SPATIAL_DIMENSIONS)}; a mask names which pixels survive, so it "
             f"spans at least the two spatial axes"
         )
     stray = sorted(str(dim) for dim in valid.dims if dim not in spatial.dims)

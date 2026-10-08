@@ -11,6 +11,7 @@ import xarray as xr
 from odc.geo.geobox import GeoBox
 from odc.geo.geom import Geometry
 
+from geosave_engine.geodata.conventions import SPATIAL_DIMENSIONS
 from geosave_engine.geodata.transform import nodata
 
 if TYPE_CHECKING:
@@ -52,10 +53,10 @@ def vectorize(
     geobox = flags.gs.geobox
     if not isinstance(geobox, GeoBox) or geobox.crs is None:
         raise ValueError("flags carry no locatable grid")
-    if flags.ndim != 2 or tuple(flags.dims) != tuple(geobox.dimensions):
+    if flags.ndim != 2 or tuple(flags.dims) != SPATIAL_DIMENSIONS:
         raise ValueError(
             "vectorize needs one two-dimensional spatial plane on "
-            f"{geobox.dimensions}; select extra dimensions from {flags.dims} first"
+            f"{SPATIAL_DIMENSIONS}; select extra dimensions from {flags.dims} first"
         )
     if value_name == "geometry":
         raise ValueError("value_name must not replace the geometry column")
@@ -232,13 +233,13 @@ def rasterize(
     if column is None:
         pixels = pixels.view(bool)
 
-    burned = array(pixels, geobox).rename(output_name)
+    burned = array(pixels, geobox, dims=SPATIAL_DIMENSIONS).rename(output_name)
     if isinstance(like, GeoAnchor):
         return burned
     # A sliced raster's coordinates drift from its geobox's own by float error,
     # so the result takes the target's, which is what aligns with it.
     source = like.dataset if isinstance(like, xr.DataTree) else like
-    return burned.assign_coords({dim: source.coords[dim] for dim in geobox.dimensions})
+    return burned.assign_coords({dim: source.coords[dim] for dim in SPATIAL_DIMENSIONS})
 
 
 def crop[T: xr.DataArray | xr.Dataset | xr.DataTree](

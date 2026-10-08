@@ -72,6 +72,9 @@ dependencies = [
     "openpyxl>=3.1.5",
     "prefect>=3.8.6",
     "stac-geoparquet>=0.8.2",
+    "s3fs>=2026.3.0",
+    "gcsfs>=2026.3.0",
+    "rustac[arrow]>=0.9.17",
 ]
 
 [project.optional-dependencies]
@@ -88,6 +91,9 @@ Source = "https://github.com/weedkat/geosave-engine"
 
 [project.scripts]
 geosave = "geosave_engine.cli.main:app"
+
+[project.entry-points."xarray.backends"]
+geosave = "geosave_engine.geodata.io.backend:GeoSaveBackendEntrypoint"
 
 [tool.hatch.version]
 path = "src/geosave_engine/__about__.py"

@@ -14,7 +14,8 @@ uv run python scripts/prepare_example.py
 
 Input is a packed, lazy four-band Sentinel-2 `xarray.Dataset`. Output is a
 sample-ready lazy Dataset with nodata masked and reflectance unpacked. The
-example computes only the small result it prints.
+example computes only the small result it prints. The spec calls
+`optical.gs.mask_and_scale()` to decode nodata and packing together.
 
 ```python
 from geosave_engine.model.spec import ModelSpec
@@ -30,7 +31,8 @@ requirements, and model-specific preparation stay with the model document.
 ## Prepare training items
 
 `prepare_dense_data` writes one folder per sample, holding one raster per layer,
-and a `manifest.parquet` listing the samples as STAC items. Run it once per
+and a `manifest.parquet` listing each sample's rasters as STAC items, one row
+per raster, grouped by `geosave:stack`. Run it once per
 split, so training and validation each have their own manifest:
 
 ```bash
@@ -102,17 +104,18 @@ assemble logits and score the original parent labels. Validity excludes input
 nodata before zero filling. Augmentation stays in the training DataModule.
 
 For development prediction, build a method-owned PyTorch Dataset that reads
-`reference.loc[id].gs.crop(parent)` and prepares tensors with
+`cuts.select_pixels(parent, reference.loc[id])` and prepares tensors with
 `geosave_engine.ml.inputs.model_inputs(spec, tile.gs.rasters, row)`. Ordinary
 asset rows and tiled rows use the same raster reader; tiled rows add a pixel
 window. The shared `ml.datasets.TileDataset` has been removed.
 
-Use `spec.chips.tiler(shape)` to construct native spatial Tilers.
-`transform.chip.chip_windows(parents, tilers, padding=...)` creates the reference
-without reading pixels. Each ID identifies a parent, native tile ID, window,
-exact grid, and per-raster timestamps/bands. Supervised references retain
-annotations, `source_id`, and `source_assets` for provenance. Those source paths
-do not store the prepared pixels: use `row.gs.crop(parents[row.parent_id])`.
+Cut windows from the item table with `geosave_engine.geodata.cuts`:
+`cuts.stacks(items)` lists each saved sample, and `spec.frames.cut(...)` and
+`spec.chips.cut(...)` split it in time and space without reading pixels. Each
+ID identifies a parent, its chip number, window, exact grid, and per-raster
+timestamps. Supervised references retain annotations and `stack` for
+provenance. The sample's own paths do not store the prepared pixels: use
+`cuts.select_pixels(parents[row.parent], row)`.
 Register saved prepared parents separately to obtain readable `assets`.
 
 Enable the encoder's row-based `context` recipe in `model_spec.yaml` when its

@@ -1,9 +1,10 @@
 import pytest
 
-from geosave_engine.geodata import stack
+from geosave_engine.geodata import cuts, stack
 from geosave_engine.geodata.transform.concat import concat_time
-from geosave_engine.geodata.transform.time import stack_frames
 from geosave_engine.geodata.transform.warp import reproject
+
+from tests.geodata.conftest import whole_windows
 
 from .conftest import build, geobox
 
@@ -18,5 +19,6 @@ def test_rebuilt_stacks_preserve_root_attrs(operation):
         result = reproject(source, source.gs.geobox.zoom_out(2))
         assert result.gs.geobox == source.gs.geobox.zoom_out(2)
     else:
-        result = stack_frames(source, 1, tolerance="1D")[0]
+        (window,) = whole_windows({"scene": source}).to_dict("records")
+        result = cuts.select_times(source, window)
     assert result.attrs == source.attrs

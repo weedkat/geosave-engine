@@ -1,9 +1,9 @@
 """Read a label set as a table of STAC items."""
 
-from geosave_engine.geodata.stac import asset, item
+from geosave_engine.geodata.stac import create_item, table
 from pathlib import Path, PurePosixPath
 
-from geosave_engine.geodata import GeoDataFrame, GeoVector, read_vector
+from geosave_engine.geodata import GeoDataFrame, read_raster
 
 _TABLE_SUFFIXES = (".parquet", ".geoparquet")
 
@@ -44,13 +44,13 @@ def read_labels(source: str | Path, pattern: str = "**/*.tif") -> GeoDataFrame:
     if path.suffix.lower() not in _TABLE_SUFFIXES:
         rows = []
         for sample_id, label_path in find_labels(path, pattern).items():
-            label = asset.from_path(label_path)
-            if label.common_metadata.start_datetime is None:
-                raise ValueError(f"Label raster has no time: {label_path}")
-            rows.append(item.from_assets({"label": label}, id=sample_id))
-        return GeoVector.from_items(rows)
+            with read_raster(label_path) as label:
+                if label.gs.timespan is None:
+                    raise ValueError(f"Label raster has no time: {label_path}")
+            rows.append(create_item({"label": label_path}, id=sample_id))
+        return table.from_items(rows)
 
-    labels = read_vector(path)
+    labels = table.read(path)
     absent = [name for name in ("id", "assets") if name not in labels]
     if absent:
         raise ValueError(f"Label table {path} has no {absent} column")

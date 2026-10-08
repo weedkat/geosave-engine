@@ -4,81 +4,86 @@ from __future__ import annotations
 
 import numpy as np
 import xarray as xr
+from odc.geo.geobox import GeoBox
 
-from geosave_engine.geodata.utils.xarray import map_spatial_overlap
+from geosave_engine.geodata.conventions import TIME_COORDINATE
 
-from ._raster import feature_raster
+from geosave_engine.geodata.utils.dask_mapping import map_spatial_overlap
 
 
 def shadow_mask(
-    raster: xr.Dataset,
+    scene: xr.Dataset,
     *,
-    name: str,
-    cloud_mask: str,
-    sun_azimuth: str,
-    resolution: float = 10,
+    cloud: str,
+    sun_azimuth: str | float,
     shadow_distance_m: float = 500,
-) -> xr.Dataset:
-    """Derive a named shadow mask from clouds and sun-azimuth coordinates.
+) -> xr.DataArray:
+    """Flag the ground cloud shadow is estimated to fall on.
 
     Shifts cloud pixels opposite the sun azimuth for up to
-    `shadow_distance_m`, one pixel per step. A sun-azimuth coordinate may be
-    scalar or vary along time; each observation uses its own value.
+    `shadow_distance_m`, one pixel per step. Steps are counted along `x`, so
+    pixels are taken as square.
 
     Args:
-        raster: Raster carrying cloud pixels and sun-azimuth coordinates.
-        name: Output variable name.
-        cloud_mask: Boolean cloud-mask variable name.
-        sun_azimuth: Scalar or time-varying coordinate name.
-        resolution: Pixel size in meters.
-        shadow_distance_m: Maximum shadow projection distance in meters.
+        scene: Dataset containing a boolean cloud mask on a metric grid.
+        cloud: Cloud mask variable name.
+        sun_azimuth: Coordinate or variable name holding degrees clockwise
+            from north, scalar or along `time`, or a constant angle.
+        shadow_distance_m: Furthest a shadow is projected, in metres.
 
     Returns:
-        One-variable bool raster, True where shadow is estimated, lazy when
-        the cloud mask is.
+        Unnamed bool band, True where shadow is estimated, on the mask's
+        coordinates and lazy when it is.
 
     Raises:
-        ValueError: The mask is not boolean, resolution is not positive, or
-            sun azimuth is absent or varies along unsupported dimensions.
+        KeyError: A selected variable or coordinate is absent.
+        ValueError: The mask is not boolean or sits on no metric grid, or the
+            azimuth varies along anything but the mask's own dates.
+
+    Examples:
+        >>> shadow = shadow_mask(scene, cloud="cloud", sun_azimuth="sun_azimuth")
+        >>> scene.assign(shadow=shadow).shadow.dtype
+        dtype('bool')
     """
-    cloud = raster[cloud_mask]
-    if cloud.dtype != bool:
-        raise ValueError(f"Cloud mask {cloud_mask!r} must be boolean")
-    if resolution <= 0:
-        raise ValueError(f"Resolution must be positive, got {resolution}")
-    if sun_azimuth not in raster.coords:
-        raise ValueError(f"Sun azimuth coordinate {sun_azimuth!r} is absent")
-    azimuth = raster.coords[sun_azimuth]
-    if any(dim != "time" for dim in azimuth.dims):
+    mask = scene[cloud]
+    if mask.dtype != bool:
+        raise ValueError(f"cloud mask is {mask.dtype}, not boolean")
+    geobox = mask.gs.geobox
+    if (
+        not isinstance(geobox, GeoBox)
+        or geobox.crs is None
+        or geobox.crs.units != ("metre", "metre")
+    ):
         raise ValueError(
-            f"Sun azimuth coordinate {sun_azimuth!r} varies along "
-            f"{list(azimuth.dims)}; expected a scalar or time coordinate"
-        )
-    if azimuth.dims and "time" not in cloud.dims:
-        raise ValueError(
-            f"Sun azimuth coordinate {sun_azimuth!r} varies with time but "
-            f"cloud mask {cloud_mask!r} does not"
+            "cloud mask sits on no grid measured in metres, so a shadow distance "
+            "in metres spans no known pixels; reproject it to a projected CRS first"
         )
 
-    depth = round(shadow_distance_m / resolution)
+    azimuth = (
+        scene[sun_azimuth]
+        if isinstance(sun_azimuth, str)
+        else xr.DataArray(sun_azimuth)
+    )
+    if set(azimuth.dims) - {TIME_COORDINATE}:
+        raise ValueError(
+            f"sun azimuth varies along {list(azimuth.dims)}; expected a scalar "
+            f"or along {TIME_COORDINATE!r}"
+        )
+    steps = round(shadow_distance_m / abs(geobox.resolution.x))
     if not azimuth.dims:
-        field = _project(cloud, float(azimuth.values), depth)
-    else:
-        fields = [
-            _project(
-                cloud.isel(time=index),
-                float(azimuth.isel(time=index).values),
-                depth,
-            )
-            for index in range(cloud.sizes["time"])
-        ]
-        field = xr.concat(
-            fields,
-            dim=cloud.coords["time"],
-            coords="minimal",
-            compat="override",
-        ).assign_coords({sun_azimuth: azimuth})
-    return feature_raster(raster, field, name=name, reference=cloud)
+        return _project(mask, float(azimuth), steps)
+
+    if TIME_COORDINATE not in mask.dims:
+        raise ValueError("sun azimuth varies with time but the cloud mask does not")
+    dates = mask.sizes[TIME_COORDINATE]
+    fields = [
+        _project(mask.isel(time=index), float(azimuth.isel(time=index)), steps)
+        for index in range(dates)
+    ]
+    # Each date's slice carries scalar copies of the time-indexed coordinates.
+    return xr.concat(
+        fields, dim=mask.coords[TIME_COORDINATE], coords="minimal", compat="override"
+    ).assign_coords(mask.coords)
 
 
 def _project(

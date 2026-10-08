@@ -111,10 +111,7 @@ class GeoSaveModel(PreTrainedModel):
                     f"Stage {stage!r} must use a registered name for publication"
                 )
         config = GeoSaveConfig(
-            stages=[
-                StageConfig(stage=name, spec=spec)
-                for name, spec in specs.items()
-            ]
+            stages=[StageConfig(stage=name, spec=spec) for name, spec in specs.items()]
         )
         model = cls(config, chain=chain)
         model.training = chain.training
@@ -131,13 +128,9 @@ class GeoSaveModel(PreTrainedModel):
         if loading_info.missing_keys:
             problems.append(f"Missing keys: {sorted(loading_info.missing_keys)}")
         if loading_info.unexpected_keys:
-            problems.append(
-                f"Unexpected keys: {sorted(loading_info.unexpected_keys)}"
-            )
+            problems.append(f"Unexpected keys: {sorted(loading_info.unexpected_keys)}")
         if loading_info.mismatched_keys:
-            problems.append(
-                f"Mismatched keys: {sorted(loading_info.mismatched_keys)}"
-            )
+            problems.append(f"Mismatched keys: {sorted(loading_info.mismatched_keys)}")
         if problems:
             raise RuntimeError(
                 "GeoSaveModel requires an exact checkpoint match. "

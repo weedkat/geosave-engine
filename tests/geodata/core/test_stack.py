@@ -8,9 +8,10 @@ import xarray as xr
 
 
 import geosave_engine.geodata.attrs as attrs
-from geosave_engine.geodata import GeoVector, read_stack
+from geosave_engine.geodata.stac import create_stack_items
+from geosave_engine.geodata import read_raster, read_stack
 from geosave_engine.geodata.core.stack import map_groups, stack as build_stack
-from geosave_engine.geodata.io import gdal, zarr
+from geosave_engine.geodata.io import gdal
 
 from tests.geodata.conftest import build_raster
 
@@ -94,7 +95,7 @@ def test_stack_carries_the_shared_grid_at_its_root() -> None:
 
     assert built.gs.groups == ("optical", "dem")
     assert built.gs.geobox == raster.gs.geobox
-    expected = (*raster.gs.geobox.dimensions, "spatial_ref")
+    expected = ("y", "x", "spatial_ref")
     assert set(expected) <= set(built.dataset.coords)
     assert not built.dataset.data_vars
 
@@ -151,13 +152,11 @@ def test_an_unplaced_raster_leaves_the_root_bare() -> None:
     assert loose.gs.geobox is None
 
 
-def test_a_stack_without_a_shared_grid_names_no_axes_and_no_anchor() -> None:
+def test_a_stack_without_a_shared_grid_names_no_anchor() -> None:
     loose = build_stack(
         {"whole": build_raster(), "geographic": build_raster(crs="EPSG:4326")}
     )
 
-    with pytest.raises(ValueError, match="publishes no grid at its root"):
-        _ = loose.gs.grid_dims
     with pytest.raises(ValueError, match="publishes no grid at its root"):
         _ = loose.gs.anchor
 
@@ -175,22 +174,57 @@ def test_xarray_refuses_a_misaligned_group_after_construction(
 def test_stack_round_trip_preserves_groups_and_grid(
     tmp_path: Path, stack: xr.DataTree
 ) -> None:
-    destination = zarr.write(stack, tmp_path / "stack.zarr")
+    paths = stack.gs.to_zarr(tmp_path / "stack")
 
-    restored = zarr.read_stack(destination)
+    restored = read_stack(paths)
 
-    assert set(restored.gs.groups) == {"optical", "infrared"}
+    assert list(paths) == list(stack.gs.groups)
+    assert paths["optical"] == tmp_path / "stack/optical.zarr"
+    assert restored.gs.groups == stack.gs.groups
     assert restored.gs.geobox == stack.gs.geobox
     assert restored["optical"].dataset.red.dtype == np.dtype("uint16")
 
 
 def test_every_group_opens_on_its_own(tmp_path: Path, stack: xr.DataTree) -> None:
-    destination = zarr.write(stack, tmp_path / "solo.zarr")
+    paths = stack.gs.to_netcdf(tmp_path / "solo")
 
-    solo = zarr.read(destination, group="optical")
+    store = paths["optical"]
+    solo = read_raster(store)
 
+    assert store == tmp_path / "solo/optical.nc"
     assert solo.gs.geobox == stack.gs.geobox
     assert "spatial_ref" in solo.coords
+
+
+def test_a_saved_group_is_not_replaced_unasked(tmp_path, stack: xr.DataTree) -> None:
+    stack.gs.to_zarr(tmp_path / "stack")
+
+    with pytest.raises(FileExistsError):
+        stack.gs.to_zarr(tmp_path / "stack")
+
+    assert list(stack.gs.to_zarr(tmp_path / "stack", overwrite=True)) == list(
+        stack.gs.groups
+    )
+
+
+def test_a_deferred_stack_write_resolves_to_its_stores(
+    tmp_path, stack: xr.DataTree
+) -> None:
+    deferred = stack.chunk().gs.to_zarr(tmp_path / "later", compute=False)
+
+    paths = deferred.compute()
+
+    assert list(paths) == list(stack.gs.groups)
+    np.testing.assert_array_equal(
+        read_stack(paths)["optical"].red, stack["optical"].red
+    )
+
+
+def test_a_single_store_is_not_a_stack(tmp_path, stack: xr.DataTree) -> None:
+    store = stack.gs.to_zarr(tmp_path / "stack")["optical"]
+
+    with pytest.raises(ValueError, match="read_raster"):
+        read_stack(store)
 
 
 def test_a_stack_spans_from_its_earliest_group_to_its_latest() -> None:
@@ -283,37 +317,58 @@ def test_a_stack_reprojects_onto_a_target_rasters_own_grid(
     assert stack.gs.reproject("EPSG:3857").gs.crs.epsg == 3857
 
 
-def test_a_stack_indexes_one_item_per_instant_with_one_asset_per_group(
-    tmp_path: Path,
-) -> None:
+def test_a_saved_stack_indexes_one_item_per_group_scene(tmp_path: Path) -> None:
     optical = build_raster(times=2)
     sample = build_stack({"optical": optical, "dem": build_raster()})
 
-    items = sample.gs.to_items(tmp_path / "s0")
+    items = create_stack_items(sample.gs.to_cog(tmp_path / "s0"), name="s0")
 
-    assert [item.id for item in items] == ["s0_20250601T000000", "s0_20250602T000000"]
-    # The timeless group joins every Item.
-    assert [sorted(item.assets) for item in items] == [["dem", "optical"]] * 2
-    assert {item.collection_id for item in items} == {"s0"}
-    assert items[0].assets["dem"].href == str(tmp_path / "s0/dem.tif")
-
-    row = GeoVector.from_items(items).iloc[0]
-    restored = row.gs.to_stack()
-    assert restored.gs.groups == ("optical", "dem")
-    np.testing.assert_array_equal(
-        restored["optical"].red.squeeze(), optical.red.isel(time=0)
-    )
+    assert [item.id for item in items] == [
+        "s0/optical_20250601T000000",
+        "s0/optical_20250602T000000",
+        "s0/dem",
+    ]
+    assert [item.collection_id for item in items] == ["optical", "optical", "dem"]
+    assert {item.properties["geosave:stack"] for item in items} == {"s0"}
+    assert items[2].assets["image"].href == str(tmp_path / "s0/dem.tif")
 
 
-@pytest.mark.parametrize(("driver", "suffix"), [("zarr", ".zarr"), ("netcdf", ".nc")])
-def test_a_stack_store_driver_writes_one_store_per_group(tmp_path, driver, suffix) -> None:
+@pytest.mark.parametrize("suffix", [".zarr", ".nc"])
+def test_a_stack_store_restores_each_group_through_the_table(tmp_path, suffix) -> None:
+    from geosave_engine.geodata.stac import table
+
     optical = build_raster(times=2)
     sample = build_stack({"optical": optical, "label": build_raster(times=2)})
+    write = sample.gs.to_zarr if suffix == ".zarr" else sample.gs.to_netcdf
 
-    (item,) = sample.gs.to_items(tmp_path / "s0", driver=driver)
+    items = create_stack_items(write(tmp_path / "s0"), name="s0")
 
-    assert item.id == "s0"
-    assert item.assets["optical"].href == str(tmp_path / f"s0/optical{suffix}")
-    restored = GeoVector.from_items([item]).iloc[0].gs.to_stack()
+    rows = table.from_items(items)
+    restored = build_stack(
+        {
+            group: table.load(table.to_items(rows[rows["collection"] == group]))
+            for group in sample.gs.groups
+        }
+    )
+    assert restored.gs.groups == sample.gs.groups
     np.testing.assert_array_equal(restored["optical"].red, optical.red)
-    assert read_stack(tmp_path / "s0").gs.groups == ("label", "optical")
+    restored.close()
+
+
+def test_shared_geographic_stack_spans_y_x() -> None:
+    from affine import Affine
+    from odc.geo import GeoBox
+    from odc.geo.xr import xr_coords
+
+    dims = ("y", "x")
+    grid = GeoBox((2, 3), Affine(1, 0, 10, 0, -1, 20), "EPSG:4326")
+    scene = xr.Dataset(
+        {"red": (dims, np.ones((2, 3)))}, coords=xr_coords(grid, dims=dims)
+    )
+    scene.red.encoding["grid_mapping"] = "spatial_ref"
+
+    tree = build_stack({"optical": scene, "dem": scene.rename({"red": "elevation"})})
+
+    assert tree.gs.geobox == grid
+    assert tree["optical"].dataset.red.dims == dims
+    assert tree["dem"].dataset.elevation.dims == dims

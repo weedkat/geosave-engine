@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from typing import TYPE_CHECKING, Annotated, ClassVar
+from typing import TYPE_CHECKING, Annotated
 
 from pydantic import Field, field_validator
 from rasterio.enums import ColorInterp
@@ -13,7 +13,7 @@ if TYPE_CHECKING:
     import xarray as xr
 
 # GDAL's names for the three display channels, in the order a composite draws them.
-_RGB = (ColorInterp.red.name, ColorInterp.green.name, ColorInterp.blue.name)
+RGB = (ColorInterp.red.name, ColorInterp.green.name, ColorInterp.blue.name)
 
 
 class GDALVariable(AttrsModel):
@@ -37,8 +37,6 @@ class GDALVariable(AttrsModel):
         >>> ds.gs.attrs.data_vars["B04"].get(GDALVariable)
         GDALVariable(variable_name='B04', colorinterp='red')
     """
-
-    NAME: ClassVar[str] = "gdal_variable"
 
     variable_name: Annotated[str, Field(min_length=1)] | None = None
     colorinterp: str | None = None
@@ -94,7 +92,7 @@ class GDALVariable(AttrsModel):
         bands = (cls.from_attrs(variable.attrs) for variable in ds.data_vars.values())
         measures = [None if band is None else band.colorinterp for band in bands]
 
-        absent = [colour for colour in _RGB if colour not in measures]
+        absent = [colour for colour in RGB if colour not in measures]
         if absent:
             raise ValueError(
                 f"no band of {list(ds.data_vars)} draws {absent}, so this raster "
@@ -102,5 +100,5 @@ class GDALVariable(AttrsModel):
                 f"ds.gs.write_rgb('B04', 'B03', 'B02'), or name three bands for "
                 f"one drawing with ds.gs.plot(('B08', 'B04', 'B03'))"
             )
-        red, green, blue = (measures.index(colour) for colour in _RGB)
+        red, green, blue = (measures.index(colour) for colour in RGB)
         return red, green, blue

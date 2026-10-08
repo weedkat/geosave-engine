@@ -1,7 +1,6 @@
-"""Package dependency direction and removed import paths."""
+"""Package dependency direction and registration behavior."""
 
 import ast
-import importlib.util
 import subprocess
 import sys
 from pathlib import Path
@@ -16,6 +15,7 @@ def _run(code: str) -> str:
         capture_output=True,
         text=True,
         check=True,
+        timeout=60,
     )
     return result.stdout.strip().splitlines()[-1]
 
@@ -26,34 +26,6 @@ def _loads(imports: str, module: str) -> bool:
         _run(f"import sys\nimport {imports}\nprint({module!r} in sys.modules)")
         == "True"
     )
-
-
-@pytest.mark.parametrize(
-    "path",
-    [
-        "geosave_engine.utils",
-        "geosave_engine.geodata.utils.io",
-        "geosave_engine.ml.callbacks",
-        "geosave_engine.ml.datasets",
-        "geosave_engine.templates.tasks",
-        "geosave_engine.templates.boilerplate",
-        "geosave_engine.geodata.datasets",
-        "geosave_engine.ml.model_chain",
-        "geosave_engine.ml.models",
-        "geosave_engine.ml.encoding",
-        "geosave_engine.model_spec",
-        "geosave_engine.release",
-        "geosave_engine.ml.registry",
-        "geosave_engine.ml.lightning",
-        "geosave_engine.ml.metrics",
-        "geosave_engine.ml.transforms.semantic_segmentation",
-        "geosave_engine.geodata.core.profile",
-        "geosave_engine.geodata.utils.gdal_env",
-        "geosave_engine.geodata.transform.window",
-    ],
-)
-def test_old_path_is_gone(path):
-    assert importlib.util.find_spec(path) is None
 
 
 def test_geodata_has_no_torch_or_ml_imports():

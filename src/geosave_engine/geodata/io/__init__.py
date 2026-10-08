@@ -1,6 +1,10 @@
-"""One module per file format, each reading and writing that format alone.
+"""Raster and vector I/O, one module per format.
 
-Every module has a `read`; a writable format also has a `write`, except GeoTIFF
+Raster formats live in `io.raster` and vector formats in `io.vector`; both are
+also reachable from here. `storage` resolves locations and writes single
+files, and `readers` picks a format by suffix.
+
+Format modules have a `read`; writable formats also have a `write`, except GeoTIFF
 (`write_cog`, `write_gtiff`) and `cogs`, which arranges one raster as several
 GeoTIFFs that `read_raster` reads back. Reach for them module-qualified:
 
@@ -14,30 +18,21 @@ The fluent `to_cog`, `to_zarr`, and `to_netcdf` names belong to the `gs`
 accessors, not here.
 """
 
-from . import (
-    cogs,
-    gdal,
-    geojson,
-    geopackage,
-    geoparquet,
-    geotiff,
-    netcdf,
-    safe,
-    zarr,
-)
-from .gdal import RasterioOpenOptions
-from .geojson import GeoJSONOpenOptions
-from .geopackage import GeoPackageOpenOptions
-from .geoparquet import GeoParquetOpenOptions
-from .geotiff import (
+from . import raster, storage, vector
+from .raster import cogs, gdal, geotiff, netcdf, safe, zarr
+from .vector import geojson, geopackage, geoparquet
+from .raster.gdal import RasterioOpenOptions, configure_gdal
+from .vector.geojson import GeoJSONOpenOptions
+from .vector.geopackage import GeoPackageOpenOptions
+from .vector.geoparquet import GeoParquetOpenOptions
+from .raster.geotiff import (
     COGWriteOptions,
     GeoTIFFTags,
     GeoTIFFWriteOptions,
     GTiffWriteOptions,
 )
-from .netcdf import NetCDFOpenOptions, NetCDFWriteOptions
-from .zarr import ZarrOpenOptions, ZarrWriteOptions
-from .gdal_env import configure_gdal
+from .raster.netcdf import NetCDFOpenOptions, NetCDFWriteOptions
+from .raster.zarr import ZarrOpenOptions, ZarrWriteOptions
 from .readers import read_raster, read_stack, read_vector
 
 __all__ = [
@@ -61,9 +56,12 @@ __all__ = [
     "geoparquet",
     "geotiff",
     "netcdf",
+    "raster",
     "read_raster",
     "read_stack",
     "read_vector",
     "safe",
+    "storage",
+    "vector",
     "zarr",
 ]

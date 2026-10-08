@@ -13,6 +13,7 @@ from pydantic import BaseModel, ConfigDict, Field
 
 from geosave_engine.geodata.attrs import rebase
 from geosave_engine.geodata.attrs.headers.stac import create_header, read_asset_fields
+from geosave_engine.geodata.conventions import to_yx
 from geosave_engine.geodata.errors import AnchorFetchError
 from geosave_engine.geodata.transform.warp import Resampling
 
@@ -330,7 +331,7 @@ class StacSource:
 
         Examples:
             >>> [f for f in source.list_asset_fields() if "wavelength" in f]
-            ['center_wavelength', 'full_width_half_max']
+            ['eo:center_wavelength']
         """
         sample = self.sample_item()
         if sample is None:
@@ -375,8 +376,9 @@ class StacSource:
                 f"no {self.collection!r} items matched the anchor's extent and window"
             )
 
-        data = odc.stac.load(
-            matched, geobox=anchor.geobox, **self.config.to_load_kwargs()
+        # odc-stac names a geographic grid latitude/longitude.
+        data = to_yx(
+            odc.stac.load(matched, geobox=anchor.geobox, **self.config.to_load_kwargs())
         )
         if self.config.with_properties:
             property_names = [

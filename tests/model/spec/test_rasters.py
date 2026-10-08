@@ -54,9 +54,7 @@ def test_positional_metadata_accepts_only_wildcard_variable_names():
         RasterRequirement.model_validate(
             {"channels": 2, "attrs": {"data_vars": {"red": {}}}}
         )
-    RasterRequirement.model_validate(
-        {"channels": 2, "attrs": {"data_vars": {"*": {}}}}
-    )
+    RasterRequirement.model_validate({"channels": 2, "attrs": {"data_vars": {"*": {}}}})
 
 
 @pytest.mark.parametrize(
@@ -353,7 +351,9 @@ def test_registered_datetime_uses_the_same_typed_representation_on_both_sides(
 
 def test_crs_requirement_applies_to_selected_variables_not_an_unused_raster():
     box = GeoBox.from_bbox((0, 0, 20, 20), crs="EPSG:32633", resolution=10)
-    data = raster({"unused": np.ones(tuple(box.shape))}, box).assign(offset=1.0)
+    data = raster({"unused": (("y", "x"), np.ones(tuple(box.shape)))}, box).assign(
+        offset=1.0
+    )
     requirement = RasterRequirement(variables=("offset",), require_crs=True)
     with pytest.raises(ValueError, match="CRS"):
         requirement.select_raster(data)
@@ -365,11 +365,11 @@ def test_partial_predicates_use_attrs_field_parsing_without_constructing_whole_m
             "variables": ["red"],
             "attrs": {
                 "data_vars": {
-                "red": {
-                    "models": {
-                        "legend": {"equals": {"flag_values": "[0, 1]"}},
+                    "red": {
+                        "models": {
+                            "legend": {"equals": {"flag_values": "[0, 1]"}},
+                        }
                     }
-                }
                 }
             },
         }
@@ -385,14 +385,14 @@ def test_registered_predicate_consistency_uses_parsed_field_values():
             "variables": ["red"],
             "attrs": {
                 "data_vars": {
-                "red": {
-                    "models": {
-                        "packing": {
-                            "equals": {"scale_factor": "0.01"},
-                            "one_of": {"scale_factor": [0.01]},
-                        },
+                    "red": {
+                        "models": {
+                            "packing": {
+                                "equals": {"scale_factor": "0.01"},
+                                "one_of": {"scale_factor": [0.01]},
+                            },
+                        }
                     }
-                }
                 }
             },
         }
@@ -461,7 +461,15 @@ def test_metadata_requirements_respect_attrs_scopes(section, message) -> None:
 
 def _dated_scene() -> xr.Dataset:
     grid = GeoBox.from_bbox((0, 0, 40, 40), crs="EPSG:32633", resolution=10)
-    scene = raster({"red": da.ones((4, 4), chunks=(2, 2), dtype="uint16")}, grid)
+    scene = raster(
+        {
+            "red": (
+                ("y", "x"),
+                da.ones((4, 4), chunks=(2, 2), dtype="uint16"),
+            )
+        },
+        grid,
+    )
     return scene.assign_coords(time=np.datetime64("2025-01-15T12:00:00"))
 
 

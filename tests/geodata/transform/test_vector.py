@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import geopandas as gpd
 import numpy as np
 import pytest
 
@@ -12,7 +13,7 @@ def test_crop_cuts_a_band_and_marks_outside_pixels_nodata() -> None:
     from geosave_engine.geodata.core.array import array
 
     grid = GeoBox.from_bbox((0, 0, 40, 40), crs="EPSG:32633", resolution=10)
-    band = array(np.ones(grid.shape, "uint16"), grid, nodata=0)
+    band = array(np.ones(grid.shape, "uint16"), grid, dims=("y", "x"), nodata=0)
     triangle = gpd.GeoDataFrame(
         geometry=[shapely.Polygon([(0, 0), (20, 0), (0, 20)])], crs="EPSG:32633"
     )
@@ -53,7 +54,9 @@ def _band(times: int = 0):
     from geosave_engine.geodata.core.array import array
 
     grid = GeoBox.from_bbox((0, 0, 40, 40), crs="EPSG:32633", resolution=10)
-    band = array(np.ones(grid.shape, "uint16"), grid, nodata=0).rename("red")
+    band = array(np.ones(grid.shape, "uint16"), grid, dims=("y", "x"), nodata=0).rename(
+        "red"
+    )
     if not times:
         return band
     return band.expand_dims(time=np.arange(times).astype("datetime64[D]")).copy()
@@ -96,10 +99,9 @@ def test_crop_cuts_every_group_of_a_stack_and_keeps_root_attrs() -> None:
 
 
 def test_crop_refuses_an_empty_vector() -> None:
-    from geosave_engine.geodata.core.vector import GeoVector
 
     with pytest.raises(ValueError, match="empty vector"):
-        _band().gs.crop(GeoVector.empty("EPSG:32633"))
+        _band().gs.crop(gpd.GeoDataFrame(geometry=gpd.GeoSeries([], crs="EPSG:32633")))
 
 
 def test_crop_masks_a_geographic_grid_whose_coordinates_are_not_float_exact() -> None:
@@ -115,7 +117,7 @@ def test_crop_masks_a_geographic_grid_whose_coordinates_are_not_float_exact() ->
         crs="EPSG:4326",
         resolution=step,
     )
-    band = array(np.ones(grid.shape, "uint16"), grid, nodata=0)
+    band = array(np.ones(grid.shape, "uint16"), grid, dims=("y", "x"), nodata=0)
     corner = gpd.GeoDataFrame(
         geometry=[
             shapely.Polygon(
@@ -162,8 +164,8 @@ def _sliced_geographic_scene():
         crs="EPSG:4326",
         resolution=step,
     )
-    whole = raster({"red": np.ones(grid.shape, "uint16")}, grid, nodata=0)
-    return whole.isel(longitude=slice(5, 25), latitude=slice(5, 25))
+    whole = raster({"red": (("y", "x"), np.ones(grid.shape, "uint16"))}, grid, nodata=0)
+    return whole.isel(x=slice(5, 25), y=slice(5, 25))
 
 
 def test_rasterize_lands_on_the_target_rasters_own_coordinates() -> None:
@@ -195,15 +197,14 @@ def _flags(values, dtype):
     pixels = np.asarray(values, dtype=dtype)
     side = pixels.shape[0] * 10
     grid = GeoBox.from_bbox((0, 0, side, side), crs="EPSG:32633", resolution=10)
-    return array(pixels, grid)
+    return array(pixels, grid, dims=("y", "x"))
 
 
 def test_vectorize_joins_regions_touching_at_a_corner_into_valid_geometry() -> None:
-    from geosave_engine.geodata.core.vector import GeoVector
 
     diagonal = _flags([[1, 0], [0, 1]], "uint8")
 
-    regions = GeoVector.vectorize(diagonal, connectivity=8)
+    regions = diagonal.gs.vectorize(connectivity=8)
 
     assert regions.geometry.is_valid.all()
     ones = regions[regions["value"] == 1]
@@ -212,18 +213,16 @@ def test_vectorize_joins_regions_touching_at_a_corner_into_valid_geometry() -> N
 
 @pytest.mark.parametrize("dtype", ["int64", "int8", "uint32"])
 def test_vectorize_takes_the_integer_dtypes_a_model_emits(dtype: str) -> None:
-    from geosave_engine.geodata.core.vector import GeoVector
 
-    regions = GeoVector.vectorize(_flags([[1, 0], [0, 1]], dtype))
+    regions = _flags([[1, 0], [0, 1]], dtype).gs.vectorize()
 
     assert sorted(regions["value"].tolist()) == [0, 0, 1, 1]
 
 
 def test_vectorize_refuses_integers_no_supported_dtype_holds() -> None:
-    from geosave_engine.geodata.core.vector import GeoVector
 
     with pytest.raises(ValueError, match="int32"):
-        GeoVector.vectorize(_flags([[2**40, 0], [0, 1]], "int64"))
+        _flags([[2**40, 0], [0, 1]], "int64").gs.vectorize()
 
 
 def test_crop_takes_a_vector_in_another_crs() -> None:
@@ -290,3 +289,25 @@ def test_crop_refuses_an_odc_geometry_that_names_no_crs() -> None:
 
     with pytest.raises(TypeError, match="CRS"):
         _band().gs.crop(box(10, 10, 30, 30, None))
+
+
+def test_geographic_polygonization_and_rasterization_round_trip():
+    from affine import Affine
+    from odc.geo import GeoBox
+    from odc.geo.xr import xr_coords
+    import xarray as xr
+
+    dims = ("y", "x")
+    grid = GeoBox((2, 3), Affine(1, 0, 10, 0, -1, 20), "EPSG:4326")
+    pixels = np.array([[1, 1, 0], [0, 2, 2]], dtype="uint8")
+    band = xr.DataArray(pixels, dims=dims, coords=xr_coords(grid, dims=dims))
+    band.encoding["grid_mapping"] = "spatial_ref"
+
+    from geosave_engine.geodata.transform.vector import vectorize
+
+    regions = vectorize(band)
+    restored = regions.gs.rasterize(band, column="value", dtype="uint8")
+
+    assert restored.dims == dims
+    assert restored.gs.geobox == grid
+    np.testing.assert_array_equal(restored, pixels)

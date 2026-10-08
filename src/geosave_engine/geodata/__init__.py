@@ -12,12 +12,11 @@ from .core import (
     GeoRaster,
     GeoStack,
     GeoVector,
-    GeoRow,
     raster,
     stack,
 )
 from . import io
-from .io.gdal_env import configure_gdal
+from .io.raster.gdal import configure_gdal
 from .io import read_raster, read_stack, read_vector
 
 
@@ -76,7 +75,6 @@ __all__ = [
     "GeoRaster",
     "GeoStack",
     "GeoVector",
-    "GeoRow",
     "configure_gdal",
     "io",
     "raster",

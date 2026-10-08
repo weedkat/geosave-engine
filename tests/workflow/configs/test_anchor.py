@@ -54,7 +54,8 @@ def test_geojson_anchor_opens_a_native_grid(tmp_path):
 def test_raster_anchor_uses_the_file_grid_and_time(tmp_path, anchor):
     instant = np.datetime64("2025-01-15")
     label = raster(
-        {"class": np.ones((4, 4), dtype="uint8")}, anchor.geobox
+        {"class": (("y", "x"), np.ones((4, 4), dtype="uint8"))},
+        anchor.geobox,
     ).assign_coords(time=instant)
     path = io.geotiff.write_cog(label, tmp_path / "label.tif")
 

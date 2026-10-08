@@ -430,7 +430,9 @@ class Clay(nn.Module):
         features = [
             captured[i] for i in self.out_indices
         ]  # list[len(out_indices)] of (B, 1+L, D), CLS at idx 0
-        prefix_tokens: list[torch.Tensor | None] = [f[:, :1, :] for f in features]  # list of (B, 1, D) -- CLS only
+        prefix_tokens: list[torch.Tensor | None] = [
+            f[:, :1, :] for f in features
+        ]  # list of (B, 1, D) -- CLS only
         pyramid = [
             self._tokens_to_spatial(f[:, 1:, :]) for f in features
         ]  # list of (B, D, H, W)

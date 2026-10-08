@@ -28,9 +28,9 @@ def apply_thresholds(
         Uint8 labels and float32 top-class probabilities shaped ``[B, H, W]``.
     """
     labels, confidence = softmax_argmax(logits)
-    pixel_thresholds = torch.index_select(
-        thresholds, 0, labels.reshape(-1)
-    ).view_as(labels)
+    pixel_thresholds = torch.index_select(thresholds, 0, labels.reshape(-1)).view_as(
+        labels
+    )
     labels = torch.where(
         confidence >= pixel_thresholds,
         labels,
@@ -38,8 +38,6 @@ def apply_thresholds(
     )
 
     if mask is not None:
-        labels = torch.where(
-            mask.bool(), labels.new_full((), ignore_index), labels
-        )
+        labels = torch.where(mask.bool(), labels.new_full((), ignore_index), labels)
 
     return labels.to(torch.uint8), confidence.to(torch.float32)

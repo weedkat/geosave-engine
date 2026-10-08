@@ -67,8 +67,6 @@ def test_parse_field_value_supports_partial_requirements_and_typed_timestamps():
 
 def test_parse_field_value_does_not_construct_a_partial_model():
     class DecoratedField(AttrsModel):
-        NAME = "test_decorated_field"
-
         decorated_value: int
 
         @field_validator("decorated_value", mode="before")
@@ -100,8 +98,7 @@ def test_namespace_merge_preserves_equivalent_native_timestamps():
     merged, dropped = AttrsNamespace.merge(
         [
             AttrsNamespace(foreign={"observed_at": timestamp}),
-            AttrsNamespace(foreign={"observed_at": timestamp.astype("datetime64[us]")}
-            ),
+            AttrsNamespace(foreign={"observed_at": timestamp.astype("datetime64[us]")}),
         ]
     )
     assert dropped == set()
@@ -110,7 +107,10 @@ def test_namespace_merge_preserves_equivalent_native_timestamps():
 
 def test_common_attrs_keeps_what_every_mapping_carries_alike():
     shared = common_attrs(
-        [{"units": "1", "nodata": np.nan, "a": 1}, {"units": "1", "nodata": float("nan")}]
+        [
+            {"units": "1", "nodata": np.nan, "a": 1},
+            {"units": "1", "nodata": float("nan")},
+        ]
     )
 
     assert shared.keys() == {"units", "nodata"}

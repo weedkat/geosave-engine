@@ -33,8 +33,8 @@ def build_raster(
         shape=(2, 2),
         tight=True,
     )
-    coords = dict(xr_coords(geobox))
-    spatial_dims = geobox.dimensions  # ('latitude', 'longitude') when geographic
+    coords = dict(xr_coords(geobox, always_yx=True))
+    spatial_dims = ("y", "x")
     values = np.array([[1000, 2000], [3000, 0]], dtype="uint16")
     if times:
         coords["time"] = xr.DataArray(
@@ -85,3 +85,59 @@ def bucket():
     yield prefix
     if filesystem.exists(prefix):
         filesystem.rm(prefix, recursive=True)
+
+
+def whole_windows(parents):
+    """List rasters held in memory as whole windows, as `cuts.stacks` lists saved ones.
+
+    Args:
+        parents: Window id mapped to a DataArray, Dataset or stack. A lone
+            raster is the group `image`.
+
+    Returns:
+        One window per parent, stating each group's time labels as they are
+        and the parent's grid, or no grid for unreferenced pixels.
+    """
+    import geopandas as gpd
+    import numpy as np
+    import xarray as xr
+    from odc.geo.geobox import GeoBox
+
+    rows = []
+    for name, parent in parents.items():
+        rasters = (
+            parent.gs.rasters if isinstance(parent, xr.DataTree) else {"image": parent}
+        )
+        times = {}
+        for group, each in rasters.items():
+            stamps = each.coords.get("time")
+            if stamps is None:
+                times[group] = None
+            elif np.issubdtype(stamps.dtype, np.datetime64):
+                labels = np.atleast_1d(stamps.values).astype("datetime64[us]")
+                times[group] = np.datetime_as_string(labels).tolist()
+            else:
+                times[group] = list(np.atleast_1d(stamps.values))
+        first = next(iter(rasters.values()))
+        grid = first.gs.geobox
+        located = isinstance(grid, GeoBox) and grid.crs is not None
+        rows.append(
+            {
+                "id": name,
+                "parent": None,
+                "stack": name,
+                "times": times,
+                "start_datetime": None,
+                "end_datetime": None,
+                "crs": str(grid.crs) if located else None,
+                "transform": list(grid.transform)[:6]
+                if located
+                else [1.0, 0.0, 0.0, 0.0, 1.0, 0.0],
+                "row_off": 0,
+                "col_off": 0,
+                "height": first.sizes["y"],
+                "width": first.sizes["x"],
+                "geometry": grid.extent.to_crs("EPSG:4326").geom if located else None,
+            }
+        )
+    return gpd.GeoDataFrame(rows, geometry="geometry", crs="EPSG:4326")

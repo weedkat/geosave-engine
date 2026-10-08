@@ -33,17 +33,17 @@ def _source() -> xr.Dataset:
 
 def test_namespace_get_accepts_a_model_class_or_registered_name() -> None:
     model = ACDD(title="source")
-    namespace = AttrsNamespace(models={ACDD.NAME: model})
+    namespace = AttrsNamespace(models={ACDD: model})
 
     assert namespace.get(ACDD) is model
-    assert namespace.get(ACDD.NAME) is model
+    assert namespace.get("acdd") is model
 
 
 def test_only_the_accumulating_model_writes_its_own_merge() -> None:
     stating_a_policy = {
         model.__name__
         for models in MODELS.values()
-        for model in models
+        for model in models.values()
         if "merge" in model.__dict__
     }
 
@@ -176,25 +176,23 @@ def test_rebase_header_prevalidates_targets_before_an_inplace_write() -> None:
 
 def test_a_namespace_rejects_foreign_keys_owned_by_a_model() -> None:
     with pytest.raises(ValueError, match="collide"):
-        AttrsNamespace(
-            models={ACDD.NAME: ACDD(title="x")}, foreign={"title": "untyped"}
-        )
+        AttrsNamespace(models={ACDD: ACDD(title="x")}, foreign={"title": "untyped"})
 
 
-def test_a_namespace_rejects_a_model_filed_under_another_name() -> None:
+def test_a_namespace_rejects_a_model_filed_under_another_class() -> None:
     with pytest.raises(TypeError, match="must be ACDD"):
-        AttrsNamespace(models={ACDD.NAME: Nodata(fill_value=0)})
+        AttrsNamespace(models={ACDD: Nodata(fill_value=0)})
 
 
 def test_rebase_rejects_target_alongside_a_header() -> None:
-    header = AttrsHeader(root=AttrsNamespace(models={ACDD.NAME: ACDD(title="source")}))
+    header = AttrsHeader(root=AttrsNamespace(models={ACDD: ACDD(title="source")}))
 
     with pytest.raises(ValueError, match="target"):
         rebase(xr.Dataset({"red": ("x", [1, 2])}), header, target="red")  # type: ignore[call-overload]
 
 
 def test_rebase_rejects_keyword_models_alongside_a_header() -> None:
-    header = AttrsHeader(root=AttrsNamespace(models={ACDD.NAME: ACDD(title="source")}))
+    header = AttrsHeader(root=AttrsNamespace(models={ACDD: ACDD(title="source")}))
 
     with pytest.raises(ValueError, match="keyword models"):
         rebase(xr.Dataset(), header, acdd={"title": "override"})  # type: ignore[call-overload]
@@ -205,7 +203,7 @@ def test_rebase_namespace_patches_target_leaving_other_keys_alone() -> None:
         {"red": ("x", [1, 2], {"_FillValue": -1, "stale": True, "kept": True})}
     )
     namespace = AttrsNamespace(
-        models={Nodata.NAME: Nodata(fill_value=0)}, foreign={"note": "typed"}
+        models={Nodata: Nodata(fill_value=0)}, foreign={"note": "typed"}
     )
 
     patched = rebase(ds, namespace, target="red")  # type: ignore[call-overload]
@@ -221,7 +219,7 @@ def test_rebase_namespace_patches_target_leaving_other_keys_alone() -> None:
 
 def test_rebase_namespace_patches_root_when_target_is_none() -> None:
     ds = xr.Dataset(attrs={"stale": True, "title": "old"})
-    namespace = AttrsNamespace(models={ACDD.NAME: ACDD(title="new")})
+    namespace = AttrsNamespace(models={ACDD: ACDD(title="new")})
 
     patched = rebase(ds, namespace)  # type: ignore[call-overload]
 
@@ -229,7 +227,7 @@ def test_rebase_namespace_patches_root_when_target_is_none() -> None:
 
 
 def test_rebase_rejects_keyword_models_alongside_a_namespace() -> None:
-    namespace = AttrsNamespace(models={ACDD.NAME: ACDD(title="source")})
+    namespace = AttrsNamespace(models={ACDD: ACDD(title="source")})
 
     with pytest.raises(ValueError, match="keyword models"):
         rebase(xr.Dataset(), namespace, acdd={"title": "override"})  # type: ignore[call-overload]
@@ -237,7 +235,7 @@ def test_rebase_rejects_keyword_models_alongside_a_namespace() -> None:
 
 def test_rebase_header_preserves_registered_model_serialization() -> None:
     header = AttrsHeader(
-        data_vars={"red": AttrsNamespace(models={Nodata.NAME: Nodata(fill_value=0)})}
+        data_vars={"red": AttrsNamespace(models={Nodata: Nodata(fill_value=0)})}
     )
     stamped = rebase(xr.Dataset({"red": ("x", [1, 2])}), header)
 
@@ -250,7 +248,7 @@ def test_invalid_later_target_leaves_all_attrs_unchanged(as_namespace: bool) -> 
     ds = _source()
     before = ds.copy(deep=True)
     model = Nodata(fill_value=255)
-    patch = AttrsNamespace(models={model.NAME: model}) if as_namespace else model
+    patch = AttrsNamespace(models={type(model): model}) if as_namespace else model
 
     with pytest.raises(ValueError, match="missing"):
         rebase(ds, patch, target=["red", "missing"], inplace=True)
@@ -262,7 +260,7 @@ def test_header_serialization_failure_leaves_all_attrs_unchanged() -> None:
     ds = _source()
     before = ds.copy(deep=True)
     unwritable = AttrsNamespace(
-        models={StackedAttrs.NAME: StackedAttrs(dataset_attrs={"handle": object()})},
+        models={StackedAttrs: StackedAttrs(dataset_attrs={"handle": object()})},
     )
     header = AttrsHeader(
         root=AttrsNamespace.from_attrs({"title": "changed"}, "dataset"),
@@ -341,9 +339,9 @@ def test_rebase_header_leaves_variables_it_does_not_name() -> None:
 def test_rebase_refuses_a_model_outside_the_target_scope() -> None:
     ds = xr.Dataset({"red": ("time", [1])}, coords={"time": [0]})
 
-    with pytest.raises(ValueError, match="time_spec belongs on a coordinate"):
+    with pytest.raises(ValueError, match="TimeSpec belongs on a coordinate"):
         rebase(ds, TimeSpec.from_resample("MS"), target="red")
-    with pytest.raises(ValueError, match="nodata belongs on a variable"):
+    with pytest.raises(ValueError, match="Nodata belongs on a variable"):
         rebase(ds, nodata={"fill_value": 0})
 
 
@@ -400,9 +398,9 @@ def test_merge_refuses_a_dataarray_with_a_dataset() -> None:
 
 def test_every_decoding_field_carries_the_marker() -> None:
     marked = {
-        (model.NAME, name)
+        (model_name, name)
         for models in MODELS.values()
-        for model in models
+        for model_name, model in models.items()
         for name, field in model.model_fields.items()
         if MUST_AGREE in field.metadata
     }
@@ -440,7 +438,7 @@ def test_merging_root_less_headers_carries_no_root() -> None:
 def test_rebase_header_write_failure_leaves_every_attr_untouched() -> None:
     ds = xr.Dataset({"red": ("x", [1], {"units": "1"})}, attrs={"title": "kept"})
     header = AttrsHeader(
-        root=AttrsNamespace(models={ACDD.NAME: ACDD(title="changed")}),
+        root=AttrsNamespace(models={ACDD: ACDD(title="changed")}),
         data_vars={"missing": AttrsNamespace()},
     )
 
@@ -477,7 +475,7 @@ def test_dropped_attr_from_keys_qualifies_each_key() -> None:
 
 
 def test_a_field_set_to_none_writes_no_key() -> None:
-    namespace = AttrsNamespace(models={Nodata.NAME: Nodata(fill_value=None)})
+    namespace = AttrsNamespace(models={Nodata: Nodata(fill_value=None)})
 
     assert Nodata(fill_value=None).to_attrs() == {}
     assert namespace.to_attrs() == {}
@@ -496,9 +494,9 @@ def test_a_merged_model_leaves_a_disagreed_field_unset_and_names_its_keys() -> N
 def test_rebase_keyword_none_is_refused_outside_the_models_scope() -> None:
     ds = xr.Dataset({"red": ("time", [1])}, coords={"time": [0]})
 
-    with pytest.raises(ValueError, match="time_spec belongs on a coordinate"):
+    with pytest.raises(ValueError, match="TimeSpec belongs on a coordinate"):
         rebase(ds, time_spec=None, target="red")
-    with pytest.raises(ValueError, match="nodata belongs on a variable"):
+    with pytest.raises(ValueError, match="Nodata belongs on a variable"):
         rebase(ds, nodata=None)
 
 

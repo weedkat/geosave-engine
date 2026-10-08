@@ -27,3 +27,13 @@ def test_geobox_factory_describes_its_spatial_coordinates_completely() -> None:
         "units": "metre",
         "axis": "X",
     }
+
+
+def test_geographic_header_describes_y_x_coordinates() -> None:
+    grid = GeoBox.from_bbox((10, 20, 13, 22), crs="EPSG:4326", shape=(2, 3))
+
+    header = geobox.create_header(grid)
+
+    assert set(header.coords) == {"y", "x"}
+    assert header.coords["y"].to_attrs()["standard_name"] == "latitude"
+    assert header.coords["x"].to_attrs()["standard_name"] == "longitude"

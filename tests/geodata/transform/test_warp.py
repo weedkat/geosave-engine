@@ -27,7 +27,10 @@ def scene() -> xr.Dataset:
     """Build a two-band uint16 raster on the projected grid."""
     box = utm_box()
     return build_raster(
-        {"red": np.ones(box.shape, "uint16"), "nir": np.ones(box.shape, "uint16")},
+        {
+            "red": (("y", "x"), np.ones(box.shape, "uint16")),
+            "nir": (("y", "x"), np.ones(box.shape, "uint16")),
+        },
         box,
         nodata=0,
     )
@@ -36,7 +39,7 @@ def scene() -> xr.Dataset:
 def landcover() -> xr.Dataset:
     """Build a raster whose values are class codes."""
     box = utm_box()
-    coded = build_raster({"landcover": np.ones(box.shape, "uint8")}, box)
+    coded = build_raster({"landcover": (("y", "x"), np.ones(box.shape, "uint8"))}, box)
     return attrs.rebase(
         coded,
         attrs.Legend(class_map={1: "water", 2: "urban"}),
@@ -69,7 +72,10 @@ def test_fill_warning_points_to_the_caller(mode: str) -> None:
 
 
 def test_a_warped_raster_reports_the_crs_it_landed_on() -> None:
-    source = build_raster({"elevation": np.ones(utm_box().shape, "float32")}, utm_box())
+    source = build_raster(
+        {"elevation": (("y", "x"), np.ones(utm_box().shape, "float32"))},
+        utm_box(),
+    )
 
     warped = reproject(source, WGS84)
 
@@ -81,7 +87,9 @@ def test_a_warped_raster_reports_the_crs_it_landed_on() -> None:
 def test_a_warped_raster_stacks_with_the_grid_it_targeted() -> None:
     imagery = scene()
     dem_box = GeoBox.from_bbox((12.9, 45.0, 13.2, 45.2), crs=WGS84, resolution=0.0003)
-    dem = build_raster({"elevation": np.ones(dem_box.shape, "float32")}, dem_box)
+    dem = build_raster(
+        {"elevation": (("y", "x"), np.ones(dem_box.shape, "float32"))}, dem_box
+    )
 
     warped = reproject(dem, imagery, resampling="bilinear")
 
@@ -135,7 +143,10 @@ def test_a_blending_kernel_refuses_class_codes(resampling: str) -> None:
 
 def test_a_palette_band_refuses_a_blending_kernel_without_a_legend() -> None:
     painted = attrs.rebase(
-        build_raster({"cover": np.ones(utm_box().shape, "uint8")}, utm_box()),
+        build_raster(
+            {"cover": (("y", "x"), np.ones(utm_box().shape, "uint8"))},
+            utm_box(),
+        ),
         attrs.GDALVariable(colorinterp="palette"),
         target="cover",
     )
@@ -171,7 +182,9 @@ def test_reproject_honours_a_requested_resolution() -> None:
 def test_matching_adopts_a_rasters_grid_without_naming_a_geobox() -> None:
     imagery = scene()
     dem_box = GeoBox.from_bbox((12.9, 45.0, 13.2, 45.2), crs=WGS84, resolution=0.0003)
-    dem = build_raster({"elevation": np.ones(dem_box.shape, "float32")}, dem_box)
+    dem = build_raster(
+        {"elevation": (("y", "x"), np.ones(dem_box.shape, "float32"))}, dem_box
+    )
 
     assert reproject(dem, imagery).gs.geobox == imagery.gs.geobox
 
@@ -203,7 +216,9 @@ def offset_box(shift: float = 5.0, size: int = 256, resolution: int = 10) -> Geo
 
 def placed(box: GeoBox, fill: int = 7, name: str = "red") -> xr.Dataset:
     """Build a single-band raster holding `fill` on `box`."""
-    return build_raster({name: np.full(box.shape, fill, "uint16")}, box, nodata=0)
+    return build_raster(
+        {name: (("y", "x"), np.full(box.shape, fill, "uint16"))}, box, nodata=0
+    )
 
 
 def test_align_puts_every_raster_on_one_exact_grid() -> None:
@@ -247,7 +262,12 @@ def test_align_keeps_only_common_ground_when_it_intersects() -> None:
 def test_align_carries_a_raster_across_crs_and_resolution() -> None:
     metric = placed(utm_box(size=8))
     coarse = build_raster(
-        {"dem": np.full((4, 4), 5.0, "float32")},
+        {
+            "dem": (
+                ("y", "x"),
+                np.full((4, 4), 5.0, "float32"),
+            )
+        },
         GeoBox.from_bbox((300000, 5000000, 300080, 5000080), crs=UTM, resolution=20),
         nodata=-9999.0,
     )
@@ -295,7 +315,9 @@ def test_align_refuses_rasters_sharing_no_ground_to_intersect() -> None:
 
 def _small(dtype: str, nodata: float | int | None) -> xr.Dataset:
     box = utm_box(size=8)
-    return build_raster({"red": np.full(box.shape, 5, dtype)}, box, nodata=nodata)
+    return build_raster(
+        {"red": (("y", "x"), np.full(box.shape, 5, dtype))}, box, nodata=nodata
+    )
 
 
 def _wider() -> GeoBox:
@@ -360,3 +382,14 @@ def test_reproject_records_nan_for_a_float_with_no_fill_value_and_warns() -> Non
     assert np.isnan(attrs.Nodata.from_attrs(warped.red.attrs).fill_value)
     assert np.isnan(warped.red.values).any()
     assert warped.red.dtype == np.dtype("float32")
+
+
+def test_reproject_onto_a_geographic_grid_keeps_y_x_and_laziness() -> None:
+    source = scene().chunk({"y": 2, "x": 2})
+
+    warped = reproject(source, WGS84)
+
+    assert warped.red.dims == ("y", "x")
+    assert warped.gs.crs.epsg == 4326
+    assert warped.red.chunks is not None
+    assert warped.y.attrs["standard_name"] == "latitude"

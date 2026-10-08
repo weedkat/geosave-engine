@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from collections.abc import Mapping, Sequence
 from functools import cache
-from typing import Any, ClassVar, Self
+from typing import Any, ClassVar, Literal, Self
 
 import numpy as np
 import orjson
@@ -29,7 +29,6 @@ class AttrsModel(BaseModel):
     unless `field_keys` declares other keys.
 
     Attributes:
-        NAME: Stable name, unique across `MODELS`, used as `rebase`'s keyword.
         field_keys: Field names mapped to the attr keys they write, for fields
             spelled several ways; `Nodata.fill_value` writes
             `("_FillValue", "nodata")`.
@@ -54,15 +53,45 @@ class AttrsModel(BaseModel):
         coerce_numbers_to_str=True,
     )
 
-    NAME: ClassVar[str]
     field_keys: ClassVar[Mapping[str, tuple[str, ...]]] = {}
 
     @classmethod
-    def attr_keys(cls, field_name: str | None = None) -> tuple[str, ...]:
-        """Return the attr keys one field writes, or every key this model writes."""
-        if field_name is not None:
-            return cls.field_keys.get(field_name, (field_name,))
-        return tuple(key for name in cls.model_fields for key in cls.attr_keys(name))
+    @cache
+    def attr_keys(cls) -> tuple[str, ...]:
+        """Return all stored keys owned by this model, in field order.
+
+        The declared fields and aliases are fixed for each model class, so
+        their key list is computed once. This includes keys for unset fields.
+
+        Examples:
+            >>> Nodata.attr_keys()
+            ('_FillValue', 'nodata')
+        """
+        keys: list[str] = []
+        for name in cls.model_fields:
+            keys.extend(cls.keys_for(name))
+        return tuple(keys)
+
+    @classmethod
+    def keys_for(cls, field: str) -> tuple[str, ...]:
+        """Return the stored aliases for one declared model field.
+
+        Args:
+            field: Logical Pydantic field name, such as `fill_value`.
+
+        Returns:
+            Tuple of stored attr keys. A field without aliases uses its name.
+
+        Raises:
+            KeyError: The field is not declared by this model.
+
+        Examples:
+            >>> Nodata.keys_for("fill_value")
+            ('_FillValue', 'nodata')
+        """
+        if field not in cls.model_fields:
+            raise KeyError(field)
+        return cls.field_keys.get(field, (field,))
 
     @classmethod
     def from_attrs(cls, attrs: Mapping[str, Any]) -> Self | None:
@@ -84,23 +113,24 @@ class AttrsModel(BaseModel):
         """
         field_values: dict[str, Any] = {}
         for field_name in cls.model_fields:
-            spellings = [key for key in cls.attr_keys(field_name) if key in attrs]
+            spellings = [key for key in cls.keys_for(field_name) if key in attrs]
             if not spellings:
                 continue
+            first_key = spellings[0]
+            value = attrs[first_key]
             if len(spellings) > 1:
                 # One store may hold a spelling as text and another as a number.
-                typed = [
-                    parse_field_value(cls, field_name, attrs[key]) for key in spellings
-                ]
-                for spelling, other in zip(spellings[1:], typed[1:], strict=True):
-                    if not attrs_equal(other, typed[0]):
+                parsed = parse_field_value(cls, field_name, value)
+                for spelling in spellings[1:]:
+                    other = parse_field_value(cls, field_name, attrs[spelling])
+                    if not attrs_equal(other, parsed):
                         raise ValueError(
-                            f"{spellings[0]!r} is {typed[0]!r} but {spelling!r} is "
+                            f"{first_key!r} is {parsed!r} but {spelling!r} is "
                             f"{other!r}; they spell one {cls.__name__}.{field_name}, "
                             f"so set one of them"
                         )
-            field_values[field_name] = attrs[spellings[0]]
-        return cls(**field_values) if field_values else None
+            field_values[field_name] = _native_number(value)
+        return cls.model_validate(field_values) if field_values else None
 
     def to_attrs(self) -> FlatAttrs:
         """Read this model back as a flat attrs mapping.
@@ -123,29 +153,37 @@ class AttrsModel(BaseModel):
             >>> CFVariable(units="1").to_attrs()
             {'units': '1'}
         """
-        return {
-            key: value
-            for field_name, value in self.model_dump(
-                mode="json",
-                exclude_unset=True,
-                exclude_computed_fields=True,
-                fallback=_json_value,
-            ).items()
-            if value is not None
-            for key in self.attr_keys(field_name)
-        }
+        fields = self.model_dump(
+            mode="json",
+            exclude_unset=True,
+            exclude_computed_fields=True,
+            fallback=_json_value,
+        )
+        attrs: FlatAttrs = {}
+        for field_name, value in fields.items():
+            if value is None:
+                continue
+            for key in self.keys_for(field_name):
+                attrs[key] = value
+        return attrs
 
     @classmethod
-    def merge(cls, models: Sequence[AttrsModel | None]) -> tuple[Self, set[str]]:
+    def merge(
+        cls,
+        models: Sequence[AttrsModel | None],
+        *,
+        conflicts: Literal["raise", "drop"] = "raise",
+    ) -> tuple[Self, set[str]]:
         """Keep the fields every object of a join set to the same value.
 
-        A field they set differently drops; one marked `MUST_AGREE` refuses,
-        since it says what the joined pixels mean. Override this where a
-        field accumulates instead, as STAC provenance does.
+        A field they set differently drops; one marked `MUST_AGREE` raises
+        unless `conflicts="drop"`. Override this where a field accumulates
+        instead, as STAC provenance does.
 
         Args:
             models: This model from each joined object, in call order, at
                 least one, None where an object carried none.
+            conflicts: Whether differing `MUST_AGREE` fields raise or drop.
 
         Returns:
             (model the joined result carries, attr keys the dropped fields
@@ -154,42 +192,56 @@ class AttrsModel(BaseModel):
         Raises:
             ValueError: `models` is empty, or the objects carry a field marked
                 `MUST_AGREE` differently, including one carrying it and another
-                not.
+                not, when `conflicts="raise"`.
 
         Examples:
             >>> CFVariable.merge([CFVariable(long_name="Red"), CFVariable()])
             (CFVariable(standard_name=None, long_name=None, units=None, cell_methods=None), {'long_name'})
         """
         if not models:
-            raise ValueError(f"merging {cls.NAME} needs at least one object")
+            raise ValueError(f"merging {cls.__name__} needs at least one object")
 
+        fields_set: set[str] = set()
+        missing_model = False
+        for model in models:
+            if model is None:
+                missing_model = True
+            else:
+                fields_set.update(model.model_fields_set)
+
+        merged: dict[str, Any] = {}
+        dropped_keys: set[str] = set()
         for name, field_info in cls.model_fields.items():
-            if MUST_AGREE in field_info.metadata:
-                values = [
-                    None if model is None else getattr(model, name) for model in models
-                ]
-                if not all_equal(values):
-                    raise ValueError(
-                        f"{cls.NAME}.{name} must agree across the joined objects, "
-                        f"but they carry {values}; align it before joining them"
-                    )
-
-        fields_set = set().union(*(m.model_fields_set for m in models if m is not None))
-        common_fields = {
-            name
-            for name in cls.model_fields
-            # An object carrying no model has nothing in common with the others.
-            if None not in models and all_equal([getattr(m, name) for m in models])
-        }
-        dropped_fields = fields_set - common_fields
-        merged = {name: getattr(models[0], name) for name in common_fields & fields_set}
-        dropped_keys = {key for name in dropped_fields for key in cls.attr_keys(name)}
+            values: list[Any] = []
+            for model in models:
+                values.append(None if model is None else getattr(model, name))
+            agreed = all_equal(values)
+            if (
+                conflicts == "raise"
+                and MUST_AGREE in field_info.metadata
+                and not agreed
+            ):
+                raise ValueError(
+                    f"{cls.__name__}.{name} must agree across the joined objects, "
+                    f"but they carry {values}; align it before joining them"
+                )
+            if name not in fields_set:
+                continue
+            if agreed and not missing_model:
+                merged[name] = values[0]
+            else:
+                dropped_keys.update(cls.keys_for(name))
         return cls(**merged), dropped_keys
 
 
 @cache
 def _field_adapter(model: type[AttrsModel], field: str) -> TypeAdapter[Any]:
-    """Build the validator for one field's annotation, once per field."""
+    """Reuse one Pydantic validation schema per model class and field name.
+
+    Creating a TypeAdapter builds a validator and serializer. Caching the
+    adapter avoids rebuilding them on each parse; values are still validated
+    on every call.
+    """
     return TypeAdapter(model.model_fields[field].rebuild_annotation())
 
 
@@ -303,6 +355,24 @@ def attrs_equal(left: object, right: object) -> bool:
         )
 
     return array_equiv(left, right)
+
+
+def _native_number(value: object) -> object:
+    """Read a NumPy integer or boolean a file hands back as a Python one.
+
+    Pydantic reads a NumPy integer offered to an `int | float` field as a
+    float, so a `uint16` fill of `0` would otherwise become `0.0`.
+
+    Args:
+        value: Stored attr value.
+
+    Returns:
+        An `int` or `bool` for a NumPy integer or boolean. Any other value is
+        returned as it came.
+    """
+    if isinstance(value, np.integer | np.bool_):
+        return value.item()
+    return value
 
 
 def _json_value(value: object) -> object:

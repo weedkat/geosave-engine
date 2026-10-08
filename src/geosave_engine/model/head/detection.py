@@ -67,7 +67,9 @@ class DetectionHead(nn.Module):
                 nn.Conv2d(hidden_channels, out_channels, 1),
             )
 
-        self.box_branches = nn.ModuleList(branch(width, 4) for width in pyramid_channels)
+        self.box_branches = nn.ModuleList(
+            branch(width, 4) for width in pyramid_channels
+        )
         self.class_branches = nn.ModuleList(
             branch(width, len(classes)) for width in pyramid_channels
         )

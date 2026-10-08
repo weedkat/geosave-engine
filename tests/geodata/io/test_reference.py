@@ -27,8 +27,9 @@ def test_asset_reference_is_not_automatically_stac(tmp_path, georeferenced):
     path = tmp_path / "reference.parquet"
     frame.gs.to_geoparquet(path)
     assert b"stac-geoparquet" not in pq.read_schema(path).metadata
+    # A plain table's columns are stored as given, hrefs included.
     stored = pq.read_table(path).column("assets")[0].as_py()
-    assert stored["image"]["href"] == "./image.nc"
+    assert stored["image"]["href"] == str(tmp_path / "image.nc")
     restored = read_vector(path)
     assert restored.crs == frame.crs
     assert restored.iloc[0].assets["image"]["href"] == str(tmp_path / "image.nc")

@@ -59,7 +59,5 @@ class BuildSpec(BaseModel):
         module_name, _, attribute = self.class_path.rpartition(".")
         factory = getattr(import_module(module_name), attribute)
         if not isinstance(factory, type) or not issubclass(factory, base):
-            raise TypeError(
-                f"{self.class_path!r} must name a {base.__name__} subclass"
-            )
+            raise TypeError(f"{self.class_path!r} must name a {base.__name__} subclass")
         return factory

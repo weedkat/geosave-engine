@@ -55,14 +55,12 @@ class Samples(Dataset[tuple[dict[str, torch.Tensor], torch.Tensor, str, torch.Te
 
     def __init__(self) -> None:
         grid = GeoBox.from_bbox((0, 0, 40, 40), "EPSG:32748", resolution=10)
-        scene = raster({"red": np.ones((4, 4), "float32")}, grid)
+        scene = raster({"red": (("y", "x"), np.ones((4, 4), "float32"))}, grid)
         samples = _samples({"a": scene}, (4, 4))
         self.reference = samples.reference
-        self.tilers = samples.tilers
-        self.padding = samples.padding
         self.spec = SimpleNamespace(chips=ChipsSpec(size=4))
         self.target = "label"
-        label = raster({"label": np.zeros((4, 4), "float32")}, grid)
+        label = raster({"label": (("y", "x"), np.zeros((4, 4), "float32"))}, grid)
         self.parents = {"a": stack({"image": scene, "label": label})}
         self.scene = scene
 

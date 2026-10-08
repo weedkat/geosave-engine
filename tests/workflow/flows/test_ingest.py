@@ -36,7 +36,8 @@ def model_spec(tmp_path, url):
 def test_ingest_writes_one_sample_folder_from_a_raster_anchor(tmp_path, stac_server):
     url, requests, anchor = stac_server
     label = raster(
-        {"class": np.ones((4, 4), dtype="uint8")}, anchor.geobox
+        {"class": (("y", "x"), np.ones((4, 4), dtype="uint8"))},
+        anchor.geobox,
     ).assign_coords(time=np.datetime64("2025-01-15"))
     label_path = io.geotiff.write_cog(label, tmp_path / "label.tif")
     output = tmp_path / "raw"
@@ -166,7 +167,8 @@ def test_ingest_run_opens_a_json_anchor(tmp_path, prefect_server, monkeypatch) -
 def test_ingest_refuses_an_existing_output(tmp_path, stac_server):
     url, requests, anchor = stac_server
     label = raster(
-        {"class": np.ones((4, 4), dtype="uint8")}, anchor.geobox
+        {"class": (("y", "x"), np.ones((4, 4), dtype="uint8"))},
+        anchor.geobox,
     ).assign_coords(time=np.datetime64("2025-01-15"))
     label_path = io.geotiff.write_cog(label, tmp_path / "label.tif")
     (tmp_path / "raw").mkdir()

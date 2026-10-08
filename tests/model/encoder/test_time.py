@@ -8,7 +8,7 @@ from geosave_engine.model.encoder.time import time_labels
 
 
 def _row(times):
-    return pd.Series({"raster_metadata": {"image": {"times": times}}})
+    return pd.Series({"times": {"image": times}})
 
 
 def test_time_labels_preserve_frame_order():

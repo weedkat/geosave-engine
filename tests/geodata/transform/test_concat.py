@@ -42,7 +42,12 @@ def series(
     grid = grid or box()
     labels = np.array(observed, "datetime64[ns]")
     pixels = np.stack([np.full(grid.shape, fill, dtype) for _ in labels])
-    return build_raster({name: pixels}, grid, nodata=nodata, time=labels)
+    return build_raster(
+        {name: (("time", *("y", "x")), pixels)},
+        grid,
+        coords={"time": labels},
+        nodata=nodata,
+    )
 
 
 def dates(raster: xr.Dataset | xr.DataArray) -> list[str]:
@@ -84,10 +89,10 @@ def test_overlapping_and_repeated_labels_lay_down_untouched() -> None:
 def test_an_unlabelled_or_empty_axis_lays_down_all_the_same() -> None:
     grid = box()
     empty = build_raster(
-        {"red": np.zeros((0, *grid.shape), "uint16")},
+        {"red": (("time", *("y", "x")), np.zeros((0, *grid.shape), "uint16"))},
         grid,
+        coords={"time": np.array([], "datetime64[ns]")},
         nodata=0,
-        time=np.array([], "datetime64[ns]"),
     )
 
     joined = concat_time([empty, series("2024-01-05")])
@@ -111,17 +116,17 @@ def test_shared_attrs_survive_and_conflicting_ones_are_dropped() -> None:
 @pytest.mark.parametrize(
     ("first_model", "second_model", "semantic"),
     [
-        (attrs.Nodata(fill_value=0), attrs.Nodata(fill_value=255), "nodata"),
+        (attrs.Nodata(fill_value=0), attrs.Nodata(fill_value=255), "Nodata"),
         (
             attrs.Packing(scale_factor=0.1),
             attrs.Packing(scale_factor=0.01),
-            "packing",
+            "Packing",
         ),
-        (attrs.CFVariable(units="m"), attrs.CFVariable(units="ft"), "cf_variable.units"),
+        (attrs.CFVariable(units="m"), attrs.CFVariable(units="ft"), "CFVariable.units"),
         (
             attrs.Legend(class_map={7: "forest"}),
             attrs.Legend(class_map={7: "water"}),
-            "legend",
+            "Legend",
         ),
     ],
     ids=["nodata", "packing", "units", "legend"],
@@ -131,12 +136,8 @@ def test_incompatible_pixel_semantics_are_refused(
     second_model: attrs.AttrsModel,
     semantic: str,
 ) -> None:
-    first = series("2024-01-05", nodata=None).gs.rebase(
-        first_model, target="red"
-    )
-    second = series("2024-02-10", nodata=None).gs.rebase(
-        second_model, target="red"
-    )
+    first = series("2024-01-05", nodata=None).gs.rebase(first_model, target="red")
+    second = series("2024-02-10", nodata=None).gs.rebase(second_model, target="red")
 
     with pytest.raises(ValueError, match=rf"{semantic}.*\n.*'red'"):
         concat_time([first, second])
@@ -146,7 +147,7 @@ def test_incompatible_dataarray_semantics_are_refused() -> None:
     first = series("2024-01-05", nodata=0).red
     second = series("2024-02-10", nodata=255).red
 
-    with pytest.raises(ValueError, match=r"nodata.fill_value must agree"):
+    with pytest.raises(ValueError, match=r"Nodata.fill_value must agree"):
         concat_time([first, second])
 
 

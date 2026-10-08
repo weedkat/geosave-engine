@@ -1,11 +1,14 @@
 from __future__ import annotations
 
+from collections.abc import Sequence
+from pathlib import Path
 from typing import Any, Mapping
 
 import numpy as np
 import torch
+import xarray as xr
 from lightning.pytorch import LightningModule, Trainer
-from lightning.pytorch.callbacks import Callback
+from lightning.pytorch.callbacks import BasePredictionWriter, Callback
 from lightning.pytorch.loggers import MLFlowLogger, TensorBoardLogger
 from matplotlib import pyplot as plt
 from matplotlib.backends.backend_agg import FigureCanvasAgg
@@ -199,3 +202,88 @@ class DensePredictionLogger(Callback):
         dataloader_idx: int = 0,
     ) -> None:
         self._log(trainer, outputs, batch_idx, "test", dataloader_idx)
+
+
+class ChipWriter(BasePredictionWriter):
+    """Save each batch of chip predictions, keyed by window id, to merge later.
+
+    Nothing is merged while predicting, so chips of one raster may be
+    predicted in any order and on several devices; each process appends to a
+    store of its own. `cuts.merge` puts them back together afterwards.
+
+    Args:
+        output_dir: Folder taking one `chips-<rank>.zarr` per process.
+        name: Name the saved output carries, and the merged raster after it.
+
+    Examples:
+        >>> trainer = Trainer(callbacks=[ChipWriter("runs/predict/chips")])
+        >>> trainer.predict(module, dataloaders=loader, return_predictions=False)
+        >>> outputs = ChipWriter.read("runs/predict/chips")
+        >>> merged = cuts.merge(frames, chips, outputs, taper="hann")
+    """
+
+    def __init__(self, output_dir: str | Path, *, name: str = "logits") -> None:
+        super().__init__(write_interval="batch")
+        self.output_dir = Path(output_dir)
+        self.name = name
+
+    def _store(self, trainer: Trainer) -> Path:
+        """Return the store this process writes."""
+        return self.output_dir / f"chips-{trainer.global_rank}.zarr"
+
+    def on_predict_start(self, trainer: Trainer, pl_module: LightningModule) -> None:
+        """Refuse to append to chips an earlier run left behind.
+
+        Raises:
+            FileExistsError: This process's store already exists.
+        """
+        store = self._store(trainer)
+        if store.exists():
+            raise FileExistsError(
+                f"{store} holds chips of an earlier run, which a merge would mix "
+                f"with this one's; write to another folder or remove it"
+            )
+
+    def write_on_batch_end(
+        self,
+        trainer: Trainer,
+        pl_module: LightningModule,
+        prediction: Any,
+        batch_indices: Sequence[int] | None,
+        batch: Any,
+        batch_idx: int,
+        dataloader_idx: int,
+    ) -> None:
+        """Append one batch of `(outputs, ids)` to this process's store."""
+        outputs, ids = prediction
+        values = outputs.detach().float().cpu().numpy()
+        dims = ("id", "band", "y", "x") if values.ndim == 4 else ("id", "y", "x")
+        chips = xr.Dataset(
+            {self.name: (dims, values)},
+            coords={"id": np.asarray(list(ids), dtype=object)},
+        )
+        store = self._store(trainer)
+        if store.exists():
+            chips.to_zarr(store, append_dim="id")
+        else:
+            chips.to_zarr(store, mode="w")
+
+    @staticmethod
+    def read(output_dir: str | Path) -> xr.DataArray:
+        """Open every process's saved chips as one lazy array along `id`.
+
+        Args:
+            output_dir: Folder a `ChipWriter` wrote to.
+
+        Returns:
+            The saved outputs, one per chip, in the order they were written.
+
+        Raises:
+            FileNotFoundError: The folder holds no saved chips.
+        """
+        stores = sorted(Path(output_dir).glob("chips-*.zarr"))
+        if not stores:
+            raise FileNotFoundError(f"{output_dir} holds no saved chips")
+        parts = [xr.open_zarr(store) for store in stores]
+        (name,) = parts[0].data_vars
+        return xr.concat(parts, "id")[name]

@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 from types import MappingProxyType
-from typing import TYPE_CHECKING, Annotated, ClassVar, Final, Literal
+from typing import TYPE_CHECKING, Annotated, Final, Literal
 
 from pydantic import Field
 
@@ -52,8 +52,6 @@ class CFVariable(AttrsModel):
         ... )
     """
 
-    NAME: ClassVar[str] = "cf_variable"
-
     standard_name: Annotated[CFPhrase, MUST_AGREE] = None
     long_name: CFPhrase = None
     units: Annotated[CFPhrase, MUST_AGREE] = None
@@ -77,8 +75,6 @@ class CFCoordinate(AttrsModel):
         >>> ds.gs.attrs.coords["y"].get(CFCoordinate).axis
         'Y'
     """
-
-    NAME: ClassVar[str] = "cf_coordinate"
 
     standard_name: CFPhrase = None
     units: CFPhrase = None

@@ -75,18 +75,19 @@ context:
 ```
 
 ```python
+from geosave_engine.geodata import cuts
 from geosave_engine.ml.inputs import model_inputs
 
 row = reference.loc[sample_id]
-tile = row.gs.crop(parents[row.parent_id])
+tile = cuts.select_pixels(parents[row.parent], row)
 inputs = model_inputs(spec, tile.gs.rasters, row)
 ```
 
 `inputs` binds prepared raster pixels; `context` encodes the native catalog row.
 Training and inference use the same declared function. Encoder-specific
 `model_context(row, *, raster="image")` functions return dictionaries of tensors.
-The row's `raster_metadata` records ordered timestamps and band names per raster;
-its projection fields describe the exact input grid. Neither metadata extraction
+The row's `times` states each prepared raster's ordered timestamps; its `crs`,
+`transform`, `height` and `width` describe the exact input grid. Neither metadata extraction
 nor context encoding reads raster pixels. A row may also carry annotation columns.
 
 | Encoder | Per-sample context |
@@ -197,14 +198,13 @@ chain owns the constructor recipe required to rebuild the native module.
 
 ```python
 from lightning import Trainer
-from tiler import Merger
 from torch.utils.data import DataLoader, Dataset
-from geosave_engine.geodata.transform.chip import chip_windows
+from geosave_engine.geodata import cuts
 from geosave_engine.ml.inputs import model_inputs
+from geosave_engine.ml.segmentation.callbacks import ChipWriter
 
-# parents holds prepared xarray stacks. tilers and padding come from native Tiler.
-reference = chip_windows(parents, tilers, padding=padding)
-reference = reference.set_index("id", drop=False)
+# frames lists the windows to predict; parents holds each one's prepared stack.
+reference = spec.chips.cut(frames).set_index("id", drop=False)
 
 class PredictionDataset(Dataset):
     def __len__(self):
@@ -212,29 +212,26 @@ class PredictionDataset(Dataset):
 
     def __getitem__(self, position):
         row = reference.iloc[position]
-        tile = row.gs.crop(parents[row.parent_id])
+        tile = cuts.select_pixels(parents[row.parent], row)
         return model_inputs(spec, tile.gs.rasters, row), row.id
 
-mergers = {
-    key: Merger(tiler, logits=task.num_classes, window=spec.chips.window,
-                save_visits=False)
-    for key, tiler in tilers.items()
-}
-for logits, ids in Trainer().predict(task, dataloaders=DataLoader(PredictionDataset(), batch_size=8)):
-    for sample_id, prediction in zip(ids, logits.detach().cpu().numpy(), strict=True):
-        row = reference.loc[sample_id]
-        mergers[row.parent_id].add(int(row.tile_id), prediction)
-scene_logits = mergers["scene-a"].merge(extra_padding=padding["scene-a"])
+# Chips are saved as they are predicted, then merged in a step of their own.
+trainer = Trainer(callbacks=[ChipWriter("runs/predict/chips")])
+trainer.predict(task, dataloaders=DataLoader(PredictionDataset(), batch_size=8),
+                return_predictions=False)
+merged = cuts.merge(frames, reference, ChipWriter.read("runs/predict/chips"),
+                    taper=spec.chips.window)
+scene_logits = merged["scene-a"]["logits"]
 ```
 
 This example assumes finite predictions and a complete prediction run. Apply
 pixel transforms appropriate to the released model before its forward call.
-Native Merger owns weighting and pixel placement; use the original parent's
-raster grid when wrapping results. Geometry does not reconstruct tilers.
+`cuts.merge` rebuilds the layout the cut used and returns each raster on its
+parent's grid, so chips may be predicted in any order and on several devices.
 
 The PyTorch Dataset belongs to the consuming method. GeoSave's shared
-`ml.datasets.TileDataset` has been removed. `row.gs.to_stack()` opens both
-ordinary asset rows and windowed rows. `row.gs.crop(parent)` applies an explicit
+`ml.datasets.TileDataset` has been removed. `stac.table.load(stac.table.to_items(rows))`
+opens the saved assets of selected rows. `cuts.select_pixels(parent, row)` applies an explicit
 window to prepared native xarray data. Reads remain lazy until tensor
 conversion. No custom tile object or automatic property-triggered loading exists.
 

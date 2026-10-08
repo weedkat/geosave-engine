@@ -14,12 +14,12 @@ from geosave_engine.geodata.utils.datetime import (
     DateRange,
     parse_daterange,
 )
-from geosave_engine.geodata.utils.geo.crs import (
+from geosave_engine.geodata.utils.crs import (
     select_grid_crs,
     validate_wgs84_bbox,
     validate_wgs84_coordinate,
 )
-from geosave_engine.geodata.utils.geo.geometry import SomeGeometry
+from geosave_engine.geodata.utils.geometry import SomeGeometry
 
 # Where pixel edges sit relative to the CRS origin, spelled as odc accepts it.
 type GridAnchor = Literal["edge", "centre", "floating"]
@@ -28,7 +28,7 @@ if TYPE_CHECKING:
     from odc.geo import Resolution
     from pyproj import CRS
 
-    from geosave_engine.geodata.utils.geo.geolocator import Place
+    from geosave_engine.geodata.utils.geolocator import Place
 
 
 @dataclass(frozen=True, eq=False)
@@ -86,7 +86,7 @@ class GeoAnchor:
             Resolved place, or None when Nominatim has no result or is
             unavailable.
         """
-        from geosave_engine.geodata.utils.geo.geolocator import Place
+        from geosave_engine.geodata.utils.geolocator import Place
 
         longitude, latitude = self.lonlat
         return Place.from_coordinate(latitude, longitude)

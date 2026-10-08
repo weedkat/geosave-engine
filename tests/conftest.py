@@ -65,7 +65,7 @@ def raw():
     return {
         "optical": raster(
             {
-                name: da.full((4, 4), value, chunks=(2, 2))
+                name: (("y", "x"), da.full((4, 4), value, chunks=(2, 2)))
                 for name, value in (("red", 2.0), ("nir", 6.0), ("unused", 0.0))
             },
             box,

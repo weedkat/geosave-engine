@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from typing import TYPE_CHECKING, Any, Literal, overload
+from typing import TYPE_CHECKING, Any, Literal, cast, overload
 
 import numpy as np
 import pandas as pd
@@ -11,7 +11,7 @@ import xarray as xr
 import geosave_engine.geodata.attrs as attrs
 from geosave_engine.geodata.utils.datetime import parse_daterange
 
-from geosave_engine.geodata.conventions import TIME_COORDINATE
+from geosave_engine.geodata.conventions import TIME_COORDINATE, require_yx
 
 if TYPE_CHECKING:
     import geopandas as gpd
@@ -40,6 +40,19 @@ class GeoRasterAccessor[DataT: xr.Dataset | xr.DataArray | xr.DataTree]:
     """
 
     _data: DataT
+
+    def __init__(self, data: DataT) -> None:
+        """Bind the xarray object.
+
+        Args:
+            data: Band, raster, or stack to read through this accessor.
+
+        Raises:
+            ValueError: Its grid, or a group's, spans dimensions other than
+                `y` and `x`.
+        """
+        require_yx(data)
+        self._data = data
 
     @property
     def _grid_source(self) -> xr.Dataset | xr.DataArray:
@@ -243,10 +256,12 @@ class GeoRasterAccessor[DataT: xr.Dataset | xr.DataArray | xr.DataTree]:
             >>> ds.gs.times.strftime("%Y%m%d").tolist()
             ['20250601', '20250611']
         """
-        coords = self._data.coords
+        # ty misbinds the coords property on the bounded type parameter.
+        data = cast(xr.Dataset | xr.DataArray | xr.DataTree, self._data)
+        coords = data.coords
         if TIME_COORDINATE not in coords:
             return None
-        return pd.DatetimeIndex(coords[TIME_COORDINATE].values)
+        return pd.DatetimeIndex(np.atleast_1d(coords[TIME_COORDINATE].values))
 
     @property
     def anchor(self) -> GeoAnchor:
@@ -286,6 +301,25 @@ class GeoRasterAccessor[DataT: xr.Dataset | xr.DataArray | xr.DataTree]:
         from geosave_engine.geodata.transform import packing
 
         return packing.unpack(self._data)
+
+    def mask_and_scale(self) -> DataT:
+        """Decode stored nodata, scale, and offset into physical values.
+
+        Nodata is masked before scaling so its stored value cannot become
+        an ordinary reading. Already decoded variables pass through.
+
+        Returns:
+            New object of the same kind, preserving coordinates, descriptive
+            metadata, and laziness. Decoded storage metadata leaves attrs.
+
+        Examples:
+            >>> reflectance = ds.gs.mask_and_scale()
+            >>> reflectance.red.dtype
+            dtype('float32')
+        """
+        from geosave_engine.geodata.transform import nodata, packing
+
+        return packing.unpack(nodata.to_nan(self._data))
 
     def mask(
         self, valid: xr.DataArray | np.ndarray, *, fill: float | int | None = None

@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from typing import TYPE_CHECKING, Annotated, Any, ClassVar, NamedTuple, Self
+from typing import TYPE_CHECKING, Annotated, Any, NamedTuple, Self
 
 from pydantic import BeforeValidator, model_validator
 
@@ -42,8 +42,6 @@ class Legend(AttrsModel):
         >>> legend.class_map
         {0: 'bg', 1: 'palm'}
     """
-
-    NAME: ClassVar[str] = "legend"
 
     flag_values: Annotated[
         list[int] | None, BeforeValidator(parse_collection_text), MUST_AGREE

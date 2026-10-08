@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from collections.abc import Mapping, Sequence
 from dataclasses import dataclass, field
-from typing import Any, Self, overload
+from typing import Any, Literal, Self, overload
 
 from .model import AttrsModel, FlatAttrs, all_equal
 from .models import MODELS, Scope, model_scope, resolve_model, scope_keys
@@ -15,12 +15,12 @@ class AttrsNamespace:
     """One xarray attrs mapping, split into typed models and foreign keys.
 
     Args:
-        models: Model name mapped to the model parsed from the mapping.
+        models: Model class mapped to the instance parsed from the mapping.
         foreign: Keys no present model writes, kept as they came in.
 
     Raises:
-        KeyError: A model name names no GeoSave model.
-        TypeError: A model does not match its name.
+        TypeError: A model class is unregistered, or an instance does not
+            match the class it is filed under.
         ValueError: The models belong to different scopes, or a foreign key is
             written by one of the models.
 
@@ -32,42 +32,47 @@ class AttrsNamespace:
         ('1', {'mission': 'S2'})
     """
 
-    models: Mapping[str, AttrsModel] = field(default_factory=dict[str, AttrsModel])
+    models: Mapping[type[AttrsModel], AttrsModel] = field(
+        default_factory=dict[type[AttrsModel], AttrsModel]
+    )
     foreign: Mapping[str, object] = field(default_factory=dict[str, object])
 
     def __post_init__(self) -> None:
-        """Refuse a model filed under the wrong name, models of two scopes, or a key claimed twice."""
-        for model_name, model in self.models.items():
-            model_type = resolve_model(model_name)
+        """Check model identity, one scope, and distinct owned and foreign keys."""
+        scopes: set[Scope] = set()
+        model_keys: set[str] = set()
+        for model_type, model in self.models.items():
+            if not isinstance(model_type, type):
+                raise TypeError("attrs models must be keyed by their classes")
+            resolve_model(model_type)
             if not isinstance(model, model_type):
                 raise TypeError(
-                    f"attrs model {model_name!r} must be {model_type.__name__}, "
+                    f"attrs model must be {model_type.__name__}, "
                     f"got {type(model).__name__}"
                 )
-        scopes = {model_scope(type(model)) for model in self.models.values()}
+            scopes.add(model_scope(type(model)))
+            model_keys.update(model_type.attr_keys())
         if len(scopes) > 1:
             raise ValueError(
                 f"models of different scopes cannot share a namespace: {sorted(scopes)}"
             )
-        model_keys = {
-            key for model in self.models.values() for key in model.attr_keys()
-        }
         if collisions := sorted(self.foreign.keys() & model_keys):
             raise ValueError(f"foreign attrs collide with model keys: {collisions}")
 
     @property
     def scope(self) -> Scope | None:
         """Return the scope its models belong to, None when it holds none."""
-        scopes: set[Scope] = {
-            model_scope(type(model)) for model in self.models.values()
-        }
-        return scopes.pop() if scopes else None
+        for model_type in self.models:
+            return model_scope(model_type)
+        return None
 
     @classmethod
     def from_attrs(cls, attrs: Mapping[Any, Any], scope: Scope) -> Self:
         """Parse one flat xarray attrs mapping against the models of one scope.
 
-        A model appears where the mapping carries at least one of its keys.
+        Each registered model reads the same mapping independently and selects
+        its own fields. Keys owned by no model in this scope remain foreign
+        attrs; the input mapping is untouched.
         xarray types attrs keys as merely `Hashable`, but every key actually
         written is a string, so this is where that gets settled once.
 
@@ -76,8 +81,8 @@ class AttrsNamespace:
             scope: Where the mapping lives.
 
         Returns:
-            Namespace holding the models the mapping carries and every key
-            none of them writes.
+            Namespace with `models={ModelClass: instance, ...}` and
+            `foreign={unclaimed_key: value, ...}`.
 
         Raises:
             ValueError: A field's spellings are set to different values.
@@ -85,17 +90,26 @@ class AttrsNamespace:
                 key.
         """
         flat_attrs = {str(key): value for key, value in attrs.items()}
-        models: dict[str, AttrsModel] = {}
-        for model_type in MODELS[scope]:
+        models: dict[type[AttrsModel], AttrsModel] = {}
+        for model_type in MODELS[scope].values():
             model = model_type.from_attrs(flat_attrs)
             if model is not None:
-                models[model_type.NAME] = model
-        keys = scope_keys(scope)
-        foreign = {key: value for key, value in flat_attrs.items() if key not in keys}
+                models[model_type] = model
+
+        owned_keys = scope_keys(scope)
+        foreign: FlatAttrs = {}
+        for key, value in flat_attrs.items():
+            if key not in owned_keys:
+                foreign[key] = value
         return cls(models, foreign)
 
     @classmethod
-    def merge(cls, namespaces: Sequence[AttrsNamespace]) -> tuple[Self, set[str]]:
+    def merge(
+        cls,
+        namespaces: Sequence[AttrsNamespace],
+        *,
+        conflicts: Literal["raise", "drop"] = "raise",
+    ) -> tuple[Self, set[str]]:
         """Merge several attrs mappings into the one their combination carries.
 
         Each model decides for itself what survives, through its own `merge`.
@@ -103,6 +117,7 @@ class AttrsNamespace:
 
         Args:
             namespaces: The mappings being merged, in call order, at least one.
+            conflicts: Whether differing `MUST_AGREE` fields raise or drop.
 
         Returns:
             (merged namespace, every attr key dropped from it — model and
@@ -111,21 +126,26 @@ class AttrsNamespace:
         Raises:
             ValueError: `namespaces` is empty, the merged models belong to
                 different scopes, or a model refuses what the mappings disagree
-                on.
+                on when `conflicts="raise"`.
         """
         if not namespaces:
             raise ValueError("merging attrs needs at least one namespace")
         dropped: set[str] = set()
-        merged_models: dict[str, AttrsModel] = {}
-        for model_name in sorted(set().union(*(n.models for n in namespaces))):
-            models = [namespace.models.get(model_name) for namespace in namespaces]
-            merged_models[model_name], dropped_keys = resolve_model(model_name).merge(
-                models
+        model_types: set[type[AttrsModel]] = set()
+        foreign_keys: set[str] = set()
+        for namespace in namespaces:
+            model_types.update(namespace.models)
+            foreign_keys.update(namespace.foreign)
+        merged_models: dict[type[AttrsModel], AttrsModel] = {}
+        for model_type in sorted(model_types, key=lambda model: model.__name__):
+            models = [namespace.models.get(model_type) for namespace in namespaces]
+            merged_models[model_type], dropped_keys = model_type.merge(
+                models, conflicts=conflicts
             )
             dropped |= dropped_keys
 
         foreign: dict[str, object] = {}
-        for key in sorted(set().union(*(n.foreign for n in namespaces))):
+        for key in sorted(foreign_keys):
             values = [n.foreign[key] for n in namespaces if key in n.foreign]
             if len(values) == len(namespaces) and all_equal(values):
                 foreign[key] = values[0]
@@ -154,10 +174,10 @@ class AttrsNamespace:
     def get(self, model: str) -> AttrsModel | None: ...
 
     def get[M: AttrsModel](self, model: type[M] | str) -> M | AttrsModel | None:
-        """Read one model by its class or `NAME`.
+        """Read one model by its class or registered configuration name.
 
         Args:
-            model: Model class or its `NAME`.
+            model: Model class or its name in the scope registry.
 
         Returns:
             The model, or None when this namespace does not carry it.
@@ -167,6 +187,10 @@ class AttrsNamespace:
             Packing(scale_factor=0.0001, add_offset=None)
         """
         if isinstance(model, str):
-            return self.models.get(model)
-        instance = self.models.get(model.NAME)
+            try:
+                model_type = resolve_model(model)
+            except KeyError:
+                return None
+            return self.models.get(model_type)
+        instance = self.models.get(model)
         return instance if isinstance(instance, model) else None

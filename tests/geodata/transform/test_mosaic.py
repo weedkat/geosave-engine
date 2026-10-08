@@ -38,7 +38,9 @@ def granule(
 ) -> xr.Dataset:
     """Build a timeless raster holding `fill` at every pixel."""
     grid = grid or box()
-    return build_raster({name: np.full(grid.shape, fill, dtype)}, grid, nodata=nodata)
+    return build_raster(
+        {name: (("y", "x"), np.full(grid.shape, fill, dtype))}, grid, nodata=nodata
+    )
 
 
 @contextmanager
@@ -131,7 +133,7 @@ def test_rasters_with_different_nodata_markers_are_refused() -> None:
     first = granule(nodata=0)
     second = granule(nodata=255)
 
-    with pytest.raises(ValueError, match=r"nodata.*\n.*'red'"):
+    with pytest.raises(ValueError, match=r"Nodata.*\n.*'red'"):
         mosaic([first, second])
 
 
@@ -217,8 +219,16 @@ def test_mosaic_lays_floats_whose_nodata_is_nan() -> None:
 
     west = GeoBox.from_bbox((0, 0, 80, 80), crs="EPSG:32633", resolution=10)
     east = GeoBox.from_bbox((40, 0, 120, 80), crs="EPSG:32633", resolution=10)
-    left = build({"red": np.full(west.shape, 5.0, "float32")}, west, nodata=np.nan)
-    right = build({"red": np.full(east.shape, 9.0, "float32")}, east, nodata=np.nan)
+    left = build(
+        {"red": (("y", "x"), np.full(west.shape, 5.0, "float32"))},
+        west,
+        nodata=np.nan,
+    )
+    right = build(
+        {"red": (("y", "x"), np.full(east.shape, 9.0, "float32"))},
+        east,
+        nodata=np.nan,
+    )
 
     laid = mosaic([left, right])
 

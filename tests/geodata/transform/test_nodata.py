@@ -24,15 +24,22 @@ def scene(*, times: int = 0, nodata: float | int | None = 0) -> xr.Dataset:
     box = utm_box()
     if times:
         return build_raster(
-            {"red": np.full((times, *box.shape), 7, "uint16")},
+            {
+                "red": (
+                    ("time", *("y", "x")),
+                    np.full((times, *box.shape), 7, "uint16"),
+                )
+            },
             box,
+            coords={
+                "time": np.array(["2025-06-01", "2025-06-11"][:times], "datetime64[ns]")
+            },
             nodata=nodata,
-            time=np.array(["2025-06-01", "2025-06-11"][:times], "datetime64[ns]"),
         )
     return build_raster(
         {
-            "red": np.full(box.shape, 7, "uint16"),
-            "nir": np.full(box.shape, 8, "uint16"),
+            "red": (("y", "x"), np.full(box.shape, 7, "uint16")),
+            "nir": (("y", "x"), np.full(box.shape, 8, "uint16")),
         },
         box,
         nodata=nodata,
@@ -41,7 +48,7 @@ def scene(*, times: int = 0, nodata: float | int | None = 0) -> xr.Dataset:
 
 def classification() -> xr.DataArray:
     """Build a scene classification band, half ground and half cloud."""
-    dims = scene().gs.grid_dims
+    dims = ("y", "x")
     return xr.DataArray(np.array([[4, 4, 9, 9]] * 4), dims=dims)
 
 
@@ -126,7 +133,9 @@ def test_a_nan_fill_is_refused_for_an_integer_variable() -> None:
 
 def test_a_nan_fill_is_accepted_by_a_float_variable() -> None:
     box = utm_box()
-    floating = build_raster({"elevation": np.ones(box.shape, "float32")}, box)
+    floating = build_raster(
+        {"elevation": (("y", "x"), np.ones(box.shape, "float32"))}, box
+    )
 
     masked = mask(floating, classification().isin(CLEAR), fill=float("nan"))
 
@@ -164,7 +173,7 @@ def test_a_mask_that_misses_the_grid_is_refused() -> None:
 
 
 def test_a_mask_spanning_an_axis_the_raster_lacks_is_refused() -> None:
-    dims = scene().gs.grid_dims
+    dims = ("y", "x")
     extra = xr.DataArray(np.ones((2, 4, 4), bool), dims=("depth", *dims))
 
     with pytest.raises(ValueError, match="does not carry"):
@@ -179,7 +188,6 @@ def test_masking_refuses_something_that_is_not_an_xarray_object() -> None:
 def test_cropping_with_a_mask_keeps_the_dtype_and_declared_fill() -> None:
     import geopandas as gpd
     import shapely
-
 
     source = scene()
     half = gpd.GeoDataFrame(geometry=[shapely.box(0, 0, 20, 40)], crs=UTM)

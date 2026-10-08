@@ -9,7 +9,8 @@ def geographic_center(row: pd.Series) -> tuple[float, float]:
     """Return latitude and longitude from the row's exact raster grid.
 
     Args:
-        row: Sample row with projection shape, transform and CRS fields.
+        row: Window row stating its grid as `crs`, `transform`, `height`
+            and `width`.
 
     Returns:
         Geographic centre in latitude/longitude order.
@@ -17,10 +18,11 @@ def geographic_center(row: pd.Series) -> tuple[float, float]:
     Raises:
         ValueError: The sample has no georeferenced grid.
     """
-    code = row.get("proj:code")
-    crs = code if isinstance(code, str) else row.get("proj:wkt2")
+    crs = row.get("crs")
     if not isinstance(crs, str):
         raise ValueError("model location context requires a georeferenced grid")
-    grid = GeoBox(tuple(row["proj:shape"]), Affine(*row["proj:transform"]), crs)
+    grid = GeoBox(
+        (int(row["height"]), int(row["width"])), Affine(*row["transform"]), crs
+    )
     longitude, latitude = grid.extent.centroid.to_crs("EPSG:4326").coords[0]
     return float(latitude), float(longitude)

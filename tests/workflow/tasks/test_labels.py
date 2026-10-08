@@ -13,7 +13,7 @@ from geosave_engine.workflow.tasks.labels import find_labels, read_labels
 
 def _label(path: Path, *, dated: bool = True) -> Path:
     grid = GeoBox.from_bbox((0, 0, 40, 40), crs="EPSG:32633", resolution=10)
-    label = raster({"class": np.ones((4, 4), dtype="uint8")}, grid)
+    label = raster({"class": (("y", "x"), np.ones((4, 4), dtype="uint8"))}, grid)
     if dated:
         label = label.assign_coords(time=np.datetime64("2025-01-15T12:00:00"))
     path.parent.mkdir(parents=True, exist_ok=True)

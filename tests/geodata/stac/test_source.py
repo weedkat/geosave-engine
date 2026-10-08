@@ -121,7 +121,16 @@ def test_load_returns_dask_backed_arrays_by_default(
     def fake_load(items: list[object], *, geobox: GeoBox, **options: Any) -> xr.Dataset:
         captured.update(options)
         values = np.ones((1, *geobox.shape), dtype="uint16")
-        loaded = raster({"red": values}, geobox, time=[dt(2025, 6, 1)])
+        loaded = raster(
+            {
+                "red": (
+                    ("time", *("y", "x")),
+                    values,
+                )
+            },
+            geobox,
+            coords={"time": [dt(2025, 6, 1)]},
+        )
         return loaded.chunk(options["chunks"])
 
     monkeypatch.setattr(source_module.odc.stac, "load", fake_load)
@@ -140,6 +149,47 @@ def test_load_returns_dask_backed_arrays_by_default(
 
     assert captured["chunks"] == {"x": 1024, "y": 1024}
     assert isinstance(loaded["red"].data, da.Array)
+
+
+def test_load_names_a_geographic_grid_y_x(monkeypatch: pytest.MonkeyPatch) -> None:
+    from odc.geo.xr import xr_coords
+
+    def fake_load(items: list[object], *, geobox: GeoBox, **options: Any) -> xr.Dataset:
+        # odc-stac names a geographic grid latitude/longitude.
+        coords = dict(xr_coords(geobox))
+        coords["time"] = [dt(2025, 6, 1)]
+        loaded = xr.Dataset(
+            {
+                "red": (
+                    ("time", *geobox.dimensions),
+                    da.ones((1, *geobox.shape), chunks=-1),
+                )
+            },
+            coords=coords,
+        )
+        loaded.red.encoding["grid_mapping"] = "spatial_ref"
+        return loaded
+
+    monkeypatch.setattr(source_module.odc.stac, "load", fake_load)
+    monkeypatch.setattr(
+        source_module, "create_header", lambda *args, **kwargs: AttrsHeader()
+    )
+    anchor = GeoAnchor.from_coordinates(
+        -6.5914,
+        107.8416,
+        shape=2,
+        resolution=0.0001,
+        crs="EPSG:4326",
+        timespan="2025-06",
+    )
+    assert anchor.geobox.dimensions == ("latitude", "longitude")
+
+    loaded = StacSource(FakeClient(), collection="example").load(anchor)  # type: ignore[arg-type]
+
+    assert loaded.red.dims == ("time", "y", "x")
+    assert loaded.gs.geobox == anchor.geobox
+    assert isinstance(loaded.red.data, da.Array)
+    assert loaded.y.attrs["standard_name"] == "latitude"
 
 
 def test_chunks_none_remains_an_explicit_eager_mode() -> None:

@@ -1,10 +1,10 @@
-"""Per-acquisition STAC metadata carried with a raster."""
+"""STAC source history carried with a raster."""
 
 from __future__ import annotations
 
 from collections.abc import Sequence
 from datetime import datetime as dt
-from typing import Annotated, Any, ClassVar, Self
+from typing import Annotated, Any, Literal, Self
 
 from pydantic import BaseModel, BeforeValidator, ConfigDict, Field
 
@@ -36,12 +36,12 @@ class StacItem(BaseModel):
 class StacMetadata(AttrsModel):
     """Metadata of the STAC items a raster was loaded from.
 
-    One row per item, each keeping its own identity and instant rather than an
-    index into the loaded time axis, so a join accumulates provenance instead
-    of realigning it.
+    Source records keep their own identity and instant rather than indexing
+    the loaded time axis. Joins accumulate this history, and selecting pixels
+    leaves it intact. Use `with_properties` for time-dependent values.
 
     Args:
-        stac_items: One row per item, in the order loaded.
+        stac_items: Captured source records, in the order first encountered.
         stac_groupby: How the items were grouped onto the time axis, as
             `odc.stac.load` was asked to group them.
 
@@ -49,8 +49,6 @@ class StacMetadata(AttrsModel):
         >>> ds.gs.attrs.root.get(StacMetadata).properties()
         ('eo:cloud_cover', 'platform')
     """
-
-    NAME: ClassVar[str] = "stac_metadata"
 
     stac_items: Annotated[
         tuple[StacItem, ...] | None, BeforeValidator(parse_collection_text)
@@ -67,7 +65,12 @@ class StacMetadata(AttrsModel):
         return tuple(sorted({key for row in rows for key in row.properties}))
 
     @classmethod
-    def merge(cls, models: Sequence[AttrsModel | None]) -> tuple[Self, set[str]]:
+    def merge(
+        cls,
+        models: Sequence[AttrsModel | None],
+        *,
+        conflicts: Literal["raise", "drop"] = "raise",
+    ) -> tuple[Self, set[str]]:
         """Merge STAC metadata: union `stac_items`, drop a mixed grouping.
 
         Items are provenance, so a joined result was loaded from all of them. A
@@ -77,25 +80,28 @@ class StacMetadata(AttrsModel):
         Args:
             models: This model from each joined object, in call order, at
                 least one, None where an object carried none.
+            conflicts: Whether differing `MUST_AGREE` fields raise or drop.
 
         Returns:
-            Metadata carrying every model's items once, the first occurrence
-            of an item id winning, and the attr keys it could not keep.
+            Metadata carrying every distinct source record once, in encounter
+            order, and the attr keys it could not keep. Records sharing an ID
+            but differing in timestamp, properties, or assets are retained.
 
         Raises:
             ValueError: `models` is empty.
         """
-        grouped, dropped = super().merge(models)
-        items: dict[str, StacItem] = {}
-        # The base merge has already refused any model that is not this model.
+        grouped, dropped = super().merge(models, conflicts=conflicts)
+        items: list[StacItem] = []
         for model in models:
             if not isinstance(model, cls):
                 continue
             for item in model.stac_items or ():
-                items.setdefault(item.id, item)
+                if item not in items:
+                    items.append(item)
         combined = cls(
-            stac_items=tuple(items.values()),
+            stac_items=tuple(items),
             stac_groupby=grouped.stac_groupby,
         )
         # Items accumulate rather than drop, so differing ones are not a loss.
-        return combined, dropped - set(cls.attr_keys("stac_items"))
+        dropped.discard("stac_items")
+        return combined, dropped

@@ -34,6 +34,7 @@ from odc.geo.geobox import (
 )
 
 import geosave_engine.geodata.attrs as attrs
+from geosave_engine.geodata.conventions import SPATIAL_DIMENSIONS, to_yx
 from geosave_engine import __path__ as _package_paths
 from geosave_engine.geodata.warnings import AssumedFillWarning
 from geosave_engine.geodata.transform import nodata
@@ -305,7 +306,8 @@ def _warp_band(band: xr.DataArray, geobox: GeoBox, kernel: Resampling) -> xr.Dat
         )
         band = band.gs.write_nodata(fill)
 
-    warped = band.odc.reproject(geobox, resampling=kernel).rename(band.name)
+    # odc names a geographic target latitude/longitude.
+    warped = to_yx(band.odc.reproject(geobox, resampling=kernel)).rename(band.name)
     # odc drops a NaN fill value from attrs and narrows a float one to int.
     return warped if fill is None else warped.gs.write_nodata(fill)
 
@@ -452,13 +454,12 @@ def reproject[T: xr.DataArray | xr.Dataset | xr.DataTree](
             "the Dataset holds no data variable, so it names no pixels to warp; "
             "select the variables you mean before warping"
         )
-    grid_dims = set(raster.gs.grid_dims)
     data_vars: dict[str, xr.DataArray] = {}
     for variable, values in raster.data_vars.items():
-        if not grid_dims <= set(values.dims):
+        if not set(SPATIAL_DIMENSIONS) <= set(values.dims):
             raise ValueError(
                 f"{str(variable)!r} spans {list(values.dims)}, not the grid "
-                f"{sorted(grid_dims)}, so it names no pixels to warp; drop it "
+                f"{list(SPATIAL_DIMENSIONS)}, so it names no pixels to warp; drop it "
                 f"or place it on the grid first"
             )
         data_vars[str(variable)] = _warp_band(

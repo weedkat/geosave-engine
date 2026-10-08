@@ -46,11 +46,17 @@ def optical(shape: tuple[int, int] = (8, 8), *, times: int = 2) -> xr.Dataset:
     )
     return raster(
         {
-            "B04": np.full((times, *shape), 4, "uint16"),
-            "B08": np.full((times, *shape), 8, "uint16"),
+            "B04": (
+                ("time", *("y", "x")),
+                np.full((times, *shape), 4, "uint16"),
+            ),
+            "B08": (
+                ("time", *("y", "x")),
+                np.full((times, *shape), 8, "uint16"),
+            ),
         },
         box,
-        time=labels,
+        coords={"time": labels},
     ).gs.write_nodata(0)
 
 
@@ -68,7 +74,14 @@ def test_to_numpy_stacks_in_the_order_xarray_holds_the_variables() -> None:
 
 
 def test_to_numpy_reads_an_unplaced_raster() -> None:
-    unplaced = raster({"pixels": np.zeros((4, 4), "uint8")})
+    unplaced = raster(
+        {
+            "pixels": (
+                ("y", "x"),
+                np.zeros((4, 4), "uint8"),
+            )
+        }
+    )
 
     assert unplaced.gs.to_numpy().shape == (1, 4, 4)
 
@@ -80,7 +93,7 @@ def test_to_numpy_refuses_a_raster_carrying_no_variables() -> None:
 
 def test_to_numpy_refuses_variables_on_different_axes() -> None:
     source = optical()
-    timeless = raster({"dem": np.zeros((8, 8), "uint16")}, geobox())
+    timeless = raster({"dem": (("y", "x"), np.zeros((8, 8), "uint16"))}, geobox())
     mixed = source.assign(dem=timeless.dem)
 
     with pytest.raises(ValueError, match="different axes"):
@@ -103,7 +116,15 @@ def test_to_numpy_casts_variables_onto_one_dtype() -> None:
 
 
 def test_to_numpy_refuses_a_raster_already_carrying_the_stacking_axis() -> None:
-    conflicting = raster({"pixels": np.zeros((3, 4, 4), "uint8")}, None, band=None)
+    conflicting = raster(
+        {
+            "pixels": (
+                ("band", "y", "x"),
+                np.zeros((3, 4, 4), "uint8"),
+            )
+        },
+        None,
+    )
 
     with pytest.raises(ValueError, match="already carries a 'band' dimension"):
         conflicting.gs.to_numpy()

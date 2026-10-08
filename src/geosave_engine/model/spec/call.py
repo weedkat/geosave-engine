@@ -57,14 +57,7 @@ class Ref:
 
 
 type CallValue = (
-    None
-    | bool
-    | int
-    | float
-    | str
-    | Ref
-    | list[CallValue]
-    | dict[str, CallValue]
+    None | bool | int | float | str | Ref | list[CallValue] | dict[str, CallValue]
 )
 
 
@@ -95,9 +88,7 @@ class CallSpec(SpecModel):
         return cls._validate_value(value)
 
     @classmethod
-    def _validate_value(
-        cls, value: object, active: set[int] | None = None
-    ) -> object:
+    def _validate_value(cls, value: object, active: set[int] | None = None) -> object:
         if value is None or isinstance(value, (Ref, str, bool, int)):
             return value
         if isinstance(value, float) and math.isfinite(value):
@@ -134,9 +125,7 @@ class CallSpec(SpecModel):
             )
         if isinstance(value, list):
             return tuple(
-                reference
-                for item in value
-                for reference in cls._find_references(item)
+                reference for item in value for reference in cls._find_references(item)
             )
         return ()
 
@@ -154,14 +143,10 @@ class CallSpec(SpecModel):
         """Select referenced roots, raising KeyError for missing inputs."""
         if missing := self.inputs - state.keys():
             raise KeyError(f"Missing call inputs: {sorted(missing)}")
-        return {
-            reference.root: state[reference.root] for reference in self.references
-        }
+        return {reference.root: state[reference.root] for reference in self.references}
 
     @classmethod
-    def _resolve_value(
-        cls, value: CallValue, inputs: Mapping[str, object]
-    ) -> object:
+    def _resolve_value(cls, value: CallValue, inputs: Mapping[str, object]) -> object:
         if isinstance(value, Ref):
             return value.resolve(inputs)
         if isinstance(value, dict):
@@ -172,9 +157,7 @@ class CallSpec(SpecModel):
             return [cls._resolve_value(item, inputs) for item in value]
         return value
 
-    def _resolve_target(
-        self, inputs: Mapping[str, object]
-    ) -> Callable[..., object]:
+    def _resolve_target(self, inputs: Mapping[str, object]) -> Callable[..., object]:
         if isinstance(self.call, Ref):
             target = self.call.resolve(inputs)
         else:

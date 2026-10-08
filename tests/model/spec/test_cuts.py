@@ -1,10 +1,10 @@
 from __future__ import annotations
 
+import geopandas as gpd
 import numpy as np
 import pytest
 from odc.geo.geobox import GeoBox
 
-from geosave_engine.geodata import raster, stack
 from geosave_engine.model.spec import FramesSpec, ChipsSpec
 
 
@@ -28,27 +28,61 @@ def test_a_window_needs_overlapping_tiles():
         ChipsSpec(size=4, window="hann")
 
 
+def _windows() -> gpd.GeoDataFrame:
+    """One whole window over an 8 by 8 sample with a dated and a timeless group."""
+    grid = _grid()
+    return gpd.GeoDataFrame(
+        [
+            {
+                "id": "s0",
+                "parent": None,
+                "stack": "s0",
+                "times": {
+                    "s2": [
+                        f"2024-01-{day}T00:00:00" for day in ("01", "11", "21", "31")
+                    ],
+                    "dem": None,
+                },
+                "start_datetime": None,
+                "end_datetime": None,
+                "crs": "EPSG:32748",
+                "transform": list(grid.transform)[:6],
+                "row_off": 0,
+                "col_off": 0,
+                "height": 8,
+                "width": 8,
+                "geometry": grid.extent.to_crs("EPSG:4326").geom,
+            }
+        ],
+        geometry="geometry",
+        crs="EPSG:4326",
+    )
+
+
 def test_layout_is_native_and_only_needs_pixel_dimensions():
     from tiler import Tiler
 
-    layout = ChipsSpec(size=4, overlap=2, mode="constant").tiler((8, 8))
+    layout, halo = ChipsSpec(size=4, overlap=2, mode="constant").layout((8, 8))
     assert isinstance(layout, Tiler)
     assert tuple(layout.tile_shape) == (4, 4)
     assert (layout.overlap, layout.mode) == (2, "constant")
-    assert layout.get_tile(np.zeros((8, 8)), 0).shape == (4, 4)
+    assert halo == [(1, 1), (1, 1)]
+    assert layout.get_tile(np.zeros(tuple(layout.data_shape)), 0).shape == (4, 4)
 
 
 def test_frames_are_cut_as_declared():
-    times = np.array(
-        ["2024-01-01", "2024-01-11", "2024-01-21", "2024-01-31"], "datetime64[ns]"
-    )
-    series = raster({"red": np.zeros((4, 8, 8), dtype="float32")}, _grid(), time=times)
-    flat = raster({"elevation": np.ones((8, 8), dtype="float32")}, _grid())
+    cut = FramesSpec(length=2, tolerance="1D").cut(_windows())
 
-    cut = FramesSpec(length=2, tolerance="1D").cut(stack({"s2": series, "dem": flat}))
+    assert cut["id"].tolist() == ["s0/frame-0", "s0/frame-1"]
+    assert [len(times["s2"]) for times in cut["times"]] == [2, 2]
+    assert all(times["dem"] is None for times in cut["times"])
 
-    assert [frame["s2"].sizes["time"] for frame in cut] == [2, 2]
-    assert all("time" not in frame["dem"].dims for frame in cut)
+
+def test_chips_are_cut_as_declared():
+    cut = ChipsSpec(size=4).cut(_windows())
+
+    assert cut["chip"].tolist() == [0, 1, 2, 3]
+    assert set(zip(cut["height"], cut["width"], strict=True)) == {(4, 4)}
 
 
 @pytest.mark.parametrize(

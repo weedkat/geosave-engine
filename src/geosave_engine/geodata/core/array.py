@@ -2,10 +2,11 @@
 
 from __future__ import annotations
 
-from typing import TYPE_CHECKING, Any, NamedTuple, Unpack, cast
+from typing import TYPE_CHECKING, Any, Literal, Unpack, cast
 
 import numpy as np
 import odc.geo.xr  # noqa: F401  — registers the .odc accessor
+import pandas as pd
 import xarray as xr
 from odc.geo.geobox import GeoBox
 
@@ -13,77 +14,65 @@ import geosave_engine.geodata.attrs as attrs
 from geosave_engine.geodata.transform import nodata
 
 from .base import GeoRasterAccessor
+from geosave_engine.geodata.utils.statistics import statistics
 from geosave_engine.geodata.conventions import (
     BAND_DIMENSION,
-    NOT_GEOREFERENCED_DIMENSIONS,
+    SPATIAL_DIMENSIONS,
 )
 
 if TYPE_CHECKING:
-    from collections.abc import Sequence
+    from collections.abc import Mapping, Sequence
     from os import PathLike
     from pathlib import Path
 
     import holoviews as hv
-    import pystac
     from numpy.typing import DTypeLike
 
     from geosave_engine.geodata.io.storage import StorageOptions
-    from geosave_engine.geodata.io.geotiff import (
+    from geosave_engine.geodata.io.raster.geotiff import (
         COGWriteOptions,
         GTiffWriteOptions,
     )
 
-    from geosave_engine.geodata import DataArray, Dataset
+    from geosave_engine.geodata import DataArray, Dataset, GeoDataFrame
 
 
 def array(
-    pixels: np.ndarray,
+    pixels: Any,
     geobox: GeoBox | None = None,
     /,
     *,
+    dims: Sequence[str],
+    coords: Mapping[str, Any] | None = None,
     nodata: float | int | None = None,
-    **coords: Sequence[Any] | np.ndarray | None,
 ) -> DataArray:
-    """Build one band from an array on a grid.
-
-    The array ends in the two spatial axes, which the geobox names, and lies
-    along the axes `coords` names ahead of them. It is `raster` with one
-    variable, which builds several bands at once as one Dataset.
+    """Build an array with explicit dimensions and optional grid placement.
 
     Args:
-        pixels: Values, ending in the two spatial axes.
-        geobox: Grid placing the trailing two axes. None leaves the band
-            unreferenced, so it holds pixels without claiming ground position.
-        nodata: Value standing for nodata pixels, written as
-            `Nodata.fill_value`. None writes no fill value.
-        **coords: Leading axis name mapped to its labels, in array order. None
-            labels an axis carrying none. Pass a name Python reserves as
-            `**{"class": labels}`.
+        pixels: NumPy or lazy array data.
+        geobox: Grid placing `y` and `x` for any CRS. None leaves pixels unreferenced.
+        dims: All dimensions in pixel-axis order, ending with `y` and `x`.
+        coords: Native xarray coordinates, independent of dimension order.
+            Omit a coordinate to leave its dimension unlabelled.
+        nodata: Stored value marking absent pixels. None writes no fill value.
 
     Returns:
-        Georeferenced DataArray when `geobox` is given, its spatial
-        coordinates naming what they measure, otherwise a DataArray carrying
-        no grid, whose spatial dims are named `y` and `x`.
+        Unnamed native DataArray preserving pixel dtype and laziness.
 
     Raises:
-        ValueError: `pixels` rank does not match `coords` plus the spatial
-            pair, its trailing axes do not match `geobox`, an axis is labelled
-            with the wrong number of values, or an axis name collides with a
-            coordinate the grid supplies.
+        ValueError: Dimensions, coordinates, or grid shape are incompatible.
 
     Examples:
-        >>> array(logits, geobox, **{"class": ["water", "urban", "crop"]})
-        <xarray.DataArray (class: 3, y: 512, x: 512)> Size: 3MB
-        Coordinates:
-          * class        (class) <U5 'water' 'urban' 'crop'
-          * y            (y) float64 5.005e+06 5.005e+06 ... 5e+06
-          * x            (x) float64 3e+05 3e+05 ... 3.051e+05
-            spatial_ref  int32 32633
+        >>> band = array(
+        ...     logits, geobox, dims=("class", "y", "x"),
+        ...     coords={"class": ["water", "urban", "crop"]},
+        ... )
+        >>> band.dims
+        ('class', 'y', 'x')
     """
     from .raster import raster
 
-    # A band is a one-variable raster, so it is built and checked the same way.
-    built = raster({"pixels": pixels}, geobox, nodata=nodata, **coords)
+    built = raster({"pixels": (dims, pixels)}, geobox, coords=coords, nodata=nodata)
     return cast("DataArray", built["pixels"].rename(None))
 
 
@@ -101,30 +90,10 @@ class GeoArray(GeoRasterAccessor["DataArray"]):
         >>> ds["ndvi"].gs.plot(cmap="RdYlGn")
     """
 
-    def __init__(self, data: xr.DataArray) -> None:
-        """Bind the DataArray.
-
-        Args:
-            data: DataArray to read through this accessor.
-        """
-        self._data = cast("DataArray", data)
-
     @property
     def variables(self) -> tuple[str, ...]:
         """Name this array as a data variable, when it has a name."""
         return () if self._data.name is None else (str(self._data.name),)
-
-    @property
-    def grid_dims(self) -> tuple[str, str]:
-        """Name the two dimensions the grid spans.
-
-        Returns:
-            `("y", "x")` for a projected CRS, `("latitude", "longitude")` for
-            a geographic one, and `("y", "x")` for a band carrying no grid,
-            whose pixels span those axes without claiming ground position.
-        """
-        grid = self._data.odc.geobox
-        return NOT_GEOREFERENCED_DIMENSIONS if grid is None else grid.dimensions
 
     @property
     def axes(self) -> dict[str, np.ndarray | None]:
@@ -140,13 +109,12 @@ class GeoArray(GeoRasterAccessor["DataArray"]):
             >>> ds["ndvi"].gs.axes
             {'time': array(['2025-06-01T00:00:00.000000000'], dtype='datetime64[ns]')}
         """
-        grid_dims = self.grid_dims
         return {
             str(dim): self._data.coords[dim].values
             if dim in self._data.coords
             else None
             for dim in self._data.dims
-            if dim not in grid_dims
+            if dim not in SPATIAL_DIMENSIONS
         }
 
     @property
@@ -201,9 +169,8 @@ class GeoArray(GeoRasterAccessor["DataArray"]):
         if BAND_DIMENSION in self._data.dims:
             ahead.append(BAND_DIMENSION)
 
-        ordered = self._data.transpose(*ahead, *self.grid_dims).values
+        ordered = self._data.transpose(*ahead, *SPATIAL_DIMENSIONS).values
         return ordered if dtype is None else ordered.astype(dtype)
-
 
     def to_cog(
         self,
@@ -277,7 +244,7 @@ class GeoArray(GeoRasterAccessor["DataArray"]):
                 dimension rather than a scalar coordinate.
             FileExistsError: `path` exists and `overwrite` is false.
         """
-        from geosave_engine.geodata.io.geotiff import write_gtiff
+        from geosave_engine.geodata.io.raster.geotiff import write_gtiff
 
         return write_gtiff(
             self.to_raster(),
@@ -288,46 +255,37 @@ class GeoArray(GeoRasterAccessor["DataArray"]):
             **options,
         )
 
-    def to_items(
+    def vectorize(
         self,
-        path: str | PathLike[str],
         *,
-        collection: str | None = None,
-        map_scale: float | None = None,
-        overwrite: bool = False,
-        storage_options: StorageOptions | None = None,
-        **options: Unpack[COGWriteOptions],
-    ) -> tuple[pystac.Item, ...]:
-        """Save this band as COGs and describe them as STAC Items.
+        value_name: str = "value",
+        mask: xr.DataArray | np.ndarray | None = None,
+        connectivity: Literal[4, 8] = 4,
+    ) -> GeoDataFrame:
+        """Polygonize contiguous values of this flag plane.
+
+        This computes lazy flags, because geometry depends on their values.
 
         Args:
-            path: Name to save the band under, as a local path or fsspec URL
-                without a TIFF suffix.
-            collection: Name the Items share. None names them after `path`.
-            map_scale: Map denominator for TIFF resolution tags.
-            overwrite: Replace existing files.
-            storage_options: Options for the filesystem a URL names.
-            **options: COG creation options.
+            value_name: Property column receiving each region's value.
+            mask: Optional exact-grid mask selecting additional valid pixels.
+            connectivity: Four- or eight-neighbour region connectivity.
 
         Returns:
-            One Item per instant, each holding this band as its one asset.
+            One row per contiguous region, in this array's CRS.
 
         Raises:
-            ValueError: This band is unnamed or timeless.
-            FileExistsError: A file exists and `overwrite` is false.
+            ValueError: The array, mask, name, connectivity or dtype is
+                unsuitable for polygonization.
 
         Examples:
-            >>> [item.id for item in ds["ndvi"].gs.to_items("samples/ndvi")]
-            ['ndvi_20250601T103031', 'ndvi_20250611T103031']
+            >>> prediction.gs.vectorize(value_name="class")["class"].tolist()
+            [1, 2]
         """
-        return self.to_raster().gs.to_items(
-            path,
-            driver="cog",
-            collection=collection,
-            map_scale=map_scale,
-            overwrite=overwrite,
-            storage_options=storage_options,
-            **options,
+        from geosave_engine.geodata.transform.vector import vectorize
+
+        return vectorize(
+            self._data, value_name=value_name, mask=mask, connectivity=connectivity
         )
 
     def to_raster(self) -> Dataset:
@@ -362,61 +320,40 @@ class GeoArray(GeoRasterAccessor["DataArray"]):
                 f"{BAND_DIMENSION!r} coordinate first"
             )
 
-        stacked = self.attrs.coords[BAND_DIMENSION].get(attrs.StackedAttrs)
+        source = self.attrs
+        preserved = source.coords[BAND_DIMENSION].get(attrs.StackedAttrs)
         raster = cast("Dataset", self._data.to_dataset(dim=BAND_DIMENSION))
-        own = {} if stacked is None else stacked.variable_attrs or {}
-        for name in raster.data_vars:
-            raster[name].attrs = {**own.get(str(name), {}), **self._data.attrs}
-        raster.attrs = {} if stacked is None else dict(stacked.dataset_attrs or {})
+        header = (preserved or attrs.StackedAttrs()).to_header(
+            variables=(str(name) for name in raster.data_vars), shared=source.root
+        )
+        raster.attrs = {}
+        attrs.rebase(raster, header, inplace=True)
         return raster
 
-    def statistics(self) -> BandSummary:
-        """Summarise this band's present pixels, reading every one of them.
+    def statistics(self) -> pd.DataFrame:
+        """Summarise present pixels, with one table row per band.
 
-        A pixel is absent where it is NaN or holds the band's own fill value,
-        which is what GDAL summarises too. A chunked band is computed, so this
-        costs a full read.
+        NaN and each band's own fill value are excluded. This eagerly reads
+        every band. A `band` axis is split through `to_raster`, preserving its
+        labels and each band's metadata. Other axes are reduced together.
 
         Returns:
-            Summary of the pixels this band calls present.
+            DataFrame with minimum, maximum, mean, population stddev, and
+            valid_percent columns. Rows follow band order; without a band
+            axis, the single row uses the array's name, or None when unnamed.
 
         Raises:
-            ValueError: Every pixel is absent, so there is nothing to
-                summarise.
+            ValueError: A band holds no present pixels, or the band axis
+                carries no labels to identify its bands.
 
         Examples:
             >>> ds["B04"].gs.statistics()
-            BandSummary(minimum=1.0, maximum=63.0, mean=32.0, stddev=18.2, valid_percent=98.4)
+                 minimum  maximum  mean  stddev  valid_percent
+            B04      1.0     63.0  32.0    18.2           98.4
         """
-        fill = attrs.Nodata.from_attrs(self._data.attrs)
-        values = (
-            self._data
-            if fill is None or fill.fill_value is None
-            else self._data.where(self._data != fill.fill_value)
-        )
-
-        summary = xr.Dataset(
-            {
-                "present": values.notnull().sum(),
-                "minimum": values.min(),
-                "maximum": values.max(),
-                "mean": values.mean(),
-                "stddev": values.std(),
-            }
-        ).compute()
-        present = int(summary["present"])
-        if not present:
-            raise ValueError(
-                f"{self._data.name} holds no present pixel, so it summarises to "
-                f"nothing; drop the band or give it pixels that are not fill"
-            )
-        return BandSummary(
-            minimum=float(summary["minimum"]),
-            maximum=float(summary["maximum"]),
-            mean=float(summary["mean"]),
-            stddev=float(summary["stddev"]),
-            valid_percent=100.0 * present / values.size,
-        )
+        if BAND_DIMENSION in self._data.dims:
+            return self.to_raster().gs.statistics()
+        return statistics({self._data.name: self._data})
 
     def colorize(self) -> DataArray:
         """Bake the class colours this band carries into display channels.
@@ -438,41 +375,9 @@ class GeoArray(GeoRasterAccessor["DataArray"]):
             >>> ds["landcover"].gs.colorize().sizes["band"]
             3
         """
-        from geosave_engine.geodata.utils.color import parse_color
+        from geosave_engine.geodata.transform import color
 
-        legend = attrs.Legend.from_attrs(self._data.attrs)
-        class_map = None if legend is None else legend.class_map
-        if legend is None or class_map is None:
-            raise ValueError(
-                "band lists no classes, so its values name none to colour; write "
-                "a Legend, or compose channels with GeoRaster.to_array"
-            )
-
-        colour_of = legend.color_map or {}
-        codes = sorted(class_map)
-        missing_colour = [code for code in codes if code not in colour_of]
-        if missing_colour:
-            raise ValueError(
-                f"classes {missing_colour} carry no colour; give Legend.color_map an "
-                f"entry for every class the band lists"
-            )
-
-        palette = np.array(
-            [parse_color(colour_of[code]) for code in codes], dtype="float32"
-        )
-        palette /= 255.0  # (class, 3)
-
-        pixels = self._data.values
-        names_class = np.isin(pixels, codes)
-        code_index = np.where(names_class, np.searchsorted(codes, pixels), 0)
-        channels = np.where(names_class[..., None], palette[code_index], np.nan)
-
-        return array(
-            np.moveaxis(channels, -1, -3),  # (*axes, band, y, x)
-            self._data.odc.geobox,
-            nodata=None,  # absence is NaN here, which no fill value stands for
-            **{**self.axes, BAND_DIMENSION: ["red", "green", "blue"]},
-        )
+        return cast("DataArray", color.colorize(self._data))
 
     def plot(
         self,
@@ -528,26 +433,3 @@ class GeoArray(GeoRasterAccessor["DataArray"]):
             title=title,
             xlabel=caption,
         )
-
-
-class BandSummary(NamedTuple):
-    """What one band's present pixels amount to.
-
-    Args:
-        minimum: Smallest value among the present pixels.
-        maximum: Largest value among them.
-        mean: Their arithmetic mean.
-        stddev: Their population standard deviation.
-        valid_percent: Share of the band's pixels that are present, as a
-            percentage.
-
-    Examples:
-        >>> ds["B04"].gs.statistics()
-        BandSummary(minimum=1.0, maximum=63.0, mean=32.0, stddev=18.2, valid_percent=98.4)
-    """
-
-    minimum: float
-    maximum: float
-    mean: float
-    stddev: float
-    valid_percent: float

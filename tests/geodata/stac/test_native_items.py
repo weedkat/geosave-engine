@@ -1,13 +1,17 @@
-"""Native STAC Items integrate with the GeoDataFrame accessor."""
+"""Native STAC Items from other producers fit the item table."""
 
+import shutil
 from datetime import UTC, datetime
 from pathlib import Path
 
+import pyarrow.parquet as pq
 import pystac
 import pytest
 from shapely.geometry import mapping
+from stac_geoparquet.arrow import stac_table_to_items
 
-from geosave_engine.geodata import GeoVector, io
+from geosave_engine.geodata import io
+from geosave_engine.geodata.stac import table
 from tests.geodata.conftest import build_raster
 
 
@@ -37,16 +41,16 @@ def _item(tmp_path, name="scene"):
     return item, source
 
 
-def test_native_item_insertion_does_not_require_xarray_metadata(tmp_path):
+def test_a_native_item_needs_no_geosave_fields(tmp_path):
     entry, _ = _item(tmp_path)
-    frame = GeoVector.from_items([entry])
-    updated = frame.gs.upsert(entry, on="id")
-    assert updated.id.tolist() == [entry.id]
-    assert updated.iloc[0]["provider:quality"] == "good"
-    assert "raster_metadata" not in frame
-    assert not any(name.startswith("geosave:") for name in frame.columns)
+
+    rows = table.from_items([entry])
+
+    assert rows.id.tolist() == [entry.id]
+    assert rows.iloc[0]["provider:quality"] == "good"
+    assert not any(name.startswith("geosave:") for name in rows.columns)
     assert (
-        frame.iloc[0].assets["reflectance"]["href"] == entry.assets["reflectance"].href
+        rows.iloc[0].assets["reflectance"]["href"] == entry.assets["reflectance"].href
     )
 
 
@@ -54,16 +58,14 @@ def test_relative_assets_resolve_without_mutating_the_item(tmp_path):
     entry, _ = _item(tmp_path)
     entry.assets["reflectance"].href = "scene.tif"
     entry.set_self_href(str(tmp_path / "scene.json"))
-    frame = GeoVector.from_items([entry])
+
+    rows = table.from_items([entry])
+
     assert entry.assets["reflectance"].href == "scene.tif"
-    assert frame.iloc[0].assets["reflectance"]["href"] == str(tmp_path / "scene.tif")
+    assert rows.iloc[0].assets["reflectance"]["href"] == str(tmp_path / "scene.tif")
 
 
-def test_explicit_stac_serializer_retains_item_and_asset_properties(tmp_path):
-    import pyarrow.parquet as pq
-    from stac_geoparquet.arrow import stac_table_to_items
-    from pandas.testing import assert_frame_equal
-
+def test_a_written_table_retains_item_and_asset_properties(tmp_path):
     first, source = _item(tmp_path, "first")
     second, _ = _item(tmp_path, "second")
     bands = [
@@ -73,28 +75,28 @@ def test_explicit_stac_serializer_retains_item_and_asset_properties(tmp_path):
     first.assets["reflectance"].extra_fields["bands"] = bands
     second.properties["new:property"] = 7
     second.assets["other"] = second.assets.pop("reflectance")
-    frame = GeoVector.from_items([first, second]).iloc[::-1]
-    original = frame.copy(deep=True)
-    saved = frame.gs.to_geoparquet(tmp_path / "items.parquet")
-    assert_frame_equal(frame, original)
-    schema = pq.read_schema(saved)
-    assert b"stac-geoparquet" in schema.metadata
+
+    saved = table.write([second, first], tmp_path / "items.parquet")
+
     restored = list(stac_table_to_items(pq.read_table(saved)))
     assert [entry["id"] for entry in restored] == ["second", "first"]
     assert restored[0]["properties"]["new:property"] == 7
     assert restored[1]["assets"]["reflectance"]["bands"] == bands
 
 
-def test_a_stac_table_keeps_its_bbox_through_read_and_rewrite(tmp_path):
-    import pyarrow.parquet as pq
-    import pytest
-    from stac_geoparquet.arrow import stac_table_to_items
+def test_only_data_assets_load(tmp_path):
+    entry, source = _item(tmp_path)
 
-    from geosave_engine.geodata import read_vector
+    loaded = table.load([entry])
 
+    assert list(loaded.data_vars) == list(source.data_vars)
+    loaded.close()
+
+
+def test_a_table_keeps_its_bbox_through_read_and_rewrite(tmp_path):
     entry, _ = _item(tmp_path)
-    first = GeoVector.from_items([entry]).gs.to_geoparquet(tmp_path / "catalog.parquet")
-    second = read_vector(first).gs.to_geoparquet(tmp_path / "again.parquet")
+    first = table.write([entry], tmp_path / "catalog.parquet")
+    second = table.write(table.read(first), tmp_path / "again.parquet")
 
     for path in (first, second):
         (restored,) = stac_table_to_items(pq.read_table(path))
@@ -102,39 +104,30 @@ def test_a_stac_table_keeps_its_bbox_through_read_and_rewrite(tmp_path):
 
 
 def test_an_edited_geometry_changes_the_bbox_written(tmp_path):
-    import pyarrow.parquet as pq
-    from stac_geoparquet.arrow import stac_table_to_items
-
     entry, _ = _item(tmp_path)
-    frame = GeoVector.from_items([entry])
-    frame = frame.set_geometry(frame.geometry.translate(xoff=1.0))
+    rows = table.from_items([entry])
+    rows = rows.set_geometry(rows.geometry.translate(xoff=1.0))
 
     (restored,) = stac_table_to_items(
-        pq.read_table(frame.gs.to_geoparquet(tmp_path / "catalog.parquet"))
+        pq.read_table(table.write(rows, tmp_path / "catalog.parquet"))
     )
 
     assert restored["bbox"][0] == pytest.approx(entry.bbox[0] + 1.0)
 
 
 @pytest.mark.parametrize("folder", ["dataset", "data set"])
-def test_a_stac_table_follows_its_assets_when_moved(tmp_path, folder):
-    import shutil
-
-    import pyarrow.parquet as pq
-
-    from geosave_engine.geodata import read_vector
-
+def test_a_table_follows_its_assets_when_moved(tmp_path, folder):
     home = tmp_path / folder
     home.mkdir()
     entry, _ = _item(home)
-    table = GeoVector.from_items([entry]).gs.to_geoparquet(home / "catalog.parquet")
-    stored = pq.read_table(table).column("assets")[0].as_py()
+    saved = table.write([entry], home / "catalog.parquet")
+    stored = pq.read_table(saved).column("assets")[0].as_py()
     assert stored["reflectance"]["href"] == "./scene.tif"
     assert stored["thumbnail"]["href"] == "https://example.com/thumb.jpg"
 
     moved = tmp_path / "moved"
     shutil.move(home, moved)
 
-    href = read_vector(moved / "catalog.parquet").iloc[0].assets["reflectance"]["href"]
+    href = table.read(moved / "catalog.parquet").iloc[0].assets["reflectance"]["href"]
     assert href == str(moved / "scene.tif")
     assert Path(href).is_file()

@@ -68,7 +68,9 @@ def build_optimizer(
             )
         selected.update(identities)
 
-        trainable = [parameter for parameter in child_parameters if parameter.requires_grad]
+        trainable = [
+            parameter for parameter in child_parameters if parameter.requires_grad
+        ]
         if trainable:
             parameter_groups.append({"params": trainable, **options})
 

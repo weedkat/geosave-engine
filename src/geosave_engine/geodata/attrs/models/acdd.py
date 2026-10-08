@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-from typing import ClassVar
 
 from geosave_engine.geodata.attrs.model import AttrsModel
 
@@ -27,8 +26,6 @@ class ACDD(AttrsModel):
         >>> ds.gs.attrs.root.get(ACDD).license
         'CC-BY-4.0'
     """
-
-    NAME: ClassVar[str] = "acdd"
 
     id: str | None = None
     title: str | None = None

@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from typing import Annotated, ClassVar
+from typing import Annotated
 
 from geosave_engine.geodata.attrs.model import MUST_AGREE, AttrsModel
 
@@ -23,8 +23,6 @@ class Packing(AttrsModel):
         >>> ds.gs.attrs.data_vars["B04"].get(Packing)
         Packing(scale_factor=0.0001, add_offset=-0.1)
     """
-
-    NAME: ClassVar[str] = "packing"
 
     scale_factor: Annotated[float | None, MUST_AGREE] = None
     add_offset: Annotated[float | None, MUST_AGREE] = None

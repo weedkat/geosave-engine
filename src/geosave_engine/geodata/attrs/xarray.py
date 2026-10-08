@@ -44,7 +44,9 @@ def create_header(obj: XarrayObject) -> AttrsHeader:
     coords = {str(name): coord.attrs for name, coord in obj.coords.items()}
     # A DataArray is one variable, so its own attrs are a variable's.
     if isinstance(obj, xr.DataArray):
-        return AttrsHeader.from_attrs(root=obj.attrs, root_scope="variable", coords=coords)
+        return AttrsHeader.from_attrs(
+            root=obj.attrs, root_scope="variable", coords=coords
+        )
     data_vars = {str(name): variable.attrs for name, variable in obj.data_vars.items()}
     return AttrsHeader.from_attrs(root=obj.attrs, data_vars=data_vars, coords=coords)
 
@@ -157,7 +159,8 @@ class AttrsEdit:
         if self.namespace.scope not in (None, target_scope):
             where = "the root" if self.target is None else repr(self.target)
             raise ValueError(
-                f"{', '.join(self.namespace.models)} belongs on a {self.namespace.scope}; "
+                f"{', '.join(model.__name__ for model in self.namespace.models)} "
+                f"belongs on a {self.namespace.scope}; "
                 f"{where} of this {type(obj).__name__} holds {target_scope} attrs"
             )
 
@@ -270,7 +273,7 @@ def rebase[T: XarrayObject](
                 )
             # One edit per model, so models patch in order and the last wins per key.
             edits = [
-                AttrsEdit(name, AttrsNamespace({model.NAME: model}))
+                AttrsEdit(name, AttrsNamespace({type(model): model}))
                 for model in attrs_models
                 for name in targets
             ]
@@ -283,10 +286,10 @@ def rebase[T: XarrayObject](
                     key
                     for field_name, value in values.items()
                     if value is None
-                    for key in model_type.attr_keys(field_name)
+                    for key in model_type.keys_for(field_name)
                 )
                 # The model rides along even when empty, so its scope is still checked.
-                namespace = AttrsNamespace({model_name: model_type(**set_values)})
+                namespace = AttrsNamespace({model_type: model_type(**set_values)})
                 edits += [AttrsEdit(name, namespace, drop=drop) for name in targets]
 
     # A failed write must leave `obj` untouched, even inplace, so try every edit on a copy first.

@@ -32,6 +32,7 @@ def to_tensor(
 
     Select and order Dataset variables with xarray before conversion. Leading
     axes retain their order, followed by bands and the spatial dimensions.
+    Read-only pixel buffers are copied so tensor operations can safely write.
 
     Args:
         data: Prepared raster, band, or stack of named rasters.
@@ -64,7 +65,7 @@ def to_tensor(
         target_dtype = dtype
 
     if target_dtype is None:
-        values = np.ascontiguousarray(data.gs.to_numpy())
+        values = np.require(data.gs.to_numpy(), requirements=["C", "W"])
         try:
             return torch.as_tensor(values)
         except (TypeError, ValueError) as error:
@@ -77,7 +78,8 @@ def to_tensor(
     except TypeError:
         reading_dtype = np.dtype("float32")
     return torch.as_tensor(
-        np.ascontiguousarray(data.gs.to_numpy(dtype=reading_dtype)), dtype=target_dtype
+        np.require(data.gs.to_numpy(dtype=reading_dtype), requirements=["C", "W"]),
+        dtype=target_dtype,
     )
 
 

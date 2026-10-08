@@ -15,24 +15,24 @@ Examples:
 
 from . import (
     chip,
+    color,
     composite,
     concat,
     merge,
     nodata,
     packing,
-    time,
     vector,
     warp,
 )
 
 __all__ = [
     "chip",
+    "color",
     "composite",
     "concat",
     "merge",
     "nodata",
     "packing",
-    "time",
     "vector",
     "warp",
 ]

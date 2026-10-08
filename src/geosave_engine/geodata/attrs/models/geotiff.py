@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 from datetime import datetime
-from typing import TYPE_CHECKING, ClassVar, Literal, Self
+from typing import TYPE_CHECKING, Literal, Self
 
 import numpy as np
 from odc.geo.geobox import GeoBox
@@ -44,8 +44,6 @@ class GeoTIFFTags(AttrsModel):
     Examples:
         >>> ds.gs.rebase(geotiff_tags={"TIFFTAG_ARTIST": "GeoSave"})
     """
-
-    NAME: ClassVar[str] = "geotiff_tags"
 
     TIFFTAG_DOCUMENTNAME: str | None = None
     TIFFTAG_IMAGEDESCRIPTION: str | None = None
@@ -95,9 +93,7 @@ class GeoTIFFTags(AttrsModel):
             instant = time.values
             if isinstance(instant, np.datetime64) and not np.isnat(instant):
                 values["TIFFTAG_DATETIME"] = instant.astype("datetime64[s]")
-                values["GEOSAVE_DATETIME"] = np.datetime_as_string(
-                    instant, unit="auto"
-                )
+                values["GEOSAVE_DATETIME"] = np.datetime_as_string(instant, unit="auto")
             else:
                 values["TIFFTAG_DATETIME"] = instant
                 values["GEOSAVE_DATETIME"] = None
@@ -112,9 +108,7 @@ class GeoTIFFTags(AttrsModel):
 
             grid = obj.odc.geobox
             if not isinstance(grid, GeoBox):
-                raise ValueError(
-                    "map_scale needs a regular grid with a projected CRS"
-                )
+                raise ValueError("map_scale needs a regular grid with a projected CRS")
             if grid.crs is None or not grid.crs.projected:
                 raise ValueError("map_scale needs a regular grid in a projected CRS")
 
@@ -190,9 +184,7 @@ class GeoTIFFTags(AttrsModel):
         try:
             instant = np.datetime64(value)
         except ValueError:
-            raise ValueError(
-                "GEOSAVE_DATETIME needs an ISO 8601 instant"
-            ) from None
+            raise ValueError("GEOSAVE_DATETIME needs an ISO 8601 instant") from None
         if np.isnat(instant):
             raise ValueError("GEOSAVE_DATETIME needs an ISO 8601 instant")
         return value

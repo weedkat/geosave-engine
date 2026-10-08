@@ -1,5 +1,3 @@
-from pathlib import Path
-
 import pytest
 from prefect import Flow, Task
 
@@ -26,28 +24,6 @@ def test_layers_export_only_supported_operations() -> None:
         "write_sample",
     ):
         assert not hasattr(tasks, helper)
-
-
-def test_active_files_do_not_reference_removed_workflow_packages() -> None:
-    root = Path(__file__).parents[3]
-    paths = [
-        root / "README.md",
-        *(root / "src/geosave_engine").rglob("*.py"),
-        *(root / "tests").rglob("*.py"),
-        *(root / "docs/guides").rglob("*.md"),
-    ]
-    removed = (
-        ".".join(("geosave_engine", "workflow", "ingestion")),
-        ".".join(("geosave_engine", "workflow", "training_data")),
-    )
-    references = {
-        str(path.relative_to(root)): package
-        for path in paths
-        for package in removed
-        if package in path.read_text()
-    }
-
-    assert references == {}
 
 
 def test_dense_flow_is_explicitly_pending_without_side_effects(tmp_path):

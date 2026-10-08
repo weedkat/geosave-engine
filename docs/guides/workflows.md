@@ -41,8 +41,9 @@ geosave workflow ingest \
 | `--help` | No | — | Show command help. |
 
 The sample opens with `read_stack("data/scenes/s1")`, one group per model
-raster. To list the sample in a catalog, build its row with
-`stac.item.from_assets` over one `stac.asset.from_path` per raster.
+raster. To list the sample in a catalog, build one Item per group with
+`stac.create_stack_items(paths, name="s1")`, where `paths` maps each group to its
+saved files, and store them with `stac.table.write`.
 
 The anchor may copy an existing raster's exact grid and time:
 

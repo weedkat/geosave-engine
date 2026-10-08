@@ -187,3 +187,53 @@ def test_preprocess_checks_a_supplied_raster_no_call_reads(raw) -> None:
         model.preprocess({"optical": raw["optical"], "elevation": raw["optical"]})
 
     assert caught.value.__notes__ == ["While validating raster 'elevation'"]
+
+
+def test_preprocessing_hands_features_a_dataset_and_literal_selectors() -> None:
+    import dask.array as da
+
+    from tests.geodata.features.conftest import sentinel
+
+    scene = sentinel({"time": 1, "y": 16, "x": 16})
+    model = ModelSpec.model_validate(
+        {
+            "schema_version": 2,
+            "rasters": {
+                "optical": {"variables": ["B10"], "coordinates": ["sun_azimuth"]}
+            },
+            "preprocessing": {
+                "cloud": {
+                    "call": "geosave_engine.geodata.features.cirrus_cloud_mask",
+                    "kwargs": {"scene": Ref("optical"), "b10": "B10"},
+                },
+                "cloud_scene": {
+                    "call": Ref("optical.assign"),
+                    "kwargs": {"cloud": Ref("cloud")},
+                },
+                "shadow": {
+                    "call": "geosave_engine.geodata.features.shadow_mask",
+                    "kwargs": {
+                        "scene": Ref("cloud_scene"),
+                        "cloud": "cloud",
+                        "sun_azimuth": "sun_azimuth",
+                        "shadow_distance_m": 30,
+                    },
+                },
+                "image": {
+                    "call": Ref("optical.assign"),
+                    "kwargs": {"cloud": Ref("cloud"), "shadow": Ref("shadow")},
+                },
+            },
+            "inputs": {"image": Ref("image")},
+        }
+    )
+
+    image = model.preprocess({"optical": scene})["image"]
+
+    assert list(image.data_vars) == ["B10", "cloud", "shadow"]
+    assert isinstance(image.shadow.data, da.Array)
+    assert image.shadow.dtype == bool
+    assert image.gs.geobox == scene.gs.geobox
+
+    with pytest.raises(KeyError, match="sun_azimuth"):
+        model.preprocess({"optical": scene.drop_vars("sun_azimuth")})

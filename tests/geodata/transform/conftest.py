@@ -60,12 +60,12 @@ def build(
     """
     shape = (times, *box.shape)
     data: dict[str, tuple[tuple[str, ...], np.ndarray]] = {
-        "red": (("time", *box.dimensions), np.full(shape, 1000, "uint16"))
+        "red": (("time", "y", "x"), np.full(shape, 1000, "uint16"))
     }
     if labelled:
-        data["cls"] = (("time", *box.dimensions), np.full(shape, 1, "uint8"))
+        data["cls"] = (("time", "y", "x"), np.full(shape, 1, "uint8"))
 
-    coords = dict(xr_coords(box))
+    coords = dict(xr_coords(box, always_yx=True))
     coords["time"] = xr.DataArray(
         pd.date_range(start, periods=times, freq="D").values, dims="time"
     )

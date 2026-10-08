@@ -14,7 +14,11 @@ import numpy as np
 import odc.geo.xr  # noqa: F401  — registers the .odc accessor
 import xarray as xr
 
-from geosave_engine.geodata.conventions import BAND_DIMENSION, TIME_COORDINATE
+from geosave_engine.geodata.conventions import (
+    BAND_DIMENSION,
+    SPATIAL_DIMENSIONS,
+    TIME_COORDINATE,
+)
 from matplotlib.colors import ListedColormap
 
 from geosave_engine.geodata.utils.color import parse_color
@@ -172,7 +176,7 @@ def continuous(
         >>> continuous(ds["ndvi"], cmap="RdYlGn")
         >>> continuous(monthly["ndvi"], cols=6)  # one panel per month
     """
-    y, x = array.odc.geobox.dimensions
+    y, x = SPATIAL_DIMENSIONS
     has_time = TIME_COORDINATE in array.dims
     drawn = array.hvplot.image(
         x=x,
@@ -226,7 +230,7 @@ def rgb(
         >>> rgb(ds.gs.to_array(["B04", "B03", "B02"]), stretch=(0.0, 0.3))
         >>> rgb(monthly.gs.to_array(["B04", "B03", "B02"]), cols=6)
     """
-    y, x = array.odc.geobox.dimensions
+    y, x = SPATIAL_DIMENSIONS
     has_time = TIME_COORDINATE in array.dims
 
     if stretch is None:
@@ -310,7 +314,7 @@ def classes(
         ...     cols=6,  # one panel per year
         ... )
     """
-    y, x = array.odc.geobox.dimensions
+    y, x = SPATIAL_DIMENSIONS
     has_time = TIME_COORDINATE in array.dims
 
     uncoloured = sorted(code for code in class_map if code not in color_map)

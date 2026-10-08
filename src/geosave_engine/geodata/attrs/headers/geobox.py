@@ -6,6 +6,8 @@ from typing import TYPE_CHECKING
 
 from odc.geo.xr import xr_coords
 
+from geosave_engine.geodata.conventions import SPATIAL_DIMENSIONS
+
 from ..header import AttrsHeader
 
 if TYPE_CHECKING:
@@ -19,8 +21,8 @@ def create_header(geobox: GeoBox) -> AttrsHeader:
         geobox: Grid carrying a CRS.
 
     Returns:
-        Header naming only the grid's coordinates, under the grid's dimension
-        names, each holding odc's `units`, `resolution`, and `crs` plus CF's
+        Header naming only the grid's coordinates, under `y` and `x`, each
+        holding odc's `units`, `resolution`, and `crs` plus CF's
         `standard_name` and `axis`.
 
     Raises:
@@ -37,21 +39,24 @@ def create_header(geobox: GeoBox) -> AttrsHeader:
             "geobox carries no CRS, so its axes measure pixels rather than "
             "ground position; assign one before describing them"
         )
-    names = (
-        ("latitude", "longitude")
-        if crs.geographic
-        else ("projection_y_coordinate", "projection_x_coordinate")
-    )
-    coords = xr_coords(geobox)
+    y_dim, x_dim = SPATIAL_DIMENSIONS
+    coords = xr_coords(geobox, always_yx=True)
+    if crs.geographic:
+        y_name, x_name = "latitude", "longitude"
+    else:
+        y_name, x_name = "projection_y_coordinate", "projection_x_coordinate"
+
     return AttrsHeader.from_attrs(
         coords={
-            str(dimension): {
-                **coords[dimension].attrs,
-                "standard_name": name,
-                "axis": axis,
-            }
-            for dimension, name, axis in zip(
-                geobox.dimensions, names, ("Y", "X"), strict=True
-            )
+            y_dim: {
+                **coords[y_dim].attrs,
+                "standard_name": y_name,
+                "axis": "Y",
+            },
+            x_dim: {
+                **coords[x_dim].attrs,
+                "standard_name": x_name,
+                "axis": "X",
+            },
         }
     )

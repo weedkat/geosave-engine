@@ -21,6 +21,7 @@ from geosave_engine.ml.builders import (
 from geosave_engine.model.chain import ModelChain
 from geosave_engine.model.registry import build_model
 from geosave_engine.geodata.warnings import GeoSaveWarning
+from geosave_engine.geodata.conventions import SPATIAL_DIMENSIONS
 
 
 @dataclass
@@ -29,6 +30,7 @@ class _Evaluation:
 
     remaining: set[str]
     mergers: dict[str, Merger] = field(default_factory=dict)
+    halos: dict[str, list[tuple[int, int]]] = field(default_factory=dict)
 
 
 class Module(LightningModule):
@@ -36,8 +38,8 @@ class Module(LightningModule):
 
     A batch is ``(model_inputs, target, ids, valid)``. Training scores each tile;
     validation and test merge tile logits and score each raster whole, so
-    their datasets supply original parents, reference IDs, native tilers,
-    and explicit padding. Scene evaluation currently requires a single device;
+    their datasets supply original parents and the window table their ids
+    name. Scene evaluation currently requires a single device;
     tile-sharded distributed evaluation cannot complete the local scenes.
 
     Args:
@@ -276,10 +278,14 @@ class Module(LightningModule):
         ):
             if sample_id not in state.remaining:
                 raise ValueError(f"prediction {sample_id!r} was already accumulated")
-            parent_id = row.parent_id
+            parent_id = row.parent
             if parent_id not in state.mergers:
+                # The layout a cut used is rebuilt from the same shape and settings.
+                tiler, state.halos[parent_id] = dataset.spec.chips.layout(
+                    tuple(dataset.parents[parent_id].gs.anchor.geobox.shape)
+                )
                 state.mergers[parent_id] = Merger(
-                    dataset.tilers[parent_id],
+                    tiler,
                     logits=self.num_classes + 1,
                     window=dataset.spec.chips.window,
                     save_visits=False,
@@ -288,18 +294,18 @@ class Module(LightningModule):
                 )
             # Coverage uses the same native taper as logits, excluding invalid tiles.
             contribution = np.concatenate([np.where(mask, values, 0), mask[None]])
-            state.mergers[parent_id].add(int(row.tile_id), contribution)
+            state.mergers[parent_id].add(int(row.chip), contribution)
             state.remaining.remove(sample_id)
 
         completed = []
-        for parent_id in rows.parent_id.unique():
+        for parent_id in rows.parent.unique():
             expected = dataset.reference.loc[
-                dataset.reference.parent_id == parent_id, "id"
+                dataset.reference.parent == parent_id, "id"
             ]
             if state.remaining.intersection(expected):
                 continue
             sums = state.mergers.pop(parent_id).merge(
-                extra_padding=dataset.padding[parent_id],
+                extra_padding=state.halos.pop(parent_id),
                 normalize_by_weights=False,
             )
             coverage = sums[-1]
@@ -309,8 +315,8 @@ class Module(LightningModule):
             image = next(iter(parent.gs.rasters.values()))
             labels = parent[dataset.target].dataset
             if image.gs.geobox != labels.gs.geobox or tuple(
-                image.sizes[d] for d in image.gs.grid_dims
-            ) != tuple(labels.sizes[d] for d in labels.gs.grid_dims):
+                image.sizes[d] for d in SPATIAL_DIMENSIONS
+            ) != tuple(labels.sizes[d] for d in SPATIAL_DIMENSIONS):
                 raise ValueError(
                     f"target grid differs from prediction for {parent_id!r}"
                 )

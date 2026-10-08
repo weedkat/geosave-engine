@@ -5,28 +5,26 @@ from __future__ import annotations
 from collections.abc import Iterable, Mapping
 from os import PathLike
 from pathlib import Path
-from typing import TYPE_CHECKING, Any, Literal, cast, get_args
+from typing import TYPE_CHECKING, Literal, cast, get_args
 
 import geopandas as gpd
-import numpy as np
 import pandas as pd
 import xarray as xr
-import pystac
 from odc.geo import SomeCRS
 from odc.geo.crs import CRS as OdcCRS
 from odc.geo.geom import Geometry
 
 from geosave_engine.geodata.utils.datetime import naive_utc
-from geosave_engine.geodata.utils.geo.geometry import SomeGeometry, to_shapely
+from geosave_engine.geodata.utils.geometry import SomeGeometry, to_shapely
 
 if TYPE_CHECKING:
     from numpy.typing import DTypeLike
     from typing_extensions import Unpack
 
     from geosave_engine.geodata import GeoDataFrame
-    from geosave_engine.geodata.io.geojson import GeoJSONWriteOptions
-    from geosave_engine.geodata.io.geopackage import GeoPackageWriteOptions
-    from geosave_engine.geodata.io.geoparquet import GeoParquetWriteOptions
+    from geosave_engine.geodata.io.vector.geojson import GeoJSONWriteOptions
+    from geosave_engine.geodata.io.vector.geopackage import GeoPackageWriteOptions
+    from geosave_engine.geodata.io.vector.geoparquet import GeoParquetWriteOptions
 
     from .anchor import GeoAnchor
 
@@ -41,12 +39,13 @@ _PREDICATES = get_args(SpatialPredicate.__value__)
 class GeoVector:
     """GeoSave operations on a GeoDataFrame, read through `gs`.
 
-    The frame stays a native GeoDataFrame, so every GeoPandas operation still
-    applies to it.
+    A vector is geometry with information attached: an active geometry column,
+    a CRS, and any other columns. Nothing here requires or adds a column. A
+    time filter applies in `query` only where the frame happens to carry
+    `datetime`, `start_datetime` or `end_datetime`.
 
     Args:
-        data: GeoDataFrame with an active geometry column. Pixel-only catalogs
-            may have no CRS; geographic operations require one.
+        data: GeoDataFrame with an active geometry column.
 
     Raises:
         AttributeError: `data` is not a GeoDataFrame, or has no active
@@ -56,11 +55,9 @@ class GeoVector:
         >>> plots = read_vector("plots.geojson")
         >>> plots.gs.crs.to_epsg()
         4326
-        >>> catalog = GeoVector.from_items(ds.gs.to_items("dataset/forest"))
-        >>> catalog = catalog.gs.upsert(another_item, on="id")
-        >>> matches = labels.gs.query(prediction)
-        >>> catalog.gs.to_geoparquet("dataset/catalog.parquet")
-        PosixPath('dataset/catalog.parquet')
+        >>> mask = plots.gs.rasterize(scene, column="class")
+        >>> plots.gs.to_geoparquet("plots.parquet")
+        PosixPath('plots.parquet')
     """
 
     def __init__(self, data: gpd.GeoDataFrame) -> None:
@@ -75,32 +72,28 @@ class GeoVector:
             raise AttributeError("gs needs an active geometry column")
         self._data = data
 
-    def to_raster(self, **options: Any) -> xr.Dataset:
-        """Read the data assets of every row as one lazy raster.
+    def _time_bounds(self) -> tuple[pd.Series, pd.Series] | None:
+        """Return each row's first and last instant in UTC, or None if undated.
 
-        Select rows first, with pandas or `query`. Variables of split-band
-        scenes come back in asset-key order; select by name where order matters.
-
-        Args:
-            **options: Forwarded to `read_raster`. `chunks` defaults to `{}`.
-
-        Returns:
-            Dataset joining the rows' scenes along `time`.
-
-        Raises:
-            ValueError: The frame holds no row, or its assets sit on different
-                grids or repeat an instant.
-
-        Examples:
-            >>> catalog.gs.query(scene).gs.to_raster().sizes["time"]
-            2
+        A frame is dated when it has `datetime`, `start_datetime` or
+        `end_datetime`. A row missing an edge leaves it NaT, so a time query
+        treats that edge as open.
         """
-        from geosave_engine.geodata.io import read_raster
-
-        hrefs = [
-            href for _, row in self._data.iterrows() for href in row.gs.hrefs.values()
-        ]
-        return read_raster(hrefs, **{"chunks": {}, **options})
+        frame = self._data
+        times = {
+            name: pd.to_datetime(frame[name], utc=True, format="mixed")
+            for name in ("datetime", "start_datetime", "end_datetime")
+            if name in frame
+        }
+        if not times:
+            return None
+        instant = times.get(
+            "datetime",
+            pd.Series(pd.NaT, index=frame.index, dtype="datetime64[ns, UTC]"),
+        )
+        first = times.get("start_datetime", instant).fillna(instant)
+        last = times.get("end_datetime", instant).fillna(instant)
+        return first, last
 
     @property
     def crs(self) -> OdcCRS:
@@ -129,7 +122,7 @@ class GeoVector:
         *,
         overwrite: bool = False,
         **options: Unpack[GeoJSONWriteOptions],
-    ) -> Path:
+    ) -> Path | str:
         """Write this vector as one GeoJSON file.
 
         GeoJSON states coordinates in WGS84, so a projected vector is
@@ -137,12 +130,12 @@ class GeoVector:
         `to_geoparquet` to keep the vector's own CRS.
 
         Args:
-            path: Output path ending in `.geojson` or `.json`.
+            path: Output path or URL ending in `.geojson` or `.json`.
             overwrite: Replace an existing file when true.
             **options: GeoJSON write options.
 
         Returns:
-            The written path.
+            Local writes return a path; URL writes return the supplied URL.
 
         Raises:
             FileExistsError: The path exists and `overwrite` is false.
@@ -163,17 +156,17 @@ class GeoVector:
         layer: str | None = None,
         overwrite: bool = False,
         **options: Unpack[GeoPackageWriteOptions],
-    ) -> Path:
+    ) -> Path | str:
         """Write this vector as one layer in a GeoPackage.
 
         Args:
-            path: Output path ending in `.gpkg`.
+            path: Output path or URL ending in `.gpkg`.
             layer: Layer name. None names the layer after the file stem.
             overwrite: Replace an existing file when true.
             **options: GeoPackage write options.
 
         Returns:
-            The written path.
+            Local writes return a path; URL writes return the supplied URL.
 
         Raises:
             FileExistsError: The path exists and `overwrite` is false.
@@ -198,10 +191,6 @@ class GeoVector:
     ) -> Path | str:
         """Write this vector as one GeoParquet file.
 
-        A table of STAC Items is written as STAC GeoParquet, whose schema and
-        file metadata stac-geoparquet owns. Geometry options such as
-        `write_covering_bbox` apply only to ordinary tables.
-
         Args:
             path: Output path or URL ending in `.parquet` or `.geoparquet`.
             overwrite: Replace an existing file when true.
@@ -217,43 +206,15 @@ class GeoVector:
         Examples:
             >>> plots.gs.to_geoparquet("plots.parquet")
             PosixPath('plots.parquet')
-            >>> catalog.gs.to_geoparquet(
-            ...     "hf://buckets/fatmur/test/catalog.parquet",
+            >>> plots.gs.to_geoparquet(
+            ...     "hf://buckets/fatmur/test/plots.parquet",
             ...     storage_options={"token": token},
             ... )
-            'hf://buckets/fatmur/test/catalog.parquet'
+            'hf://buckets/fatmur/test/plots.parquet'
         """
         from geosave_engine.geodata.io import geoparquet
 
         return geoparquet.write(self._data, path, overwrite=overwrite, **options)
-
-    @classmethod
-    def from_items(cls, items: Iterable[pystac.Item]) -> GeoDataFrame:
-        """Build a native GeoDataFrame from STAC Items without mutating them.
-
-        Args:
-            items: Items with self hrefs for resolving any relative assets.
-
-        Returns:
-            Frame with library-converted STAC properties and absolute assets.
-
-        Raises:
-            ValueError: No Items are supplied.
-            pystac.STACError: A relative asset lacks an Item self href.
-        """
-        from stac_geoparquet.arrow import parse_stac_items_to_arrow
-
-        clones = []
-        for item in items:
-            clone = item.clone()
-            clone.make_asset_hrefs_absolute()
-            clones.append(clone)
-        if not clones:
-            raise ValueError("from_items needs at least one STAC Item")
-        table = parse_stac_items_to_arrow(
-            clones, drop_invalid_properties=False
-        ).read_all()
-        return cast("GeoDataFrame", gpd.GeoDataFrame.from_arrow(table))
 
     @classmethod
     def concat(cls, vectors: Iterable[gpd.GeoDataFrame]) -> GeoDataFrame:
@@ -297,42 +258,6 @@ class GeoVector:
                 pd.concat(frames, ignore_index=True), geometry="geometry", crs=crs
             ),
         )
-
-    def upsert(
-        self, records: gpd.GeoDataFrame | pystac.Item, *, on: str
-    ) -> GeoDataFrame:
-        """Replace matching keyed rows and append new keys.
-
-        Args:
-            records: Incoming frame in the same CRS, or one native STAC Item.
-            on: Property column containing explicit record identity.
-
-        Returns:
-            Updated collection. Replaced rows move to the end, so row order
-            is not preserved.
-
-        Raises:
-            KeyError: Either collection lacks the key column.
-            ValueError: CRSs differ or incoming keys are null or duplicated.
-        """
-        if isinstance(records, pystac.Item):
-            records = type(self).from_items([records])
-        if self.crs != records.gs.crs:
-            raise ValueError(
-                f"the vectors' CRSs differ ({self.crs} and {records.gs.crs}); "
-                "call to_crs explicitly"
-            )
-        for label, frame in (("existing", self._data), ("incoming", records)):
-            if on not in frame:
-                raise KeyError(f"the {label} vector has no {on!r} column")
-        keys = cast("pd.Series", records[on])
-        if keys.isna().any():
-            raise ValueError(f"incoming {on!r} keys must not be null")
-        duplicates = keys[keys.duplicated(keep=False)].tolist()
-        if duplicates:
-            raise ValueError(f"incoming {on!r} keys must be unique, got {duplicates}")
-        others = self._data.loc[~self._data[on].isin(keys)]
-        return type(self).concat([others, records])
 
     def query(
         self,
@@ -378,51 +303,14 @@ class GeoVector:
         matched = candidates.loc[getattr(candidates.geometry, predicate)(ground)]
 
         span = anchor.timespan
-        if span is not None and "datetime" in matched:
+        bounds = matched.gs._time_bounds()
+        if span is not None and bounds is not None:
             start, end = (pd.Timestamp(naive_utc(edge), tz="UTC") for edge in span)
-            instant = pd.to_datetime(matched["datetime"], utc=True)
-            first, last = (
-                pd.to_datetime(matched.get(name, instant), utc=True).fillna(instant)
-                for name in ("start_datetime", "end_datetime")
-            )
-            matched = matched.loc[(first <= end) & (last >= start)]
+            first, last = bounds
+            matched = matched.loc[
+                (first.isna() | (first <= end)) & (last.isna() | (last >= start))
+            ]
         return cast("GeoDataFrame", matched.copy())
-
-    @classmethod
-    def vectorize(
-        cls,
-        flags: xr.DataArray,
-        *,
-        value_name: str = "value",
-        mask: xr.DataArray | np.ndarray | None = None,
-        connectivity: Literal[4, 8] = 4,
-    ) -> GeoDataFrame:
-        """Polygonize contiguous values from one geolocated flag plane.
-
-        This operation computes lazy flags because geometry depends on their
-        values.
-
-        Args:
-            flags: Two-dimensional categorical or flag array.
-            value_name: Property column receiving each region's value.
-            mask: Optional exact-grid mask selecting additional valid pixels.
-            connectivity: Four- or eight-neighbour region connectivity.
-
-        Returns:
-            One row per contiguous flag region, in the raster CRS.
-
-        Raises:
-            ValueError: The array, mask, name, connectivity, or dtype is
-                unsuitable for polygonization.
-        """
-        from geosave_engine.geodata.transform.vector import vectorize
-
-        return vectorize(
-            flags,
-            value_name=value_name,
-            mask=mask,
-            connectivity=connectivity,
-        )
 
     def rasterize(
         self,
@@ -462,20 +350,6 @@ class GeoVector:
         )
 
     @classmethod
-    def empty(cls, crs: SomeCRS) -> GeoDataFrame:
-        """Build an empty spatial collection on one CRS.
-
-        Args:
-            crs: Coordinate reference system for future geometries.
-
-        Returns:
-            Empty frame with an active geometry column.
-        """
-        return cast(
-            "GeoDataFrame", gpd.GeoDataFrame(geometry=gpd.GeoSeries([], crs=crs))
-        )
-
-    @classmethod
     def from_geometry(
         cls,
         geometry: SomeGeometry,
@@ -510,11 +384,9 @@ class GeoVector:
                 f"geometry is in {geometry_crs} but crs= names {crs}; "
                 "transform the geometry or provide its actual CRS"
             )
-        return cast(
-            "GeoDataFrame",
-            gpd.GeoDataFrame(
-                {name: [value] for name, value in properties.items()},
-                geometry=[to_shapely(geometry)],
-                crs=geometry_crs or crs or "EPSG:4326",
-            ),
+        frame = gpd.GeoDataFrame(
+            {name: [value] for name, value in properties.items()},
+            geometry=[to_shapely(geometry)],
+            crs=geometry_crs or crs or "EPSG:4326",
         )
+        return cast("GeoDataFrame", frame)

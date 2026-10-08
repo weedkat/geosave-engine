@@ -11,15 +11,14 @@ from types import SimpleNamespace
 import geopandas as gpd
 import numpy as np
 import pytest
-import pystac
 import torch
 import xarray as xr
 from lightning import LightningDataModule
 from odc.geo.geobox import GeoBox
 from torch.utils.data import DataLoader
 
-from geosave_engine.geodata import GeoVector, raster, read_vector
-from geosave_engine.geodata import io
+from geosave_engine.geodata import cuts, raster, stack
+from geosave_engine.geodata.stac import create_stack_items, table
 from geosave_engine.ml.segmentation import supervised
 from geosave_engine.model.spec import ModelSpec, Ref
 
@@ -51,8 +50,8 @@ def _pixels(index: int, times: int = 0) -> np.ndarray:
 
 
 def _manifest(root: Path, *, times: int = 0, label: bool = True) -> gpd.GeoDataFrame:
-    """Write two samples and return the manifest listing them."""
-    records = []
+    """Write two samples and return the manifest listing their groups."""
+    items = []
     for index in range(2):
         left = 500_000 + index * 1000
         grid = GeoBox.from_bbox(
@@ -63,44 +62,42 @@ def _manifest(root: Path, *, times: int = 0, label: bool = True) -> gpd.GeoDataF
         days = np.array(
             [f"2025-06-{day + 1:02d}" for day in range(times)], "datetime64[ns]"
         )
+        dims = ("time", "y", "x") if times else ("y", "x")
         optical = raster(
-            {"red": _pixels(index, times), "nir": _pixels(index, times) + 0.5},
+            {
+                "red": (
+                    dims,
+                    _pixels(index, times),
+                ),
+                "nir": (
+                    dims,
+                    _pixels(index, times) + 0.5,
+                ),
+            },
             grid,
-            **({"time": days} if times else {}),
+            coords={"time": days} if times else None,
         )
-        classes = raster({"class": np.full((SIZE, SIZE), index, "uint8")}, grid)
-        folder = root / f"s{index}"
-        folder.mkdir(parents=True)
-        suffix = ".zarr" if times else ".tif"
-        write = io.zarr.write if times else io.geotiff.write_cog
-        write(optical, folder / f"optical{suffix}")
-        assets = {"optical": folder / f"optical{suffix}"}
+        classes = raster(
+            {"class": (("y", "x"), np.full((SIZE, SIZE), index, "uint8"))},
+            grid,
+        )
+        groups = {"optical": optical}
         if label or index == 0:
-            io.geotiff.write_cog(classes, folder / "label.tif")
-            assets["label"] = folder / "label.tif"
-        records.append(
-            GeoVector.from_items(
-                [
-                    pystac.Item(
-                        id=f"s{index}",
-                        geometry=optical.gs.geobox.extent.to_crs("EPSG:4326").json,
-                        bbox=list(
-                            optical.gs.geobox.extent.to_crs("EPSG:4326").boundingbox
-                        ),
-                        datetime=datetime(2025, 6, 1, tzinfo=UTC),
-                        properties={},
-                        assets={
-                            name: pystac.Asset(str(href))
-                            for name, href in assets.items()
-                        },
-                    )
-                ]
-            )
-        )
-    path = GeoVector.concat(records).gs.to_geoparquet(root / "manifest.parquet")
-    # Registering read each sample lazily; collect, so no test starts with them open.
+            groups["label"] = classes
+        sample = stack(groups)
+        # Dated samples are one store per group; timeless ones are COGs dated by hand.
+        if times:
+            paths = sample.gs.to_zarr(root / f"s{index}")
+            when = None
+        else:
+            paths = sample.gs.to_cog(root / f"s{index}")
+            when = datetime(2025, 6, 1, tzinfo=UTC)
+        items.extend(create_stack_items(paths, name=f"s{index}", datetime=when))
+    root.mkdir(parents=True, exist_ok=True)
+    path = table.write(items, root / "manifest.parquet")
+    # Building read each sample lazily; collect, so no test starts with them open.
     gc.collect()
-    return read_vector(path)
+    return table.read(path)
 
 
 def _spec(**changes: object) -> ModelSpec:
@@ -148,7 +145,7 @@ def test_a_dataset_numbers_every_tile_of_every_sample(tmp_path: Path) -> None:
 
     # A 20-pixel side takes four 8-pixel tiles stepping by 6, so 16 per sample.
     assert len(dataset) == 32
-    assert sum(map(len, dataset.tilers.values())) == 32
+    assert dataset.reference["parent"].value_counts().tolist() == [16, 16]
 
 
 def test_a_sample_holds_the_declared_inputs_a_target_and_its_number(
@@ -158,7 +155,7 @@ def test_a_sample_holds_the_declared_inputs_a_target_and_its_number(
 
     model_inputs, target, index, valid = dataset[21]
 
-    assert index == "s1/tile-5"
+    assert index == "s1/chip-5"
     assert valid.shape == target.shape
     assert sorted(model_inputs) == ["image", "location_coords"]
     assert model_inputs["image"].shape == (2, 8, 8)
@@ -212,17 +209,18 @@ def test_merged_tiles_rebuild_every_sample(tmp_path: Path) -> None:
     from tiler import Merger
 
     dataset = supervised.Dataset(_manifest(tmp_path), _spec())
+    layouts = {key: dataset.spec.chips.layout((SIZE, SIZE)) for key in dataset.parents}
     mergers = {
         key: Merger(layout, logits=2, window="hann", save_visits=False)
-        for key, layout in dataset.tilers.items()
+        for key, (layout, _) in layouts.items()
     }
     for number in range(len(dataset)):
         model_inputs, _, sample_id, _ = dataset[number]
         row = dataset.reference.loc[sample_id]
-        mergers[row.parent_id].add(int(row.tile_id), model_inputs["image"].numpy())
+        mergers[row.parent].add(int(row.chip), model_inputs["image"].numpy())
     for index in range(2):
         key = f"s{index}"
-        rebuilt = mergers[key].merge(extra_padding=dataset.padding[key])
+        rebuilt = mergers[key].merge(extra_padding=layouts[key][1])
         np.testing.assert_allclose(rebuilt[0], 2 * _pixels(index), rtol=1e-5)
         labels = to_tensor(dataset.parents[key][dataset.target].dataset)
         assert labels.shape == (1, SIZE, SIZE)
@@ -308,7 +306,7 @@ def _batch(
     return (
         {"image": image, "location_coords": torch.ones(2, 2)},
         target,
-        ["s0/tile-4", "s0/tile-9"],
+        ["s0/chip-4", "s0/chip-9"],
         torch.ones((2, 8, 8), dtype=torch.bool),
     )
 
@@ -331,7 +329,7 @@ def test_setup_reads_each_split_from_its_own_manifest(tmp_path: Path) -> None:
     assert target.shape == (4, 8, 8)
     assert len(index) == 4
     assert list(next(iter(data.val_dataloader()))[2]) == [
-        f"s0/tile-{i}" for i in range(4)
+        f"s0/chip-{i}" for i in range(4)
     ]
 
 
@@ -340,7 +338,13 @@ def test_the_test_split_needs_its_manifest(tmp_path: Path) -> None:
     with pytest.raises(ValueError, match="test="):
         data.setup("test")
 
-    data = _data(tmp_path / "again", test=tmp_path / "val/manifest.parquet")
+    data = supervised.DataModule(
+        spec=tmp_path / "model_spec.yaml",
+        train=tmp_path / "train/manifest.parquet",
+        val=tmp_path / "val/manifest.parquet",
+        test=tmp_path / "val/manifest.parquet",
+        num_workers=0,
+    )
     data.setup("test")
     assert len(data.test_dataloader().dataset) == 32
 
@@ -353,7 +357,6 @@ def test_workers_start_without_this_process_state(tmp_path: Path) -> None:
 
     assert loader.multiprocessing_context.get_start_method() == "forkserver"
     assert loader.persistent_workers
-    assert _data(tmp_path / "again").val_dataloader is not None
 
 
 FLIP = [{"name": "RandomHorizontalFlip", "init_args": {"p": 1.0}}]
@@ -506,28 +509,22 @@ def test_prepared_reference_retains_provenance_without_advertising_raw_assets(
     tmp_path, frames
 ):
     manifest = _manifest(tmp_path, times=4 if frames else 0)
-    manifest["class_id"] = [7, 9]
+    manifest["class_id"] = manifest["geosave:stack"].map({"s0": 7, "s1": 9})
     dataset = supervised.Dataset(manifest, _spec(frames=frames))
     parent_id = "s1/frame-1" if frames else "s1"
-    row = dataset.reference.loc[f"{parent_id}/tile-5"]
+    row = dataset.reference.loc[f"{parent_id}/chip-5"]
     assert row.class_id == 9
-    assert row.source_id == "s1"
-    assert row.source_assets == manifest.iloc[1].assets
+    assert row.stack == "s1"
     assert "assets" not in row
-    assert set(row.raster_metadata) == {"image", "label"}
-    with pytest.raises(KeyError, match="assets"):
-        row.gs.to_stack()
-    tile = row.gs.crop(dataset.parents[row.parent_id])
+    assert set(row.times) == {"image", "label"}
+    tile = cuts.select_pixels(dataset.parents[row.parent], row.to_dict())
     assert to_tensor(tile.gs.rasters["label"]).shape == (1, 8, 8)
     expected = (
         2 * _pixels(1, 4)[1:3, 3:11, 3:11] if frames else 2 * _pixels(1)[3:11, 3:11]
     )
     np.testing.assert_array_equal(tile.gs.rasters["image"].red, expected)
     if frames:
-        assert row.raster_metadata["image"]["times"] == [
-            "2025-06-02T00:00:00.000000000",
-            "2025-06-03T00:00:00.000000000",
-        ]
+        assert row.times["image"] == ["2025-06-02T00:00:00", "2025-06-03T00:00:00"]
 
 
 def test_evaluation_validity_intersects_named_inputs_and_time_axes(tmp_path):

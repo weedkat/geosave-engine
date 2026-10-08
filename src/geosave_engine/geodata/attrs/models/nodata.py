@@ -21,7 +21,6 @@ class Nodata(AttrsModel):
         Nodata(fill_value=0)
     """
 
-    NAME: ClassVar[str] = "nodata"
     field_keys: ClassVar[Mapping[str, tuple[str, ...]]] = {
         "fill_value": ("_FillValue", "nodata")
     }

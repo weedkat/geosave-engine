@@ -312,3 +312,25 @@ def test_a_group_named_by_several_files_joins_them(tmp_path: Path) -> None:
     sample = read_stack({"optical": paths})
 
     assert sample.gs.rasters["optical"].sizes["time"] == 2
+
+
+@pytest.mark.parametrize("suffix", [".geojson", ".gpkg", ".parquet"])
+def test_a_plain_vector_reads_back_with_its_own_columns(tmp_path, suffix):
+    import geopandas as gpd
+    from shapely.geometry import Point
+
+    from geosave_engine.geodata import read_vector
+
+    plots = gpd.GeoDataFrame(
+        {"class": [1, 2]}, geometry=[Point(0, 0), Point(1, 1)], crs="EPSG:4326"
+    )
+    path = tmp_path / f"plots{suffix}"
+    writer = {
+        ".geojson": plots.gs.to_geojson,
+        ".gpkg": plots.gs.to_geopackage,
+        ".parquet": plots.gs.to_geoparquet,
+    }[suffix]
+
+    read = read_vector(writer(path))
+
+    assert sorted(read.columns) == ["class", "geometry"]

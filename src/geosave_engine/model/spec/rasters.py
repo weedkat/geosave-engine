@@ -51,7 +51,7 @@ class FieldRequirement(SpecModel):
         """Read expected values through their owner without building a partial model."""
         if model is not None and (unknown := self.fields - model.model_fields.keys()):
             raise ValueError(
-                f"Unknown fields for attrs model {model.NAME!r}: {sorted(unknown)}"
+                f"Unknown fields for attrs model {model.__name__!r}: {sorted(unknown)}"
             )
 
         def parse(field: str, value: JsonValue) -> object:
@@ -321,14 +321,10 @@ class RasterRequirement(SpecModel):
                 )
             count = raster.sizes["band"]
             if count < channels:
-                raise ValueError(
-                    f"Raster requires {channels} channels, got {count}"
-                )
+                raise ValueError(f"Raster requires {channels} channels, got {count}")
             return raster.isel(band=slice(channels))
         if len(names) < channels:
-            raise ValueError(
-                f"Raster requires {channels} channels, got {len(names)}"
-            )
+            raise ValueError(f"Raster requires {channels} channels, got {len(names)}")
         return raster[names[:channels]]
 
     def _validate_variables(self, raster: xr.Dataset) -> None:

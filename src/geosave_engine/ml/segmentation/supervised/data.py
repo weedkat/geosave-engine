@@ -1,6 +1,5 @@
 from __future__ import annotations
 
-from geosave_engine.geodata.transform.chip import chip_windows
 from collections.abc import Sequence
 
 import gc
@@ -13,17 +12,17 @@ from lightning import LightningDataModule
 from torch.utils.data import DataLoader
 from torch.utils.data import Dataset as TorchDataset
 
-from geosave_engine.geodata import read_vector, stack
-from stac_geoparquet import to_dict
+from geosave_engine.geodata import cuts, stack
+from geosave_engine.geodata.stac import table
+from geosave_engine.geodata.stac.extensions.geosave import STACK_PROP
 from geosave_engine.ml.inputs import model_inputs, to_tensor
 from geosave_engine.ml.transforms import DataKey, ImageAugmenter
 from geosave_engine.model.spec import ModelSpec
 
 if TYPE_CHECKING:
     import geopandas as gpd
+    import pystac
     import xarray as xr
-
-    from tiler import Tiler
 
 
 def _read_target(data: xr.Dataset, ignore_index: int) -> torch.Tensor:
@@ -44,7 +43,8 @@ class Dataset(
     is one sample; nothing is drawn at random.
 
     Args:
-        manifest: STAC table whose rows name each sample's rasters as assets.
+        manifest: Item table with one row per group; rows sharing
+            `geosave:stack` form one sample.
         spec: Model spec declaring `chips`, `inputs`, and optionally `frames`
             and `preprocessing`.
         target: Layer holding the labels, read raw.
@@ -52,11 +52,11 @@ class Dataset(
 
     Raises:
         ValueError: The spec declares no `chips` or no `inputs`, or a row
-            lacks a layer the spec or `target` names.
+            lacks an asset the spec or `target` names.
 
     Examples:
         >>> dataset = Dataset(read_vector("data/train/manifest.parquet"), spec)
-        >>> model_inputs, target, tile_id, valid = dataset[0]
+        >>> model_inputs, target, window_id, valid = dataset[0]
         >>> model_inputs["image"].shape, target.shape
         (torch.Size([4, 224, 224]), torch.Size([224, 224]))
     """
@@ -78,19 +78,38 @@ class Dataset(
         self.target = target
         self.ignore_index = ignore_index
 
-        self._layers = (*spec.rasters, target)
-        for sample_id, assets in zip(manifest["id"], manifest["assets"], strict=True):
-            missing = [name for name in self._layers if name not in assets]
+        self._groups = (*spec.rasters, target)
+        absent = [
+            name
+            for name in (STACK_PROP, "collection", "assets")
+            if name not in manifest
+        ]
+        if absent:
+            raise ValueError(
+                f"the manifest has no {absent} column; build it from each saved "
+                f"sample with stac.create_stack_items"
+            )
+        if not manifest["id"].is_unique:
+            raise ValueError("manifest IDs must be unique")
+
+        # A sample is the rows saved from one stack, one group per collection.
+        self._samples = {
+            str(name): rows for name, rows in manifest.groupby(STACK_PROP, sort=False)
+        }
+        for sample_id, rows in self._samples.items():
+            present = set(rows["collection"])
+            missing = [name for name in self._groups if name not in present]
             if missing:
                 raise ValueError(
-                    f"sample {sample_id!r} has no {missing} layer; its layers are "
-                    f"{list(assets)}"
+                    f"sample {sample_id!r} has no {missing} group; its groups are "
+                    f"{sorted(present)}"
                 )
-        if not manifest["id"].is_unique or any(
-            not isinstance(key, str) or not key for key in manifest["id"]
-        ):
-            raise ValueError("manifest IDs must be unique non-empty strings")
-        self._manifest = manifest
+
+        # Cut from the table alone: one window per frame, then its chips.
+        wanted = manifest[manifest["collection"].isin(self._groups)]
+        whole = cuts.stacks(cast("gpd.GeoDataFrame", wanted))
+        self._frames = whole if spec.frames is None else spec.frames.cut(whole)
+        self._chips = spec.chips.cut(self._frames)
 
         self._parents: dict[str, xr.DataTree] | None = None
         self._pid: int | None = None
@@ -101,23 +120,29 @@ class Dataset(
 
     def _make_reference(self, parents: dict[str, xr.DataTree]) -> gpd.GeoDataFrame:
         """Describe prepared windows, annotations and source provenance."""
-        assert self.spec.chips is not None
-        self.tilers: dict[str, Tiler] = {}
-        self.padding: dict[str, list[tuple[int, int]]] = {}
-        for key, parent in parents.items():
-            y, x = parent.gs.grid_dims
-            tiler = self.spec.chips.tiler((parent.sizes[y], parent.sizes[x]))
-            self.padding[key] = [(0, 0), (0, 0)]
-            if self.spec.chips.overlap:
-                padded_shape, self.padding[key] = tiler.calculate_padding()
-                tiler.recalculate(data_shape=padded_shape)
-            self.tilers[key] = tiler
-        reference = chip_windows(parents, self.tilers, padding=self.padding)
-        rows = [self._source_rows[key] for key in reference.parent_id]
-        reference["source_id"] = [row["id"] for row in rows]
-        reference["source_assets"] = [row["assets"] for row in rows]
+        reference = self._chips.copy()
+        # A model reads what preprocessing made, so each chip states those rasters' dates.
+        prepared = {}
+        for frame in self._frames.itertuples():
+            parent = parents[frame.id]
+            if tuple(parent.gs.anchor.geobox.shape) != (frame.height, frame.width):
+                raise ValueError(
+                    f"preprocessing left {frame.id!r} on a grid of "
+                    f"{tuple(parent.gs.anchor.geobox.shape)}, not the "
+                    f"{(frame.height, frame.width)} it was saved on, so its "
+                    f"chips would name other pixels; keep the sample's grid"
+                )
+            prepared[frame.id] = {
+                name: None
+                if raster.gs.times is None
+                else [stamp.isoformat() for stamp in raster.gs.times]
+                for name, raster in parent.gs.rasters.items()
+            }
+        reference["times"] = [prepared[parent] for parent in reference["parent"]]
+
         # Stored STAC fields describe the raw sample, not these prepared pixels.
-        properties = [to_dict(row)["properties"] for row in rows]
+        records = [self._source_rows[parent] for parent in reference["parent"]]
+        properties = [record.properties for record in records]
         annotations = dict.fromkeys(key for fields in properties for key in fields)
         for column in annotations:
             if column not in reference:
@@ -128,33 +153,33 @@ class Dataset(
         )
 
     def _prepare(self) -> dict[str, xr.DataTree]:
-        """Open prepared parents without losing scene or temporal-frame identity."""
+        """Open each sample once and prepare the rasters of each of its frames."""
         parents = {}
         self._source_rows = {}
-        for position in range(len(self._manifest)):
-            row = self._manifest.iloc[position]
-            source_id = row["id"]
-            sample = cast("xr.DataTree", row.gs.to_stack(layers=self._layers))
-            frames = (
-                (sample,) if self.spec.frames is None else self.spec.frames.cut(sample)
+        opened: dict[str, xr.DataTree] = {}
+        records: dict[str, pystac.Item] = {}
+        for frame in self._frames.to_dict("records"):
+            source_id = frame["stack"]
+            if source_id not in opened:
+                rows = self._samples[source_id]
+                items = {
+                    name: table.to_items(rows[rows["collection"] == name])
+                    for name in self._groups
+                }
+                opened[source_id] = stack(
+                    {name: table.load(part) for name, part in items.items()}
+                )
+                # The target's Item is the sample's record: it carries the annotations.
+                records[source_id] = items[self.target][0]
+            self._source_rows[frame["id"]] = records[source_id]
+            rasters = cuts.select_times(opened[source_id], frame).gs.rasters
+            results = self.spec.preprocess(rasters)
+            parents[frame["id"]] = stack(
+                {
+                    **{name: results[name] for name in self.spec.input_rasters},
+                    self.target: rasters[self.target],
+                }
             )
-            for index, frame in enumerate(frames):
-                parent_id = (
-                    source_id
-                    if self.spec.frames is None
-                    else f"{source_id}/frame-{index}"
-                )
-                if parent_id in parents:
-                    raise ValueError("prepared parent IDs must be unique")
-                self._source_rows[parent_id] = row.to_dict()
-                rasters = frame.gs.rasters
-                results = self.spec.preprocess(rasters)
-                parents[parent_id] = stack(
-                    {
-                        **{name: results[name] for name in self.spec.input_rasters},
-                        self.target: rasters[self.target],
-                    }
-                )
         return parents
 
     @property
@@ -196,10 +221,7 @@ class Dataset(
             IndexError: `index` falls outside the cut.
         """
         row = self.reference.iloc[index]
-        tile = cast(
-            "xr.DataTree",
-            row.gs.crop(self.parents[row.parent_id]),
-        )
+        tile = cuts.select_pixels(self.parents[row.parent], row.to_dict())
         rasters = tile.gs.rasters
         target = _read_target(rasters[self.target], self.ignore_index)
         inputs = model_inputs(self.spec, rasters, row)
@@ -270,7 +292,7 @@ class DataModule(LightningDataModule):
         if manifest is None:
             raise ValueError(f"no {split} manifest; pass {split}= to the datamodule")
         return Dataset(
-            read_vector(manifest),
+            table.read(manifest),
             self.spec,
             target=self.target,
             ignore_index=self.ignore_index,
